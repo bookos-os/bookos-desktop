@@ -53,8 +53,7 @@ smithay::render_elements! {
     Textura=smithay::backend::renderer::element::texture::TextureRenderElement<
         smithay::backend::renderer::gles::GlesTexture,
     >,
-    /// El velo de la capa de captura, con el recuadro redondeado. Ver
-    /// [`crate::captura::Velo`].
+    /// Shaders de píxeles: velo de captura, bandas y puntos del salvapantallas.
     Velo=smithay::backend::renderer::gles::element::PixelShaderElement,
     /// Un rectángulo de color, para el velo del launchpad. Va aparte porque
     /// pintarlo dentro del buffer del shell obligaría a rasterizar la pantalla

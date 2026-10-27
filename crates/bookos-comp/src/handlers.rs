@@ -315,6 +315,17 @@ impl BookosComp {
                 .unwrap_or(true)
         });
         if !pending {
+            // La ventana del kiosko nace a pantalla completa: va ya en esta
+            // primera configuración, que es la única que el cliente espera antes
+            // de pintar, y así su primer buffer ya tiene el tamaño de la
+            // pantalla. Los diálogos, con padre, siguen siendo ventanas.
+            if self.modo.kiosko() && toplevel.parent().is_none() {
+                let pantalla = self.pantalla();
+                toplevel.with_pending_state(|state| {
+                    state.states.set(xdg_toplevel::State::Fullscreen);
+                    state.size = Some(pantalla.size);
+                });
+            }
             toplevel.send_configure();
         }
     }
@@ -442,6 +453,9 @@ impl XdgShellHandler for BookosComp {
         // El foco de teclado apuntaba a la ventana que acaba de morir: si no se
         // reasigna, las que siguen abiertas dejan de recibir teclas y el
         // escritorio parece congelado sin estarlo.
+        if let Some(window) = self.window_de_toplevel(&surface) {
+            crate::multitarea::retirar(self, &window);
+        }
         crate::keybinds::refocalizar(self);
         self.needs_redraw = true;
         // La ventana muerta sigue en el espacio hasta el siguiente `refresh()`,

@@ -81,6 +81,12 @@ struct Udev {
     principal_id: String,
     /// La sesión está en segundo plano (has cambiado de TTY): no se dibuja.
     activa: bool,
+    /// La GPU no tiene nodo de render: es simpledrm (arranque en modo básico,
+    /// `nomodeset`) y Mesa dibuja con kms_swrast sobre buffers dumb. Ahí la
+    /// edad de los buffers de la swapchain no se cumple: fuera del damage el
+    /// buffer no conserva lo dibujado dos fotogramas antes, y la pantalla se
+    /// quedaba gris salvo el rastro del cursor y lo que se iba repintando.
+    repintado_completo: bool,
 }
 
 impl Udev {
@@ -126,7 +132,8 @@ pub fn run(
     }
 
     let gpu = elegir_gpu(&session)?;
-    tracing::info!(?gpu, "GPU elegida");
+    let repintado_completo = !gpu.has_render();
+    tracing::info!(?gpu, repintado_completo, "GPU elegida");
 
     let fd = session
         .open(
@@ -202,12 +209,17 @@ pub fn run(
         .current_mode()
         .map(|m| m.size)
         .unwrap_or_default();
-    state.shell = Some(crate::shell::ShellHost::new(
-        modo.w.max(1) as u32,
-        modo.h.max(1) as u32,
-        escala as f32,
-        state.config.take(),
-    ));
+    // En el kiosko no hay escritorio: sin shell no hay panel, dock, launchpad
+    // ni bloqueo, y el resto del compositor ya trata `None` como «no hay».
+    let kiosko = state.modo.kiosko();
+    if !kiosko {
+        state.shell = Some(crate::shell::ShellHost::new(
+            modo.w.max(1) as u32,
+            modo.h.max(1) as u32,
+            escala as f32,
+            state.config.take(),
+        ));
+    }
     if let Some(shell) = state.shell.as_mut() {
         shell.refresh();
     }
@@ -215,7 +227,9 @@ pub fn run(
     // El indicador de escritorios no puede saber cuántos hay: se lo decimos
     // antes del primer frame, para que salga pintado con el resto del panel y
     // no aparezca un instante después.
-    crate::escritorios::avisar_al_panel(state);
+    if !kiosko {
+        crate::escritorios::avisar_al_panel(state);
+    }
     let escala_cursor = salidas
         .iter()
         .map(|s| s.output.current_scale().fractional_scale())
@@ -230,11 +244,16 @@ pub fn run(
     state.contexto_gl = Some(smithay::backend::renderer::Renderer::context_id(&renderer));
     state.velo_captura = crate::captura::Velo::new(&mut renderer);
     state.banda = crate::banda::Banda::new(&mut renderer);
-    state.fondo = crate::fondo::Fondo::cargar(&state.fondo_config);
-    crate::publicar::activar();
-    crate::publicar::publicar(&state.fondo_config);
-    crate::backend::actualizar_acento_del_fondo(state);
-    crate::backend::programar_fondo_animado(state);
+    // Ni fondo ni apariencia publicada en el kiosko: el programa tapa la
+    // pantalla entera, y `publicar` como root dejaría una carpeta de «root» en
+    // /var/lib/bookos/apariencia que el greeter no tiene por qué ver.
+    if !kiosko {
+        state.fondo = crate::fondo::Fondo::cargar(&state.fondo_config);
+        crate::publicar::activar();
+        crate::publicar::publicar(&state.fondo_config);
+        crate::backend::actualizar_acento_del_fondo(state);
+        crate::backend::programar_fondo_animado(state);
+    }
     // El cristal desenfoca el fondo, así que necesita su propia copia con
     // mipmaps. En fondos animados se sustituye al avanzar el fotograma.
     if let (Some(fondo), Some(cristal)) = (state.fondo.as_ref(), state.cristal.as_ref()) {
@@ -254,6 +273,7 @@ pub fn run(
         salidas,
         principal_id,
         activa: true,
+        repintado_completo,
     }));
 
     // `DrmCompositor::clear` quita el framebuffer del conector y equivale a
@@ -587,8 +607,12 @@ pub fn run(
     crate::luz_nocturna::recargar(state, luz);
     // El tema pudo cambiar con la sesión cerrada —el automático, o editando
     // `panel.conf`—: las apps GTK tienen que arrancar ya con el que toca.
-    crate::portal::tema_gtk();
-    crate::keybinds::inhibir_boton_de_encendido();
+    // El botón de encendido se inhibe para que lo atienda el diálogo del
+    // shell; sin shell quedaría muerto, así que en el kiosko lo lleva logind.
+    if !kiosko {
+        crate::portal::tema_gtk();
+        crate::keybinds::inhibir_boton_de_encendido();
+    }
     crate::backend::escuchar_reanudacion(state);
     crate::backend::watch_hardware(state);
 
@@ -596,7 +620,9 @@ pub fn run(
     // que es lo que evita el parpadeo al iniciar sesión.
     dibujar_todas(state, &mut udev.borrow_mut());
     // Con el escritorio ya en pantalla, no antes: el sonido dice «ya está».
-    crate::multimedia::sonar_interfaz(state, "desktop-login");
+    if !kiosko {
+        crate::multimedia::sonar_interfaz(state, "desktop-login");
+    }
 
     tracing::info!(socket = ?state.socket_name, "compositor listo (sesión real)");
 
@@ -605,8 +631,10 @@ pub fn run(
          Meta+Q cierra la ventana · Meta+Alt+Retroceso sale"
     );
 
-    if let Some(cmd) = client {
-        crate::keybinds::lanzar(state, &cmd);
+    match client {
+        Some(cmd) if kiosko => crate::keybinds::lanzar_kiosko(state, &cmd)?,
+        Some(cmd) => crate::keybinds::lanzar(state, &cmd),
+        None => {}
     }
 
     let udev_loop = udev.clone();
@@ -1305,7 +1333,10 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
     crate::backend::avanzar_animaciones(state);
     let animando = state.hay_animacion();
     let Udev {
-        renderer, salidas, ..
+        renderer,
+        salidas,
+        repintado_completo,
+        ..
     } = u;
     // Antes de componer nada: si el tema cambió, el fondo y el cristal tienen
     // que ser ya los nuevos en este mismo fotograma.
@@ -1317,6 +1348,12 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
         }
     }
     for salida in salidas {
+        if *repintado_completo {
+            // Edad 0 obliga a dibujar la salida entera sin reasignar buffers.
+            salida
+                .surface
+                .with_compositor(|compositor| compositor.reset_buffer_ages());
+        }
         dibujar_salida(state, renderer, salida, animando);
     }
     state.needs_redraw = false;
@@ -1606,6 +1643,17 @@ fn configurar_dispositivo(
         // el touchpad a mitad de una frase y el cursor se va a otra línea.
         if device.config_dwt_is_available() {
             let _ = device.config_dwt_set_enabled(true);
+        }
+    }
+
+    if device.has_capability(smithay::reexports::input::DeviceCapability::Touch) {
+        let modo = if cfg.pantalla_tactil {
+            smithay::reexports::input::SendEventsMode::ENABLED
+        } else {
+            smithay::reexports::input::SendEventsMode::DISABLED
+        };
+        if device.config_send_events_set_mode(modo).is_ok() {
+            aplicado.push(format!("tactil={}", cfg.pantalla_tactil));
         }
     }
 

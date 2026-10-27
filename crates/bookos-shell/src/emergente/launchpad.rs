@@ -81,7 +81,7 @@
 //!
 use std::collections::HashMap;
 
-use iced_core::alignment::Horizontal;
+use iced_core::alignment::{Horizontal, Vertical};
 use iced_core::{Border, Color, Length};
 use iced_widget::{Space, column, container, image as iced_image, row, svg, text};
 
@@ -333,6 +333,9 @@ pub struct Launchpad {
     ocultas: Vec<String>,
     /// Los `exec` de las sueltas colocadas a mano. Ver [`Launchpad::mover_a`].
     orden: Vec<String>,
+    /// Lanzamientos por `exec`, para que buscar «vi» ponga delante la que más
+    /// se usa. Se lee al abrir: el launchpad se crea de nuevo cada vez.
+    usos: HashMap<String, u32>,
     /// El modo de edición: con él, cada icono lleva su ✕ para quitarlo. Se
     /// entra con el botón derecho, como el menú contextual del dock.
     editando: bool,
@@ -419,6 +422,7 @@ impl Launchpad {
             carpetas,
             ocultas,
             orden,
+            usos: crate::config::cargar_usos(),
             editando: false,
             dentro: None,
             paleta_abierta: false,
@@ -1189,9 +1193,16 @@ impl Launchpad {
             .filter(|(_, app)| !self.ocultas.contains(&app.exec))
             .filter_map(|(i, app)| apps::puntuar(app, &self.consulta).map(|p| (p, i)))
             .collect();
-        // A igual puntuación, alfabético: `apps` ya viene ordenado, así que
-        // basta con que la ordenación sea estable.
-        con_puntos.sort_by_key(|(p, _)| *p);
+        // Entre los aciertos buenos (nombre, prefijo, palabra o iniciales)
+        // manda el uso: con «vi», VirtualBox antes que Visor si es la que se
+        // abre. Lo que solo coincide a mitad de palabra o en difuso sigue
+        // detrás aunque se use mucho, o una letra suelta lo traería todo.
+        // A igualdad, alfabético: `apps` ya viene ordenado y la ordenación es
+        // estable.
+        con_puntos.sort_by_key(|&(p, i)| {
+            let usos = self.usos.get(&self.apps[i].exec).copied().unwrap_or(0);
+            (p > 3, std::cmp::Reverse(usos), p)
+        });
         self.visibles = con_puntos.into_iter().map(|(_, i)| Item::App(i)).collect();
         // Sin nada escrito se vuelve a la rejilla de siempre —carpetas
         // incluidas—, que es lo que `rehacer_visibles` sabe montar.
@@ -2597,7 +2608,10 @@ impl Launchpad {
             .width(Length::Fill)
             .height(Length::Fixed(PUNTOS))
             .center_x(Length::Fill)
-            .center_y(Length::Fixed(PUNTOS))
+            // Al fondo de la franja y no centrados: centrados quedaban a
+            // 23 px de las etiquetas de la última fila y se leían como parte
+            // de ella.
+            .align_y(Vertical::Bottom)
             .into()
     }
 }
@@ -2679,6 +2693,7 @@ mod tests {
             carpetas,
             ocultas: Vec::new(),
             orden: Vec::new(),
+            usos: HashMap::new(),
             editando: false,
             dentro: None,
             paleta_abierta: false,
@@ -3042,6 +3057,30 @@ mod tests {
         // Y al borrar lo escrito vuelve la rejilla con su carpeta.
         l.tecla(crate::TeclaPulsada::Retroceso);
         assert_eq!(l.visibles[0], Item::Carpeta(0));
+    }
+
+    #[test]
+    fn buscar_pone_delante_la_mas_usada() {
+        use crate::TeclaPulsada as T;
+        let mut l = con_apps(&["Vim", "VirtualBox", "Visor", "Navegador Vivaldi"]);
+        l.usos = HashMap::from([("virtualbox".into(), 9), ("navegador vivaldi".into(), 50)]);
+        l.tecla(T::Caracter('v'));
+        l.tecla(T::Caracter('i'));
+        assert_eq!(
+            l.seleccionado(),
+            Some(Accion::Lanzar("navegador vivaldi".into()))
+        );
+        l.tecla(T::Caracter('r'));
+        assert_eq!(l.seleccionado(), Some(Accion::Lanzar("virtualbox".into())));
+        // Lo difuso no adelanta a un prefijo por mucho que se use.
+        l.usos.insert("visor".into(), 1);
+        l.tecla(T::Retroceso);
+        l.tecla(T::Retroceso);
+        l.tecla(T::Caracter('i'));
+        assert_eq!(
+            l.seleccionado(),
+            Some(Accion::Lanzar("navegador vivaldi".into()))
+        );
     }
 
     #[test]

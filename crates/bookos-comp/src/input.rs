@@ -12,11 +12,13 @@
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
     GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState,
-    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
+    TouchSlot,
 };
 use smithay::input::keyboard::{FilterResult, Keycode, keysyms};
 use smithay::input::pointer::RelativeMotionEvent;
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
 
@@ -63,6 +65,7 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
     };
     let serial = SERIAL_COUNTER.next_serial();
     let pulsada = estado == KeyState::Pressed;
+    let tapado = pulsada && crate::salvapantallas::actividad(state);
     // Cualquier tecla, pulsada o suelta, corta la repetición: si sigue
     // Retroceso mantenido, la pulsación siguiente la vuelve a armar.
     if let Some(token) = state.repeticion_retroceso.take() {
@@ -98,6 +101,19 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
         time,
         |state, modifiers, handle| {
             let _ = modifiers;
+            // Con el salvapantallas puesto solo pasa su propio atajo, que lo
+            // quita; el resto de teclas se las queda la capa.
+            if tapado {
+                let accion =
+                    crate::keybinds::resolver(modifiers, &handle, codigo.raw()).filter(|a| {
+                        matches!(
+                            a,
+                            crate::keybinds::Accion::Salvapantallas
+                                | crate::keybinds::Accion::SalvapantallasOtro
+                        )
+                    });
+                return FilterResult::Intercept(accion);
+            }
             let bloqueado = state.shell.as_ref().is_some_and(|s| s.esta_bloqueado());
             // Con la capa de captura abierta, el teclado es suyo: Esc
             // la cierra, Intro captura y las flechas cambian de modo.
@@ -195,7 +211,20 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
                 .shell
                 .as_ref()
                 .is_some_and(|s| s.emergente_nombre() == Some("buscador"));
+            let emojis = state
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.emergente_nombre() == Some("emojis"));
             if let Some(accion) = crate::keybinds::resolver(modifiers, &handle, codigo.raw()) {
+                // En el kiosko solo se cambia de TTY, para poder mirar el
+                // journal si el asistente se atasca. Todo lo demás se traga:
+                // Meta+Return o Ctrl+Alt+T abrirían un terminal de root, y
+                // Meta+Alt+Retroceso saldría sin terminar la configuración.
+                if state.modo.kiosko() {
+                    return FilterResult::Intercept(
+                        matches!(accion, crate::keybinds::Accion::CambiarVt(_)).then_some(accion),
+                    );
+                }
                 // Con el buscador abierto, un atajo que mueve ventanas o
                 // cambia de escritorio actuaría sobre algo que no se ve y
                 // dejaría la paleta flotando encima del resultado. Solo
@@ -206,13 +235,22 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
                 {
                     return FilterResult::Intercept(None);
                 }
-                // Con el bloqueo echado solo valen las salidas de
-                // emergencia. Que el cambio de TTY siga funcionando no
+                if emojis
+                    && !matches!(accion, crate::keybinds::Accion::Emojis)
+                    && !accion.es_emergencia()
+                {
+                    return FilterResult::Intercept(None);
+                }
+                // Con el bloqueo echado valen las salidas de emergencia
+                // y apagar la pantalla. Que el cambio de TTY siga funcionando no
                 // es un descuido: es la puerta trasera con la que se
                 // recupera la máquina si el bloqueo falla, y la tiene
                 // cualquier escritorio. Lo demás —cerrar ventanas,
                 // maximizar, el launchpad— se traga.
-                if !bloqueado || accion.es_emergencia() {
+                if !bloqueado
+                    || accion.es_emergencia()
+                    || matches!(accion, crate::keybinds::Accion::ApagarPantalla)
+                {
                     return FilterResult::Intercept(Some(accion));
                 }
                 return FilterResult::Intercept(None);
@@ -309,7 +347,7 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
             }
             // Ctrl+C, Ctrl+V y compañía no se traducen; con el buscador
             // abierto tampoco deben llegar a la ventana que hay debajo.
-            if buscador {
+            if buscador || emojis {
                 return FilterResult::Intercept(None);
             }
             FilterResult::Forward
@@ -412,6 +450,20 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
     crate::atenuacion::actividad(state);
     state.idle_notifier_state.notify_activity(&state.seat);
     crate::backend::despertar_dpms(state);
+    // Mientras está el salvapantallas, el puntero y el tacto no llegan a nadie.
+    // El teclado se filtra dentro de `tecla`, que deja pasar Meta+Alt+S.
+    if matches!(
+        event,
+        InputEvent::PointerMotion { .. }
+            | InputEvent::PointerMotionAbsolute { .. }
+            | InputEvent::PointerButton { .. }
+            | InputEvent::PointerAxis { .. }
+            | InputEvent::TouchDown { .. }
+            | InputEvent::TouchMotion { .. }
+    ) && crate::salvapantallas::actividad(state)
+    {
+        return;
+    }
     if state
         .shell
         .as_ref()
@@ -440,11 +492,18 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
 
     match event {
         InputEvent::Keyboard { event } => {
+            if state.salvapantallas.activo() && event.state() == KeyState::Pressed {
+                tecla(state, event.key_code(), event.state(), event.time_msec());
+                return;
+            }
             // `teclas.conf` habla en evdev, que es lo que dicen
             // `input-event-codes.h` y `libinput debug-events`; smithay da el
             // código de xkb, ocho más.
             let evdev = event.key_code().raw() - 8;
             let pulsada = event.state() == KeyState::Pressed;
+            if pulsada {
+                crate::teclado::retirar(state);
+            }
             let time = event.time_msec();
             let eventos = if pulsada && capturar(state, evdev) {
                 Vec::new()
@@ -498,6 +557,7 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         }
 
         InputEvent::PointerButton { event } => {
+            state.teclado.tactil = false;
             boton(state, event.button_code(), event.state(), event.time_msec());
         }
 
@@ -544,6 +604,9 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         InputEvent::GestureSwipeBegin { event } => {
             state.gestos.deslizamiento_inicio(event.fingers());
         }
+
+        // Los gestos mueven escritorios y ventanas: en el kiosko no hay de eso.
+        InputEvent::GestureSwipeUpdate { .. } if state.modo.kiosko() => {}
 
         InputEvent::GestureSwipeUpdate { event } => {
             if let Some(gesto) = state
@@ -693,7 +756,157 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
             );
         }
 
+        InputEvent::TouchDown { event } => {
+            let punto = punto_tactil(state, &event);
+            toque_abajo(state, event.slot(), punto, event.time_msec());
+        }
+        InputEvent::TouchMotion { event } => {
+            let punto = punto_tactil(state, &event);
+            toque_mueve(state, event.slot(), punto, event.time_msec());
+        }
+        InputEvent::TouchUp { event } => toque_arriba(state, event.slot(), event.time_msec()),
+        InputEvent::TouchFrame { .. } => {
+            if let Some(touch) = state.seat.get_touch() {
+                touch.frame(state);
+            }
+        }
+        InputEvent::TouchCancel { event } => toque_cancelar(state, event.time_msec()),
+
         _ => {}
+    }
+}
+
+/// Dónde cae un toque en el escritorio.
+///
+/// La pantalla táctil es la del panel interno, no la que tenga el puntero: con
+/// un monitor externo enchufado, el dedo sigue estando sobre el portátil. En
+/// el anidado no hay `eDP` y se usa la única salida, como `PointerMotionAbsolute`.
+/// La rotación de la salida no se aplica: `output_geometry` ya da el tamaño
+/// girado, pero el eje del digitalizador no gira con él.
+fn punto_tactil<B: InputBackend>(
+    state: &BookosComp,
+    event: &impl AbsolutePositionEvent<B>,
+) -> Point<f64, Logical> {
+    let salida = state
+        .space
+        .outputs()
+        .find(|o| {
+            ["eDP", "LVDS", "DSI"]
+                .iter()
+                .any(|p| o.name().starts_with(p))
+        })
+        .or_else(|| state.space.outputs().next());
+    let Some(geo) = salida.and_then(|o| state.space.output_geometry(o)) else {
+        return state.pointer_location;
+    };
+    (
+        geo.loc.x as f64 + event.x_transformed(geo.size.w),
+        geo.loc.y as f64 + event.y_transformed(geo.size.h),
+    )
+        .into()
+}
+
+/// Un dedo apoyado, venga de libinput, de winit o de un autotest.
+///
+/// Sobre una superficie de cliente el toque es `wl_touch`, el que las apps
+/// entienden como tal (desplazar con inercia, pulsación larga). Sobre lo que
+/// dibuja el compositor —panel, dock, emergentes, decoraciones, bloqueo— se
+/// emula el ratón: todo eso ya sabe de clics y arrastres, y enseñarle un
+/// segundo idioma solo duplicaría la lógica de `boton`. Esa emulación es de un
+/// solo dedo; los demás se ignoran hasta que se levanta.
+pub fn toque_abajo(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Logical>, time: u32) {
+    crate::teclado::iniciar_toque(state, slot, punto, time);
+    if crate::teclado::pulsar(state, punto, crate::teclado::Dedo::Toque(slot)) {
+        return;
+    }
+    let Some(touch) = state.seat.get_touch() else {
+        return;
+    };
+    // La captura y el conmutador se quedan la entrada aunque haya una ventana
+    // debajo, igual que hacen con el ratón en `boton`.
+    let del_shell = state.toque_emulado.is_some()
+        || state
+            .shell
+            .as_ref()
+            .is_some_and(|s| s.hay_captura() || s.hay_conmutador());
+    let foco = if del_shell {
+        None
+    } else {
+        state.surface_under(punto)
+    };
+    match foco {
+        Some(foco) => {
+            crate::teclado::tocado(state, &foco.0);
+            if let Some((window, _)) = state.ventana_bajo(punto) {
+                state.enfocar(&window);
+            }
+            let evento = DownEvent {
+                slot,
+                location: punto,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            };
+            touch.down(state, Some(foco), &evento);
+        }
+        None if state.toque_emulado.is_none() => {
+            state.toque_emulado = Some(slot);
+            set_pointer(state, punto, time);
+            boton(state, BTN_LEFT, ButtonState::Pressed, time);
+        }
+        None => {}
+    }
+}
+
+pub fn toque_mueve(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Logical>, time: u32) {
+    crate::teclado::mover_toque(state, slot, punto);
+    if state.toque_emulado == Some(slot) {
+        set_pointer(state, punto, time);
+        return;
+    }
+    let Some(touch) = state.seat.get_touch() else {
+        return;
+    };
+    // El foco no cambia en un movimiento (lo fija `down`); lo de debajo solo
+    // le sirve a Smithay para el destino de un arrastrar y soltar.
+    let foco = state.surface_under(punto);
+    let evento = TouchMotionEvent {
+        slot,
+        location: punto,
+        time,
+    };
+    touch.motion(state, foco, &evento);
+}
+
+pub fn toque_arriba(state: &mut BookosComp, slot: TouchSlot, time: u32) {
+    crate::teclado::terminar_toque(state, slot, time);
+    if crate::teclado::soltar(state, crate::teclado::Dedo::Toque(slot)) {
+        return;
+    }
+    if state.toque_emulado == Some(slot) {
+        state.toque_emulado = None;
+        boton(state, BTN_LEFT, ButtonState::Released, time);
+        return;
+    }
+    let Some(touch) = state.seat.get_touch() else {
+        return;
+    };
+    let evento = UpEvent {
+        slot,
+        serial: SERIAL_COUNTER.next_serial(),
+        time,
+    };
+    touch.up(state, &evento);
+}
+
+fn toque_cancelar(state: &mut BookosComp, time: u32) {
+    crate::teclado::cancelar_toques(state);
+    // Un botón pulsado sin su soltar deja al shell creyendo que se sigue
+    // arrastrando: se suelta aunque el toque se haya anulado.
+    if state.toque_emulado.take().is_some() {
+        boton(state, BTN_LEFT, ButtonState::Released, time);
+    }
+    if let Some(touch) = state.seat.get_touch() {
+        touch.cancel(state);
     }
 }
 
@@ -745,6 +958,18 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
     // Meta+clic mueve y redimensiona ventanas: si hubo clic, la tecla
     // era un modificador y no debe abrir nada al soltarla.
     state.meta_sola = false;
+    // Bloqueo y captura pueden cancelar el arrastre mientras sigue pulsado.
+    // Su suelta debe liberarlo antes de que esas capas intercepten el botón.
+    if button == BTN_LEFT
+        && pulsado == ButtonState::Released
+        && state.shell.as_ref().is_some_and(|s| s.dock_agarrado())
+    {
+        if let Some(accion) = state.shell.as_mut().and_then(|s| s.soltar()) {
+            crate::keybinds::hacer(state, accion);
+        }
+        state.needs_redraw = true;
+        return;
+    }
     // Bloqueado, los clics no salen hacia los clientes: lo único que
     // atienden es el botón de apagado de la propia pantalla de bloqueo.
     // La capa de captura se queda con el ratón mientras está: se está
@@ -782,6 +1007,29 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
             state.needs_redraw = true;
         }
         return;
+    }
+    // Pulsar lo que asoma de una ventana apartada las trae todas, como en
+    // macOS. Antes que el resto: no hay cliente debajo que deba enterarse.
+    if button == BTN_LEFT
+        && pulsado == ButtonState::Pressed
+        && crate::escritorios::asomada_en(state, state.pointer_location)
+    {
+        crate::escritorios::recuperar(state);
+        state.needs_redraw = true;
+        return;
+    }
+    // El teclado en pantalla también se puede usar con el ratón: en un
+    // portátil sin pantalla táctil es la única forma de probarlo.
+    if button == BTN_LEFT {
+        let del_teclado = match pulsado {
+            ButtonState::Pressed => {
+                crate::teclado::pulsar(state, state.pointer_location, crate::teclado::Dedo::Raton)
+            }
+            ButtonState::Released => crate::teclado::soltar(state, crate::teclado::Dedo::Raton),
+        };
+        if del_teclado {
+            return;
+        }
     }
     let serial = SERIAL_COUNTER.next_serial();
 
@@ -825,6 +1073,9 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
     // ver el soltar — sin eso se queda creyendo que sigues pulsando y no
     // vuelve a pedir otro movimiento nunca más.
     if pulsado == ButtonState::Released {
+        if (button == BTN_LEFT || button == BTN_RIGHT) && crate::multitarea::soltar(state) {
+            return;
+        }
         if button == BTN_RIGHT && std::mem::take(&mut state.menu_ventana_suelta) {
             return;
         }
@@ -835,7 +1086,9 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
         }
         // El shell primero: si tenía un deslizador agarrado, el soltar
         // es suyo aunque el puntero esté ya fuera de su superficie.
-        if let Some(accion) = state.shell.as_mut().and_then(|s| s.soltar()) {
+        if button == BTN_LEFT
+            && let Some(accion) = state.shell.as_mut().and_then(|s| s.soltar())
+        {
             crate::keybinds::hacer(state, accion);
         }
         // Un botón de la barra de título se dispara al soltar y sobre
@@ -942,6 +1195,13 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
         return;
     }
 
+    if pulsado == ButtonState::Pressed
+        && button == BTN_LEFT
+        && crate::multitarea::empezar_separador(state)
+    {
+        return;
+    }
+
     // La barra de título que dibujamos nosotros: sus clics no son de
     // nadie más. Va después del shell —el panel manda sobre la barra de
     // una ventana que llegue hasta él— y antes del reenvío, porque para
@@ -958,6 +1218,12 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
         && button == BTN_LEFT
         && let Some((window, boton)) = crate::decoracion::barra_en(state, punto)
     {
+        if boton.is_none()
+            && let Some(rect) = crate::decoracion::barra_rect(state, &window)
+            && crate::multitarea::pulsar_pestana(state, &window, punto.x - rect.loc.x as f64)
+        {
+            return;
+        }
         state.enfocar(&window);
         match boton {
             Some(boton) => crate::decoracion::pulsar(state, &window, boton),
@@ -998,13 +1264,9 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
         return;
     }
 
-    // Doble clic en la franja de arriba: maximiza y restaura, como en
-    // cualquier escritorio. Va antes del reenvío porque si el clic llega
-    // al cliente, la terminal lo entiende como seleccionar una palabra.
-    if pulsado == ButtonState::Pressed && button == BTN_LEFT && doble_clic(state) {
-        return;
-    }
-
+    // Las barras del cliente procesan su propio doble clic. Interceptar la
+    // segunda pulsación dejaba a GTK con un clic pendiente: el siguiente
+    // gesto alternaba una vez en Firefox y otra aquí, y no cambiaba el tamaño.
     // Pulsar sobre una ventana le da también el foco de teclado y la
     // eleva: es lo que espera cualquiera al hacer clic.
     if pulsado == ButtonState::Pressed {
@@ -1091,10 +1353,28 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
     // Con una ventana agarrada, el movimiento es del compositor: ni el shell ni
     // el cliente lo ven. Reenviarlo mientras arrastras una terminal la deja
     // creyendo que estás seleccionando texto.
-    if state.seguir_arrastre() {
+    if crate::multitarea::seguir_separador(state) || state.seguir_arrastre() {
         state.space.refresh();
         let fallback = state.output_scale();
         state.broadcast_preferred_scale(fallback);
+        return;
+    }
+
+    if !state.shell_contiene(location) && crate::multitarea::separador_en(state, location).is_some()
+    {
+        use smithay::input::pointer::{CursorIcon, CursorImageStatus};
+        state.cursor_status = CursorImageStatus::Named(CursorIcon::EwResize);
+        let pointer = state.pointer.clone();
+        pointer.motion(
+            state,
+            None,
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        pointer.frame(state);
         return;
     }
 
@@ -1190,6 +1470,9 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
     } else {
         state.surface_under(location)
     };
+    if focus.is_none() {
+        state.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+    }
     let pointer = state.pointer.clone();
     // Un puntero bloqueado no cambia sus coordenadas absolutas; el cliente
     // recibe solo el movimiento relativo. Mandarle además `wl_pointer.motion`
@@ -1270,14 +1553,6 @@ fn confinar_a_salidas(
         .unwrap_or_else(|| Point::from((0.0, 0.0)))
 }
 
-/// Lo que se considera "la barra de título" de una ventana, en lógicos.
-///
-/// El compositor no sabe dónde acaba la barra de un cliente que se decora solo:
-/// eso vive dentro de su buffer y no se anuncia por ningún sitio. 40 cubre las
-/// barras de Qt y de GTK, que rondan las 30-36, sin llegar a la primera fila de
-/// contenido de una terminal.
-const BARRA: i32 = 40;
-
 /// Cuánto puede tardar el segundo clic para seguir siendo un doble clic.
 ///
 /// 400 ms es el valor por defecto de Qt y de GTK, o sea el que el usuario ya
@@ -1289,35 +1564,6 @@ const DOBLE_CLIC: std::time::Duration = std::time::Duration::from_millis(400);
 /// Sin este margen, un temblor de un píxel entre pulsaciones convierte el doble
 /// clic en dos clics sueltos y la ventana no hace nada.
 const DOBLE_CLIC_RADIO: f64 = 6.0;
-
-/// ¿Este clic completa un doble clic sobre la barra de título? Si sí, alterna
-/// el tamaño de la ventana y se lo traga.
-///
-/// Público para el autotest: es la única forma de probar el gesto sin una mano
-/// dando dos clics seguidos.
-pub fn doble_clic(state: &mut BookosComp) -> bool {
-    let punto = state.pointer_location;
-    if !es_doble_clic(state) {
-        return false;
-    }
-
-    let Some((window, loc)) = state
-        .space
-        .element_under(punto)
-        .map(|(w, loc)| (w.clone(), loc))
-    else {
-        return false;
-    };
-    // Solo la franja de arriba: doble clic en medio de una terminal es
-    // seleccionar una palabra, y eso es del cliente.
-    if punto.y - loc.y as f64 > BARRA as f64 {
-        return false;
-    }
-    // El tercer clic no vuelve a disparar: se olvida el par ya usado.
-    state.ultimo_clic = None;
-    state.alternar_maximizada(&window);
-    true
-}
 
 /// ¿Este clic llega lo bastante seguido y lo bastante cerca del anterior?
 ///
@@ -1600,6 +1846,14 @@ pub(crate) fn soltar_escritorio(state: &mut BookosComp) -> bool {
 fn focus_under_pointer(state: &mut BookosComp) {
     let bajo = state.ventana_bajo(state.pointer_location).map(|(w, _)| w);
     if let Some(window) = bajo {
+        // Los menús X11 reciben el clic con su grab y conservan el foco de
+        // teclado de la aplicación que los abrió.
+        if window
+            .x11_surface()
+            .is_some_and(|x| x.is_override_redirect())
+        {
+            return;
+        }
         state.enfocar(&window);
     }
 }

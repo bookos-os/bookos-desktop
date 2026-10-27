@@ -227,15 +227,15 @@ fn el_buscador_pulsa_donde_dibuja() {
     }
     let ((_, alto), _, _) = shell.emergente_geometria().unwrap();
 
-    // Cuántas filas hay: lo que sobra del campo y el divisor, en filas de 52.
-    let filas = (alto - 60 - 1 - 8 - 10) / 52;
+    // Cuántas filas hay: lo que sobra del campo y el divisor, en filas de 54.
+    let filas = (alto - 68 - 1 - 8 - 10) / 54;
     assert!(
         filas >= 1,
         "«sh» tiene que encontrar algo: el alto es {alto}"
     );
     assert_eq!(
         alto,
-        60 + 1 + 8 + filas * 52 + 10,
+        68 + 1 + 8 + filas * 54 + 10,
         "el alto declarado no cuadra con lo que apila la vista"
     );
 
@@ -245,11 +245,11 @@ fn el_buscador_pulsa_donde_dibuja() {
     // **cambia**, así que partiendo de ninguna, el orden de estas dos dice
     // exactamente dónde empieza la lista.
     assert!(
-        !shell.emergente_puntero(Some((100.0, 68.0))),
+        !shell.emergente_puntero(Some((100.0, 76.0))),
         "el campo de texto no es ninguna fila: no puede cambiar el realce"
     );
     assert!(
-        shell.emergente_puntero(Some((100.0, 69.0))),
+        shell.emergente_puntero(Some((100.0, 77.0))),
         "el primer píxel tras la separación señala la fila 0"
     );
 }
@@ -648,6 +648,42 @@ fn una_ventana_sin_lanzador_sale_en_el_dock() {
     // Y al cerrarla, el dock vuelve a su ancho.
     assert!(shell.dock_ventanas(&[]));
     assert_eq!(shell.dock_buffer_size().0, w0);
+}
+
+/// Lanzar un icono del dock sin ventana lo hace rebotar, sin cambiar el
+/// tamaño del dock.
+///
+/// Con `BOOKOS_DOCK_REBOTE_PNG=/ruta.png` guarda el dock en lo alto del salto.
+#[test]
+fn lanzar_desde_el_dock_hace_rebotar_el_icono() {
+    let mut shell = shell(1.0);
+    let Some(exec) = shell
+        .dock()
+        .items()
+        .iter()
+        .find(|i| !i.abierta() && !i.exec().is_empty())
+        .map(|i| i.exec().to_string())
+    else {
+        return;
+    };
+    let tam = shell.dock_buffer_size();
+    let (w, h) = tam;
+    let mut quieto = vec![0u8; (w * h * 4) as usize];
+    shell.draw_dock(&mut quieto);
+
+    assert!(shell.dock_lanzando(&exec));
+    assert!(shell.dock_animando(), "rebotando hay que seguir pintando");
+    // Medio periodo: lo alto del salto.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        shell.dock_buffer_size(),
+        tam,
+        "el rebote no cambia el tamaño"
+    );
+    let mut arriba = vec![0u8; (w * h * 4) as usize];
+    shell.draw_dock(&mut arriba);
+    volcar("BOOKOS_DOCK_REBOTE_PNG", &arriba, w, h);
+    assert_ne!(quieto, arriba, "el icono no se ha movido");
 }
 
 /// El emergente de la energía se abre desde la batería y trae sus perfiles.
@@ -1804,6 +1840,8 @@ fn la_barra_de_titulo_pinta_sus_botones() {
     // círculo rojo y la tinta que se lee encima— y el que se rompería sin que
     // ningún otro test se enterase.
     let estado = Estado {
+        pestanas: Vec::new(),
+        pestana_activa: 0,
         titulo: "Konsole — bash".into(),
         activa: true,
         maximizada: false,
@@ -1852,6 +1890,8 @@ fn la_barra_de_titulo_pinta_sus_botones() {
     // Repetir con el mismo estado no obliga a repintar: es lo que evita
     // rasterizar una barra por ventana en cada frame.
     let igual = Estado {
+        pestanas: Vec::new(),
+        pestana_activa: 0,
         titulo: "Konsole — bash".into(),
         activa: true,
         maximizada: false,
@@ -1866,6 +1906,8 @@ fn la_barra_de_titulo_pinta_sus_botones() {
     // Maximizada vuelve a ser rectangular para no enseñar el fondo por las
     // esquinas de la pantalla.
     let maximizada = Estado {
+        pestanas: Vec::new(),
+        pestana_activa: 0,
         titulo: "Konsole — bash".into(),
         activa: true,
         maximizada: true,
@@ -1894,18 +1936,18 @@ fn el_buscador_busca_y_lanza() {
         "una tarjeta opaca no debe dejar un halo del fondo en las esquinas"
     );
 
-    // Vacío es solo el campo: sin lista, la tarjeta no puede tener el alto de
-    // seis filas vacías.
-    let ((w, alto_vacio), _, _) = shell.emergente_geometria().unwrap();
-    assert_eq!(w, 640);
+    // Vacío enseña como mucho las sugerencias de lo más usado, que dependen
+    // de `usos.conf` de quien pruebe: aquí solo se fija el ancho.
+    let ((w, _), _, _) = shell.emergente_geometria().unwrap();
+    assert_eq!(w, 720);
 
     // «sh» encuentra al menos el ejecutable del PATH, que existe en cualquier
-    // Linux; escribir tiene que hacer crecer la tarjeta.
+    // Linux: la tarjeta pasa de ser solo el campo (68) a tener lista.
     for c in "sh".chars() {
         assert!(shell.emergente_tecla(TeclaPulsada::Caracter(c)).0);
     }
     let ((_, alto), _, _) = shell.emergente_geometria().unwrap();
-    assert!(alto > alto_vacio, "la lista no apareció al escribir");
+    assert!(alto > 68, "la lista no apareció al escribir");
 
     let (bw, bh) = shell.emergente_buffer_size().unwrap();
     let mut buf = vec![0u8; (bw * bh * 4) as usize];
@@ -1919,7 +1961,7 @@ fn el_buscador_busca_y_lanza() {
     let estable = shell.emergente_geometria().unwrap().2;
     assert_eq!(
         estable,
-        Some(60),
+        Some(68),
         "Spotlight tiene que colocarse por el campo centrado, no por la lista"
     );
 

@@ -221,6 +221,13 @@ impl Escritorios {
         Some((-recorrido, entrante))
     }
 
+    /// ¿Se está yendo esta ventana por un «mostrar escritorio» en marcha?
+    pub fn se_va(&self, window: &Window) -> bool {
+        self.despeje
+            .as_ref()
+            .is_some_and(|d| d.ida && d.ventanas.iter().any(|(w, _, _)| w == window))
+    }
+
     /// ¿Hay algo apartado por «mostrar escritorio» en lo que se ve ahora, en
     /// alguna pantalla?
     pub fn despejado(&self) -> bool {
@@ -731,6 +738,13 @@ pub fn terminar_todos(state: &mut BookosComp) {
 
 /// Envía una ventana al escritorio de su monitor sin cambiar la vista.
 pub fn mover_ventana(state: &mut BookosComp, window: &Window, destino: usize) {
+    let familia = crate::multitarea::familia(state, window);
+    for w in familia {
+        mover_ventana_una(state, &w, destino);
+    }
+}
+
+fn mover_ventana_una(state: &mut BookosComp, window: &Window, destino: usize) {
     if state.minimizando.iter().any(|(w, _)| w == window) {
         return;
     }
@@ -814,6 +828,9 @@ pub fn despejar(state: &mut BookosComp) {
         ida: true,
         ventanas: viaje,
     });
+    // Las barras que esquivan ventanas no deben esperar a que acabe el viaje
+    // para volver: las que se van ya no cuentan (ver `revisar_barras`).
+    state.revisar_barras();
     // El teclado no puede quedarse en una ventana que ya no se ve: lo que se
     // tecleara iría a ciegas a ella.
     state.desenfocar();
@@ -901,15 +918,18 @@ pub fn recuperar_app(state: &mut BookosComp, app_id: &str) -> bool {
 /// pantalla, igual que aquellas, y debe sentirse igual de rápida.
 const DESPEJE: std::time::Duration = bookos_shell::tema::D_VENTANA;
 
-/// Aire que se deja al sacar una ventana de la pantalla, para que no asome la
-/// sombra por el borde.
-const MARGEN_FUERA: f64 = 48.0;
+/// Lo que queda a la vista de cada ventana apartada, pegado al borde, como en
+/// macOS: dice que las ventanas siguen ahí y es dónde pulsar para traerlas.
+/// 24 px se ven sin quitarle escritorio a nadie y son un blanco cómodo.
+const ASOMA: i32 = 24;
 
-/// Adónde va una ventana al despejar: en línea recta desde el centro de la
-/// pantalla, justo hasta salirse, como en macOS. Las de la izquierda se van por
-/// la izquierda y las de arriba por arriba, así que se abren en abanico en vez
-/// de amontonarse en un borde. Una centrada del todo baja, que es hacia donde
-/// van los dedos.
+/// Adónde va una ventana al despejar: siempre hacia un lado, como en macOS.
+/// Las de la mitad izquierda se van por la izquierda y el resto por la derecha.
+///
+/// Antes salían en línea recta desde el centro, y una ventana centrada o
+/// maximizada —el caso normal— no tiene componente lateral: bajaba entera, que
+/// se leía como un deslizamiento y no como apartar las ventanas. En horizontal
+/// el movimiento es el mismo para todas y deja ver el escritorio de golpe.
 fn fuera_de_pantalla(
     window: &Window,
     sitio: Point<i32, Logical>,
@@ -931,37 +951,64 @@ fn fuera_de_pantalla(
     (sitio.x + dx, sitio.y + dy).into()
 }
 
-/// El desplazamiento que saca `caja` de `pantalla`, en la dirección del
-/// centro de la pantalla al de la caja. Aparte de [`fuera_de_pantalla`] para
-/// poder probarlo sin una `Window`.
+/// El desplazamiento horizontal que saca `caja` de `pantalla` por el lado más
+/// cercano a su centro; a la derecha si cae justo en medio. Aparte de
+/// [`fuera_de_pantalla`] para poder probarlo sin una `Window`.
 fn salida_hacia_fuera(
     caja: Rectangle<i32, Logical>,
     pantalla: Rectangle<i32, Logical>,
 ) -> (i32, i32) {
-    let (c, p) = (caja.to_f64(), pantalla.to_f64());
-    let (izq, arr) = (c.loc.x, c.loc.y);
-    let (der, aba) = (izq + c.size.w, arr + c.size.h);
-    let (mut vx, mut vy) = (
-        (izq + der) / 2.0 - (p.loc.x + p.size.w / 2.0),
-        (arr + aba) / 2.0 - (p.loc.y + p.size.h / 2.0),
-    );
-    if vx.hypot(vy) < 1.0 {
-        (vx, vy) = (0.0, 1.0);
+    let centro = caja.loc.x + caja.size.w / 2;
+    // `min`/`max`: una ventana que ya asomaba menos que eso no se mete hacia
+    // dentro al despejar.
+    if centro < pantalla.loc.x + pantalla.size.w / 2 {
+        let der = caja.loc.x + caja.size.w;
+        ((pantalla.loc.x + ASOMA - der).min(0), 0)
+    } else {
+        (
+            (pantalla.loc.x + pantalla.size.w - ASOMA - caja.loc.x).max(0),
+            0,
+        )
     }
-    // Cuánto hay que recorrer del vector para salir por cada eje; manda el
-    // que antes se sale.
-    let por_x = match vx {
-        v if v > 0.0 => (p.loc.x + p.size.w - izq + MARGEN_FUERA) / v,
-        v if v < 0.0 => (der - p.loc.x + MARGEN_FUERA) / -v,
-        _ => f64::INFINITY,
+}
+
+/// Las apartadas del escritorio activo de `salida`, en el borde donde asoman.
+/// Vacío mientras viajan: entonces siguen en el `Space` y ya se dibujan.
+pub fn asomadas(state: &BookosComp, salida: &str) -> Vec<(Window, Point<i32, Logical>)> {
+    if state.escritorios.despeje.is_some() {
+        return Vec::new();
+    }
+    let Some(pantalla) = state
+        .space
+        .outputs()
+        .find(|o| o.name() == salida)
+        .and_then(|o| state.space.output_geometry(o))
+    else {
+        return Vec::new();
     };
-    let por_y = match vy {
-        v if v > 0.0 => (p.loc.y + p.size.h - arr + MARGEN_FUERA) / v,
-        v if v < 0.0 => (aba - p.loc.y + MARGEN_FUERA) / -v,
-        _ => f64::INFINITY,
-    };
-    let k = por_x.min(por_y);
-    ((vx * k).round() as i32, (vy * k).round() as i32)
+    state
+        .escritorios
+        .escondidas
+        .get(salida)
+        .and_then(|l| l.get(state.escritorios.activo_en(salida)))
+        .into_iter()
+        .flatten()
+        .map(|(w, sitio)| (w.clone(), fuera_de_pantalla(w, *sitio, pantalla)))
+        .collect()
+}
+
+/// ¿Cae el punto en el trozo que asoma de alguna apartada?
+pub fn asomada_en(state: &BookosComp, punto: Point<f64, Logical>) -> bool {
+    state.space.outputs().any(|o| {
+        let Some(pantalla) = state.space.output_geometry(o) else {
+            return false;
+        };
+        asomadas(state, &o.name()).iter().any(|(w, loc)| {
+            Rectangle::new(*loc, w.geometry().size)
+                .intersection(pantalla)
+                .is_some_and(|r| r.to_f64().contains(punto))
+        })
+    })
 }
 
 /// Mueve las ventanas del despeje en marcha. `true` mientras le quede.
@@ -1182,8 +1229,9 @@ pub fn purgar(state: &mut BookosComp) {
 mod tests {
     use super::*;
 
-    /// Al despejar, cada ventana sale entera por el lado hacia el que queda, y
-    /// una centrada baja.
+    /// Al despejar, cada ventana sale por el lado en que tiene su centro, dejando
+    /// una tira a la vista,
+    /// y la centrada o maximizada también se va de lado, no hacia abajo.
     #[test]
     fn despejar_saca_cada_ventana_por_su_lado() {
         let pantalla = Rectangle::<i32, Logical>::new((0, 0).into(), (1600, 1000).into());
@@ -1191,19 +1239,20 @@ mod tests {
             let caja = Rectangle::<i32, Logical>::new((x, y).into(), (w, h).into());
             let (dx, dy) = salida_hacia_fuera(caja, pantalla);
             let movida = Rectangle::<i32, Logical>::new((x + dx, y + dy).into(), (w, h).into());
-            assert!(
-                !movida.overlaps(pantalla),
-                "la ventana {caja:?} sigue asomando en {movida:?}"
+            assert_eq!(
+                movida.intersection(pantalla).map(|r| r.size.w),
+                Some(ASOMA),
+                "la ventana {caja:?} asoma justo una tira en {movida:?}"
             );
             (dx, dy)
         };
-        let (dx, _) = fuera(50, 300, 400, 300);
+        let (dx, dy) = fuera(50, 300, 400, 300);
         assert!(dx < 0, "la de la izquierda se va por la izquierda");
+        assert_eq!(dy, 0);
         let (dx, _) = fuera(1100, 300, 400, 300);
         assert!(dx > 0, "y la de la derecha por la derecha");
-        let (dx, dy) = fuera(400, 250, 800, 500);
-        assert_eq!(dx, 0, "la centrada no se tuerce");
-        assert!(dy > 0, "y baja, hacia donde van los dedos");
+        let (dx, dy) = fuera(0, 0, 1600, 1000);
+        assert!(dx > 0 && dy == 0, "la maximizada no baja: se va de lado");
     }
 
     /// Moverse por los escritorios se para en los extremos en vez de dar la
@@ -1415,22 +1464,25 @@ pub fn ventanas_en_vista(state: &BookosComp) -> Vec<(usize, Window, Rectangle<i3
         .flat_map(|(i, (ventanas, hueco))| {
             let factor = (hueco.size.w as f64 / ancho.max(1.0) as f64)
                 .min(hueco.size.h as f64 / alto.max(1.0) as f64);
-            ventanas.into_iter().map(move |(window, posicion)| {
-                let geo = window.geometry();
-                let rect = Rectangle::new(
-                    (
-                        hueco.loc.x + (posicion.x as f64 * factor).round() as i32,
-                        hueco.loc.y + (posicion.y as f64 * factor).round() as i32,
-                    )
-                        .into(),
-                    (
-                        (geo.size.w as f64 * factor).round().max(1.0) as i32,
-                        (geo.size.h as f64 * factor).round().max(1.0) as i32,
-                    )
-                        .into(),
-                );
-                (i, window, rect)
-            })
+            ventanas
+                .into_iter()
+                .filter(|(window, _)| crate::multitarea::visible(state, window))
+                .map(move |(window, posicion)| {
+                    let geo = window.geometry();
+                    let rect = Rectangle::new(
+                        (
+                            hueco.loc.x + (posicion.x as f64 * factor).round() as i32,
+                            hueco.loc.y + (posicion.y as f64 * factor).round() as i32,
+                        )
+                            .into(),
+                        (
+                            (geo.size.w as f64 * factor).round().max(1.0) as i32,
+                            (geo.size.h as f64 * factor).round().max(1.0) as i32,
+                        )
+                            .into(),
+                    );
+                    (i, window, rect)
+                })
         })
         .collect()
 }
@@ -1463,7 +1515,10 @@ pub fn exposicion(state: &BookosComp) -> Vec<(Window, Rectangle<i32, Logical>)> 
     else {
         return Vec::new();
     };
-    let ventanas = ventanas_de(state, &salida);
+    let ventanas: Vec<_> = ventanas_de(state, &salida)
+        .into_iter()
+        .filter(|(window, _)| crate::multitarea::visible(state, window))
+        .collect();
     let n = ventanas.len() as i32;
     if n == 0 {
         return Vec::new();

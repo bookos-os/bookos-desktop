@@ -54,6 +54,8 @@ pub mod medios;
 pub mod notificaciones;
 pub mod osd;
 mod state;
+/// El teclado en pantalla.
+pub mod teclado;
 /// Los tokens del sistema de diseño. Público porque el compositor anima con
 /// las mismas curvas y duraciones que el shell: dos tablas de movimiento en el
 /// mismo escritorio se separan a la primera.
@@ -97,6 +99,11 @@ pub fn icono_de_app(nombre: &str) -> Option<Icono> {
     icono::cargar(nombre)
 }
 
+/// El nombre de la aplicación de ese `app_id`, según su `.desktop`.
+pub fn nombre_de_app(app_id: &str) -> Option<String> {
+    apps::por_app_id(app_id).map(|a| a.nombre)
+}
+
 /// Una celda del conmutador, a partir de la ventana que representa.
 ///
 /// El `app_id` casi nunca sirve como nombre ni como icono —`org.kde.konsole` no
@@ -124,11 +131,11 @@ pub fn entrada_de_ventana(app_id: &str, titulo: &str) -> conmutador::Entrada {
 
 pub use config::{
     Actividades as ConfigActividades, Bloqueo as ConfigBloqueo, BrilloAutomatico, Config, Efectos,
-    Entrada, FuenteReloj, LuzNocturna, MAXIMO_ESCRITORIOS, ModoLuzNocturna, Pasos,
-    guardar_apariencia, guardar_brillo_automatico, guardar_configuracion, guardar_dock,
-    guardar_efectos, guardar_escritorios, guardar_esquiva, guardar_fondo,
-    guardar_iconos_escritorio, guardar_luz_nocturna,
-    luz_nocturna_encendida, marcar_luz_nocturna, olvidar_fondo, ruta as ruta_config,
+    Entrada, EstiloSalvapantallas, FuenteReloj, LuzNocturna, MAXIMO_ESCRITORIOS, ModoLuzNocturna,
+    Pasos, apps_encima, guardar_apariencia, guardar_brillo_automatico, guardar_configuracion,
+    guardar_dock, guardar_efectos, guardar_escritorios, guardar_esquiva, guardar_fondo,
+    guardar_iconos_escritorio, guardar_luz_nocturna, luz_nocturna_encendida, marcar_app_encima,
+    marcar_luz_nocturna, olvidar_fondo, ruta as ruta_config, sumar_uso,
 };
 pub use dock::{
     Dock, DockItem, ICON as DOCK_ICON, MARGIN as DOCK_MARGIN, PAD as DOCK_PAD,
@@ -159,7 +166,11 @@ pub const PANEL_HEIGHT: u32 = 32;
 pub enum Accion {
     EnergiaConfirmada(confirmacion::Energia),
     CerrarEmergente,
+    InsertarEmoji(String),
     VentanaEncima,
+    VentanaUnir(bool),
+    VentanaDisposicion(bool),
+    VentanaSeparar,
     VentanaEscritorio(usize),
     VentanaMonitor(String),
     Lanzar(String),
@@ -170,6 +181,13 @@ pub enum Accion {
     /// que dice su `.desktop`— y en ese caso lanzar es mejor que no hacer nada:
     /// desde fuera, un icono que no responde parece el dock roto.
     Activar {
+        app_id: String,
+        exec: String,
+    },
+    /// Lo mismo, pero sin alternar: si ya está delante se queda. Es lo que
+    /// pide el buscador, donde elegir una aplicación abierta es querer verla,
+    /// no esconderla como al pulsar su icono del dock por segunda vez.
+    Mostrar {
         app_id: String,
         exec: String,
     },
@@ -191,6 +209,8 @@ pub enum Accion {
         /// `Some(false)` y dice lo que quiere.
         fijar: Option<bool>,
     },
+    /// El orden ya se ve durante el arrastre; se persiste una vez al soltar.
+    GuardarDock(Vec<String>),
     /// Abrir «Acerca de este PC», que es una superficie del propio shell.
     Acerca,
     /// Cambiar el tema y el acento. Los dos juntos y no una acción por cada uno
@@ -331,6 +351,7 @@ impl Accion {
                 // ahí para poner varias, y cerrarse tras la primera obligaría a
                 // reabrirlo por cada icono.
                 | Self::Anclar { .. }
+                | Self::GuardarDock(_)
         )
     }
 }
@@ -715,6 +736,8 @@ pub struct Shell {
 
     /// El aviso de volumen, brillo y demás, mientras dura.
     osd: Option<(osd::Osd, Canvas)>,
+    /// El teclado en pantalla, mientras se ve o se está yendo.
+    teclado: Option<(teclado::Teclado, Canvas)>,
     /// El panel de diagnóstico, mientras esté puesto. Va con su propio lienzo
     /// por lo mismo que el aviso: es una superficie aparte, con su tamaño, que
     /// aparece y desaparece sin tocar al panel.
@@ -849,6 +872,7 @@ impl Shell {
             bloqueo: None,
             captura: None,
             osd: None,
+            teclado: None,
             diagnostico: None,
             conmutador: None,
             notificaciones: notificaciones::Registro::default(),
@@ -958,7 +982,8 @@ impl Shell {
 
     /// Enseña u oculta los iconos. `true` si cambió.
     pub fn escritorio_mostrar(&mut self, visible: bool, pantalla: (f32, f32)) -> bool {
-        self.escritorio.mostrar(visible, PANEL_HEIGHT as f32, pantalla)
+        self.escritorio
+            .mostrar(visible, PANEL_HEIGHT as f32, pantalla)
     }
 
     /// Tamaño en píxeles físicos del buffer de **una** celda. Son todas
@@ -1754,11 +1779,8 @@ impl Shell {
         subsistemas
     }
 
-    /// ¿Hace falta pintar el dock? Su contenido solo cambia al señalar un
-    /// icono, así que la primera vez, tras un cambio de tamaño y en el hover.
-    ///
-    /// Mientras la placa del icono señalado entra o sale hay que repintarlo en
-    /// cada fotograma: el dibujo cambia sin que llegue ningún evento.
+    /// El resalte necesita fotogramas aunque deje de moverse el puntero;
+    /// los cambios de contenido y de orden invalidan el lienzo directamente.
     pub fn dock_needs_paint(&self) -> bool {
         !self.dock.painted_once || self.dock_items.animando()
     }
@@ -1766,6 +1788,11 @@ impl Shell {
     /// ¿Se está moviendo algo dentro del dock?
     pub fn dock_animando(&self) -> bool {
         self.dock_items.animando()
+    }
+
+    /// Ver [`Dock::lanzando`].
+    pub fn dock_lanzando(&mut self, exec: &str) -> bool {
+        self.dock_items.lanzando(exec)
     }
 
     /// Señala el icono que haya en `punto`, en coordenadas **lógicas relativas
@@ -2329,11 +2356,16 @@ impl Shell {
     /// Pinta el icono agarrado. `buf` debe tener el tamaño que corresponde a
     /// `lado` con la escala del shell.
     pub fn draw_agarrado(&mut self, buf: &mut [u8], lado: f32) {
-        let Some((Emergente::Launchpad(l), _)) = self.emergente.as_ref() else {
-            return;
-        };
-        let Some(vista) = l.vista_agarrado() else {
-            return;
+        let vista = if let Some(vista) = self.dock_items.vista_agarrado() {
+            vista
+        } else {
+            let Some((Emergente::Launchpad(l), _)) = self.emergente.as_ref() else {
+                return;
+            };
+            let Some(vista) = l.vista_agarrado() else {
+                return;
+            };
+            vista
         };
         let escala = self.panel.scale;
         let mut canvas = Canvas::new(Size::new(lado, lado), escala);
@@ -2511,6 +2543,101 @@ impl Shell {
             &self.theme,
             vista,
             buf,
+        )
+    }
+
+    /// Saca el teclado, o lo hace volver si se estaba yendo. `ancho` es el de
+    /// la pantalla en lógicos: va de lado a lado.
+    pub fn mostrar_teclado(&mut self, ancho: f32, capa: teclado::Capa) {
+        if let Some((t, _)) = self.teclado.as_mut()
+            && t.size().0 == ancho
+        {
+            t.mostrar(capa);
+            return;
+        }
+        let t = teclado::Teclado::new(ancho, capa);
+        let (w, h) = t.size();
+        let canvas = Canvas::new(Size::new(w, h), self.panel.scale);
+        self.teclado = Some((t, canvas));
+    }
+
+    pub fn ocultar_teclado(&mut self) {
+        if let Some((t, _)) = self.teclado.as_mut() {
+            t.ocultar();
+        }
+    }
+
+    /// Hay teclado y no se está yendo.
+    pub fn teclado_abierto(&self) -> bool {
+        self.teclado.as_ref().is_some_and(|(t, _)| !t.saliendo())
+    }
+
+    /// El teclado, si sigue a la vista. Lo tira cuando acaba de irse.
+    pub fn teclado_vivo(&mut self) -> bool {
+        if self.teclado.as_ref().is_some_and(|(t, _)| t.terminado()) {
+            self.teclado = None;
+        }
+        self.teclado.is_some()
+    }
+
+    pub fn teclado_animando(&self) -> bool {
+        self.teclado.as_ref().is_some_and(|(t, _)| t.animando())
+    }
+
+    /// Lo que tapa ahora mismo del borde de abajo, en lógicos.
+    pub fn teclado_asoma(&self) -> f32 {
+        self.teclado.as_ref().map_or(0.0, |(t, _)| t.asoma())
+    }
+
+    pub fn teclado_needs_paint(&self) -> bool {
+        self.teclado.as_ref().is_some_and(|(_, c)| !c.painted_once)
+    }
+
+    /// Un dedo sobre el teclado, en lógicos relativos a él.
+    pub fn teclado_pulsar(&mut self, x: f32, y: f32) -> Option<teclado::Accion> {
+        let (t, c) = self.teclado.as_mut()?;
+        c.painted_once = false;
+        t.pulsar(x, y)
+    }
+
+    pub fn teclado_soltar(&mut self) -> Option<teclado::Accion> {
+        let (t, c) = self.teclado.as_mut()?;
+        c.painted_once = false;
+        t.soltar()
+    }
+
+    pub fn teclado_buffer_size(&self) -> Option<(u32, u32)> {
+        self.teclado.as_ref().map(|(_, c)| c.buffer_size())
+    }
+
+    pub fn teclado_logical_size(&self) -> Option<(f32, f32)> {
+        self.teclado.as_ref().map(|(t, _)| t.size())
+    }
+
+    /// Hay que repintarlo entero al cambiar de tema o de acento: sus colores
+    /// salen de los dos.
+    pub fn teclado_invalidar(&mut self) {
+        if let Some((_, c)) = self.teclado.as_mut() {
+            c.painted_once = false;
+        }
+    }
+
+    pub fn draw_teclado(&mut self, buf: &mut [u8]) -> Vec<Damage> {
+        let Some((t, canvas)) = self.teclado.as_mut() else {
+            return Vec::new();
+        };
+        // Se limpia con el fondo opaco del teclado en vez de pintarlo como un
+        // contenedor: ver `paint_con_fondo`.
+        let fondo = t.fondo();
+        let vista = t.view();
+        Self::paint_con_fondo(
+            canvas,
+            &mut self.renderer,
+            &mut self.mask,
+            &self.theme,
+            vista,
+            buf,
+            fondo,
         )
     }
 
@@ -3055,19 +3182,27 @@ impl Shell {
     }
 
     /// Qué aplicación hay en ese punto del dock: `(app_id, exec, icono)`.
-    ///
-    /// El launchpad no cuenta: no se saca del dock ni se ancla, así que quien
-    /// pregunte por él recibe `None` y trata el clic como lo que es, abrir.
     pub fn dock_item_en(&self, x: f32, y: f32) -> Option<(String, String, String)> {
         let i = self.dock_items.item_en(x, y)?;
         let item = &self.dock_items.items()[i];
-        (item.exec() != config::LAUNCHPAD).then(|| {
-            (
-                item.app_id().to_string(),
-                item.exec().to_string(),
-                item.icono_nombre().to_string(),
-            )
-        })
+        Some((
+            item.app_id().to_string(),
+            item.exec().to_string(),
+            item.icono_nombre().to_string(),
+        ))
+    }
+
+    pub fn dock_arrastrar(&mut self, app_id: Option<&str>) {
+        self.dock_items.arrastrar(app_id);
+        self.dock.painted_once = false;
+    }
+
+    pub fn dock_mover(&mut self, app_id: &str, x: f32) -> bool {
+        let cambio = self.dock_items.mover(app_id, x);
+        if cambio {
+            self.dock.painted_once = false;
+        }
+        cambio
     }
 
     /// Abre el menú contextual del icono que haya en ese punto del dock, en

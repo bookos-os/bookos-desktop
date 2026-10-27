@@ -42,6 +42,7 @@ struct Datos {
     /// puntero de la superficie porque el shell no conoce Wayland.
     id: u64,
     lleva: Cell<bool>,
+    grupo: Cell<bool>,
 }
 
 /// Da a `window` una barra de título, o se la quita.
@@ -53,9 +54,19 @@ pub fn decorar(window: &Window, si: bool) {
     datos.insert_if_missing(|| Datos {
         id: SIGUIENTE.fetch_add(1, Ordering::Relaxed),
         lleva: Cell::new(false),
+        grupo: Cell::new(false),
     });
     if let Some(d) = datos.get::<Datos>() {
         d.lleva.set(si);
+    }
+}
+
+pub fn agrupar(window: &Window, si: bool) {
+    if window.user_data().get::<Datos>().is_none() {
+        decorar(window, false);
+    }
+    if let Some(d) = window.user_data().get::<Datos>() {
+        d.grupo.set(si);
     }
 }
 
@@ -67,7 +78,7 @@ pub fn decorada(window: &Window) -> bool {
     window
         .user_data()
         .get::<Datos>()
-        .is_some_and(|d| d.lleva.get())
+        .is_some_and(|d| d.lleva.get() || d.grupo.get())
         && !crate::ventanas::completa(window)
 }
 
@@ -108,7 +119,12 @@ pub fn barra_en(state: &BookosComp, punto: Point<f64, Logical>) -> Option<(Windo
             && punto.y >= r.loc.y as f64
             && punto.y < (r.loc.y + r.size.h) as f64
     };
-    for window in state.space.elements().rev() {
+    for window in state
+        .space
+        .elements()
+        .rev()
+        .filter(|w| crate::multitarea::visible(state, w))
+    {
         if let Some(rect) = barra_rect(state, window)
             && dentro(rect)
         {
@@ -171,7 +187,10 @@ pub fn estado_de(state: &BookosComp, window: &Window) -> bookos_shell::decoracio
             .filter(|(quien, _)| Some(*quien) == id(window))
             .map(|(_, boton)| boton)
     };
+    let (pestanas, pestana_activa) = crate::multitarea::pestanas(state, window);
     bookos_shell::decoracion::Estado {
+        pestanas,
+        pestana_activa,
         titulo: crate::handlers::titulo(window).unwrap_or_default(),
         activa,
         maximizada: crate::ventanas::maximizada(window),

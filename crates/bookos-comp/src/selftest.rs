@@ -236,13 +236,13 @@ fn comprobar_dock(state: &mut BookosComp) {
     // siempre es la escala, que convierte físicos en lógicos.
     tracing::info!(?centro, dentro, "centro del primer icono");
 
-    match state
-        .shell
-        .as_mut()
-        .and_then(|s| s.pulsar(centro.0, centro.1))
-    {
-        Some(accion) => tracing::info!(?accion, "el primer icono responde"),
-        None => tracing::error!("el centro del primer icono no devuelve acción"),
+    let accion = state.shell.as_mut().and_then(|shell| {
+        assert_eq!(shell.pulsar(centro.0, centro.1), None);
+        shell.soltar()
+    });
+    match accion {
+        Some(accion) => tracing::info!(?accion, "el primer icono responde al soltar"),
+        None => tracing::error!("el centro del primer icono no devuelve acción al soltar"),
     }
 
     // Y un punto del hueco entre el primero y el segundo, que no debe ser de
@@ -259,6 +259,106 @@ fn comprobar_dock(state: &mut BookosComp) {
         Some(accion) => tracing::error!(?accion, "el hueco entre iconos ha lanzado algo"),
         None => tracing::info!("el hueco entre iconos no es de nadie, correcto"),
     }
+}
+
+/// Usa el enrutado completo y el fichero real de la sesión de prueba: una
+/// llamada directa al dock no detectaría un clic lanzado antes del arrastre.
+fn comprobar_orden_dock(state: &mut BookosComp) {
+    use smithay::backend::input::ButtonState;
+    let config = bookos_shell::Config::cargar();
+    assert!(
+        config.dock.len() >= 5,
+        "el autotest necesita cinco lanzadores"
+    );
+    let app = &config.dock[1].app_id;
+    let destino = &config.dock[4].app_id;
+    let shell = state.shell.as_ref().expect("shell de la sesión de prueba");
+    let centro = |r: (f64, f64, f64, f64)| (r.0 + r.2 / 2.0, r.1 + r.3 / 2.0);
+    let inicio = centro(shell.icono_dock(app).expect("lanzador inicial visible"));
+    let fin = centro(
+        shell
+            .icono_dock(destino)
+            .expect("lanzador de destino visible"),
+    );
+    crate::input::set_pointer(state, inicio.into(), 100);
+    crate::input::boton(state, BTN_LEFT, ButtonState::Pressed, 101);
+    crate::input::set_pointer(state, fin.into(), 102);
+    if std::env::var("BOOKOS_SELFTEST_ORDEN_DOCK").is_ok_and(|v| v == "captura") {
+        crate::input::set_pointer(state, (fin.0, fin.1 - 35.0).into(), 103);
+        let (w, h) = state
+            .space
+            .outputs()
+            .next()
+            .and_then(|o| state.space.output_geometry(o))
+            .map(|g| (g.size.w, g.size.h))
+            .expect("salida de la sesión de prueba");
+        state.captura_pedida = Some(crate::state::CapturaPedida {
+            x: 0,
+            y: 0,
+            ancho: w,
+            alto: h,
+            guardar: true,
+        });
+        state.needs_redraw = true;
+        return;
+    }
+    crate::input::boton(state, BTN_LEFT, ButtonState::Released, 103);
+    let guardado = bookos_shell::Config::cargar();
+    let mut esperado: Vec<_> = config.dock.iter().map(|l| l.app_id.as_str()).collect();
+    let movido = esperado.remove(1);
+    esperado.insert(4, movido);
+    assert_eq!(
+        guardado
+            .dock
+            .iter()
+            .map(|l| l.app_id.as_str())
+            .collect::<Vec<_>>(),
+        esperado
+    );
+    assert!(
+        !state
+            .shell
+            .as_ref()
+            .expect("shell de prueba")
+            .dock_agarrado()
+    );
+    for captura in [true, false] {
+        let shell = state.shell.as_ref().expect("shell de prueba");
+        let origen = centro(
+            shell
+                .icono_dock(app)
+                .expect("aplicación reordenada visible"),
+        );
+        let destino = centro(
+            shell
+                .icono_dock(&config.dock[0].app_id)
+                .expect("launchpad visible"),
+        );
+        crate::input::set_pointer(state, origen.into(), 110);
+        crate::input::boton(state, BTN_LEFT, ButtonState::Pressed, 111);
+        crate::input::set_pointer(state, destino.into(), 112);
+        let shell = state.shell.as_mut().expect("shell de prueba");
+        if captura {
+            shell.abrir_captura();
+        } else {
+            shell.bloquear("12:00".into(), "Prueba de arrastre".into(), (1280.0, 800.0));
+        }
+        crate::input::boton(state, BTN_LEFT, ButtonState::Released, 113);
+        let shell = state.shell.as_mut().expect("shell de prueba");
+        assert!(
+            !shell.dock_agarrado(),
+            "la suelta libera el arrastre cancelado por otra capa"
+        );
+        if captura {
+            shell.cerrar_captura();
+        } else {
+            shell.desbloquear();
+        }
+    }
+    tracing::info!(
+        "autotest del orden del dock correcto: orden persistido y cancelación por captura y bloqueo"
+    );
+    state.loop_signal.stop();
 }
 
 /// Abre el menú y lo recorre con el puntero, midiendo lo que cuesta.
@@ -761,59 +861,80 @@ fn comprobar_doble_clic(state: &mut BookosComp) {
         tracing::error!("no hay ninguna ventana: nada que comprobar");
         return;
     };
-    let Some(inicial) = state.space.element_location(&window) else {
+    if !crate::decoracion::decorada(&window) {
+        tracing::warn!("el cliente gestiona su barra; usar konsole para probar la del compositor");
+        return;
+    }
+    let antes = crate::ventanas::maximizada(&window);
+    let Some(rect) = crate::decoracion::barra_rect(state, &window) else {
+        tracing::error!("una ventana decorada sin rectángulo de barra");
         return;
     };
-    let tam = window.geometry().size;
-    // Konsole recuerda su estado y arranca maximizada, así que el primer doble
-    // clic la restaura y el segundo la vuelve a maximizar. Lo que se comprueba
-    // es que **alterna**, no en qué estado acaba.
-    let antes = crate::ventanas::maximizada(&window);
-    tracing::info!(?inicial, ?tam, maximizada = antes, "antes del doble clic");
-
-    // En la franja de arriba de la ventana, que es donde vive la barra.
-    let barra = (
-        inicial.x as f64 + tam.w as f64 / 2.0,
-        inicial.y as f64 + 8.0,
+    let punto = (
+        rect.loc.x as f64 + rect.size.w as f64 / 2.0,
+        rect.loc.y as f64 + rect.size.h as f64 / 2.0,
     );
-    crate::input::set_pointer(state, barra.into(), 400);
+    crate::input::set_pointer(state, punto.into(), 400);
     pulsar_dos_veces(state);
-    let tras_uno = crate::ventanas::maximizada(&window);
-    if tras_uno == antes {
-        tracing::error!(maximizada = tras_uno, "el doble clic no cambió el tamaño");
+    if crate::ventanas::maximizada(&window) == antes {
+        tracing::error!("el primer doble clic en la barra no alternó el tamaño");
     } else {
-        tracing::info!(maximizada = tras_uno, "el primer doble clic alterna");
+        tracing::info!(
+            maximizada = !antes,
+            "el primer doble clic en la barra alterna"
+        );
     }
 
-    // Y otra vez: tiene que volver a donde estaba.
-    let loc = state.space.element_location(&window).unwrap_or(inicial);
-    let barra = (loc.x as f64 + 40.0, loc.y as f64 + 8.0);
-    crate::input::set_pointer(state, barra.into(), 402);
-    pulsar_dos_veces(state);
-    let tras_dos = crate::ventanas::maximizada(&window);
-    if tras_dos == antes {
-        tracing::info!(maximizada = tras_dos, loc = ?state.space.element_location(&window),
-            "el segundo doble clic devuelve al estado de partida");
-    } else {
-        tracing::error!(maximizada = tras_dos, "no volvió al estado de partida");
-    }
+    // El cliente confirma el tamaño y el panel se aparta en otras vueltas del
+    // bucle. Sin esperarlas, el segundo clic acierta al panel aún visible.
+    let resultado = state.loop_handle.insert_source(
+        Timer::from_duration(Duration::from_millis(600)),
+        move |_, _, state| {
+            let Some(rect) = crate::decoracion::barra_rect(state, &window) else {
+                tracing::error!("una ventana decorada sin rectángulo de barra");
+                return TimeoutAction::Drop;
+            };
+            let punto = (
+                rect.loc.x as f64 + rect.size.w as f64 / 2.0,
+                rect.loc.y as f64 + rect.size.h as f64 / 2.0,
+            );
+            crate::input::set_pointer(state, punto.into(), 500);
+            pulsar_dos_veces(state);
+            if crate::ventanas::maximizada(&window) != antes {
+                tracing::error!("el segundo doble clic en la barra no restauró el estado inicial");
+            } else {
+                tracing::info!(
+                    maximizada = antes,
+                    "el segundo doble clic en la barra alterna"
+                );
+            }
 
-    // Y un doble clic en mitad de la ventana no debe hacer nada: ahí seleccionar
-    // una palabra es del cliente.
-    let loc = state.space.element_location(&window).unwrap_or(inicial);
-    let tam = window.geometry().size;
-    let centro = (
-        loc.x as f64 + tam.w as f64 / 2.0,
-        loc.y as f64 + tam.h as f64 / 2.0,
+            let Some(loc) = state.space.element_location(&window) else {
+                return TimeoutAction::Drop;
+            };
+            let tam = window.geometry().size;
+            // Los primeros 40 píxeles de contenido también pertenecen al cliente:
+            // ahí puede tener pestañas o botones propios.
+            for y in [8.0, tam.h as f64 / 2.0] {
+                let punto = (loc.x as f64 + tam.w as f64 / 2.0, loc.y as f64 + y);
+                crate::input::set_pointer(state, punto.into(), 600);
+                pulsar_dos_veces(state);
+                if crate::ventanas::maximizada(&window) != antes {
+                    tracing::error!(y, "el compositor cambió el tamaño al pulsar el contenido");
+                } else {
+                    tracing::info!(
+                        y,
+                        "el compositor deja el doble clic del contenido al cliente"
+                    );
+                }
+            }
+            tracing::info!("--- fin del autotest de doble clic ---");
+            TimeoutAction::Drop
+        },
     );
-    crate::input::set_pointer(state, centro.into(), 404);
-    pulsar_dos_veces(state);
-    if crate::ventanas::maximizada(&window) == tras_dos {
-        tracing::info!("el doble clic en el centro no toca el tamaño, correcto");
-    } else {
-        tracing::error!("el doble clic en el centro cambió el tamaño, y no debía");
+    if let Err(err) = resultado {
+        tracing::error!("no se pudo programar el segundo doble clic: {err}");
     }
-    tracing::info!("--- fin del autotest de doble clic ---");
 }
 
 /// Comprueba la barra de título que dibujamos: dónde cae, qué botón hay bajo
@@ -887,16 +1008,16 @@ fn comprobar_decoracion(state: &mut BookosComp) {
     tracing::info!("--- fin del autotest de la barra de título ---");
 }
 
-/// Dos pulsaciones seguidas en el mismo sitio, que es lo que el compositor
-/// reconoce como doble clic. La primera nunca hace nada; la segunda es la que
-/// cuenta.
+/// El detector debe recibir también las sueltas: llamar solo a su función
+/// auxiliar no comprueba si el enrutado roba eventos al cliente.
 fn pulsar_dos_veces(state: &mut BookosComp) {
-    let primera = crate::input::doble_clic(state);
-    let segunda = crate::input::doble_clic(state);
-    if primera {
-        tracing::error!("la primera pulsación ya contó como doble clic");
+    use smithay::backend::input::ButtonState;
+
+    state.ultimo_clic = None;
+    for tiempo in [400, 500] {
+        crate::input::boton(state, BTN_LEFT, ButtonState::Pressed, tiempo);
+        crate::input::boton(state, BTN_LEFT, ButtonState::Released, tiempo + 1);
     }
-    tracing::debug!(segunda, "la segunda pulsación cierra el doble clic");
 }
 
 /// Comprueba que el cursor vuelve a ser el del escritorio al salir de una
@@ -1282,6 +1403,7 @@ fn comprobar_pantalla_completa(state: &mut BookosComp) {
         return;
     };
     let antes = state.space.element_location(&window);
+    let tamano_antes = window.geometry().size;
     let area = state.work_area();
     tracing::info!(?antes, ?area, "antes de nada");
 
@@ -1317,6 +1439,11 @@ fn comprobar_pantalla_completa(state: &mut BookosComp) {
                 return TimeoutAction::Drop;
             }
 
+            if std::env::var("BOOKOS_SELFTEST_COMPLETA").is_ok_and(|v| v == "encaje") {
+                comprobar_barras_tras_encajar(state, &ventana, tamano_antes);
+                return TimeoutAction::Drop;
+            }
+
             state.pantalla_completa(&ventana, false);
             let vuelta = state.space.element_location(&ventana);
             tracing::info!(?vuelta, ?antes, "tras salir de pantalla completa");
@@ -1333,6 +1460,82 @@ fn comprobar_pantalla_completa(state: &mut BookosComp) {
     if let Err(err) = result {
         tracing::error!("no se pudo programar la medición: {err}");
     }
+}
+
+/// El tamaño encajado y la marca de pantalla completa no pueden coexistir:
+/// la escena ocultaría las barras aunque la ventana ya dejara su sitio libre.
+fn comprobar_barras_tras_encajar(
+    state: &mut BookosComp,
+    ventana: &smithay::desktop::Window,
+    tamano_antes: smithay::utils::Size<i32, smithay::utils::Logical>,
+) {
+    use crate::ventanas::{self, Zona};
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+
+    let salida = state
+        .salida_del_puntero()
+        .cloned()
+        .expect("hay una salida anidada");
+    let comprobar = |state: &BookosComp| {
+        assert!(
+            !ventanas::completa(ventana),
+            "encajar quita pantalla completa"
+        );
+        assert!(
+            !state.hay_pantalla_completa_en(&salida),
+            "la ventana encajada no oculta el panel ni el dock"
+        );
+        if let Some(toplevel) = ventana.toplevel() {
+            toplevel.with_pending_state(|s| {
+                assert!(
+                    !s.states.contains(xdg_toplevel::State::Fullscreen),
+                    "el cliente también debe salir de pantalla completa"
+                );
+            });
+        }
+        if let Some(x11) = ventana.x11_surface() {
+            assert!(
+                !x11.is_fullscreen(),
+                "X11 también sale de pantalla completa"
+            );
+        }
+    };
+    for zona in [Zona::Izquierda, Zona::Derecha, Zona::Maxima] {
+        state.encajar(ventana, zona);
+        comprobar(state);
+        state.pantalla_completa(ventana, true);
+    }
+    state.desencajar(ventana);
+    comprobar(state);
+    if let Some(toplevel) = ventana.toplevel() {
+        toplevel.with_pending_state(|s| {
+            assert_eq!(s.size, Some(tamano_antes), "se conserva el tamaño flotante");
+        });
+    }
+
+    state.pantalla_completa(ventana, true);
+    state.encajar(ventana, Zona::Maxima);
+    let activo = state.escritorios.activo_en(&salida.name());
+    crate::escritorios::cambiar_a(state, &salida, (activo + 1) % 2);
+    crate::escritorios::terminar_todos(state);
+    assert!(
+        !state.hay_pantalla_completa_en(&salida),
+        "el escritorio vecino conserva sus barras"
+    );
+    crate::escritorios::cambiar_a(state, &salida, activo);
+    crate::escritorios::terminar_todos(state);
+    comprobar(state);
+    state
+        .loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_secs(2)),
+            |_, _, state| {
+                captura_multitarea(state);
+                tracing::info!("BARRAS_TRAS_ENCAJE_OK: encajar, restaurar y volver al escritorio");
+                TimeoutAction::Drop
+            },
+        )
+        .expect("temporizador de la captura de regresión insertado");
 }
 
 /// Comprueba que una aplicación X11 llega hasta el escritorio.
@@ -2051,6 +2254,8 @@ fn comprobar_bloqueo_pam(state: &mut BookosComp) {
 /// tema claro           # o `oscuro`; guarda en panel.conf, usar otro XDG_CONFIG_HOME
 /// pulsar 400 300        # baja el botón izquierdo ahí y lo deja pulsado
 /// soltar               # lo suelta donde esté el puntero
+/// toque 400 300        # un dedo apoyado y levantado, por `input::toque_abajo`
+/// arrastre 400 600 400 200  # un dedo de un punto a otro en diez pasos
 /// captura              # pantalla entera a $XDG_PICTURES_DIR/Capturas
 /// fin                  # cierra el compositor
 /// ```
@@ -2107,6 +2312,50 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
             state.needs_redraw = true;
             despues(3)
         }
+        ["toque", ..] | ["arrastre", ..] => {
+            let (Some(x), Some(y)) = (numero(1), numero(2)) else {
+                tracing::error!(linea, "faltan las coordenadas");
+                return;
+            };
+            let slot = smithay::backend::input::TouchSlot::from(Some(0));
+            let frame = |state: &mut BookosComp| {
+                if let Some(touch) = state.seat.get_touch() {
+                    touch.frame(state);
+                }
+            };
+            crate::input::toque_abajo(state, slot, (x, y).into(), t);
+            frame(state);
+            let mut fijas = 3;
+            // Diez pasos y no un salto: un cliente que desplaza con el dedo
+            // necesita ver el recorrido, no solo el destino.
+            if let (["arrastre", ..], Some(x2), Some(y2)) =
+                (partes.as_slice(), numero(3), numero(4))
+            {
+                fijas = 5;
+                for paso in 1..=10u32 {
+                    let f = paso as f64 / 10.0;
+                    let punto = (x + (x2 - x) * f, y + (y2 - y) * f).into();
+                    crate::input::toque_mueve(state, slot, punto, t + paso);
+                    frame(state);
+                }
+            }
+            crate::input::toque_arriba(state, slot, t + 11);
+            frame(state);
+            state.needs_redraw = true;
+            despues(fijas)
+        }
+        // `rueda dy`: lo que manda una rueda o un touchpad al shell, en
+        // píxeles lógicos. Va al mismo `desplazar` que la entrada real.
+        ["rueda", ..] => {
+            let Some(dy) = numero(1) else {
+                tracing::error!(linea, "falta cuánto desplazar");
+                return;
+            };
+            if state.shell.as_mut().is_some_and(|s| s.desplazar(0.0, dy)) {
+                state.needs_redraw = true;
+            }
+            despues(2)
+        }
         ["soltar", ..] => {
             crate::input::boton(state, BTN_IZQUIERDO, ButtonState::Released, t);
             state.needs_redraw = true;
@@ -2122,9 +2371,12 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
             // depende de que el usuario vuelva (la atenuación, el bloqueo).
             state.last_input = Some(std::time::Instant::now());
             crate::atenuacion::actividad(state);
-            crate::input::set_pointer(state, (x, y).into(), t);
+            let tapado = crate::salvapantallas::actividad(state);
+            if !tapado {
+                crate::input::set_pointer(state, (x, y).into(), t);
+            }
             let espera = despues(3);
-            if partes[0] == "clic" {
+            if !tapado && partes[0] == "clic" {
                 let boton = if partes.get(3) == Some(&"der") {
                     BTN_DERECHO
                 } else {
@@ -2273,6 +2525,49 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
 }
 
 fn run(state: &mut BookosComp) {
+    if let Ok(modo) = std::env::var("BOOKOS_SELFTEST_MULTITAREA") {
+        if matches!(modo.as_str(), "x11" | "wayland") {
+            if modo == "x11" {
+                assert!(
+                    state.display_x11.is_some(),
+                    "Xwayland ha arrancado antes del cliente de prueba"
+                );
+            }
+            let plataforma = if modo == "x11" { "xcb" } else { "wayland" };
+            crate::keybinds::lanzar(
+                state,
+                &format!(
+                    "env QT_QPA_PLATFORM={plataforma} python3 '{}/tests/clientes_multitarea.py'",
+                    env!("CARGO_MANIFEST_DIR")
+                ),
+            );
+            state
+                .loop_handle
+                .insert_source(
+                    Timer::from_duration(Duration::from_secs(2)),
+                    |_, _, state| {
+                        comprobar_multitarea(state, 0);
+                        TimeoutAction::Drop
+                    },
+                )
+                .expect("temporizador de arranque de los clientes insertado");
+        } else {
+            comprobar_multitarea(state, 0);
+        }
+        return;
+    }
+    if std::env::var_os("BOOKOS_SELFTEST_ORDEN_DOCK").is_some() {
+        comprobar_orden_dock(state);
+        return;
+    }
+    if std::env::var_os("BOOKOS_SELFTEST_TOQUES_TECLADO").is_some() {
+        comprobar_toques_teclado(state, 0);
+        return;
+    }
+    if std::env::var_os("BOOKOS_SELFTEST_SALVAPANTALLAS").is_some() {
+        comprobar_salvapantallas(state);
+        return;
+    }
     if let Ok(ruta) = std::env::var("BOOKOS_SELFTEST_GUION") {
         guion(state, &ruta);
         return;
@@ -2684,7 +2979,235 @@ fn muestrear_resize(state: &mut BookosComp, window: smithay::desktop::Window, i:
 
 /// El código evdev de una tecla del guion; xkb los numera 8 más arriba. Las
 /// letras van por filas de un teclado QWERTY, que es donde están en evdev.
+fn comprobar_toques_teclado(state: &mut BookosComp, paso: u8) {
+    use smithay::backend::input::TouchSlot;
+    use smithay::wayland::text_input::TextInputSeat;
+
+    let slot = TouchSlot::from(Some(0));
+    let abierto = |state: &BookosComp| state.shell.as_ref().is_some_and(|s| s.teclado_abierto());
+    let ventana = state
+        .space
+        .elements()
+        .next()
+        .expect("cliente táctil mapeado");
+    let rect = state
+        .space
+        .element_geometry(ventana)
+        .expect("geometría del cliente táctil");
+    let punto = (f64::from(rect.loc.x + 80), f64::from(rect.loc.y + 100)).into();
+    let time = state.start_time.elapsed().as_millis() as u32;
+    match paso {
+        0 => {
+            assert!(
+                state.seat.text_input().campo_activo().is_some(),
+                "cliente con text-input habilitado"
+            );
+            assert!(!abierto(state));
+            crate::input::toque_abajo(state, slot, punto, time);
+            crate::teclado::revisar(state);
+            assert!(!abierto(state), "apoyar el dedo aún no abre el teclado");
+        }
+        1 => {
+            assert!(
+                !abierto(state),
+                "el procesamiento del cliente tampoco abre al apoyar"
+            );
+            crate::input::toque_mueve(
+                state,
+                slot,
+                punto + smithay::utils::Point::from((0.0, 80.0)),
+                time,
+            );
+            crate::input::toque_arriba(state, slot, time + 1);
+            crate::teclado::revisar(state);
+            assert!(!abierto(state), "deslizar no abre el teclado");
+        }
+        2 => {
+            assert!(!abierto(state), "el foco tras desplazar no abre el teclado");
+            crate::input::toque_abajo(state, slot, punto, time);
+        }
+        3 => {
+            assert!(
+                !abierto(state),
+                "el toque breve espera a que se levante el dedo"
+            );
+            crate::input::toque_arriba(state, slot, time);
+        }
+        4 => {
+            assert!(abierto(state), "un toque completado abre el teclado");
+            let salida = state.space.outputs().next().expect("salida de prueba");
+            let g = state
+                .space
+                .output_geometry(salida)
+                .expect("geometría de la salida");
+            state.captura_pedida = Some(crate::state::CapturaPedida {
+                x: 0,
+                y: 0,
+                ancho: g.size.w,
+                alto: g.size.h,
+                guardar: true,
+            });
+            let (emisario, _) = crate::portal::promesa();
+            state.captura_portal = Some(emisario);
+            state.needs_redraw = true;
+        }
+        _ => {
+            tracing::info!(
+                "autotest del teclado correcto: desplazamiento sin abrir y toque al soltar"
+            );
+            state.loop_signal.stop();
+            return;
+        }
+    }
+    if let Some(touch) = state.seat.get_touch() {
+        touch.frame(state);
+    }
+    state
+        .loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(if paso >= 3 { 500 } else { 150 })),
+            move |_, _, state| {
+                comprobar_toques_teclado(state, paso + 1);
+                TimeoutAction::Drop
+            },
+        )
+        .expect("temporizador del autotest del teclado insertado");
+}
+
+/// Bloqueo, salvapantallas encima y apagado, con plazos de milisegundos. La
+/// atenuación no entra: en anidado escribiría el brillo real del portátil.
+fn comprobar_escalones(state: &mut BookosComp) {
+    state.aplicar_dpms = Some(Box::new(|_| Ok(())));
+    state.salvapantallas.inactividad = Duration::from_millis(150);
+    state.salvapantallas.apagado = Duration::from_millis(400);
+    crate::keybinds::ejecutar(state, crate::keybinds::Accion::Bloquear);
+    state.last_input = Some(std::time::Instant::now());
+    crate::salvapantallas::programar(state);
+    state
+        .loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(280)),
+            |_, _, state| {
+                assert!(
+                    state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()),
+                    "sigue bloqueado"
+                );
+                assert!(
+                    state.salvapantallas.activo(),
+                    "el salvapantallas sale sobre el bloqueo"
+                );
+                TimeoutAction::Drop
+            },
+        )
+        .expect("temporizador del autotest insertado");
+    state
+        .loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(600)),
+            |_, _, state| {
+                assert!(!state.dpms_encendido, "la inactividad apaga la pantalla");
+                assert!(
+                    !state.salvapantallas.activo(),
+                    "con la pantalla apagada no queda animándose"
+                );
+                assert!(
+                    !state.salvapantallas.pantalla_apagada(),
+                    "no es el modo de Meta+Alt+O: la suspensión sigue contando"
+                );
+                tracing::info!(
+                    "autotest del salvapantallas correcto: atajos, sueltas, DPMS, inactividad y escalones"
+                );
+                state.loop_signal.stop();
+                TimeoutAction::Drop
+            },
+        )
+        .expect("temporizador del autotest insertado");
+}
+
+fn comprobar_salvapantallas(state: &mut BookosComp) {
+    use smithay::backend::input::KeyState;
+    use smithay::input::keyboard::Keycode;
+
+    let acorde = |state: &mut BookosComp, evdev| {
+        for codigo in [125, 56, evdev] {
+            crate::input::tecla(state, Keycode::new(codigo + 8), KeyState::Pressed, 1);
+        }
+        for codigo in [evdev, 56, 125] {
+            crate::input::tecla(state, Keycode::new(codigo + 8), KeyState::Released, 2);
+        }
+    };
+    acorde(state, 31);
+    assert!(
+        state.salvapantallas.activo(),
+        "soltar Meta+Alt+S conserva el salvapantallas"
+    );
+    assert!(!state.abrir_launchpad, "soltar Meta no abre el launchpad");
+    crate::input::tecla(state, Keycode::new(38 + 8), KeyState::Pressed, 3);
+    crate::input::tecla(state, Keycode::new(38 + 8), KeyState::Released, 4);
+    assert!(
+        state.salvapantallas.activo(),
+        "otra tecla no retira el salvapantallas"
+    );
+    assert!(
+        !state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()),
+        "la L tapada no bloquea"
+    );
+    acorde(state, 31);
+    assert!(
+        !state.salvapantallas.activo(),
+        "Meta+Alt+S otra vez lo retira"
+    );
+
+    // El backend anidado no controla la energía del anfitrión. Este sustituto
+    // comprueba el enrutado y los temporizadores sin apagar su pantalla real.
+    state.aplicar_dpms = Some(Box::new(|_| Ok(())));
+    acorde(state, 24);
+    assert!(!state.dpms_encendido, "Meta+Alt+O apaga las salidas");
+    assert!(state.salvapantallas.pantalla_apagada());
+    assert!(state.tick_suspension.is_none());
+    crate::backend::despertar_dpms(state);
+    assert!(
+        !state.dpms_encendido,
+        "la suelta del atajo no enciende la pantalla"
+    );
+    state.dpms_sordo_hasta = None;
+    crate::backend::despertar_dpms(state);
+    crate::salvapantallas::actividad(state);
+    assert!(state.dpms_encendido);
+    assert!(!state.salvapantallas.pantalla_apagada());
+    state.aplicar_dpms = None;
+
+    state.salvapantallas.inactividad = Duration::from_millis(100);
+    state.last_input = Some(std::time::Instant::now() - Duration::from_secs(1));
+    crate::salvapantallas::programar(state);
+    state
+        .loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(150)),
+            |_, _, state| {
+                assert!(
+                    state.salvapantallas.activo(),
+                    "la inactividad activa el salvapantallas"
+                );
+                assert!(
+                    crate::salvapantallas::actividad(state),
+                    "la capa se traga el movimiento"
+                );
+                assert!(
+                    !state.salvapantallas.activo(),
+                    "el de inactividad se quita al moverse, como en una tele"
+                );
+                comprobar_escalones(state);
+                TimeoutAction::Drop
+            },
+        )
+        .expect("temporizador del autotest insertado");
+}
+
 fn codigo_tecla(nombre: &str) -> Option<u32> {
+    if matches!(nombre, "." | "punto") {
+        return Some(52);
+    }
     const FILAS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
     if let [letra] = nombre.as_bytes() {
         return FILAS.iter().find_map(|(fila, primero)| {
@@ -2710,4 +3233,225 @@ fn codigo_tecla(nombre: &str) -> Option<u32> {
         "meta" => 125,
         _ => return None,
     })
+}
+
+fn comprobar_multitarea(state: &mut BookosComp, paso: u32) {
+    use crate::multitarea as m;
+    use smithay::backend::input::ButtonState;
+    let buscar = |titulo: &str| {
+        state
+            .space
+            .elements()
+            .chain(state.minimizadas.iter().map(|(w, _)| w))
+            .chain(state.escritorios.apartadas())
+            .find(|w| crate::handlers::titulo(w).as_deref() == Some(titulo))
+            .cloned()
+    };
+    let editor = buscar("Editor de prueba").expect("el cliente de prueba ha abierto el editor");
+    let referencia =
+        buscar("Referencia de prueba").expect("el cliente de prueba ha abierto la referencia");
+    let otra = buscar("Otra aplicación de prueba");
+    let dialogo = buscar("Párrafo de prueba").expect("el cliente de prueba ha abierto el diálogo");
+    match paso {
+        0 => {
+            let otra = otra
+                .as_ref()
+                .expect("el cliente de prueba ha abierto otra aplicación");
+            assert_eq!(
+                m::raiz(state, &dialogo),
+                editor,
+                "Qt declara el padre del diálogo"
+            );
+            assert!(
+                !m::misma_unidad(state, &editor, &referencia),
+                "dos documentos del mismo proceso son independientes"
+            );
+            state.encajar(&editor, crate::ventanas::Zona::Izquierda);
+            state.encajar(&referencia, crate::ventanas::Zona::Derecha);
+            assert!(
+                m::misma_unidad(state, &editor, &referencia),
+                "el encaje complementario forma un grupo"
+            );
+            state.enfocar(otra);
+            state.enfocar(&editor);
+            assert_eq!(
+                state.ventana_con_foco(),
+                Some(dialogo.clone()),
+                "volver al editor recupera su diálogo"
+            );
+            crate::keybinds::ejecutar(
+                state,
+                crate::keybinds::Accion::Conmutar(bookos_shell::conmutador::Modo::Aplicaciones, 1),
+            );
+            assert_eq!(
+                state.conmutador_destinos.len(),
+                2,
+                "el grupo y su diálogo ocupan una sola celda"
+            );
+            crate::keybinds::ejecutar(state, crate::keybinds::Accion::ConmutarCancelar);
+        }
+        1 => {
+            let izq = state
+                .space
+                .element_geometry(&editor)
+                .expect("editor mapeado");
+            let der = state
+                .space
+                .element_geometry(&referencia)
+                .expect("referencia mapeada");
+            assert_eq!(izq.loc.x + izq.size.w + 8, der.loc.x);
+            let punto = (der.loc.x as f64 - 4.0, der.loc.y as f64 + 80.0).into();
+            crate::input::set_pointer(state, punto, 100);
+            crate::input::boton(state, BTN_LEFT, ButtonState::Pressed, 101);
+            crate::input::set_pointer(state, (punto.x + 100.0, punto.y).into(), 102);
+            crate::input::boton(state, BTN_LEFT, ButtonState::Released, 103);
+        }
+        2 => {
+            let izq = state
+                .space
+                .element_geometry(&editor)
+                .expect("editor redimensionado");
+            let der = state
+                .space
+                .element_geometry(&referencia)
+                .expect("referencia redimensionada");
+            assert_eq!(
+                izq.loc.x + izq.size.w + 8,
+                der.loc.x,
+                "ambos clientes han aceptado el nuevo reparto"
+            );
+            let pila: Vec<_> = state.space.elements().collect();
+            let posicion = |w: &smithay::desktop::Window| {
+                pila.iter()
+                    .position(|v| *v == w)
+                    .expect("ventana mapeada en la pila")
+            };
+            assert!(
+                posicion(&dialogo) > posicion(&editor)
+                    && posicion(&dialogo) > posicion(&referencia),
+                "redimensionar conserva los diálogos por encima de ambos paneles"
+            );
+            assert!(
+                izq.to_f64().contains(
+                    state
+                        .space
+                        .element_location(&dialogo)
+                        .expect("diálogo colocado")
+                        .to_f64()
+                ),
+                "el diálogo permanece en su panel"
+            );
+            assert!(
+                izq.size.w > der.size.w,
+                "el separador ha cambiado ambos anchos"
+            );
+            captura_multitarea(state);
+        }
+        3 => {
+            m::cambiar_disposicion(state, &editor, true);
+            assert!(!m::visible(state, &referencia));
+            assert!(m::visible(state, &dialogo));
+        }
+        4 => {
+            let rect =
+                crate::decoracion::barra_rect(state, &editor).expect("barra de pestañas visible");
+            let x = rect.loc.x as f64 + (rect.size.w as f64 - 102.0) * 0.75;
+            let punto = (x, rect.loc.y as f64 + 16.0).into();
+            crate::input::set_pointer(state, punto, 200);
+            crate::input::boton(state, BTN_LEFT, ButtonState::Pressed, 201);
+            crate::input::boton(state, BTN_LEFT, ButtonState::Released, 202);
+            assert_eq!(state.ventana_con_foco(), Some(referencia.clone()));
+            assert!(
+                !m::visible(state, &editor) && !m::visible(state, &dialogo),
+                "el diálogo se oculta con su pestaña"
+            );
+            captura_multitarea(state);
+        }
+        5 => crate::ventanas::minimizar(state, referencia.clone()),
+        6 => {
+            assert!(state.space.element_location(&editor).is_none());
+            assert!(state.space.element_location(&referencia).is_none());
+            assert!(state.space.element_location(&dialogo).is_none());
+            let app_id = crate::handlers::app_id(&referencia)
+                .expect("Qt declara el identificador de aplicación");
+            assert!(crate::ventanas::restaurar_minimizada(state, &app_id));
+            assert!(state.space.element_location(&editor).is_some());
+            assert!(state.space.element_location(&referencia).is_some());
+            assert!(state.space.element_location(&dialogo).is_some());
+        }
+        7 => {
+            let otra = otra.as_ref().expect("la tercera aplicación sigue abierta");
+            m::unir(state, otra, &referencia, true);
+            assert!(
+                m::misma_unidad(state, &editor, otra),
+                "un grupo admite una tercera pestaña"
+            );
+            assert_eq!(m::pestanas(state, otra).0.len(), 3);
+            if let Some(toplevel) = otra.toplevel() {
+                toplevel.send_close();
+            } else if let Some(x11) = otra.x11_surface() {
+                x11.close()
+                    .expect("el cliente X11 de prueba acepta la petición de cierre");
+            }
+        }
+        8 => {
+            assert!(otra.is_none(), "el cliente ha cerrado la pestaña activa");
+            assert!(
+                m::visible(state, &editor) || m::visible(state, &referencia),
+                "cerrar una pestaña recupera otra"
+            );
+            crate::escritorios::mover_ventana(state, &referencia, 1);
+            for w in [&editor, &referencia, &dialogo] {
+                assert!(
+                    state.space.element_location(w).is_none(),
+                    "el grupo entero cambia de escritorio"
+                );
+            }
+            crate::escritorios::cambiar_aqui(state, 1);
+            crate::escritorios::terminar_todos(state);
+            for w in [&editor, &referencia, &dialogo] {
+                assert!(state.space.element_location(w).is_some());
+            }
+            m::separar(state, &referencia);
+            assert!(!m::misma_unidad(state, &editor, &referencia));
+            assert!(m::misma_unidad(state, &editor, &dialogo));
+            m::unir(state, &editor, &referencia, false);
+            state.arrastrar_ventana(&referencia, crate::ventanas::Modo::Mover, true);
+            assert!(
+                !m::misma_unidad(state, &editor, &referencia),
+                "arrastrar un panel lo saca del grupo lado a lado"
+            );
+            state.soltar_arrastre();
+            tracing::info!(
+                "MULTITAREA_OK: encaje, separador, pestañas, diálogos, Alt+Tab, minimizar y escritorios"
+            );
+            state.loop_signal.stop();
+            return;
+        }
+        _ => unreachable!("el autotest termina en el paso ocho"),
+    }
+    state
+        .loop_handle
+        .insert_source(
+            Timer::from_duration(Duration::from_millis(800)),
+            move |_, _, state| {
+                comprobar_multitarea(state, paso + 1);
+                TimeoutAction::Drop
+            },
+        )
+        .expect("temporizador de multitarea insertado");
+}
+
+fn captura_multitarea(state: &mut BookosComp) {
+    let area = state.pantalla();
+    state.captura_pedida = Some(crate::state::CapturaPedida {
+        x: area.loc.x,
+        y: area.loc.y,
+        ancho: area.size.w,
+        alto: area.size.h,
+        guardar: true,
+    });
+    let (emisario, _) = crate::portal::promesa();
+    state.captura_portal = Some(emisario);
+    state.needs_redraw = true;
 }

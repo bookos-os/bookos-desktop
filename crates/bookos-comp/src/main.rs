@@ -18,6 +18,7 @@ mod decoracion;
 mod desenfoque;
 mod drminfo;
 mod emision;
+mod emojis;
 mod escritorios;
 mod fondo;
 mod fundido;
@@ -26,17 +27,21 @@ mod gestos;
 mod handlers;
 mod input;
 mod keybinds;
+mod locale1;
 mod luz_nocturna;
 mod metricas;
 mod multimedia;
+mod multitarea;
 mod notificaciones;
 mod pantallas;
 mod portal;
 mod publicar;
 mod pw;
+mod salvapantallas;
 mod selftest;
 mod shell;
 mod state;
+mod teclado;
 mod teclas;
 mod ventanas;
 mod xwayland;
@@ -44,7 +49,7 @@ mod xwayland;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
-use crate::state::BookosComp;
+use crate::state::{BookosComp, Modo};
 
 fn main() -> anyhow::Result<()> {
     // Los búferes del shell y del fondo son reservas de 1 a 21 MB que van y
@@ -64,10 +69,12 @@ fn main() -> anyhow::Result<()> {
     // `--help` tienen que poder ejecutarse sin abrir el socket Wayland ni crear
     // un asiento; si no, consultar el hardware tendría efectos secundarios.
     let mut fullscreen = false;
+    let mut modo = Modo::Escritorio;
     let mut client = None;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--fullscreen" | "-f" => fullscreen = true,
+            "--kiosko" => modo = Modo::Kiosko { salida: None },
             "--drm-info" => return drminfo::run(),
             "--cursor-info" => return cursor::info(),
             // Igual que --drm-info, pero para el otro lado del escritorio: qué
@@ -79,8 +86,10 @@ fn main() -> anyhow::Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Uso: bookos-comp [--fullscreen] [programa]\n\n\
+                    "Uso: bookos-comp [--fullscreen] [--kiosko] [programa]\n\n\
                        --fullscreen, -f   ocupa toda la pantalla (previsualizar el DE)\n\
+                       --kiosko           solo el programa, a pantalla completa: sin escritorio,\n\
+                                          atajos ni gestos; termina con él y con su código\n\
                        --drm-info         enumera GPU y pantallas y sale (no toca nada)\n\
                        --panel-info       enseña los estados que lee el panel y sale\n\
                        --cursor-info      dice qué fichero resuelve cada cursor y sale\n\
@@ -95,8 +104,12 @@ fn main() -> anyhow::Result<()> {
                        Meta+F             maximizar la ventana con foco, o restaurarla\n  \
                        Meta+flechas       encajar en media pantalla; otra flecha, en un cuarto\n  \
                        Meta+Q             cerrar la ventana con foco\n  \
+                       Meta+.             abrir o cerrar el selector de emojis\n  \
                        Meta+Alt+B         el panel: esquivar ventanas o siempre visible\n  \
                        Meta+Alt+D         lo mismo para el dock\n  \
+                       Meta+Alt+O         apagar solo las pantallas, sin suspender\n  \
+                       Meta+Alt+S         poner o quitar el salvapantallas (solo se quita así)\n  \
+                       Meta+Alt+Mayús+S   lo mismo, con el otro estilo (estela o rebote)\n  \
                        Meta+arrastrar     mover la ventana (botón derecho: redimensionar)\n  \
                        arrastrar al borde encaja: los lados dan mitades y las esquinas cuartos\n\n\
                      Solo en sesión real (TTY):\n  \
@@ -109,6 +122,9 @@ fn main() -> anyhow::Result<()> {
             }
             other => client = Some(other.to_string()),
         }
+    }
+    if modo.kiosko() && client.is_none() {
+        anyhow::bail!("--kiosko necesita el programa que alojar");
     }
 
     // Dentro de una sesión gráfica solo tiene sentido el backend anidado; en un
@@ -125,17 +141,29 @@ fn main() -> anyhow::Result<()> {
 
     let mut event_loop: EventLoop<BookosComp> = EventLoop::try_new()?;
     let display: Display<BookosComp> = Display::new()?;
-    let mut state = BookosComp::new(&mut event_loop, display)?;
+    let mut state = BookosComp::new(&mut event_loop, display, modo)?;
     // Antes de arrancar el backend: XWayland tarda en estar listo y así el
     // servidor va calentando mientras se inicializa la GPU, en vez de sumar su
-    // arranque al primer programa X11 que se lance.
-    xwayland::arrancar(&mut state);
+    // arranque al primer programa X11 que se lance. El kiosko aloja un
+    // programa Wayland conocido: no lo necesita.
+    if !modo.kiosko() {
+        xwayland::arrancar(&mut state);
+    }
 
     if anidado {
-        backend::winit::run(&mut event_loop, &mut state, client, fullscreen)
+        backend::winit::run(&mut event_loop, &mut state, client, fullscreen)?;
     } else {
-        backend::udev::run(&mut event_loop, &mut state, client)
+        backend::udev::run(&mut event_loop, &mut state, client)?;
     }
+    // El código del programa alojado es el del compositor: la unidad que
+    // lanzó el kiosko tiene que saber si el asistente falló.
+    if let Modo::Kiosko {
+        salida: Some(codigo),
+    } = state.modo
+    {
+        std::process::exit(codigo);
+    }
+    Ok(())
 }
 
 fn init_tracing() {

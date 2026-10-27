@@ -32,6 +32,14 @@
 //!     El segundo es de solo lectura: `ApplyConfig` lo ignora, así que se
 //!     puede devolver el objeto entero tal como vino.
 //!
+//! GetScreensaverPreview(s estilo) -> s
+//!     Miniatura SVG generada por el mismo modelo del compositor. Sin
+//!     animación cuando el usuario ha elegido efectos reducidos.
+//!
+//! PreviewScreensaver(s estilo) -> (b ok, s error)
+//!     Prueba el salvapantallas real sin guardar preferencias. Cualquier
+//!     entrada lo retira tras el margen para soltar el clic de apertura.
+//!
 //! GetOutputs() -> a(ssssuubba(uuubb)dadiisbbbii)
 //!     El censo de salidas. Ver `pantallas::Salida` para el orden de campos;
 //!     la firma la genera zvariant y no hay que escribirla a mano.
@@ -158,6 +166,10 @@ fn config_json(config: &bookos_shell::Config) -> serde_json::Value {
         "toque_para_clic": config.entrada.toque_para_clic,
         "scroll_natural": config.entrada.scroll_natural,
     });
+    json["salvapantallas_inactividad"] = config.salvapantallas_inactividad.into();
+    json["atenuacion_inactividad"] = config.atenuacion_inactividad.into();
+    json["salvapantallas_estilo"] = config.salvapantallas_estilo.nombre().into();
+    json["apagado_inactividad"] = config.apagado_inactividad.into();
     // Fuera del `json!`: con una clave más, el macro pasa del límite de
     // recursión de rustc.
     json["sonido_volumen"] = config.sonido_volumen.into();
@@ -172,6 +184,7 @@ fn config_json(config: &bookos_shell::Config) -> serde_json::Value {
     json["bloqueo_nombre"] = config.bloqueo.nombre.into();
     json["bloqueo_energia"] = config.bloqueo.energia.into();
     json["dock_esquiva"] = config.dock_esquiva.into();
+    json["pantalla_tactil"] = config.entrada.pantalla_tactil.into();
     json["panel_esquiva"] = config.panel_esquiva.into();
     json["bloqueo_reloj_fuente"] = config.bloqueo.reloj_fuente.nombre().into();
     json["bloqueo_reloj_grosor"] = config.bloqueo.reloj_grosor.into();
@@ -341,7 +354,11 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
             }
             "cursor" => entero(valor, clave, 8, 128)?,
             "escritorios" => entero(valor, clave, 1, 5)?,
-            "bloqueo_inactividad" | "suspension_inactividad" => entero(valor, clave, 0, 86_400)?,
+            "bloqueo_inactividad"
+            | "salvapantallas_inactividad"
+            | "suspension_inactividad"
+            | "atenuacion_inactividad"
+            | "apagado_inactividad" => entero(valor, clave, 0, 86_400)?,
             "velocidad_touchpad" | "velocidad_raton" => numero(valor, clave, -1.0, 1.0)?,
             "bloqueo_reloj_y" => numero(valor, clave, 0.02, 0.40)?,
             "bloqueo_acceso_y" => numero(valor, clave, 0.18, 0.72)?,
@@ -352,6 +369,13 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                 let v = entero(valor, clave, 100, 900)?;
                 if v.parse::<u16>().is_ok_and(|n| n % 100 != 0) {
                     return Err("«bloqueo_reloj_grosor» va de 100 en 100".into());
+                }
+                v
+            }
+            "salvapantallas_estilo" => {
+                let v = texto(valor, clave)?;
+                if bookos_shell::EstiloSalvapantallas::desde_nombre(&v).is_none() {
+                    return Err("«salvapantallas_estilo» debe ser estela o rebote".into());
                 }
                 v
             }
@@ -376,7 +400,8 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
             | "dock_esquiva"
             | "panel_esquiva"
             | "toque_para_clic"
-            | "scroll_natural" => booleano(valor, clave)?,
+            | "scroll_natural"
+            | "pantalla_tactil" => booleano(valor, clave)?,
             "tema" => {
                 let v = texto(valor, clave)?;
                 if !matches!(v.as_str(), "claro" | "oscuro" | "automatico") {
@@ -465,6 +490,10 @@ pub enum Aviso {
     RemitenteCaido(String),
     AbrirActividadPrevisualizacion(String),
     CapturarTecla(bool),
+    PrevisualizarSalvapantallas(
+        bookos_shell::EstiloSalvapantallas,
+        mpsc::Sender<Result<(), String>>,
+    ),
 }
 
 #[derive(Deserialize)]
@@ -572,6 +601,40 @@ impl Servidor {
     /// Qué sabe hacer este backend.
     fn get_capabilities(&self) -> std::collections::HashMap<String, zbus::zvariant::OwnedValue> {
         self.compartido.capacidades()
+    }
+
+    fn get_screensaver_preview(&self, estilo: &str) -> zbus::fdo::Result<String> {
+        let estilo = bookos_shell::EstiloSalvapantallas::desde_nombre(estilo).ok_or_else(|| {
+            zbus::fdo::Error::InvalidArgs("el estilo debe ser estela o rebote".into())
+        })?;
+        let reducidos = bookos_shell::Config::cargar().efectos == bookos_shell::Efectos::Reducidos;
+        crate::salvapantallas::miniatura(estilo, reducidos)
+            .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))
+    }
+
+    fn preview_screensaver(&self, estilo: &str) -> (bool, String) {
+        let Some(estilo) = bookos_shell::EstiloSalvapantallas::desde_nombre(estilo) else {
+            return (false, "el estilo debe ser estela o rebote".into());
+        };
+        let (tx, rx) = mpsc::channel();
+        if self
+            .canal
+            .send(Aviso::PrevisualizarSalvapantallas(estilo, tx))
+            .is_err()
+        {
+            return (
+                false,
+                "el compositor no pudo recibir la vista previa".into(),
+            );
+        }
+        match rx.recv_timeout(ESPERA) {
+            Ok(Ok(())) => (true, String::new()),
+            Ok(Err(err)) => (false, err),
+            Err(err) => (
+                false,
+                format!("el compositor no respondió a la vista previa: {err}"),
+            ),
+        }
     }
 
     /// El censo de salidas conectadas.
@@ -766,6 +829,9 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
             state.needs_redraw = true;
         }
         Aviso::Recargar(seccion) => recargar(state, &seccion),
+        Aviso::PrevisualizarSalvapantallas(estilo, respuesta) => {
+            let _ = respuesta.send(crate::salvapantallas::previsualizar(state, estilo));
+        }
         Aviso::Salidas(peticion, respuesta) => {
             let r = crate::pantallas::aplicar(state, peticion);
             if let Err(err) = r.as_ref() {
@@ -909,6 +975,10 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
         if let Some(aplicar) = state.aplicar_entrada.as_ref() {
             aplicar(&state.entrada, state.touchpad_activo);
         }
+        // Sin táctil no hay con qué usar el teclado en pantalla.
+        if !state.entrada.pantalla_tactil {
+            crate::teclado::retirar(state);
+        }
     }
     let repeticion = (config.teclado_retardo, config.teclado_velocidad);
     if matches!(seccion, "teclado" | "all")
@@ -1045,6 +1115,12 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
     }
     if matches!(seccion, "lockscreen" | "bloqueo" | "all") {
         state.bloqueo_inactividad = std::time::Duration::from_secs(config.bloqueo_inactividad);
+        state.salvapantallas.inactividad =
+            std::time::Duration::from_secs(config.salvapantallas_inactividad);
+        state.salvapantallas.apagado = std::time::Duration::from_secs(config.apagado_inactividad);
+        state.salvapantallas.estilo = config.salvapantallas_estilo;
+        state.atenuacion.inactividad =
+            std::time::Duration::from_secs(config.atenuacion_inactividad);
         state.suspension_inactividad =
             std::time::Duration::from_secs(config.suspension_inactividad);
         crate::backend::programar_bloqueo_inactividad(state);
@@ -1462,7 +1538,19 @@ mod pruebas {
         assert!(json["dock"].is_array());
         assert!(json.get("bloqueo_inactividad").is_some());
         assert_eq!(json["suspension_inactividad"], 0);
+        assert_eq!(json["salvapantallas_inactividad"], 1200);
+        assert_eq!(json["apagado_inactividad"], 1800);
+        assert_eq!(
+            validar_config_json(r#"{"salvapantallas_inactividad":0}"#),
+            Ok(vec![("salvapantallas_inactividad".into(), "0".into())])
+        );
+        assert!(validar_config_json(r#"{"salvapantallas_inactividad":86401}"#).is_err());
         assert!(json.get("velocidad_touchpad").is_some());
+        assert_eq!(json["pantalla_tactil"], true);
+        assert_eq!(
+            validar_config_json(r#"{"pantalla_tactil":false}"#),
+            Ok(vec![("pantalla_tactil".into(), "no".into())])
+        );
         assert_eq!(json["sonido_volumen"], true);
         assert_eq!(
             validar_config_json(r#"{"sonido_volumen":false}"#),

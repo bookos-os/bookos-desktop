@@ -6,7 +6,7 @@ exclude = ["vendor/smithay"]
 [workspace.package]
 version = "0.1.1"
 edition = "2024"
-license = "GPL-3.0-or-later"
+license = "LicenseRef-BookOS"
 repository = "https://github.com/bookos/bookos-desktop"
 
 [workspace.dependencies]
@@ -26,6 +26,13 @@ anyhow = "1"
 # Y un segundo cambio que upstream no tiene: `X11Wm::new_selection` vacía la
 # conexión. Sin eso, lo copiado en Wayland no se anunciaba a X11 hasta que
 # otro suceso X11 cualquiera hacía escribir al gestor.
+#
+# Tercero, tampoco de upstream: `text_input_handle.rs` ya no descarta las
+# peticiones de text-input-v3 cuando no hay ningún cliente input-method. El
+# teclado en pantalla lo dibuja el propio compositor y necesita saber qué campo
+# está activo y de qué tipo (`TextInputHandle::campo_activo`). Por lo mismo,
+# `seat/keyboard.rs` y `text_input/mod.rs` mandan `enter`/`leave` de
+# text-input aunque no haya IME.
 # Lo que no es de upstream va marcado con «BookOS» dentro de la copia.
 #
 # Copia entera y no `git = …master`: del 0.7.0 al arreglo hay 101 commits que

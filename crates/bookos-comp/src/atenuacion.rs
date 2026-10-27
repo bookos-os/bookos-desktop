@@ -4,10 +4,11 @@
 //! con un velo negro: un velo no ahorra un vatio y bajar el brillo sí, que es
 //! de lo que va una batería a punto de acabarse.
 //!
-//! - **Inactividad**: [`AVISO`] antes del bloqueo automático el brillo baja a
-//!   un [`FRACCION_INACTIVIDAD`] del que había. Es el aviso de que la pantalla
-//!   se va a bloquear: sin él, el bloqueo llega de golpe. El primer movimiento
-//!   lo devuelve de inmediato.
+//! - **Inactividad**: a los `atenuacion_inactividad` segundos (cinco minutos
+//!   por defecto) el brillo baja a un [`FRACCION_INACTIVIDAD`] del que había,
+//!   como las teles que se oscurecen antes del salvapantallas. Es el primer
+//!   escalón; luego vienen el bloqueo, el salvapantallas y el apagado. El
+//!   primer movimiento lo devuelve de inmediato.
 //! - **Batería baja**: al cruzar [`UMBRAL_BATERIA`] sin cargador, a la mitad.
 //!   No vuelve con la actividad —el usuario no se ha ido, la batería sigue
 //!   igual de baja— sino al enchufar o al subir de [`UMBRAL_BATERIA`] más
@@ -25,10 +26,6 @@ use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
 use crate::state::BookosComp;
 
-/// Cuánto antes del bloqueo empieza a bajar. Quince segundos dan tiempo a
-/// mover el ratón antes de que se bloquee, pero con un bloqueo de menos de
-/// treinta se reduce a la mitad del plazo para no atenuar nada más abrir.
-const AVISO: Duration = Duration::from_secs(15);
 const FRACCION_INACTIVIDAD: f64 = 0.3;
 const FRACCION_BATERIA: f64 = 0.5;
 /// Porcentaje de batería al que se atenúa, y lo que tiene que subir para soltar.
@@ -37,8 +34,8 @@ const HISTERESIS_BATERIA: u8 = 5;
 /// El suelo de la tecla de brillo (`multimedia::brillo`): por debajo, la
 /// pantalla se ve apagada y el usuario cree que se ha colgado.
 const SUELO: u8 = 5;
-/// La bajada es una rampa, no un salto. Un segundo, en pasos de 40 ms como la
-/// del brillo automático; subir no lleva rampa porque quien vuelve quiere ver.
+/// La bajada es una rampa, no un salto. Un segundo, en pasos de 40 ms;
+/// subir no lleva rampa porque quien vuelve quiere ver.
 const RAMPA: Duration = Duration::from_secs(1);
 const PASO_RAMPA: Duration = Duration::from_millis(40);
 
@@ -54,14 +51,23 @@ struct Atenuada {
     previo: u8,
 }
 
-#[derive(Default)]
 pub struct Estado {
+    pub inactividad: Duration,
     atenuada: Option<Atenuada>,
     alarma: Option<RegistrationToken>,
     rampa: Option<RegistrationToken>,
 }
 
 impl Estado {
+    pub fn nuevo(segundos: u64) -> Self {
+        Self {
+            inactividad: Duration::from_secs(segundos),
+            atenuada: None,
+            alarma: None,
+            rampa: None,
+        }
+    }
+
     pub fn activa(&self) -> bool {
         self.atenuada.is_some()
     }
@@ -75,9 +81,9 @@ pub fn programar(state: &mut BookosComp) {
     if let Some(token) = state.atenuacion.alarma.take() {
         state.loop_handle.remove(token);
     }
-    let bloqueo = state.bloqueo_inactividad;
-    tracing::debug!(?bloqueo, "programando la atenuación");
-    if bloqueo.is_zero()
+    let plazo = state.atenuacion.inactividad;
+    tracing::debug!(?plazo, "programando la atenuación");
+    if plazo.is_zero()
         || !state.idle_inhibidores.is_empty()
         || bookos_shell::mantener_despierto()
         || state.atenuacion.atenuada.is_some()
@@ -85,8 +91,6 @@ pub fn programar(state: &mut BookosComp) {
     {
         return;
     }
-    let aviso = AVISO.min(bloqueo / 2);
-    let plazo = bloqueo - aviso;
     let desde_entrada = state.last_input.map(|t| t.elapsed()).unwrap_or_default();
     let espera = plazo
         .saturating_sub(desde_entrada)

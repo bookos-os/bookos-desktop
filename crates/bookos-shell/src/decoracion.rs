@@ -60,6 +60,8 @@ impl Boton {
 /// copias se quede atrás.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Estado {
+    pub pestanas: Vec<String>,
+    pub pestana_activa: usize,
     pub titulo: String,
     /// La que tiene el foco. Las demás se apagan, que es lo único que distingue
     /// de un vistazo dónde van a ir las teclas.
@@ -104,6 +106,14 @@ pub fn boton_en(ancho: f32, x: f32, y: f32) -> Option<Boton> {
 /// invadir.
 fn ancho_botones() -> f32 {
     MARGEN + 3.0 * (LADO + HUECO)
+}
+
+pub fn pestana_en(ancho: f32, cantidad: usize, x: f32) -> Option<usize> {
+    let libre = (ancho - ancho_botones()).max(0.0);
+    if cantidad == 0 || x < 0.0 || x >= libre {
+        return None;
+    }
+    Some(((x / libre * cantidad as f32) as usize).min(cantidad - 1))
 }
 
 /// El SVG de un glifo. `viewBox` de 16 y trazo de 1,4.
@@ -217,14 +227,42 @@ pub fn vista(estado: &Estado, ancho: f32) -> PanelElement<'static> {
     .align_y(Vertical::Center)
     .into();
 
-    let fila = row![
-        Space::new().width(Length::Fixed(ancho_botones())),
-        rotulo,
-        botones,
-        Space::new().width(Length::Fixed(MARGEN)),
-    ]
-    .align_y(Vertical::Center)
-    .height(Length::Fill);
+    let fila = if !estado.pestanas.is_empty() {
+        let libre = (ancho - ancho_botones()).max(0.0);
+        let ancho_pestana = libre / estado.pestanas.len() as f32;
+        let mut pestanas = row![].height(Length::Fill);
+        for (i, titulo) in estado.pestanas.iter().enumerate() {
+            let activa = i == estado.pestana_activa;
+            let titulo = recortar(titulo, (ancho_pestana - 20.0).max(0.0));
+            pestanas = pestanas.push(
+                container(text(titulo).size(tema::T_PEQUENO).color(if activa {
+                    tema::texto()
+                } else {
+                    tema::TEXTO2
+                }))
+                .width(Length::Fixed(ancho_pestana))
+                .height(Length::Fill)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .style(move |_| container::Style {
+                    background: activa.then(|| tema::alfa(tema::tinta(), 0.12).into()),
+                    ..Default::default()
+                }),
+            );
+        }
+        row![pestanas, botones, Space::new().width(Length::Fixed(MARGEN))]
+            .align_y(Vertical::Center)
+            .height(Length::Fill)
+    } else {
+        row![
+            Space::new().width(Length::Fixed(ancho_botones())),
+            rotulo,
+            botones,
+            Space::new().width(Length::Fixed(MARGEN)),
+        ]
+        .align_y(Vertical::Center)
+        .height(Length::Fill)
+    };
 
     // Restaurada, la barra forma las dos esquinas superiores de la ventana.
     // Maximizada toca los bordes de la salida y debe volver a ser rectangular:

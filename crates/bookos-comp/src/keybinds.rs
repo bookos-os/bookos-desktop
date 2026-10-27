@@ -39,6 +39,7 @@ pub enum Accion {
     Launchpad,
     /// El buscador de Meta+Espacio: aplicaciones, comandos y estados.
     Buscador,
+    Emojis,
     /// Meta+W — vista general y gestión de escritorios.
     VistaEscritorios,
     /// Meta+F — maximizar la ventana con foco, o devolverla a su sitio.
@@ -52,6 +53,10 @@ pub enum Accion {
     Captura,
     /// Meta+L — echar la pantalla de bloqueo.
     Bloquear,
+    ApagarPantalla,
+    Salvapantallas,
+    /// El estilo que no está configurado, para probarlo sin editar nada.
+    SalvapantallasOtro,
     /// Quitar el bloqueo. La pide el ayudante de PAM cuando la contraseña vale.
     Desbloquear,
     /// Apagar, reiniciar o suspender desde el menú de la pantalla de bloqueo.
@@ -191,21 +196,32 @@ fn conmutar(state: &mut BookosComp, modo: bookos_shell::conmutador::Modo, sentid
         }
     }
 
-    let ventanas: Vec<Window> = state.space.elements().cloned().collect();
+    let ventanas: Vec<Window> = state
+        .space
+        .elements()
+        .filter(|w| w.alive() && !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
+        .filter(|w| !state.minimizando.iter().any(|(m, _)| m == *w))
+        .cloned()
+        .collect();
     let sellos: Vec<_> = ventanas.iter().map(crate::ventanas::enfocada_en).collect();
     let app_ids: Vec<_> = ventanas
         .iter()
         .map(|w| crate::handlers::app_id(w).unwrap_or_default())
         .collect();
-    // Una celda por ventana en los dos modos. Alt tiene tope —la fila de iconos
-    // se sale de la pantalla pasadas doce— y Meta no, porque su rejilla encoge
-    // las miniaturas hasta que quepan.
-    let orden = match modo {
-        bookos_shell::conmutador::Modo::Aplicaciones => {
-            crate::conmutador::orden(&sellos, bookos_shell::conmutador::MAXIMO)
-        }
-        bookos_shell::conmutador::Modo::Ventanas => crate::conmutador::orden(&sellos, usize::MAX),
+    let maximo = match modo {
+        bookos_shell::conmutador::Modo::Aplicaciones => bookos_shell::conmutador::MAXIMO,
+        bookos_shell::conmutador::Modo::Ventanas => usize::MAX,
     };
+    let mut orden = Vec::new();
+    for i in crate::conmutador::orden(&sellos, usize::MAX) {
+        if !orden
+            .iter()
+            .any(|j: &usize| crate::multitarea::misma_unidad(state, &ventanas[i], &ventanas[*j]))
+        {
+            orden.push(i);
+        }
+    }
+    orden.truncate(maximo);
 
     let entradas: Vec<_> = orden
         .iter()
@@ -246,6 +262,42 @@ fn conmutar(state: &mut BookosComp, modo: bookos_shell::conmutador::Modo, sentid
     }
     tracing::debug!(celdas = orden.len(), "conmutador abierto");
     state.needs_redraw = true;
+}
+
+/// Cierra la exposición de tres dedos con el viaje de vuelta y deja la acción
+/// para cuando las ventanas han llegado. `true` si se encarga ella.
+///
+/// Solo la exposición: Alt+Tab se resuelve al soltar la tecla y esperar 260 ms
+/// para cambiar de ventana se notaría como retraso, no como animación.
+fn salir_de_la_exposicion(state: &mut BookosComp, accion: &Accion) -> bool {
+    // Ya saliendo, una segunda orden —Esc con el gesto, un clic— no hace nada:
+    // el temporizador ya va a resolver la primera.
+    if state.conmutador_salida.is_some() {
+        return true;
+    }
+    if !state.conmutador_pegado
+        || state.conmutador_modo != Some(bookos_shell::conmutador::Modo::Ventanas)
+        || bookos_shell::tema::efectos_reducidos()
+        || !state.shell.as_ref().is_some_and(|s| s.hay_conmutador())
+    {
+        return false;
+    }
+    state.conmutador_salida = Some(std::time::Instant::now());
+    state.needs_redraw = true;
+    let accion = accion.clone();
+    state
+        .loop_handle
+        .insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(bookos_shell::tema::D_VENTANA),
+            move |_, _, state| {
+                state.conmutador_salida = None;
+                state.conmutador_pegado = false;
+                ejecutar(state, accion.clone());
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            },
+        )
+        .expect("temporizador de salida de la exposición insertado");
+    true
 }
 
 /// Se ha soltado el modificador: a la ventana elegida.
@@ -394,6 +446,15 @@ pub fn resolver(
     // Y Meta+Mayús+S, que es lo que tienen en los dedos los que vienen de
     // Windows o de GNOME. Antes que el brazo de Meta a secas por lo mismo que
     // Meta+Alt: si no, entraría por él y no llegaría aquí.
+    // Con Alt también, el salvapantallas en el otro estilo. Va antes que la
+    // captura: Meta+Mayús+S entraría también con Alt pulsado.
+    if modifiers.logo
+        && modifiers.shift
+        && modifiers.alt
+        && matches!(sym, keysyms::KEY_s | keysyms::KEY_S)
+    {
+        return Some(Accion::SalvapantallasOtro);
+    }
     if modifiers.logo && modifiers.shift && matches!(sym, keysyms::KEY_s | keysyms::KEY_S) {
         return Some(Accion::Captura);
     }
@@ -408,6 +469,8 @@ pub fn resolver(
             return Some(Accion::Salir);
         }
         match sym {
+            keysyms::KEY_o | keysyms::KEY_O => return Some(Accion::ApagarPantalla),
+            keysyms::KEY_s | keysyms::KEY_S => return Some(Accion::Salvapantallas),
             keysyms::KEY_a | keysyms::KEY_A => return Some(Accion::Asistente),
             keysyms::KEY_t | keysyms::KEY_T => return Some(Accion::SiempreEncima),
             keysyms::KEY_b | keysyms::KEY_B => {
@@ -436,6 +499,9 @@ pub fn resolver(
             // gestos distintos para dos cosas distintas —ver todo lo instalado
             // frente a escribir lo que quieres.
             keysyms::KEY_space => return Some(Accion::Buscador),
+            keysyms::KEY_period if !modifiers.alt && !modifiers.ctrl && !modifiers.shift => {
+                return Some(Accion::Emojis);
+            }
             keysyms::KEY_z | keysyms::KEY_Z => return Some(Accion::MenuBookos),
             keysyms::KEY_x | keysyms::KEY_X => return Some(Accion::CentroControl),
             keysyms::KEY_e | keysyms::KEY_E => return Some(Accion::Explorador),
@@ -517,6 +583,31 @@ pub fn menu_ventana(state: &mut BookosComp, window: Window) {
         opciones.push((
             format!("Mover a {visible}"),
             bookos_shell::Accion::VentanaMonitor(nombre),
+        ));
+    }
+    if crate::multitarea::agrupada(state, &window) {
+        opciones.push((
+            "Ver como pestañas".into(),
+            bookos_shell::Accion::VentanaDisposicion(true),
+        ));
+        if crate::multitarea::admite_dos_paneles(state, &window) {
+            opciones.push((
+                "Ver lado a lado".into(),
+                bookos_shell::Accion::VentanaDisposicion(false),
+            ));
+        }
+        opciones.push(("Separar grupo".into(), bookos_shell::Accion::VentanaSeparar));
+    }
+    state.menu_ventana_companera = crate::multitarea::candidata(state, &window);
+    if let Some(otra) = state.menu_ventana_companera.as_ref() {
+        let titulo = crate::handlers::titulo(otra).unwrap_or_else(|| "otra aplicación".into());
+        opciones.push((
+            format!("Unir lado a lado con «{titulo}»"),
+            bookos_shell::Accion::VentanaUnir(false),
+        ));
+        opciones.push((
+            format!("Unir en pestañas con «{titulo}»"),
+            bookos_shell::Accion::VentanaUnir(true),
         ));
     }
     state.menu_ventana = Some(window);
@@ -603,6 +694,7 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
             }
             state.needs_redraw = true;
         }
+        Accion::Emojis => crate::emojis::alternar(state),
         Accion::VistaEscritorios => alternar_vista_escritorios(state),
         Accion::AlternarBarra(cual) => {
             let modo = state.shell.as_mut().map(|s| s.alternar_visibilidad(cual));
@@ -648,6 +740,18 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
             state.needs_redraw = true;
         }
         Accion::Bloquear => bloquear(state),
+        Accion::ApagarPantalla => crate::salvapantallas::apagar_pantalla(state),
+        Accion::Salvapantallas | Accion::SalvapantallasOtro => {
+            if !crate::salvapantallas::retirar(state) {
+                let estilo = state.salvapantallas.estilo;
+                let estilo = if matches!(accion, Accion::SalvapantallasOtro) {
+                    estilo.otro()
+                } else {
+                    estilo
+                };
+                crate::salvapantallas::activar(state, crate::salvapantallas::Origen::Atajo, estilo);
+            }
+        }
         Accion::DialogoEnergia => alternar_dialogo_energia(state),
         Accion::MenuBookos => alternar_tarjeta_del_panel(state, "menu", "menu"),
         Accion::CentroControl => alternar_tarjeta_del_panel(state, "centro", "control"),
@@ -763,6 +867,8 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
             }
         }
         Accion::Conmutar(modo, sentido) => conmutar(state, modo, sentido),
+        Accion::ConmutarFin | Accion::ConmutarCancelar
+            if salir_de_la_exposicion(state, &accion) => {}
         Accion::ConmutarFin => conmutar_fin(state),
         Accion::ConmutarCancelar => {
             state.conmutador_destinos.clear();
@@ -782,7 +888,7 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
 
 /// Quita temporalmente el foco de puntero a las aplicaciones al abrir una
 /// capa modal del compositor.
-fn liberar_puntero_para_capa(state: &mut BookosComp) {
+pub(crate) fn liberar_puntero_para_capa(state: &mut BookosComp) {
     use smithay::input::pointer::MotionEvent;
 
     let pointer = state.pointer.clone();
@@ -845,6 +951,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
         }
         bookos_shell::Accion::Lanzar(cmd) => lanzar(state, &cmd),
+        bookos_shell::Accion::InsertarEmoji(texto) => crate::emojis::insertar(state, &texto),
         bookos_shell::Accion::Launchpad => {
             if let Some(shell) = state.shell.as_mut() {
                 shell.alternar_launchpad();
@@ -1131,11 +1238,23 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
         bookos_shell::Accion::Bloquear => bloquear(state),
         bookos_shell::Accion::VentanaEncima
         | bookos_shell::Accion::VentanaEscritorio(_)
-        | bookos_shell::Accion::VentanaMonitor(_) => {
+        | bookos_shell::Accion::VentanaMonitor(_)
+        | bookos_shell::Accion::VentanaUnir(_)
+        | bookos_shell::Accion::VentanaDisposicion(_)
+        | bookos_shell::Accion::VentanaSeparar => {
             let Some(window) = state.menu_ventana.take().filter(|w| w.alive()) else {
                 return;
             };
             match accion {
+                bookos_shell::Accion::VentanaUnir(pestanas) => {
+                    if let Some(otra) = state.menu_ventana_companera.take().filter(|w| w.alive()) {
+                        crate::multitarea::unir(state, &window, &otra, pestanas);
+                    }
+                }
+                bookos_shell::Accion::VentanaDisposicion(pestanas) => {
+                    crate::multitarea::cambiar_disposicion(state, &window, pestanas)
+                }
+                bookos_shell::Accion::VentanaSeparar => crate::multitarea::separar(state, &window),
                 bookos_shell::Accion::VentanaEncima => state.alternar_encima(&window),
                 bookos_shell::Accion::VentanaEscritorio(n) => {
                     crate::escritorios::mover_ventana(state, &window, n)
@@ -1164,6 +1283,12 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
             state.needs_redraw = true;
         }
+        bookos_shell::Accion::GuardarDock(lista) => {
+            if let Err(err) = bookos_shell::guardar_dock(&lista) {
+                tracing::warn!("no se pudo guardar el orden del dock: {err}");
+            }
+            state.needs_redraw = true;
+        }
         bookos_shell::Accion::Cerrar { app_id } => {
             // Se pide el cierre a todas sus ventanas, no solo a la primera: el
             // "Cerrar" del dock cierra la aplicación, y una que tenga tres
@@ -1188,6 +1313,15 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             );
             for window in ventanas {
                 cerrar(&window);
+            }
+        }
+        bookos_shell::Accion::Mostrar { app_id, exec } => {
+            let delante = state.ventana_de_app(&app_id).is_some_and(|w| {
+                state.ventana_con_foco().as_ref() == Some(&w)
+                    && !crate::ventanas::hay_minimizada(state, &app_id)
+            });
+            if !delante {
+                hacer(state, bookos_shell::Accion::Activar { app_id, exec });
             }
         }
         bookos_shell::Accion::Activar { app_id, exec } => {
@@ -1627,6 +1761,65 @@ pub fn lanzar(state: &mut BookosComp, cmd: &str) {
         .hijos
         .retain_mut(|hijo| !matches!(hijo.try_wait(), Ok(Some(_))));
 
+    match orden(state, cmd).spawn() {
+        Ok(hijo) => {
+            tracing::info!(cmd, pid = hijo.id(), "cliente lanzado");
+            state.hijos.push(hijo);
+            if state.shell.as_mut().is_some_and(|s| s.dock_lanzando(cmd)) {
+                state.needs_redraw = true;
+            }
+            if let Err(err) = bookos_shell::sumar_uso(cmd) {
+                tracing::warn!("no se pudo apuntar el uso de {cmd}: {err}");
+            }
+        }
+        Err(err) => tracing::error!(cmd, "no se pudo lanzar: {err}"),
+    }
+}
+
+/// Lanza el programa del kiosko y avisa al bucle cuando termine.
+///
+/// Un hilo esperándolo, y no `try_wait` en `post_dispatch` como el resto de
+/// hijos: el bucle duerme en epoll y no hay SIGCHLD que lo despierte. Si el
+/// programa terminara después del último fotograma, nadie volvería a mirar y
+/// el arranque se quedaría parado delante de una pantalla vacía.
+pub fn lanzar_kiosko(state: &mut BookosComp, cmd: &str) -> anyhow::Result<()> {
+    use smithay::reexports::calloop::channel;
+
+    let mut hijo = orden(state, cmd)
+        .spawn()
+        .map_err(|err| anyhow::anyhow!("no se pudo lanzar {cmd}: {err}"))?;
+    tracing::info!(cmd, pid = hijo.id(), "programa del kiosko lanzado");
+    let (aviso, fuente) = channel::channel::<i32>();
+    state
+        .loop_handle
+        .insert_source(fuente, |evento, _, state| {
+            if let channel::Event::Msg(codigo) = evento {
+                state.modo = crate::state::Modo::Kiosko {
+                    salida: Some(codigo),
+                };
+            }
+        })
+        .map_err(|err| anyhow::anyhow!("insert_source(kiosko): {err}"))?;
+    std::thread::Builder::new()
+        .name("bookos-kiosko".into())
+        .spawn(move || {
+            // Matado por una señal no hay código: cuenta como fallo, que es lo
+            // que tiene que decir el journal de la unidad.
+            let codigo = match hijo.wait() {
+                Ok(estado) => estado.code().unwrap_or(1),
+                Err(err) => {
+                    tracing::error!("no se pudo esperar al programa del kiosko: {err}");
+                    1
+                }
+            };
+            let _ = aviso.send(codigo);
+        })?;
+    Ok(())
+}
+
+/// La orden para lanzar `cmd` dentro de la sesión, con el entorno que necesita
+/// para encontrar este compositor.
+pub fn orden(state: &mut BookosComp, cmd: &str) -> std::process::Command {
     // `sh -c` para que valga cualquier cosa que se escriba en BOOKOS_TERMINAL,
     // con sus argumentos; `exec` evita dejar un shell de más colgando.
     //
@@ -1696,14 +1889,7 @@ pub fn lanzar(state: &mut BookosComp, cmd: &str) {
         Some(n) => orden.env("DISPLAY", format!(":{n}")),
         None => orden.env_remove("DISPLAY"),
     };
-
-    match orden.spawn() {
-        Ok(hijo) => {
-            tracing::info!(cmd, pid = hijo.id(), "cliente lanzado");
-            state.hijos.push(hijo);
-        }
-        Err(err) => tracing::error!(cmd, "no se pudo lanzar: {err}"),
-    }
+    orden
 }
 
 /// El keysym de la tecla de encendido. Como los demás `XF86`, a mano: su valor
@@ -1810,6 +1996,7 @@ fn marcar_bloqueo_sesion(bloqueada: bool) {
 }
 
 fn bloquear(state: &mut BookosComp) {
+    crate::salvapantallas::retirar(state);
     if state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()) {
         return;
     }
@@ -1820,6 +2007,9 @@ fn bloquear(state: &mut BookosComp) {
     // uno de ellos abierto, salían encima del candado y lo que se tecleaba
     // como contraseña iba a la captura. Un arrastre a medias seguía moviendo
     // la ventana bajo el candado, y al desbloquear la llevaba pegada al cursor.
+    // Sin el viaje de vuelta: con el candado ya puesto no se vería.
+    state.conmutador_pegado = false;
+    state.conmutador_salida = None;
     ejecutar(state, Accion::ConmutarCancelar);
     if let Some(shell) = state.shell.as_mut() {
         shell.cerrar_emergente();
@@ -1851,7 +2041,11 @@ fn bloquear(state: &mut BookosComp) {
     std::thread::Builder::new()
         .name("bookos-lock-media".into())
         .spawn(move || {
-            let _ = canal.send((generacion, bookos_shell::medios::Sonando::leer()));
+            // Un móvil pausado se queda en el bus indefinidamente y la tarjeta
+            // salía en cada bloqueo con la canción de hace horas.
+            let sonando = bookos_shell::medios::Sonando::leer()
+                .filter(|s| s.reproduciendo || !s.es_de_movil());
+            let _ = canal.send((generacion, sonando));
         })
         .inspect_err(|err| tracing::warn!("no se pudo consultar MPRIS para el bloqueo: {err}"))
         .ok();
@@ -1870,7 +2064,11 @@ pub fn refocalizar(state: &mut BookosComp) {
     // `alive()` porque la ventana destruida sigue mapeada en el espacio hasta
     // el siguiente `refresh()`: sin filtrarla se le devolvería el foco al
     // muerto.
-    let heredera = state.space.elements().rfind(|w| w.alive()).cloned();
+    let heredera = state
+        .space
+        .elements()
+        .rfind(|w| w.alive() && crate::multitarea::visible(state, w))
+        .cloned();
     match heredera {
         // Por `enfocar` y no por `set_focus` a secas: la ventana que hereda el
         // foco también tiene que enterarse de que ahora está activa, o se queda

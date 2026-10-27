@@ -89,6 +89,17 @@ const PUNTO: f32 = 7.0;
 /// duplicaba el desplazamiento en vez de quitarlo: medido en pantalla, 11,5
 /// por encima del icono y 25,5 por debajo.
 const PAD_V_ARRIBA: f32 = PAD_V + PUNTO / 2.0;
+/// Altura del rebote al lanzar, sacada del margen de arriba (el relleno es
+/// `PAD_V_ARRIBA - BOTE` y cada icono lleva este hueco encima): por ahí
+/// salta. Así el dock no cambia de tamaño ni recorta el salto, que se saldría
+/// del buffer si fuera más alto.
+const BOTE: f32 = 12.0;
+/// Un salto completo, subida y bajada. El de macOS ronda los 0,6 s.
+const PERIODO_BOTE: f32 = 0.6;
+/// Si la ventana no aparece en este tiempo se deja de rebotar: una orden que
+/// falla, o un `app_id` que no casa con el lanzador, no puede dejar el icono
+/// saltando para siempre.
+const LIMITE_BOTE: std::time::Duration = std::time::Duration::from_secs(10);
 const PAD_V_ABAJO: f32 = PAD_V - PUNTO / 2.0;
 
 /// ¿Se puede pasar esto a un intérprete de órdenes sin miedo?
@@ -121,6 +132,8 @@ pub struct DockItem {
     icono_modificado: Option<SystemTime>,
     /// Tiene al menos una ventana en el escritorio.
     abierta: bool,
+    /// Se lanzó y todavía no tiene ventana: el icono rebota mientras tanto.
+    lanzado: Option<std::time::Instant>,
     /// Está fijada por el usuario. Los que no lo están salen en el dock solo
     /// mientras tienen ventana —como en macOS— y desaparecen al cerrarla; son
     /// también los que se pueden fijar con el clic derecho, porque hasta que
@@ -143,6 +156,7 @@ impl DockItem {
             anclada: true,
             icon,
             abierta: false,
+            lanzado: None,
         }
     }
 
@@ -175,11 +189,27 @@ impl DockItem {
     pub fn has_icon(&self) -> bool {
         self.icon.is_some()
     }
+
+    /// Cuánto se levanta ahora mismo, de 0 a [`BOTE`].
+    fn salto(&self) -> f32 {
+        let Some(desde) = self.lanzado else {
+            return 0.0;
+        };
+        let t = desde.elapsed();
+        if t >= LIMITE_BOTE || tema::efectos_reducidos() {
+            return 0.0;
+        }
+        (t.as_secs_f32() / PERIODO_BOTE * std::f32::consts::PI)
+            .sin()
+            .abs()
+            * BOTE
+    }
 }
 
 pub struct Dock {
     tamano: f32,
     items: Vec<DockItem>,
+    arrastrado: Option<String>,
     /// Índice del icono bajo el puntero, si lo hay.
     /// El icono señalado, con su placa entrando y saliendo.
     hover: tema::Realce,
@@ -275,6 +305,34 @@ impl Dock {
             .position(|i| crate::mismo_programa(i.app_id(), app_id) || i.app_id() == app_id)
     }
 
+    pub fn arrastrar(&mut self, app_id: Option<&str>) {
+        self.arrastrado = app_id.map(str::to_owned);
+        self.hover.señalar(None);
+    }
+
+    pub fn vista_agarrado(&self) -> Option<PanelElement<'_>> {
+        let i = self.indice_de(self.arrastrado.as_deref()?)?;
+        Some(contenido_icono(&self.items[i], self.tamano))
+    }
+
+    pub fn mover(&mut self, app_id: &str, x: f32) -> bool {
+        let Some(origen) = self.indice_de(app_id) else {
+            return false;
+        };
+        // Se cambia de hueco a mitad de camino entre centros. Así cruzar el
+        // espacio entre iconos no devuelve el arrastrado a su sitio anterior.
+        let destino = ((x - PAD - self.tamano / 2.0) / (self.tamano + GAP))
+            .round()
+            .clamp(0.0, (self.items.len() - 1) as f32) as usize;
+        if origen == destino {
+            return false;
+        }
+        let item = self.items.remove(origen);
+        self.items.insert(destino, item);
+        self.hover.señalar(None);
+        true
+    }
+
     /// La lista tal y como se escribe en `panel.conf`, para poder guardarla.
     pub fn como_configuracion(&self) -> Vec<String> {
         self.items
@@ -292,6 +350,7 @@ impl Dock {
             .collect();
         Self {
             items,
+            arrastrado: None,
             hover: tema::Realce::nuevo(),
             pegado: true,
             tamano: ICON,
@@ -343,6 +402,9 @@ impl Dock {
             if item.abierta != abierta {
                 item.abierta = abierta;
                 cambio = true;
+            }
+            if abierta {
+                item.lanzado = None;
             }
         }
         // Lo que está abierto y no tiene lanzador entra en el dock mientras
@@ -431,7 +493,30 @@ impl Dock {
     /// shell que se anima sin que nadie la toque después del último movimiento
     /// del ratón.
     pub fn animando(&self) -> bool {
+        // Un fotograma de margen tras el límite: es el que deja el icono
+        // apoyado, que si no se quedaría congelado a media altura.
         self.hover.animando()
+            || self.items.iter().any(|i| {
+                i.lanzado.is_some_and(|d| {
+                    d.elapsed() < LIMITE_BOTE + std::time::Duration::from_millis(100)
+                })
+            })
+    }
+
+    /// Avisa de que se acaba de lanzar `exec`. Si es de un icono del dock que
+    /// aún no tiene ventana, rebota hasta que aparezca: sin esto, una
+    /// aplicación pesada tardaba segundos en dar señales y se volvía a pulsar.
+    /// Devuelve `true` si hay que repintar.
+    pub fn lanzando(&mut self, exec: &str) -> bool {
+        let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|i| !i.abierta && i.exec.trim() == exec.trim())
+        else {
+            return false;
+        };
+        item.lanzado = Some(std::time::Instant::now());
+        true
     }
 
     /// El lanzador que hay bajo `(x, y)`, en las mismas coordenadas que
@@ -469,7 +554,29 @@ impl Dock {
             .spacing(GAP)
             .align_y(iced_core::alignment::Vertical::Center);
         for (i, item) in self.items.iter().enumerate() {
-            fila = fila.push(icon_view(item, self.hover.intensidad(i), self.tamano));
+            let vista = if self.arrastrado.as_deref() == Some(item.app_id()) {
+                let hueco = container(Space::new())
+                    .width(Length::Fixed(self.tamano))
+                    .height(Length::Fixed(self.tamano))
+                    .style(|_theme| container::Style {
+                        background: Some(tema::hover().into()),
+                        border: Border {
+                            radius: tema::R_CONTROL.into(),
+                            width: 1.0,
+                            color: tema::alfa(tema::acento(), 0.35),
+                        },
+                        ..Default::default()
+                    });
+                column![
+                    Space::new().height(Length::Fixed(BOTE)),
+                    hueco,
+                    punto(item.abierta, self.tamano)
+                ]
+                .into()
+            } else {
+                icon_view(item, self.hover.intensidad(i), self.tamano)
+            };
+            fila = fila.push(vista);
         }
 
         // Pegado al borde solo se redondea por arriba: unas esquinas curvas
@@ -488,7 +595,7 @@ impl Dock {
         };
         container(fila)
             .padding(iced_core::Padding {
-                top: PAD_V_ARRIBA,
+                top: PAD_V_ARRIBA - BOTE,
                 bottom: PAD_V_ABAJO,
                 left: PAD,
                 right: PAD,
@@ -521,8 +628,8 @@ impl Dock {
 /// el icono se salga de su slot, y el buffer del dock hoy mide exactamente
 /// `PAD_V*2 + self.tamano` de alto, así que lo ampliado quedaría cortado. Reservar ese
 /// hueco cambia la geometría ya calibrada y va aparte.
-fn icon_view(item: &DockItem, señalado: f32, tamano: f32) -> PanelElement<'_> {
-    let contenido: PanelElement<'_> = match &item.icon {
+fn contenido_icono(item: &DockItem, tamano: f32) -> PanelElement<'_> {
+    match &item.icon {
         Some(Icono::Svg(handle)) => svg(handle.clone())
             .width(Length::Fixed(tamano))
             .height(Length::Fixed(tamano))
@@ -562,8 +669,11 @@ fn icon_view(item: &DockItem, señalado: f32, tamano: f32) -> PanelElement<'_> {
             })
             .into()
         }
-    };
+    }
+}
 
+fn icon_view(item: &DockItem, señalado: f32, tamano: f32) -> PanelElement<'_> {
+    let contenido = contenido_icono(item, tamano);
     // La placa se desvanece en vez de encenderse de golpe: el dock es lo que
     // más se recorre con el ratón y el parpadeo de seis placas al cruzarlo era
     // lo más aparatoso que le quedaba al shell. Por debajo del 1 % de alfa no
@@ -583,7 +693,16 @@ fn icon_view(item: &DockItem, señalado: f32, tamano: f32) -> PanelElement<'_> {
         contenido
     };
 
-    column![icono, punto(item.abierta, tamano)].into()
+    // El salto pasa el aire de encima a debajo: el alto total no cambia y el
+    // punto acompaña al icono, como en macOS.
+    let salto = item.salto();
+    column![
+        Space::new().height(Length::Fixed(BOTE - salto)),
+        icono,
+        punto(item.abierta, tamano),
+        Space::new().height(Length::Fixed(salto)),
+    ]
+    .into()
 }
 
 /// El indicador de "esta aplicación tiene ventana", bajo el icono.
@@ -639,14 +758,52 @@ mod tests {
                 icon: None,
                 anclada: true,
                 abierta: false,
+                lanzado: None,
             })
             .collect();
         Dock {
             items,
+            arrastrado: None,
             tamano: ICON,
             hover: tema::Realce::nuevo(),
             pegado: true,
         }
+    }
+
+    #[test]
+    fn mover_un_icono_inserta_sin_intercambiar_a_los_vecinos() {
+        let mut d = dock(4);
+        assert!(d.mover("org.bookos.prog1", d.centro_de(3)));
+        let orden: Vec<_> = d.items().iter().map(|i| i.exec()).collect();
+        assert_eq!(orden, ["prog0", "prog2", "prog3", "prog1"]);
+        assert!(d.mover("org.bookos.prog1", d.centro_de(0)));
+        let orden: Vec<_> = d.items().iter().map(|i| i.exec()).collect();
+        assert_eq!(orden, ["prog1", "prog0", "prog2", "prog3"]);
+    }
+
+    #[test]
+    fn ordenar_acota_los_extremos_y_no_oscila_en_los_huecos() {
+        let mut d = dock(3);
+        assert!(d.mover("org.bookos.prog1", -50.0));
+        assert!(!d.mover("org.bookos.prog1", d.centro_de(0) + 10.0));
+        assert!(d.mover("org.bookos.prog1", d.size().0 + 50.0));
+        assert!(!d.mover("desconocida", d.centro_de(0)));
+        assert!(!dock(0).mover("desconocida", 0.0));
+    }
+
+    #[test]
+    fn las_aplicaciones_temporales_no_se_anclan_al_reordenar() {
+        let mut d = dock(3);
+        d.items[1].anclada = false;
+        d.items[1].abierta = true;
+        assert!(d.mover("org.bookos.prog1", d.centro_de(0)));
+        let guardado = d.como_configuracion();
+        assert_eq!(guardado.len(), 2);
+        assert!(!d.items()[0].anclada());
+        assert!(guardado.iter().all(|s| !s.contains("prog1")));
+        d.set_abiertas(&[]);
+        assert_eq!(d.items().len(), 2);
+        assert_eq!(d.items()[0].exec(), "prog0");
     }
 
     #[test]
@@ -710,6 +867,24 @@ mod tests {
 
     /// La correspondencia entre el lanzador y la ventana es heurística, así que
     /// conviene fijar exactamente qué casa y qué no.
+    /// Lanzar un icono sin ventana lo pone a rebotar, y la ventana lo para.
+    #[test]
+    fn lanzar_rebota_hasta_que_hay_ventana() {
+        let mut d = dock(2);
+        assert!(
+            !d.lanzando("otra-cosa"),
+            "lo que no está en el dock no rebota"
+        );
+        assert!(d.lanzando("prog1"));
+        assert!(d.animando());
+        d.set_abiertas(&["org.bookos.prog1".to_string()]);
+        assert!(
+            !d.animando(),
+            "con la ventana ya abierta se deja de rebotar"
+        );
+        assert!(!d.lanzando("prog1"), "una ya abierta no rebota otra vez");
+    }
+
     #[test]
     fn la_ventana_se_reconoce_por_el_sufijo_del_app_id() {
         let item = DockItem {
@@ -721,6 +896,7 @@ mod tests {
             icon: None,
             anclada: true,
             abierta: false,
+            lanzado: None,
         };
         assert!(item.es_suya("konsole"));
         assert!(item.es_suya("org.kde.konsole"));

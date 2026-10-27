@@ -152,6 +152,15 @@ impl Sonando {
         ejecutar_en(&self.bus, que)
     }
 
+    /// El móvil emparejado con BookOS Link. Su reproductor MPRIS sigue en el
+    /// bus, pausado y sin `mpris:length`, mientras Android conserve la sesión
+    /// multimedia —medido el 2026-10-26: `Paused`, `Position` 6,6 s congelada,
+    /// `CanSeek` falso—, así que «pausado» ahí no quiere decir «lo acabo de
+    /// pausar».
+    pub fn es_de_movil(&self) -> bool {
+        self.bus.contains(".kdeconnect.")
+    }
+
     /// De 0 a 1, para la barra de progreso. `None` si el reproductor no publica
     /// las dos cosas —los navegadores a menudo no dan `Position`—.
     pub fn avance(&self) -> Option<f32> {

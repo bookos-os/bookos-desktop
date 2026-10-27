@@ -6,12 +6,9 @@
 //! de cada ventana— y sale el orden; el que traduce índices a ventanas es el
 //! compositor.
 //!
-//! **Los dos conmutadores enseñan una celda por ventana.** Alt agrupaba por
-//! aplicación —el icono de Firefox una sola vez, llevara tres ventanas o una— y
-//! eso dejaba Alt+Tab muerto en el caso más corriente que hay: dos terminales
-//! abiertas. Con una sola aplicación no había a dónde ir y el atajo no hacía
-//! nada. Ahora los dos parten del mismo orden de uso reciente y la diferencia
-//! está solo en lo que se ve: Alt enseña iconos y Meta, miniaturas vivas.
+//! El compositor reúne los índices de una misma unidad de trabajo después de
+//! ordenar: cada grupo y sus diálogos ocupan una celda, y dos documentos
+//! independientes de una aplicación siguen teniendo una celda cada uno.
 
 use std::time::Instant;
 

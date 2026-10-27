@@ -273,6 +273,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
             crate::keybinds::ejecutar(self, crate::keybinds::Accion::ConmutarCancelar);
         }
         if let Some(elemento) = self.window_de_x11(&window) {
+            crate::multitarea::retirar(self, &elemento);
             self.space.unmap_elem(&elemento);
         }
         if !window.is_override_redirect() {
@@ -308,7 +309,9 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     ) {
         let elemento = self.window_de_x11(&window);
         if let Some(elemento) = &elemento
-            && crate::ventanas::encajada(elemento)
+            && (crate::ventanas::encajada(elemento)
+                || (crate::multitarea::agrupada(self, elemento)
+                    && crate::multitarea::raiz(self, elemento) == *elemento))
         {
             let geo = window.geometry();
             let _ = window.configure(geo);
@@ -341,7 +344,13 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         };
         let nuevo_tamano = crate::ventanas::tamano_nuevo(&elemento);
         if self.space.element_location(&elemento) != Some(geometry.loc) {
+            // Confirmar la posición no cambia el orden de las ventanas: un
+            // ConfigureNotify atrasado no puede tapar un diálogo ya enfocado.
+            let pila: Vec<_> = self.space.elements().cloned().collect();
             self.space.map_element(elemento, geometry.loc, false);
+            for w in pila {
+                self.space.raise_element(&w, false);
+            }
         }
         // Un cliente X11 confirma aquí su tamaño nuevo: ver `tamano_nuevo`.
         if nuevo_tamano {

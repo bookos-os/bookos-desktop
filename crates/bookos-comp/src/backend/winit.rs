@@ -125,12 +125,15 @@ pub fn run(
     // El shell se crea aquí, en cuanto se sabe el ancho de la pantalla, y ya
     // queda pintado para el primer frame: no hay un segundo proceso al que
     // esperar ni un hueco en el que se vea el escritorio a medio montar.
-    state.shell = Some(crate::shell::ShellHost::new(
-        size.w.max(1) as u32,
-        size.h.max(1) as u32,
-        scale as f32,
-        state.config.take(),
-    ));
+    // En el kiosko no hay escritorio. Ver el mismo punto en `udev`.
+    if !state.modo.kiosko() {
+        state.shell = Some(crate::shell::ShellHost::new(
+            size.w.max(1) as u32,
+            size.h.max(1) as u32,
+            scale as f32,
+            state.config.take(),
+        ));
+    }
     if let Some(shell) = state.shell.as_mut() {
         shell.refresh();
     }
@@ -303,8 +306,10 @@ pub fn run(
 
     tracing::info!(socket = ?state.socket_name, "compositor listo (backend anidado)");
 
-    if let Some(cmd) = client {
-        crate::keybinds::lanzar(state, &cmd);
+    match client {
+        Some(cmd) if state.modo.kiosko() => crate::keybinds::lanzar_kiosko(state, &cmd)?,
+        Some(cmd) => crate::keybinds::lanzar(state, &cmd),
+        None => {}
     }
 
     event_loop.run(None, state, |state| {
@@ -356,6 +361,7 @@ fn pump(winit_loop: &mut winit::WinitEventLoop, state: &mut BookosComp, refresco
                 }
                 // Los clientes ya conectados tienen que enterarse de la escala nueva.
                 state.broadcast_preferred_scale(scale_factor);
+                state.recolocar_encajadas();
                 state.cursor_theme = Some(crate::cursor::CursorTheme::con_tamano(
                     scale_factor,
                     state.cursor_nominal,

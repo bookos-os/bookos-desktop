@@ -91,6 +91,8 @@ pub enum AccionRemap {
     MostrarEscritorio,
     Captura,
     Bloquear,
+    ApagarPantalla,
+    Salvapantallas,
     Terminal,
 }
 
@@ -103,6 +105,8 @@ const ACCIONES: &[(&str, AccionRemap)] = &[
     ("mostrar_escritorio", AccionRemap::MostrarEscritorio),
     ("captura", AccionRemap::Captura),
     ("bloquear", AccionRemap::Bloquear),
+    ("apagar_pantalla", AccionRemap::ApagarPantalla),
+    ("salvapantallas", AccionRemap::Salvapantallas),
     ("terminal", AccionRemap::Terminal),
 ];
 
@@ -118,6 +122,8 @@ impl AccionRemap {
             AccionRemap::MostrarEscritorio => Accion::MostrarEscritorio,
             AccionRemap::Captura => Accion::Captura,
             AccionRemap::Bloquear => Accion::DelShell(bookos_shell::Accion::Bloquear),
+            AccionRemap::ApagarPantalla => Accion::ApagarPantalla,
+            AccionRemap::Salvapantallas => Accion::Salvapantallas,
             AccionRemap::Terminal => Accion::Terminal,
         }
     }

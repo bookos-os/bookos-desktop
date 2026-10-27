@@ -220,6 +220,26 @@ pub fn encogido_ahora(e: Encogido) -> (Point<f64, Logical>, f64, f32) {
 /// [`animar_minimizados`]: si se sacara ya del `Space` no habría nada que
 /// dibujar y el encogido no se vería.
 pub fn minimizar(state: &mut BookosComp, window: Window) {
+    let familia = crate::multitarea::familia(state, &window);
+    for w in familia {
+        minimizar_una(state, w);
+    }
+    let siguiente = state
+        .space
+        .elements()
+        .rev()
+        .find(|w| {
+            !state.minimizando.iter().any(|(m, _)| m == *w) && crate::multitarea::visible(state, w)
+        })
+        .cloned();
+    if let Some(w) = siguiente {
+        state.enfocar(&w);
+    } else if let Some(kbd) = state.seat.get_keyboard() {
+        kbd.set_focus(state, None, SERIAL_COUNTER.next_serial());
+    }
+}
+
+fn minimizar_una(state: &mut BookosComp, window: Window) {
     // El botón puede recibir otro clic mientras la lámpara sigue en marcha.
     // No debemos arrancar una segunda animación ni guardar la misma ventana
     // dos veces: al terminar, eso dejaría una entrada fantasma en el dock.
@@ -235,22 +255,6 @@ pub fn minimizar(state: &mut BookosComp, window: Window) {
     let destino = destino_dock(state, &app_id, origen);
     encoger(&window, origen, destino, true);
     state.minimizando.push((window, origen.loc));
-    // El foco pasa a la de debajo: dejárselo a una ventana que se está yendo al
-    // dock significa escribir a ciegas en ella.
-    let siguiente = state
-        .space
-        .elements()
-        .rev()
-        .find(|w| *w != &state.minimizando.last().expect("recién metida").0)
-        .cloned();
-    match siguiente {
-        Some(w) => state.enfocar(&w),
-        None => {
-            if let Some(kbd) = state.seat.get_keyboard() {
-                kbd.set_focus(state, None, SERIAL_COUNTER.next_serial());
-            }
-        }
-    }
     state.actualizar_dock();
     state.needs_redraw = true;
 }
@@ -284,15 +288,24 @@ pub fn restaurar_minimizada(state: &mut BookosComp, app_id: &str) -> bool {
     }) else {
         return false;
     };
-    let (window, posicion) = state.minimizadas.remove(i);
-    state.capturas.retain(|(w, _)| *w != window);
-    state.space.map_element(window.clone(), posicion, true);
-    let origen = state
-        .space
-        .element_geometry(&window)
-        .unwrap_or(Rectangle::new(posicion, (1, 1).into()));
-    let destino = destino_dock(state, app_id, origen);
-    encoger(&window, origen, destino, false);
+    let window = state.minimizadas[i].0.clone();
+    let familia: Vec<_> = state
+        .minimizadas
+        .iter()
+        .filter(|(w, _)| crate::multitarea::misma_unidad(state, &window, w))
+        .map(|(w, _)| w.clone())
+        .collect();
+    for w in familia {
+        let Some(i) = state.minimizadas.iter().position(|(v, _)| *v == w) else {
+            continue;
+        };
+        let (w, posicion) = state.minimizadas.remove(i);
+        state.capturas.retain(|(v, _)| *v != w);
+        state.space.map_element(w.clone(), posicion, true);
+        let origen = Rectangle::new(posicion, w.geometry().size);
+        let destino = destino_dock(state, app_id, origen);
+        encoger(&w, origen, destino, false);
+    }
     state.enfocar(&window);
     // Vuelve al `Space` sin pasar por mover ni mapear, que es donde se miran
     // las barras: una maximizada traída del dock dejaba el panel encima.
@@ -987,7 +1000,7 @@ pub fn hueco(
 /// Si no cabe, manda la esquina de arriba a la izquierda: es donde suelen estar
 /// el título y los campos, y un diálogo con la cabecera bajo el panel no se
 /// puede ni mover.
-fn encima_de(
+pub(crate) fn encima_de(
     tam: Size<i32, Logical>,
     sobre: Rectangle<i32, Logical>,
     area: Rectangle<i32, Logical>,
@@ -1048,6 +1061,8 @@ pub fn duena(state: &BookosComp, window: &Window) -> Option<Duena> {
     let principal = state
         .space
         .elements()
+        .chain(state.minimizadas.iter().map(|(w, _)| w))
+        .chain(state.escritorios.apartadas())
         .filter(|w| *w != window && colocada(w) && padre(state, w).is_none())
         .filter(|w| mia.is_none_or(|m| estado(w).nacida.get() < Some(m)))
         .filter(|w| pid_de(state, w) == Some(pid))
@@ -1072,16 +1087,23 @@ pub fn app_id_de_grupo(state: &BookosComp, window: &Window) -> Option<String> {
 }
 
 fn padre(state: &BookosComp, window: &Window) -> Option<Window> {
-    if let Some(x11) = window.x11_surface() {
-        let id = x11.is_transient_for()?;
-        return state
+    let todas = || {
+        state
             .space
             .elements()
+            .chain(state.minimizadas.iter().map(|(w, _)| w))
+            .chain(state.escritorios.apartadas())
+    };
+    if let Some(x11) = window.x11_surface() {
+        let id = x11.is_transient_for()?;
+        return todas()
             .find(|w| w.x11_surface().is_some_and(|s| s.window_id() == id))
             .cloned();
     }
     let superficie = window.toplevel()?.parent()?;
-    state.window_for_surface(&superficie)
+    todas()
+        .find(|w| w.wl_surface().is_some_and(|s| *s == superficie))
+        .cloned()
 }
 
 /// El proceso que dibuja la ventana.
@@ -1108,18 +1130,61 @@ fn pid_de(state: &BookosComp, window: &Window) -> Option<u32> {
 /// a un mensaje de Wayland: son las operaciones del escritorio, y los handlers
 /// del protocolo solo las invocan.
 impl BookosComp {
+    /// Lo que pide el usuario: alterna, lo recuerda para la aplicación y lo
+    /// dice en pantalla. Sin el aviso no había forma de saber si el atajo había
+    /// hecho algo —una ventana que ya estaba delante no cambia nada a la vista—
+    /// y sin recordarlo había que volver a pedirlo cada vez que se abría.
     pub fn alternar_encima(&mut self, window: &Window) {
         let encima = !siempre_encima(window);
-        estado(window).encima.set(encima);
-        // Entre las ventanas normales (30) y las capas del escritorio (40).
-        window.override_z_index(if encima { 35 } else { 30 });
-        self.space.raise_element(window, false);
+        self.marcar_encima(window, encima);
+        let raiz = crate::multitarea::raiz(self, window);
+        let app_id = crate::handlers::app_id(&raiz);
+        if let Some(app_id) = &app_id
+            && let Err(err) = bookos_shell::marcar_app_encima(app_id, encima)
+        {
+            tracing::warn!(app_id, "no se pudo guardar «siempre encima»: {err}");
+        }
+        // El nombre de la aplicación y no el título: se recuerda para todas
+        // sus ventanas, y «Bienvenido — KWrite siempre encima» decía otra cosa.
+        let nombre = app_id
+            .as_deref()
+            .and_then(bookos_shell::nombre_de_app)
+            .or_else(|| crate::handlers::titulo(&raiz))
+            .unwrap_or_else(|| "La ventana".into());
+        if let Some(shell) = self.shell.as_mut() {
+            shell.mostrar_osd(
+                "fijar",
+                None,
+                Some(if encima {
+                    format!("{nombre} siempre encima")
+                } else {
+                    format!("{nombre} ya no está encima")
+                }),
+            );
+        }
+    }
+
+    fn marcar_encima(&mut self, window: &Window, encima: bool) {
+        for window in crate::multitarea::familia(self, window) {
+            estado(&window).encima.set(encima);
+            // Entre las ventanas normales (30) y las capas del escritorio (40).
+            window.override_z_index(if encima { 35 } else { 30 });
+            self.space.raise_element(&window, false);
+        }
         self.needs_redraw = true;
     }
 
     /// Traslada coordenadas lógicas y conserva maximizado/fullscreen y el
     /// rectángulo flotante al que volver. El destino puede tener otra escala.
     pub fn mover_a_monitor(&mut self, window: &Window, nombre: &str) {
+        let familia = crate::multitarea::familia(self, window);
+        for w in familia {
+            self.mover_a_monitor_una(&w, nombre);
+        }
+        crate::multitarea::ajustar_monitor(self, window, nombre);
+    }
+
+    fn mover_a_monitor_una(&mut self, window: &Window, nombre: &str) {
         if self.minimizando.iter().any(|(w, _)| w == window) {
             return;
         }
@@ -1250,6 +1315,16 @@ impl BookosComp {
             return;
         }
         let duena = duena(self, window);
+        // En el kiosko la ventana principal tapa la pantalla desde su primer
+        // fotograma, sin la lámpara que la traería desde un dock que no hay.
+        if self.modo.kiosko() && duena.is_none() {
+            estado(window).completa.set(true);
+            self.space
+                .map_element(window.clone(), self.pantalla().loc, true);
+            nace(window);
+            self.enfocar(window);
+            return;
+        }
         let area = crate::decoracion::area_util(self, window);
         let sitio = match &duena {
             Some(Duena::Padre(padre)) => match self.space.element_geometry(padre) {
@@ -1272,6 +1347,17 @@ impl BookosComp {
         }
         self.space.map_element(window.clone(), sitio, true);
         nace(window);
+        // Un diálogo de una ventana que está encima va con ella: debajo quedaría
+        // tapado por su propia dueña. Y una aplicación marcada como siempre
+        // encima lo está desde su primera ventana.
+        let encima = match &duena {
+            Some(Duena::Padre(padre)) => siempre_encima(padre),
+            _ => crate::handlers::app_id(window)
+                .is_some_and(|id| bookos_shell::apps_encima().contains(&id)),
+        };
+        if encima {
+            self.marcar_encima(window, true);
+        }
         // Abrir recorre la misma lámpara que minimizar, en sentido inverso.
         // Se arranca después de mapear porque el renderer necesita una ventana
         // viva para congelar su primer buffer. Si la aplicación aún no tiene
@@ -1322,6 +1408,7 @@ impl BookosComp {
         // menú largo que asoma bajo el área útil es cosa del cliente.
         if nacida.elapsed() > VENTANA_DE_CRECIMIENTO
             || maximizada(window)
+            || crate::multitarea::agrupada(self, window)
             || completa(window)
             || window
                 .x11_surface()
@@ -1355,6 +1442,8 @@ impl BookosComp {
     /// barra de título viva o apagada. Sin actualizarlo, todas las ventanas se
     /// dibujan como si tuvieran el foco a la vez.
     pub fn enfocar(&mut self, window: &Window) {
+        let destino = crate::multitarea::preparar_foco(self, window);
+        let window = &destino;
         self.space.raise_element(window, true);
         // El sello de uso reciente se pone aquí y no al abrir la ventana: lo que
         // importa para Alt+Tab es a qué has ido, no qué has lanzado.
@@ -1468,9 +1557,18 @@ impl BookosComp {
     /// ver también la suelta. Arrastrando de **nuestra** barra de título el
     /// clic no ha existido para él.
     pub fn arrastrar_ventana(&mut self, window: &Window, modo: Modo, del_cliente: bool) {
+        if modo != Modo::Mover && crate::multitarea::empezar_redimension(self, window, del_cliente)
+        {
+            return;
+        }
+
         let Some(loc) = self.space.element_location(window) else {
             return;
         };
+        if modo == Modo::Mover {
+            self.soltar_para_arrastrar(window, loc, self.pointer_location);
+        }
+        let loc = self.space.element_location(window).unwrap_or(loc);
         let geo = Rectangle::new(loc, window.geometry().size);
         self.arrastre = Some(Arrastre {
             window: window.clone(),
@@ -1482,6 +1580,43 @@ impl BookosComp {
             previa_nacida: None,
             del_cliente,
         });
+    }
+
+    /// Arrastrar una ventana encajada —o la mitad de un grupo lado a lado— la
+    /// suelta, como en KWin: recupera su tamaño flotante y se queda colgando
+    /// del cursor. Sin esto arrastrarías media pantalla entera, que además no
+    /// cabe en ningún sitio y vuelve a encajarse al primer roce con un borde.
+    fn soltar_para_arrastrar(
+        &mut self,
+        window: &Window,
+        loc: Point<i32, Logical>,
+        punto: Point<f64, Logical>,
+    ) {
+        let antes = window.geometry().size.w;
+        let agrupada = crate::multitarea::sacar(self, window);
+        if !agrupada && !encajada(window) {
+            return;
+        }
+        // El tamaño nuevo se toma de lo guardado, no de la geometría: el
+        // cliente aún no ha contestado al configure y seguiría midiendo media
+        // pantalla. Sin nada guardado —grupo hecho desde el menú— la ventana
+        // vuelve a su rectángulo de antes del grupo, que ya pone `separar`.
+        let nuevo = estado(window)
+            .restaurar
+            .get()
+            .map_or(window.geometry().size, |r| r.size);
+        self.desencajar(window);
+        // El agarre se recoloca proporcionalmente: si tenías el cursor en
+        // mitad del ancho de la ventana encajada, sigue en mitad del ancho de
+        // la ventana pequeña. Si no, la ventana da un brinco lateral.
+        if loc.x < punto.x as i32 && nuevo.w > 0 && antes > 0 {
+            let f = (punto.x - loc.x as f64) / antes as f64;
+            let x = punto.x - f * nuevo.w as f64;
+            // La y de antes, no la restaurada: si no, el cursor queda fuera
+            // de la barra que estás agarrando.
+            self.space
+                .map_element(window.clone(), (x.round() as i32, loc.y), false);
+        }
     }
 
     /// Empieza a mover o redimensionar la ventana bajo el cursor.
@@ -1502,20 +1637,8 @@ impl BookosComp {
         // recupera su tamaño flotante y se queda colgando del cursor. Sin esto
         // arrastrarías media pantalla entera, que además no cabe en ningún
         // sitio y vuelve a encajarse al primer roce con un borde.
-        if modo == Modo::Mover && encajada(&window) {
-            self.desencajar(&window);
-            // El agarre se recoloca proporcionalmente: si tenías el cursor en
-            // mitad del ancho de la ventana encajada, sigue en mitad del ancho
-            // de la ventana pequeña. Si no, la ventana da un brinco lateral.
-            let nuevo = window.geometry().size;
-            if loc.x < punto.x as i32 && nuevo.w > 0 {
-                let f = (punto.x - loc.x as f64) / self.work_area().size.w.max(1) as f64;
-                let x = punto.x - f * nuevo.w as f64;
-                if let Some(actual) = self.space.element_location(&window) {
-                    self.space
-                        .map_element(window.clone(), (x.round() as i32, actual.y), false);
-                }
-            }
+        if modo == Modo::Mover {
+            self.soltar_para_arrastrar(&window, loc, punto);
         }
         let loc = self.space.element_location(&window).unwrap_or(loc);
         let geo = Rectangle::new(loc, window.geometry().size);
@@ -1527,6 +1650,9 @@ impl BookosComp {
             Modo::Redimensionar { .. } => Modo::por_cuadrante(punto, geo),
         };
         self.enfocar(&window);
+        if modo != Modo::Mover && crate::multitarea::empezar_redimension(self, &window, false) {
+            return true;
+        }
         self.arrastre = Some(Arrastre {
             window,
             modo,
@@ -1548,8 +1674,25 @@ impl BookosComp {
         };
         let area = crate::decoracion::area_util(self, &arrastre.window);
         let destino = arrastre.geometria(self.pointer_location, area);
+        if arrastre.modo == Modo::Mover
+            && let Some(loc) = self.space.element_location(&arrastre.window)
+            && crate::multitarea::arrastrar(self, &arrastre.window, destino.loc - loc)
+        {
+            self.needs_redraw = true;
+            return true;
+        }
+        if arrastre.modo != Modo::Mover
+            && crate::multitarea::redimensionar(self, &arrastre.window, destino)
+        {
+            return true;
+        }
         // Sin animación: durante un arrastre la ventana tiene que ir pegada al
         // cursor. Interpolar aquí se siente como arrastrar algo con retardo.
+        if arrastre.modo == Modo::Mover
+            && let Some(loc) = self.space.element_location(&arrastre.window)
+        {
+            crate::multitarea::acompanar(self, &arrastre.window, destino.loc - loc);
+        }
         self.space
             .map_element(arrastre.window.clone(), destino.loc, false);
         // Mientras arrastras, las barras se apartan o vuelven según dónde esté
@@ -1628,6 +1771,8 @@ impl BookosComp {
 
     /// Pone la ventana en una zona de la pantalla, animando el recorrido.
     pub fn encajar(&mut self, window: &Window, zona: Zona) {
+        crate::multitarea::separar(self, window);
+        salir_de_pantalla_completa(window);
         // El área es la de esta ventana, no la del escritorio: una decorada
         // maximizada tiene que dejar arriba el hueco de su propia barra, o la
         // barra acaba debajo del panel.
@@ -1673,6 +1818,7 @@ impl BookosComp {
             let _ = x11.configure(destino);
         }
         self.space.map_element(window.clone(), destino.loc, true);
+        crate::multitarea::encajada(self, window, zona);
         self.needs_redraw = true;
         self.revisar_barras();
     }
@@ -1682,6 +1828,7 @@ impl BookosComp {
         let Some(previa) = tomar_restaurar(window) else {
             return;
         };
+        salir_de_pantalla_completa(window);
         // Se vuelve a confinar al soltar: la posición guardada puede haber
         // dejado de ser válida —la pantalla cambió de tamaño, o el panel
         // creció— y devolver la ventana a un sitio inalcanzable es peor que no
@@ -1736,6 +1883,9 @@ impl BookosComp {
     /// shell deja de dibujarse: un vídeo o un juego con el panel encima no
     /// está a pantalla completa, está maximizado.
     pub fn pantalla_completa(&mut self, window: &Window, activar: bool) {
+        if activar {
+            crate::multitarea::separar(self, window);
+        }
         if completa(window) == activar {
             return;
         }
@@ -1789,7 +1939,7 @@ impl BookosComp {
 
     /// La pantalla entera, en lógicos: lo mismo que `work_area` pero sin
     /// descontar el panel ni el dock.
-    fn pantalla(&self) -> Rectangle<i32, Logical> {
+    pub(crate) fn pantalla(&self) -> Rectangle<i32, Logical> {
         // Las acciones se aplican a la pantalla bajo el puntero. Esto hace que
         // maximizar, pantalla completa y encajar funcionen en salidas situadas
         // a cualquier lado del origen, no siempre en el primer monitor.
@@ -1817,6 +1967,7 @@ impl BookosComp {
     /// alternar la visibilidad del panel: una ventana maximizada con el panel
     /// fijo se queda 32 px corta cuando el panel deja de reservar sitio.
     pub fn recolocar_encajadas(&mut self) {
+        crate::multitarea::ajustar_areas(self);
         let encajadas: Vec<(Window, Zona)> = self
             .space
             .elements()
@@ -1871,7 +2022,15 @@ impl BookosComp {
             // estaba maximizada seguía «tapando» las barras y en modo esquivar
             // no volvían. Pasa con los clientes que destruyen el toplevel sin
             // desmapear antes, como GTK/Tauri.
-            .filter(|w| w.alive() && colocada(w))
+            // Las que se están apartando ya se van: esperar a que salgan para
+            // traer el dock sumaba el viaje entero (260 ms) a su propia
+            // animación de entrada.
+            .filter(|w| {
+                w.alive()
+                    && colocada(w)
+                    && !self.escritorios.se_va(w)
+                    && crate::multitarea::visible(self, w)
+            })
             .filter_map(|w| {
                 let cuerpo = Rectangle::new(self.space.element_location(w)?, w.geometry().size);
                 // La barra de título que dibujamos nosotros va **encima** de la
@@ -1919,6 +2078,12 @@ impl BookosComp {
 }
 
 /// En qué zona está encajada, si lo está.
+pub fn soltar_encaje(window: &Window) {
+    estado(window).zona.set(None);
+    estado(window).desde.set(None);
+    estado(window).encogido.set(None);
+}
+
 pub fn zona_de(window: &Window) -> Option<Zona> {
     estado(window).zona.get()
 }
@@ -1940,6 +2105,24 @@ pub fn maximizada(window: &Window) -> bool {
 /// ¿Está a pantalla completa?
 pub fn completa(window: &Window) -> bool {
     estado(window).completa.get()
+}
+
+fn salir_de_pantalla_completa(window: &Window) {
+    if !completa(window) {
+        return;
+    }
+    // Encajar y restaurar envían su propio tamaño. Pasar por
+    // `pantalla_completa(false)` consumiría antes la geometría guardada;
+    // conservar la marca, en cambio, oculta ambas barras en este escritorio.
+    estado(window).completa.set(false);
+    if let Some(toplevel) = window.toplevel() {
+        toplevel.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Fullscreen);
+        });
+    }
+    if let Some(x11) = window.x11_surface() {
+        let _ = x11.set_fullscreen(false);
+    }
 }
 
 #[cfg(test)]

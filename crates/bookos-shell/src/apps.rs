@@ -254,7 +254,7 @@ fn limpiar_exec(exec: &str) -> String {
 /// No es una normalización Unicode de verdad —eso sería NFD y una tabla— sino
 /// la lista de vocales acentuadas y la eñe, que es lo que aparece en los
 /// nombres de aplicaciones que vamos a ver.
-fn normalizar(s: &str) -> String {
+pub fn normalizar(s: &str) -> String {
     s.to_lowercase()
         .chars()
         .map(|c| match c {

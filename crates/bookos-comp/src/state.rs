@@ -242,6 +242,7 @@ pub struct BookosComp {
     pub brillo_poll_activo: bool,
     pub brillo_auto: crate::brillo_auto::Estado,
     pub atenuacion: crate::atenuacion::Estado,
+    pub salvapantallas: crate::salvapantallas::Estado,
     /// Lo que se lleva escrito en la pantalla de bloqueo.
     pub bloqueo: Bloqueo,
     /// Cuándo llegó el último evento de entrada. Decide si el backend anidado
@@ -319,6 +320,8 @@ pub struct BookosComp {
     /// Vive aquí y no en el shell porque el shell no ve ventanas: elige un
     /// índice y el compositor lo traduce. Es lo que permite que una celda sea
     /// una ventana concreta sin que el shell sepa qué es una ventana.
+    pub menu_ventana_companera: Option<smithay::desktop::Window>,
+    pub multitarea: crate::multitarea::Multitarea,
     pub conmutador_destinos: Vec<smithay::desktop::Window>,
     pub menu_ventana: Option<smithay::desktop::Window>,
     pub menu_ventana_suelta: bool,
@@ -345,6 +348,12 @@ pub struct BookosComp {
     /// normal. Se decide al soltar y no al pulsar porque al pulsar todavía no se
     /// sabe si va a ser un atajo.
     pub meta_sola: bool,
+    /// El dedo que está haciendo de ratón sobre el shell, si hay uno. Ver
+    /// `input::toque_abajo`.
+    pub toque_emulado: Option<smithay::backend::input::TouchSlot>,
+    /// El teclado en pantalla: cuándo sale y qué tecla tiene apretada.
+    pub teclado: crate::teclado::Estado,
+    pub emojis: crate::emojis::Estado,
     /// Hay un launchpad pendiente de abrir por la suelta de Meta.
     pub abrir_launchpad: bool,
     /// Los remapeos de `teclas.conf`. Se releen con `ReloadConfig("teclas")`.
@@ -412,6 +421,10 @@ pub struct BookosComp {
     /// ponen: se abren y se cierran en lo que dura una pulsación, y un viaje
     /// de 260 ms los haría ir por detrás del dedo.
     pub conmutador_entrada: Option<std::time::Instant>,
+    /// Cuándo empezó a cerrarse la exposición: las ventanas vuelven a su sitio
+    /// por el mismo camino por el que llegaron. Sin esto el gesto de bajar
+    /// borraba la rejilla de golpe y las ventanas aparecían ya colocadas.
+    pub conmutador_salida: Option<std::time::Instant>,
     /// La configuración del escritorio, leída una vez al arrancar.
     ///
     /// El backend la consulta para la escala **antes** de que exista el shell
@@ -546,6 +559,8 @@ pub struct BookosComp {
     /// Programas lanzados desde la sesión. Se guardan solo para recogerlos y
     /// que no queden zombis colgando del compositor.
     pub hijos: Vec<std::process::Child>,
+    /// Escritorio completo, o una sola aplicación y nada más.
+    pub modo: Modo,
 
     /// El gestor de ventanas X11, cuando XWayland ya está en pie. `None`
     /// mientras arranca, y para siempre si `Xwayland` no está instalado.
@@ -716,6 +731,29 @@ pub struct BookosComp {
     pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
 }
 
+/// Para qué se ha arrancado el compositor.
+///
+/// El kiosko existe para el asistente de primer arranque (bookos-welcome): una
+/// sola aplicación, como root y antes del gestor de acceso. No hay shell,
+/// atajos ni gestos —un Meta+Return ahí abriría un terminal de root—, ni los
+/// servicios de sesión, que sin bus de sesión fallarían igual. Cuando la
+/// aplicación termina, el compositor termina con su mismo código, que es lo
+/// que deja seguir al arranque.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modo {
+    Escritorio,
+    Kiosko {
+        /// El código de salida del programa, cuando ya ha terminado.
+        salida: Option<i32>,
+    },
+}
+
+impl Modo {
+    pub fn kiosko(&self) -> bool {
+        matches!(self, Modo::Kiosko { .. })
+    }
+}
+
 /// Qué distribución de teclado usar.
 ///
 /// `XkbConfig::default()` es **us**, y eso es lo que salía: un teclado español
@@ -807,11 +845,13 @@ impl BookosComp {
             || self
                 .conmutador_entrada
                 .is_some_and(|desde| desde.elapsed() < bookos_shell::tema::D_VENTANA)
+            || self.conmutador_salida.is_some()
     }
 
     pub fn new(
         event_loop: &mut EventLoop<'static, BookosComp>,
         display: Display<BookosComp>,
+        modo: Modo,
     ) -> anyhow::Result<Self> {
         let dh = display.handle();
         let loop_handle = event_loop.handle();
@@ -857,20 +897,30 @@ impl BookosComp {
             smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(&dh);
 
         // La configuración se lee antes que el teclado: la distribución sale de
-        // ahí si el fichero la dice.
-        let mut config = bookos_shell::Config::cargar();
+        // ahí si el fichero la dice. El kiosko corre como root antes de que
+        // exista ninguna cuenta: el `panel.conf` que encontrara sería el de
+        // /root o, al probarlo, el de quien lo lanza, y ninguno es del sistema.
+        let mut config = match modo {
+            Modo::Escritorio => bookos_shell::Config::cargar(),
+            Modo::Kiosko { .. } => bookos_shell::Config::default(),
+        };
         let teclado_config = config.teclado.clone();
+        let locale = modo.kiosko().then(crate::locale1::actual).flatten();
 
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "bookos");
         let teclado_repeticion = (config.teclado_retardo, config.teclado_velocidad);
         let pasos = config.pasos;
         seat.add_keyboard(
-            distribucion_teclado(teclado_config.as_deref()),
+            match &locale {
+                Some(distribucion) => distribucion.xkb(),
+                None => distribucion_teclado(teclado_config.as_deref()),
+            },
             teclado_repeticion.0 as i32,
             teclado_repeticion.1 as i32,
         )?;
         let pointer = seat.add_pointer();
+        seat.add_touch();
 
         let socket_name = Self::init_socket(&loop_handle, display)?;
 
@@ -891,7 +941,13 @@ impl BookosComp {
                 }
             })
             .map_err(|err| anyhow::anyhow!("insert_source(notificaciones): {err}"))?;
-        let bus_notificaciones = crate::notificaciones::arrancar(avisos);
+        // En el kiosko no se arranca ninguno de los servicios de sesión: corre
+        // como root sin bus de sesión, y bookos-system reintentaría cada 3 s
+        // despertando el bucle para nada.
+        let bus_notificaciones = match modo {
+            Modo::Escritorio => crate::notificaciones::arrancar(avisos),
+            Modo::Kiosko { .. } => None,
+        };
 
         let (system_events, system_source) = smithay::reexports::calloop::channel::channel();
         loop_handle
@@ -905,9 +961,11 @@ impl BookosComp {
                 }
             })
             .map_err(|e| anyhow::anyhow!("system events: {e}"))?;
-        bookos_system::start(move || {
-            let _ = system_events.send(());
-        });
+        if !modo.kiosko() {
+            bookos_system::start(move || {
+                let _ = system_events.send(());
+            });
+        }
 
         // Settings escribe el fichero y solo manda una orden pequeña por
         // D-Bus. La lectura y aplicación se hacen aquí, en el hilo dueño del
@@ -922,7 +980,10 @@ impl BookosComp {
             })
             .map_err(|err| anyhow::anyhow!("insert_source(ajustes): {err}"))?;
         let pantallas = crate::pantallas::Estado::default();
-        let bus_ajustes = crate::ajustes::arrancar(ajustes, pantallas.compartido.clone());
+        let bus_ajustes = match modo {
+            Modo::Escritorio => crate::ajustes::arrancar(ajustes, pantallas.compartido.clone()),
+            Modo::Kiosko { .. } => None,
+        };
 
         // El portal de escritorio, por el mismo camino: su hilo pide, este
         // bucle decide. Ver la cabecera de `crate::portal`.
@@ -935,7 +996,13 @@ impl BookosComp {
                 }
             })
             .map_err(|err| anyhow::anyhow!("insert_source(portal): {err}"))?;
-        let bus_portal = crate::portal::arrancar(portal, &socket_name);
+        let bus_portal = match modo {
+            Modo::Escritorio => crate::portal::arrancar(portal, &socket_name),
+            Modo::Kiosko { .. } => None,
+        };
+        if modo.kiosko() {
+            crate::locale1::escuchar(&loop_handle);
+        }
         crate::ajustes::vigilar_nombres(
             [
                 (bus_notificaciones.clone(), crate::notificaciones::INTERFAZ),
@@ -994,7 +1061,12 @@ impl BookosComp {
             bloqueo_inactividad,
             suspension_inactividad,
             tick_bloqueo: None,
-            atenuacion: Default::default(),
+            atenuacion: crate::atenuacion::Estado::nuevo(config.atenuacion_inactividad),
+            salvapantallas: crate::salvapantallas::Estado::nuevo(
+                config.salvapantallas_inactividad,
+                config.apagado_inactividad,
+                config.salvapantallas_estilo,
+            ),
             tick_suspension: None,
             tick_centro: None,
             repeticion_retroceso: None,
@@ -1024,6 +1096,8 @@ impl BookosComp {
                 config.escritorios,
                 config.nombres_escritorios.clone(),
             ),
+            menu_ventana_companera: None,
+            multitarea: crate::multitarea::Multitarea::default(),
             conmutador_destinos: Vec::new(),
             menu_ventana: None,
             menu_ventana_suelta: false,
@@ -1032,12 +1106,21 @@ impl BookosComp {
             conmutador_clic: false,
             salida_armada: None,
             meta_sola: false,
+            toque_emulado: None,
+            teclado: Default::default(),
+            emojis: Default::default(),
             abrir_launchpad: false,
-            teclas: crate::teclas::cargar(),
+            // Los remapeos de `teclas.conf` pueden lanzar órdenes: en el
+            // kiosko serían órdenes de root.
+            teclas: match modo {
+                Modo::Escritorio => crate::teclas::cargar(),
+                Modo::Kiosko { .. } => Default::default(),
+            },
             traductor: Default::default(),
             captura_tecla: false,
             conmutador_pegado: false,
             conmutador_entrada: None,
+            conmutador_salida: None,
             genio: None,
             velo_captura: None,
             banda: None,
@@ -1089,6 +1172,7 @@ impl BookosComp {
             ultimo_clic: None,
             cambiar_vt: None,
             hijos: Vec::new(),
+            modo,
             xwm: None,
             display_x11: None,
             cliente_x11: None,
@@ -1214,7 +1298,9 @@ impl BookosComp {
         self.space
             .elements()
             .rev()
-            .filter(|w| crate::ventanas::encogido(w).is_none())
+            .filter(|w| {
+                crate::ventanas::encogido(w).is_none() && crate::multitarea::visible(self, w)
+            })
             .find_map(|w| {
                 if !self.space.element_bbox(w)?.to_f64().contains(punto) {
                     return None;
@@ -1314,6 +1400,17 @@ impl BookosComp {
     pub fn post_dispatch(&mut self) {
         self.hijos
             .retain_mut(|hijo| !matches!(hijo.try_wait(), Ok(Some(_))));
+        // Se espera a que la ventana se haya ido y a su animación de cierre: si
+        // no, el último fotograma sería la ventana entera cortada de golpe.
+        if let Modo::Kiosko {
+            salida: Some(codigo),
+        } = self.modo
+            && self.cierres.is_empty()
+            && self.space.elements().next().is_none()
+        {
+            tracing::info!(codigo, "el programa del kiosko ha terminado");
+            self.loop_signal.stop();
+        }
         self.actualizar_foreign_toplevels();
         self.popups.cleanup();
         // Retira layer-surfaces cuyo cliente desapareció sin dejar residuos
@@ -1324,6 +1421,7 @@ impl BookosComp {
         // Si la tarjeta del permiso se cerró sin contestar —un clic fuera—, el
         // hilo del portal sigue bloqueado. Se le manda la negativa.
         crate::portal::denegar_si_se_cerro(self);
+        crate::teclado::revisar(self);
 
         // Una emergente entrando pide fotogramas aunque no pase nada más. Es la
         // única vez que este compositor dibuja sin que haya ocurrido un evento,
@@ -1373,6 +1471,7 @@ impl BookosComp {
             }
         }
         self.space.refresh();
+        crate::multitarea::purgar(self);
         self.display_handle.flush_clients().ok();
     }
 

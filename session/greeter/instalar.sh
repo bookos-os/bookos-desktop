@@ -49,11 +49,9 @@ install -Dm755 "$aqui/bookos-greeter-start" "$destino/usr/local/libexec/bookos-g
 if [ ! -e "$destino/etc/greetd/bookos.toml" ]; then
     install -Dm644 "$aqui/bookos.toml" "$destino/etc/greetd/bookos.toml"
 fi
-if [ ! -e "$destino/etc/default/bookos-greeter" ]; then
-    install -d "$destino/etc/default"
-    printf 'XKB_DEFAULT_LAYOUT=es\n' > "$destino/etc/default/bookos-greeter"
-    chmod 644 "$destino/etc/default/bookos-greeter"
-fi
+# /etc/default/bookos-greeter ya no se crea: con XKB_DEFAULT_LAYOUT=es dentro
+# tapaba la distribución del sistema, la que deja el asistente de primer
+# arranque. Sin él, bookos-greeter-start la toma de localed.
 install -Dm644 "$aqui/50-bookos-greeter.rules" "$destino/etc/polkit-1/rules.d/50-bookos-greeter.rules"
 install -d "$destino/etc/systemd/system/greetd.service.d"
 if [ ! -e "$destino/etc/systemd/system/greetd.service.d/bookos.conf" ]; then

@@ -70,7 +70,9 @@ debug, pasa `BOOKOS_GREETER_BIN` con su ruta absoluta mediante `sudo env`.
 `DESTDIR` permite preparar los archivos en un directorio de empaquetado sin
 crear usuarios ni ejecutar systemd.
 
-El teclado de bienvenida usa `es` por defecto. Puedes cambiarlo en
+El teclado y el idioma de bienvenida son los del sistema (la distribución X11
+de `localectl` y el `LANG` de `/etc/locale.conf`, que es lo que deja el
+asistente de primer arranque), y `es` si no hay ninguno. Puedes fijarlos en
 `/etc/default/bookos-greeter` (por ejemplo `XKB_DEFAULT_LAYOUT=us`) o
 directamente desde el desplegable de idioma y teclado en la esquina superior
 derecha, que guarda la preferencia en `/var/lib/bookos-greeter/greeter.env`,

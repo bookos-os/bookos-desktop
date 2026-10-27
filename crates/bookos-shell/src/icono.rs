@@ -135,6 +135,19 @@ pub fn ver(icono: &Icono, ancho: f32, alto: f32) -> crate::view::PanelElement<'_
 /// `currentColor` el icono saldría sin pintar: usvg no lo resuelve sin un
 /// contexto de estilo que aquí no hay.
 const PROPIOS: &[(&str, &[u8])] = &[
+    // Las teclas especiales del teclado en pantalla. SVG y no ⇧ ⌫ ⏎ en texto:
+    // esos glifos no están en todas las fuentes y caían a otra de otro peso.
+    ("mayus", include_bytes!("../assets/iconos/mayus.svg")),
+    (
+        "mayus-fija",
+        include_bytes!("../assets/iconos/mayus-fija.svg"),
+    ),
+    ("borrar", include_bytes!("../assets/iconos/borrar.svg")),
+    ("intro", include_bytes!("../assets/iconos/intro.svg")),
+    (
+        "chevron-abajo",
+        include_bytes!("../assets/iconos/chevron-abajo.svg"),
+    ),
     (
         "volumen-silencio",
         include_bytes!("../assets/iconos/volumen-silencio.svg"),
@@ -980,7 +993,10 @@ mod tests {
         let cache = CACHE.get_or_init(Default::default);
         cache.lock().expect("caché sin envenenar").extend([
             ("bookos-prueba-ausente".to_string(), None),
-            ("bookos-prueba-presente".to_string(), Some(desde_svg("<svg/>"))),
+            (
+                "bookos-prueba-presente".to_string(),
+                Some(desde_svg("<svg/>")),
+            ),
         ]);
         olvidar_ausentes();
         let mapa = cache.lock().expect("caché sin envenenar");

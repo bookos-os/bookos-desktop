@@ -29,6 +29,7 @@ mod calendario;
 mod centro;
 mod compartir;
 pub(crate) mod control;
+mod emojis;
 mod energia;
 mod escritorios;
 pub mod launchpad;
@@ -143,6 +144,7 @@ pub enum Emergente {
     Bluetooth(bluetooth::Bluetooth),
     Launchpad(launchpad::Launchpad),
     Buscador(buscador::Buscador),
+    Emojis(emojis::Emojis),
     Respuesta(respuesta::Respuesta),
     Escritorios(escritorios::Escritorios),
     Proyeccion(proyeccion::Proyeccion),
@@ -230,13 +232,19 @@ impl Emergente {
     /// del shell que no conocen la pantalla. Se conserva para tests y para
     /// integraciones externas.
     pub fn buscador() -> Self {
-        Self::buscador_en((1920.0, 1080.0))
+        Self::buscador_en((1920.0, 1080.0), Vec::new())
+    }
+
+    pub fn emojis(x: f32, y: f32, recientes: &[String]) -> Self {
+        Self::Emojis(emojis::Emojis::new(x, y, recientes))
     }
 
     /// El buscador de Meta+Espacio. `pantalla` está en píxeles lógicos para
     /// que el ancho sea cómodo tanto en un portátil como en un monitor 4K/8K.
-    pub fn buscador_en(pantalla: (f32, f32)) -> Self {
-        Self::Buscador(buscador::Buscador::new(pantalla))
+    /// `abiertas` son los `(exec, app_id)` con ventana: elegir una de esas
+    /// aplicaciones la trae en vez de abrir otra.
+    pub fn buscador_en(pantalla: (f32, f32), abiertas: Vec<(String, String)>) -> Self {
+        Self::Buscador(buscador::Buscador::new(pantalla, abiertas))
     }
 
     /// La caja para responder a la notificación `id` sin abrir su aplicación.
@@ -281,6 +289,7 @@ impl Emergente {
             Self::Bluetooth(_) => "bluetooth",
             Self::Launchpad(_) => "launchpad",
             Self::Buscador(_) => "buscador",
+            Self::Emojis(_) => "emojis",
             Self::Respuesta(_) => "respuesta",
             Self::Escritorios(_) => "escritorios",
             Self::Proyeccion(_) => "proyeccion",
@@ -306,6 +315,7 @@ impl Emergente {
             Self::Bluetooth(b) => b.size(),
             Self::Launchpad(l) => l.size(),
             Self::Buscador(b) => b.size(),
+            Self::Emojis(e) => e.size(),
             Self::Respuesta(r) => r.size(),
             Self::Escritorios(e) => e.size(),
             Self::Proyeccion(p) => p.size(),
@@ -345,6 +355,7 @@ impl Emergente {
             Self::Bluetooth(b) => b.ancla(),
             Self::Launchpad(l) => l.ancla(),
             Self::Buscador(b) => b.ancla(),
+            Self::Emojis(e) => e.ancla(),
             Self::Respuesta(r) => r.ancla(),
             Self::Escritorios(e) => e.ancla(),
             Self::Proyeccion(p) => p.ancla(),
@@ -378,6 +389,7 @@ impl Emergente {
         match self {
             Self::Launchpad(l) => l.animando(),
             Self::Buscador(b) => b.animando(),
+            Self::Emojis(e) => e.animando(),
             Self::Respuesta(r) => r.animando(),
             Self::Apariencia(a) => a.animando(),
             Self::Apagar(a) => a.animando(),
@@ -481,6 +493,7 @@ impl Emergente {
             Self::Bluetooth(b) => b.view(),
             Self::Launchpad(l) => l.view(),
             Self::Buscador(b) => b.view(),
+            Self::Emojis(e) => e.view(),
             Self::Respuesta(r) => r.view(),
             Self::Escritorios(e) => e.view(),
             Self::Proyeccion(p) => p.view(),
@@ -515,6 +528,7 @@ impl Emergente {
             Self::Bluetooth(b) => b.puntero(punto),
             Self::Launchpad(l) => l.puntero(punto),
             Self::Buscador(b) => b.puntero(punto),
+            Self::Emojis(e) => e.puntero(punto),
             // Un campo de texto: no hay nada que señalar con el ratón.
             Self::Respuesta(_) => false,
             Self::Escritorios(e) => e.puntero(punto),
@@ -542,6 +556,7 @@ impl Emergente {
             Self::Bluetooth(b) => b.pulsar(x, y),
             Self::Launchpad(l) => l.pulsar(x, y),
             Self::Buscador(b) => b.pulsar(x, y),
+            Self::Emojis(e) => e.pulsar(x, y),
             Self::Respuesta(_) => None,
             Self::Escritorios(e) => e.pulsar(x, y),
             Self::Proyeccion(p) => p.pulsar(x, y),
@@ -554,6 +569,7 @@ impl Emergente {
     pub fn desplazar(&mut self, dx: f32, dy: f32) -> bool {
         match self {
             Self::Launchpad(l) => l.desplazar(dx, dy),
+            Self::Emojis(e) => e.desplazar(dy),
             Self::Sonido(s) => s.desplazar(dx, dy),
             Self::Brillo(b) => b.desplazar(dx, dy),
             // El menú y el calendario caben enteros; no hay nada que desplazar.
@@ -573,6 +589,7 @@ impl Emergente {
             Self::Sonido(s) => (s.soltar(), None),
             Self::Brillo(b) => (b.soltar(), None),
             Self::Centro(c) => (c.soltar(), None),
+            Self::Emojis(e) => (e.soltar(), None),
             Self::Launchpad(l) => l.soltar(),
             _ => (false, None),
         }
@@ -586,6 +603,7 @@ impl Emergente {
             Self::Sonido(s) => s.agarrado(),
             Self::Brillo(b) => b.agarrado(),
             Self::Centro(c) => c.agarrado(),
+            Self::Emojis(e) => e.agarrado(),
             Self::Launchpad(l) => l.agarrado(),
             _ => false,
         }
@@ -608,6 +626,7 @@ impl Emergente {
             Self::Bluetooth(b) => b.tecla(tecla),
             Self::Launchpad(l) => l.tecla(tecla),
             Self::Buscador(b) => b.tecla(tecla),
+            Self::Emojis(e) => e.tecla(tecla),
             Self::Respuesta(r) => r.tecla(tecla),
             Self::Escritorios(e) => e.tecla(tecla),
             Self::Proyeccion(p) => p.tecla(tecla),

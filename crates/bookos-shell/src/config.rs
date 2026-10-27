@@ -23,7 +23,11 @@
 //! bloqueo_avatar_tamano = 112
 //! bloqueo_reloj_fuente = moderna
 //! bloqueo_reloj_grosor = 400
+//! atenuacion_inactividad = 300
 //! bloqueo_inactividad = 900
+//! salvapantallas_inactividad = 1200
+//! salvapantallas_estilo = estela
+//! apagado_inactividad = 1800
 //! suspension_inactividad = 0
 //! actividades = si
 //! actividades_animaciones = si
@@ -57,6 +61,7 @@
 //! velocidad_touchpad = 0.3
 //! toque_para_clic = si
 //! scroll_natural = si
+//! pantalla_tactil = si
 //! ```
 //!
 //! **Por qué no TOML.** Leer dos listas de nombres no justifica meter `toml`,
@@ -69,6 +74,7 @@
 //! existe pero tiene una errata, la línea mala se ignora y se avisa: quedarse
 //! sin panel por una coma es peor que quedarse sin un widget.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Cuánto adorno se dibuja.
@@ -315,6 +321,15 @@ pub struct Config {
     /// Segundos sin entrada antes de bloquear automáticamente. Cero desactiva
     /// el bloqueo automático; por defecto son quince minutos.
     pub bloqueo_inactividad: u64,
+    /// Segundos sin entrada antes de bajar el brillo. Cero la desactiva.
+    pub atenuacion_inactividad: u64,
+    /// Segundos sin entrada antes del salvapantallas, que sale también sobre
+    /// el bloqueo: por defecto, cinco minutos después de él. Cero lo desactiva.
+    pub salvapantallas_inactividad: u64,
+    pub salvapantallas_estilo: EstiloSalvapantallas,
+    /// Segundos sin entrada antes de apagar la pantalla. Cero lo desactiva.
+    /// La suspensión sigue contando aparte desde el bloqueo.
+    pub apagado_inactividad: u64,
     /// Segundos que permanece bloqueada la sesión antes de suspender. Cero la
     /// desactiva: es una política optativa y nunca debe sorprender al usuario.
     pub suspension_inactividad: u64,
@@ -384,6 +399,39 @@ pub struct Bloqueo {
 /// Los estilos de reloj que se ofrecen, como los de la pantalla de bloqueo de
 /// macOS. Lista cerrada y no «cualquier fuente del sistema»: casi todas las
 /// instaladas traen dos o tres grosores y el control de grosor no haría nada, y
+/// Qué pinta el salvapantallas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EstiloSalvapantallas {
+    /// Hileras curvas de puntos luminosos que vagan y cambian de color, a la
+    /// manera de las teles de 2023.
+    #[default]
+    Estela,
+    /// BookOS rebotando contra los bordes, como el logo de los DVD.
+    Rebote,
+}
+
+impl EstiloSalvapantallas {
+    pub fn nombre(self) -> &'static str {
+        match self {
+            Self::Estela => "estela",
+            Self::Rebote => "rebote",
+        }
+    }
+
+    pub fn desde_nombre(nombre: &str) -> Option<Self> {
+        [Self::Estela, Self::Rebote]
+            .into_iter()
+            .find(|e| e.nombre() == nombre)
+    }
+
+    pub fn otro(self) -> Self {
+        match self {
+            Self::Estela => Self::Rebote,
+            Self::Rebote => Self::Estela,
+        }
+    }
+}
+
 /// `Family::Name` pide un `&'static str`. Todas son variables con eje `wght`
 /// completo, y cosmic-text aplica el grosor pedido a ese eje.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -473,6 +521,9 @@ pub struct Entrada {
     pub velocidad_raton: f64,
     pub toque_para_clic: bool,
     pub scroll_natural: bool,
+    /// La pantalla táctil. Apagada, libinput no manda ni un toque: la palma
+    /// sobre la pantalla de un convertible deja de pulsar cosas.
+    pub pantalla_tactil: bool,
 }
 
 impl Default for Entrada {
@@ -489,6 +540,7 @@ impl Default for Entrada {
             velocidad_raton: 0.0,
             toque_para_clic: true,
             scroll_natural: true,
+            pantalla_tactil: true,
         }
     }
 }
@@ -601,6 +653,10 @@ impl Default for Config {
             avatar: None,
             bloqueo: Bloqueo::default(),
             bloqueo_inactividad: 900,
+            atenuacion_inactividad: 300,
+            salvapantallas_inactividad: 1200,
+            salvapantallas_estilo: EstiloSalvapantallas::Estela,
+            apagado_inactividad: 1800,
             suspension_inactividad: 0,
             actividades: Actividades::default(),
             brillo_automatico: BrilloAutomatico::default(),
@@ -772,6 +828,13 @@ impl Config {
                         config.bloqueo.avatar_tamano = v as f32;
                     }
                 }
+                "salvapantallas_estilo" => match EstiloSalvapantallas::desde_nombre(valor.trim()) {
+                    Some(e) => config.salvapantallas_estilo = e,
+                    None => tracing::warn!(
+                        valor = valor.trim(),
+                        "«salvapantallas_estilo» debe ser estela o rebote"
+                    ),
+                },
                 "bloqueo_reloj_fuente" => match FuenteReloj::desde_nombre(valor.trim()) {
                     Some(f) => config.bloqueo.reloj_fuente = f,
                     None => tracing::warn!(
@@ -793,6 +856,27 @@ impl Config {
                     _ => tracing::warn!(
                         valor = valor.trim(),
                         "«bloqueo_inactividad» debe estar entre 0 y 86400 segundos"
+                    ),
+                },
+                "salvapantallas_inactividad" => match valor.trim().parse::<u64>() {
+                    Ok(v) if v <= 86_400 => config.salvapantallas_inactividad = v,
+                    _ => tracing::warn!(
+                        valor = valor.trim(),
+                        "«salvapantallas_inactividad» debe estar entre 0 y 86400 segundos"
+                    ),
+                },
+                "atenuacion_inactividad" => match valor.trim().parse::<u64>() {
+                    Ok(v) if v <= 86_400 => config.atenuacion_inactividad = v,
+                    _ => tracing::warn!(
+                        valor = valor.trim(),
+                        "«atenuacion_inactividad» debe estar entre 0 y 86400 segundos"
+                    ),
+                },
+                "apagado_inactividad" => match valor.trim().parse::<u64>() {
+                    Ok(v) if v <= 86_400 => config.apagado_inactividad = v,
+                    _ => tracing::warn!(
+                        valor = valor.trim(),
+                        "«apagado_inactividad» debe estar entre 0 y 86400 segundos"
                     ),
                 },
                 "suspension_inactividad" => match valor.trim().parse::<u64>() {
@@ -951,6 +1035,11 @@ impl Config {
                 "scroll_natural" => {
                     if let Some(v) = booleano(valor, ruta, n + 1) {
                         config.entrada.scroll_natural = v;
+                    }
+                }
+                "pantalla_tactil" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.entrada.pantalla_tactil = v;
                     }
                 }
                 otro => tracing::warn!(?ruta, linea = n + 1, clave = otro, "clave desconocida"),
@@ -1379,6 +1468,89 @@ pub fn guardar_launchpad(datos: &Launchpad) -> std::io::Result<()> {
     std::fs::write(ruta, salida)
 }
 
+/// Cuántas veces se ha lanzado cada `exec`, en `~/.config/bookos/usos.conf`.
+/// Aparte de `launchpad.conf` porque lo escribe el compositor en cada
+/// lanzamiento, venga del dock, del buscador o del launchpad, y aquel lo
+/// reescribe el launchpad entero con lo que tenía en memoria.
+///
+/// Una línea por aplicación, `n = exec`: el número a la izquierda porque un
+/// `exec` puede llevar un igual dentro.
+pub fn cargar_usos() -> HashMap<String, u32> {
+    ruta_usos()
+        .and_then(|ruta| std::fs::read_to_string(ruta).ok())
+        .map(|texto| interpretar_usos(&texto))
+        .unwrap_or_default()
+}
+
+fn interpretar_usos(texto: &str) -> HashMap<String, u32> {
+    texto
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter_map(|(n, exec)| Some((exec.trim().to_string(), n.trim().parse().ok()?)))
+        .filter(|(exec, _)| !exec.is_empty())
+        .collect()
+}
+
+pub fn sumar_uso(exec: &str) -> std::io::Result<()> {
+    let Some(ruta) = ruta_usos() else {
+        return Ok(());
+    };
+    let mut usos = cargar_usos();
+    *usos.entry(exec.trim().to_string()).or_default() += 1;
+    if let Some(dir) = ruta.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let salida: String = usos
+        .iter()
+        .map(|(exec, n)| format!("{n} = {exec}\n"))
+        .collect();
+    std::fs::write(ruta, salida)
+}
+
+/// Las aplicaciones que el usuario quiere siempre encima, en
+/// `~/.config/bookos/encima.conf`, un `app_id` por línea. Se lee al abrir cada
+/// ventana —pasa pocas veces y así no hay copia en memoria que desincronizar—.
+pub fn apps_encima() -> Vec<String> {
+    ruta_encima()
+        .and_then(|ruta| std::fs::read_to_string(ruta).ok())
+        .map(|texto| {
+            texto
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Añade o quita `app_id` de [`apps_encima`].
+pub fn marcar_app_encima(app_id: &str, encima: bool) -> std::io::Result<()> {
+    let Some(ruta) = ruta_encima() else {
+        return Ok(());
+    };
+    let mut apps = apps_encima();
+    apps.retain(|a| a != app_id);
+    if encima {
+        apps.push(app_id.to_string());
+    }
+    if let Some(dir) = ruta.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(
+        ruta,
+        apps.iter().map(|a| format!("{a}\n")).collect::<String>(),
+    )
+}
+
+fn ruta_encima() -> Option<PathBuf> {
+    Some(ruta()?.with_file_name("encima.conf"))
+}
+
+fn ruta_usos() -> Option<PathBuf> {
+    Some(ruta()?.with_file_name("usos.conf"))
+}
+
 fn ruta_launchpad() -> Option<PathBuf> {
     Some(ruta()?.with_file_name("launchpad.conf"))
 }
@@ -1444,6 +1616,15 @@ pub fn ruta() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn los_usos_admiten_un_igual_en_el_exec() {
+        let usos =
+            interpretar_usos("3 = bookos-settings --page=fondos\nbasura\nx = kate\n7 = firefox\n");
+        assert_eq!(usos.get("bookos-settings --page=fondos"), Some(&3));
+        assert_eq!(usos.get("firefox"), Some(&7));
+        assert_eq!(usos.len(), 2, "lo que no es un número se ignora");
+    }
+
     fn parsear(texto: &str) -> Config {
         Config::desde_texto(texto, std::path::Path::new("prueba.conf"))
     }
@@ -1494,6 +1675,7 @@ mod tests {
         assert_eq!(c.entrada.velocidad_touchpad, 0.3);
         assert!(c.entrada.toque_para_clic);
         assert!(c.entrada.scroll_natural);
+        assert!(c.entrada.pantalla_tactil);
         assert_eq!(c.escala, None);
         assert_eq!(c.escritorios, 2);
         assert_eq!(c.nombres_escritorios, ["Escritorio 1", "Escritorio 2"]);
@@ -1514,12 +1696,14 @@ mod tests {
             "velocidad_touchpad = 0.8\n\
              velocidad_raton = -0.2\n\
              toque_para_clic = no\n\
-             scroll_natural = no\n",
+             scroll_natural = no\n\
+             pantalla_tactil = no\n",
         );
         assert_eq!(c.entrada.velocidad_touchpad, 0.8);
         assert_eq!(c.entrada.velocidad_raton, -0.2);
         assert!(!c.entrada.toque_para_clic);
         assert!(!c.entrada.scroll_natural);
+        assert!(!c.entrada.pantalla_tactil);
     }
 
     /// Escribir la coma decimal es lo natural en castellano y no debería
@@ -1632,6 +1816,44 @@ mod tests {
         assert!(!c.actividades.habilitadas);
         assert!(!c.actividades.animaciones);
         assert!(c.actividades.temporizador_siempre);
+    }
+
+    #[test]
+    fn el_plazo_del_salvapantallas_admite_desactivarlo_y_rechaza_errores() {
+        assert_eq!(parsear("").salvapantallas_inactividad, 1200);
+        assert_eq!(parsear("").atenuacion_inactividad, 300);
+        assert_eq!(
+            parsear("").salvapantallas_estilo,
+            EstiloSalvapantallas::Estela
+        );
+        assert_eq!(
+            parsear("salvapantallas_estilo = rebote").salvapantallas_estilo,
+            EstiloSalvapantallas::Rebote
+        );
+        assert_eq!(
+            parsear("salvapantallas_estilo = burbujas").salvapantallas_estilo,
+            EstiloSalvapantallas::Estela
+        );
+        assert_eq!(parsear("").apagado_inactividad, 1800);
+        assert_eq!(
+            parsear("apagado_inactividad = 600").apagado_inactividad,
+            600
+        );
+        assert_eq!(
+            parsear("salvapantallas_inactividad = 0").salvapantallas_inactividad,
+            0
+        );
+        assert_eq!(
+            parsear("salvapantallas_inactividad = 60").salvapantallas_inactividad,
+            60
+        );
+        for valor in ["-1", "86401", "no"] {
+            assert_eq!(
+                parsear(&format!("salvapantallas_inactividad = {valor}"))
+                    .salvapantallas_inactividad,
+                1200
+            );
+        }
     }
 
     #[test]

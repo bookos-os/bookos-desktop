@@ -812,13 +812,19 @@ impl Bloqueo {
                     ..tema::amarillo()
                 },
             ),
-            Estado::Escribiendo if self.escritos == 0 => (
-                "Introduce tu contraseña para desbloquear".to_string(),
-                Color {
-                    a: 0.55,
-                    ..Color::WHITE
-                },
-            ),
+            // El aviso de la huella ya dice «o introduce tu contraseña»; con los
+            // dos renglones seguidos el mismo ruego salía dos veces.
+            Estado::Escribiendo
+                if self.escritos == 0 && !matches!(self.huella, Huella::Aviso(_)) =>
+            {
+                (
+                    "Introduce tu contraseña para desbloquear".to_string(),
+                    Color {
+                        a: 0.55,
+                        ..Color::WHITE
+                    },
+                )
+            }
             Estado::Escribiendo => ("".to_string(), Color::TRANSPARENT),
         };
         container(

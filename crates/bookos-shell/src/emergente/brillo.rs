@@ -42,8 +42,8 @@ const AYUDA: f32 = 21.0;
 /// automático sube en rampa, pero la tarjeta solo se entera de algunos pasos:
 /// sin esto la píldora iría a saltos.
 const D_BARRA: std::time::Duration = std::time::Duration::from_millis(440);
-/// Desde cuánto ajuste a mano se enseña la marca del sensor. Por debajo es
-/// el umbral con el que el propio automático deja de mover la pantalla.
+/// Desde cuánto ajuste a mano se enseña la marca del sensor. Una diferencia
+/// menor apenas separa la marca del extremo de la píldora.
 const UMBRAL_AJUSTE: u8 = 4;
 
 /// Cuánto sube o baja una muesca de rueda o una flecha.

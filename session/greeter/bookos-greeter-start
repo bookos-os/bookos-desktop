@@ -14,6 +14,18 @@ if [ -n "${HOME:-}" ] && [ -f "$HOME/greeter.env" ]; then
     . "$HOME/greeter.env"
     set +a
 fi
+# Sin elección guardada, la del sistema: la que deja el asistente de primer
+# arranque con localectl. Antes caía directamente a «es», y quien eligió
+# English (US) en el asistente se encontraba aquí —y en su sesión, que hereda
+# esto— el teclado y el idioma españoles. Cage también lee XKB_DEFAULT_LAYOUT,
+# así que tiene que ser un layout de xkb: el X11 de localed, no el KEYMAP de
+# consola.
+if [ -z "${XKB_DEFAULT_LAYOUT:-}" ]; then
+    XKB_DEFAULT_LAYOUT="$(localectl status 2>/dev/null | sed -n 's/^ *X11 Layout: *\([^,]*\).*/\1/p' || true)"
+fi
+if [ -z "${LANG:-}" ] && [ -r /etc/locale.conf ]; then
+    LANG="$(sed -n 's/^LANG="\?\([^"]*\)"\?$/\1/p' /etc/locale.conf)"
+fi
 export XKB_DEFAULT_LAYOUT="${XKB_DEFAULT_LAYOUT:-es}"
 export LANG="${LANG:-es_ES.UTF-8}"
 

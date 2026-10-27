@@ -61,6 +61,7 @@ use crate::input::{Seat, SeatHandler};
 
 pub use text_input_handle::TextInputHandle;
 pub use text_input_handle::TextInputUserData;
+pub use text_input_handle::CampoActivo;
 
 use super::input_method::InputMethodHandle;
 
@@ -160,9 +161,10 @@ where
                     },
                 );
                 handle.add_instance(&instance);
-                if input_method_handle.has_instance() {
-                    handle.enter();
-                }
+                // BookOS: sin la condición de IME de upstream, como en
+                // `seat/keyboard.rs`. El foco suele llegar antes de que el
+                // cliente cree su text-input, y este es su único `enter`.
+                handle.enter();
             }
             zwp_text_input_manager_v3::Request::Destroy => {
                 // Nothing to do

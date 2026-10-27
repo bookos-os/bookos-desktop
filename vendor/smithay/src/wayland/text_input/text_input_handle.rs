@@ -19,6 +19,20 @@ pub(crate) struct TextInput {
     instances: Vec<Instance>,
     focus: Option<WlSurface>,
     active_text_input_id: Option<ObjectId>,
+    // BookOS: lo último que pidió el campo activo, para `campo_activo`.
+    active_content_type: Option<(ContentHint, ContentPurpose)>,
+    active_cursor_rectangle: Option<Rectangle<i32, Logical>>,
+}
+
+/// BookOS: el campo de texto activo, visto desde el compositor.
+#[derive(Debug, Clone)]
+pub struct CampoActivo {
+    /// La superficie que tiene el foco del teclado.
+    pub surface: WlSurface,
+    /// Pistas y propósito del campo; `None` si el cliente no lo dijo.
+    pub content_type: Option<(ContentHint, ContentPurpose)>,
+    /// Dónde está el cursor de texto, relativo a la superficie.
+    pub cursor_rectangle: Option<Rectangle<i32, Logical>>,
 }
 
 impl TextInput {
@@ -110,6 +124,8 @@ impl TextInputHandle {
         let mut inner = self.inner.lock().unwrap();
         // Leaving clears the active text input.
         inner.active_text_input_id = None;
+        inner.active_content_type = None;
+        inner.active_cursor_rectangle = None;
         // NOTE: we implement it in a symmetrical way with `enter`.
         inner.with_focused_client_all_text_inputs(|text_input, focus, _| {
             text_input.leave(focus);
@@ -164,6 +180,22 @@ impl TextInputHandle {
         });
     }
 
+    /// BookOS: el campo de texto habilitado en la superficie con foco, si hay.
+    pub fn campo_activo(&self) -> Option<CampoActivo> {
+        let mut inner = self.inner.lock().unwrap();
+        let content_type = inner.active_content_type;
+        let cursor_rectangle = inner.active_cursor_rectangle;
+        let mut campo = None;
+        inner.with_active_text_input(|_, surface, _| {
+            campo = Some(CampoActivo {
+                surface: surface.clone(),
+                content_type,
+                cursor_rectangle,
+            });
+        });
+        campo
+    }
+
     /// Call the callback with the serial of the active text_input or with the passed
     /// `default` one when empty.
     pub(crate) fn active_text_input_serial_or_default<F>(&self, default: u32, mut callback: F)
@@ -209,11 +241,10 @@ where
             data.handle.increment_serial(resource);
         }
 
-        // Discard requsets without any active input method instance.
-        if !data.input_method_handle.has_instance() {
-            debug!("discarding text-input request without IME running");
-            return;
-        }
+        // BookOS: upstream descarta aquí todo si no hay cliente input-method.
+        // Se sigue llevando el estado del campo para el teclado del compositor;
+        // lo que va dirigido al input-method solo se envía si existe.
+        let hay_ime = data.input_method_handle.has_instance();
 
         let focus = match data.handle.focus() {
             Some(focus) if focus.id().same_client_as(&resource.id()) => focus,
@@ -271,15 +302,24 @@ where
                 match new_state.enable {
                     Some(true) => {
                         *active_text_input_id = Some(resource.id());
+                        // BookOS: un enable es un campo nuevo; lo del anterior no vale.
+                        guard.active_content_type = new_state.content_type;
+                        guard.active_cursor_rectangle = new_state.cursor_rectangle;
                         // Drop the guard before calling to other subsystem.
                         drop(guard);
-                        data.input_method_handle.activate_input_method(state, &focus);
+                        if hay_ime {
+                            data.input_method_handle.activate_input_method(state, &focus);
+                        }
                     }
                     Some(false) => {
                         *active_text_input_id = None;
+                        guard.active_content_type = None;
+                        guard.active_cursor_rectangle = None;
                         // Drop the guard before calling to other subsystem.
                         drop(guard);
-                        data.input_method_handle.deactivate_input_method(state);
+                        if hay_ime {
+                            data.input_method_handle.deactivate_input_method(state);
+                        }
                         return;
                     }
                     None => {
@@ -287,10 +327,20 @@ where
                             debug!("discarding text_input requests before enabling it");
                             return;
                         }
+                        if new_state.content_type.is_some() {
+                            guard.active_content_type = new_state.content_type;
+                        }
+                        if new_state.cursor_rectangle.is_some() {
+                            guard.active_cursor_rectangle = new_state.cursor_rectangle;
+                        }
 
                         // Drop the guard before calling to other subsystems later on.
                         drop(guard);
                     }
+                }
+
+                if !hay_ime {
+                    return;
                 }
 
                 if let Some((text, cursor, anchor)) = new_state.surrounding_text.take() {

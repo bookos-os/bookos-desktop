@@ -32,20 +32,10 @@ use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 
 use crate::state::BookosComp;
 
-/// Cuánto tiene que durar una bajada de luz antes de oscurecer. Una mano
-/// delante del sensor o una sombra al pasar no deben apagar la pantalla a
-/// medias. Subir no espera: salir a la luz con la pantalla oscura no se lee.
-const ESPERA_AL_BAJAR: Duration = Duration::from_secs(3);
-
 /// Tras escribir un brillo, sysfs tarda en reflejarlo: la escritura va por
 /// `busctl` en el hilo de `retroiluminacion`. Durante este margen, una lectura
 /// distinta se achaca a la escritura en curso y no a la mano del usuario.
 const MARGEN_ESCRITURA: Duration = Duration::from_secs(2);
-
-/// Diferencia mínima, en puntos, para mover la pantalla. El sensor avisa con
-/// cambios del 1 % (`in_illuminance_hysteresis_relative` = 0.01 en este
-/// portátil), y seguirlos todos sería ver la pantalla temblar.
-const UMBRAL_PANTALLA: u8 = 4;
 
 /// Lecturas en lux para encender y apagar el teclado. Separados para que una
 /// luz justo en el límite no lo encienda y lo apague sin parar. No salen de
@@ -53,8 +43,61 @@ const UMBRAL_PANTALLA: u8 = 4;
 const TECLADO_ENCENDER: f64 = 15.0;
 const TECLADO_APAGAR: f64 = 50.0;
 
-/// La rampa: cada paso sube o baja una fracción de lo que queda.
-const PASO_RAMPA: Duration = Duration::from_millis(40);
+const PASO_RAMPA: Duration = Duration::from_millis(16);
+// Al oscurecer hay tiempo para adaptar la vista; al salir a la luz hace falta
+// recuperar antes la legibilidad. La rampa sustituye la espera de tres segundos.
+const DURACION_BAJADA: Duration = Duration::from_millis(900);
+const DURACION_SUBIDA: Duration = Duration::from_millis(500);
+
+struct Transicion {
+    desde: f64,
+    objetivo: u8,
+    inicio: Instant,
+    duracion: Duration,
+}
+
+impl Transicion {
+    fn nueva(desde: f64, objetivo: u8, ahora: Instant) -> Self {
+        Self {
+            desde,
+            objetivo,
+            inicio: ahora,
+            duracion: if bookos_shell::tema::efectos_reducidos() {
+                Duration::ZERO
+            } else if f64::from(objetivo) < desde {
+                DURACION_BAJADA
+            } else {
+                DURACION_SUBIDA
+            },
+        }
+    }
+
+    fn terminada(&self, ahora: Instant) -> bool {
+        ahora.duration_since(self.inicio) >= self.duracion
+    }
+
+    fn nivel(&self, ahora: Instant) -> f64 {
+        if self.terminada(ahora) {
+            return f64::from(self.objetivo);
+        }
+        let t = ahora.duration_since(self.inicio).as_secs_f64() / self.duracion.as_secs_f64();
+        // Se conserva la fracción hasta escribir en la escala del panel: con
+        // porcentajes enteros, un cambio pequeño solo tenía dos o tres saltos.
+        let avance = t * t * (3.0 - 2.0 * t);
+        self.desde + (f64::from(self.objetivo) - self.desde) * avance
+    }
+
+    fn dirigir(&mut self, objetivo: u8, ahora: Instant) {
+        if self.objetivo != objetivo {
+            *self = Self::nueva(self.nivel(ahora), objetivo, ahora);
+        }
+    }
+}
+
+struct Rampa {
+    token: RegistrationToken,
+    transicion: Transicion,
+}
 
 /// Lo que se pide al hilo del bus.
 enum Orden {
@@ -83,8 +126,7 @@ pub struct Estado {
     /// Último nivel de teclado pedido. Sus LEDs también tardan en reflejar la
     /// escritura asíncrona, pero tienen escala propia y no comparten el nivel.
     teclado_a_mano: Option<(String, u32, Instant)>,
-    espera: Option<RegistrationToken>,
-    rampa: Option<RegistrationToken>,
+    rampa: Option<Rampa>,
 }
 
 impl Estado {
@@ -117,7 +159,6 @@ impl Estado {
             escrito: None,
             a_mano: None,
             teclado_a_mano: None,
-            espera: None,
             rampa: None,
         };
         estado.reclamar_si_hace_falta();
@@ -212,9 +253,9 @@ pub fn elegir(state: &mut BookosComp, elegido: bookos_shell::BrilloAutomatico) {
         bookos_shell::retroiluminacion::poner_objetivo_sensor(None);
     }
     if !elegido.pantalla
-        && let Some(token) = e.rampa.take()
+        && let Some(rampa) = e.rampa.take()
     {
-        state.loop_handle.remove(token);
+        state.loop_handle.remove(rampa.token);
     }
     evaluar(state);
     // El sol del panel lleva la «A» mientras la pantalla va sola: cambiar la
@@ -244,8 +285,8 @@ pub fn partida_tecla(state: &BookosComp) -> Option<u8> {
 pub fn tecla(state: &mut BookosComp, nivel: u8) {
     crate::atenuacion::olvidar(state);
     let e = &mut state.brillo_auto;
-    if let Some(token) = e.rampa.take() {
-        state.loop_handle.remove(token);
+    if let Some(rampa) = e.rampa.take() {
+        state.loop_handle.remove(rampa.token);
     }
     if let Some(puesta) = e.pantalla_puesta {
         e.desvio = (e.desvio + i32::from(nivel) - i32::from(puesta)).clamp(-60, 60);
@@ -270,29 +311,11 @@ pub fn tecla_teclado(state: &mut BookosComp, dispositivo: &str, nivel: u32) {
 }
 
 fn recibir(state: &mut BookosComp, lux: f64) {
-    let e = &mut state.brillo_auto;
-    let bajando = e.lux.is_some_and(|previo| lux < previo);
-    e.lux = Some(lux);
-    if !bajando {
-        if let Some(token) = e.espera.take() {
-            state.loop_handle.remove(token);
-        }
-        evaluar(state);
+    if !lux.is_finite() {
         return;
     }
-    // Una espera ya en marcha evaluará con la lectura más reciente, que es esta.
-    if e.espera.is_some() {
-        return;
-    }
-    let token =
-        state
-            .loop_handle
-            .insert_source(Timer::from_duration(ESPERA_AL_BAJAR), |_, _, state| {
-                state.brillo_auto.espera = None;
-                evaluar(state);
-                TimeoutAction::Drop
-            });
-    state.brillo_auto.espera = token.ok();
+    state.brillo_auto.lux = Some(lux);
+    evaluar(state);
 }
 
 /// El compositor ha puesto `nivel` por su cuenta (la atenuación). A diferencia
@@ -300,8 +323,8 @@ fn recibir(state: &mut BookosComp, lux: f64) {
 /// por bueno ese nivel y no «corregirlo» al volver, ni aprender de él.
 pub fn fijar(state: &mut BookosComp, nivel: u8) {
     let e = &mut state.brillo_auto;
-    if let Some(token) = e.rampa.take() {
-        state.loop_handle.remove(token);
+    if let Some(rampa) = e.rampa.take() {
+        state.loop_handle.remove(rampa.token);
     }
     if e.pantalla_puesta.is_some() {
         e.pantalla_puesta = Some(nivel);
@@ -358,40 +381,64 @@ fn pantalla(state: &mut BookosComp, lux: f64) {
         tracing::debug!(desvio = e.desvio, "brillo movido a mano");
     }
     let objetivo = (curva(lux) + e.desvio).clamp(5, 100) as u8;
-    if objetivo.abs_diff(actual) < UMBRAL_PANTALLA {
+    let ahora = Instant::now();
+    if let Some(rampa) = e.rampa.as_mut() {
+        rampa.transicion.dirigir(objetivo, ahora);
+        e.pantalla_puesta = Some(objetivo);
+        return;
+    }
+    let desde = if reciente(e) {
+        e.a_mano.or(e.pantalla_puesta).unwrap_or(actual)
+    } else {
+        actual
+    };
+    if objetivo == desde {
         if !reciente(e) {
             e.pantalla_puesta = Some(actual);
         }
         return;
     }
+    let Some((dispositivo, maximo)) = bookos_shell::backlight() else {
+        return;
+    };
     e.pantalla_puesta = Some(objetivo);
-    if let Some(token) = e.rampa.take() {
-        state.loop_handle.remove(token);
-    }
-    let mut nivel = actual;
+    e.a_mano = None;
+    let transicion = Transicion::nueva(f64::from(desde), objetivo, ahora);
+    let mut ultimo = None;
     let token = state
         .loop_handle
         .insert_source(Timer::immediate(), move |_, _, state| {
-            let Some((dispositivo, maximo)) = bookos_shell::backlight() else {
-                state.brillo_auto.rampa = None;
+            let e = &mut state.brillo_auto;
+            let Some(rampa) = e.rampa.as_ref() else {
                 return TimeoutAction::Drop;
             };
-            // Un octavo de lo que queda, y al menos un punto: rápido al
-            // principio y suave al llegar, en unos 600 ms para un salto grande.
-            let queda = i32::from(objetivo) - i32::from(nivel);
-            let paso = (queda / 8).abs().max(1) * queda.signum();
-            nivel = (i32::from(nivel) + paso) as u8;
-            let crudo = (f64::from(maximo) * f64::from(nivel) / 100.0).round() as u32;
-            bookos_shell::retroiluminacion::solicitar("backlight", &dispositivo, crudo);
-            state.brillo_auto.escrito = Some(Instant::now());
-            if nivel == objetivo {
-                state.brillo_auto.rampa = None;
+            let ahora = Instant::now();
+            let nivel = rampa.transicion.nivel(ahora);
+            let terminada = rampa.transicion.terminada(ahora);
+            let crudo = (f64::from(maximo) * nivel / 100.0).round() as u32;
+            if ultimo != Some(crudo) {
+                bookos_shell::retroiluminacion::solicitar("backlight", &dispositivo, crudo);
+                ultimo = Some(crudo);
+                e.escrito = Some(ahora);
+            }
+            if terminada {
+                e.rampa = None;
                 TimeoutAction::Drop
             } else {
                 TimeoutAction::ToDuration(PASO_RAMPA)
             }
         });
-    e.rampa = token.ok();
+    match token {
+        Ok(token) => e.rampa = Some(Rampa { token, transicion }),
+        Err(err) => {
+            tracing::warn!("no se pudo programar la transición de brillo: {err}");
+            if let Some((dispositivo, maximo)) = bookos_shell::backlight() {
+                let crudo = (f64::from(maximo) * f64::from(objetivo) / 100.0).round() as u32;
+                bookos_shell::retroiluminacion::solicitar("backlight", &dispositivo, crudo);
+            }
+            e.escrito = Some(ahora);
+        }
+    }
 }
 
 fn teclado(e: &mut Estado, lux: f64) {
@@ -430,7 +477,81 @@ fn teclado(e: &mut Estado, lux: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::curva;
+    use super::*;
+
+    #[test]
+    fn las_transiciones_suben_y_bajan_sin_saltos_ni_rebasar_el_objetivo() {
+        let ahora = Instant::now();
+        for (desde, objetivo, duracion) in [
+            (20.0, 80, DURACION_SUBIDA),
+            (80.0, 20, DURACION_BAJADA),
+            (40.0, 41, DURACION_SUBIDA),
+            (41.0, 40, DURACION_BAJADA),
+        ] {
+            let rampa = Transicion::nueva(desde, objetivo, ahora);
+            assert_eq!(rampa.nivel(ahora), desde);
+            assert_eq!(rampa.duracion, duracion);
+            let niveles: Vec<f64> = (0..=100)
+                .map(|paso| rampa.nivel(ahora + duracion * paso / 100))
+                .collect();
+            let fin = f64::from(objetivo);
+            assert!(
+                niveles
+                    .iter()
+                    .all(|n| (desde.min(fin)..=desde.max(fin)).contains(n))
+            );
+            assert!(niveles.windows(2).all(|p| if desde < fin {
+                p[0] <= p[1]
+            } else {
+                p[0] >= p[1]
+            }));
+            assert_eq!(rampa.nivel(ahora + duracion), fin);
+            assert!(rampa.terminada(ahora + duracion));
+            assert_eq!(rampa.nivel(ahora + duracion * 2), fin);
+            assert!(
+                (niveles[1] - desde).abs() < (niveles[50] - niveles[49]).abs(),
+                "la transición empieza suavemente"
+            );
+            assert!(
+                (fin - niveles[99]).abs() < (niveles[50] - niveles[49]).abs(),
+                "la transición llega suavemente"
+            );
+        }
+    }
+
+    #[test]
+    fn una_nueva_lectura_continua_desde_el_nivel_en_curso_aunque_invierta_el_sentido() {
+        let ahora = Instant::now();
+        let mut rampa = Transicion::nueva(80.0, 20, ahora);
+        let cambio = ahora + Duration::from_millis(300);
+        let nivel = rampa.nivel(cambio);
+        assert!(nivel < 80.0, "la bajada empieza sin esperar tres segundos");
+        rampa.dirigir(90, cambio);
+        assert_eq!(rampa.nivel(cambio), nivel);
+        assert!(rampa.nivel(cambio + PASO_RAMPA) > nivel);
+        assert_eq!(rampa.nivel(cambio + DURACION_SUBIDA), 90.0);
+    }
+
+    #[test]
+    fn las_lecturas_con_el_mismo_objetivo_no_reinician_la_transicion() {
+        let ahora = Instant::now();
+        let mut rampa = Transicion::nueva(20.0, 80, ahora);
+        for paso in 1..=100 {
+            rampa.dirigir(80, ahora + DURACION_SUBIDA * paso / 100);
+        }
+        assert_eq!(rampa.inicio, ahora);
+        assert!(rampa.terminada(ahora + DURACION_SUBIDA));
+        assert_eq!(rampa.nivel(ahora + DURACION_SUBIDA), 80.0);
+    }
+
+    #[test]
+    fn sin_animacion_el_objetivo_se_aplica_en_un_solo_paso() {
+        let ahora = Instant::now();
+        let mut rampa = Transicion::nueva(80.0, 20, ahora);
+        rampa.duracion = Duration::ZERO;
+        assert_eq!(rampa.nivel(ahora), 20.0);
+        assert!(rampa.terminada(ahora));
+    }
 
     #[test]
     fn la_curva_sube_con_la_luz_y_no_se_sale() {

@@ -109,6 +109,9 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
         if shell.osd_vivo().1 {
             state.needs_redraw = true;
         }
+        if shell.teclado_tick() {
+            state.needs_redraw = true;
+        }
         // Y lo mismo con el aviso de una notificación: su superficie vive aquí
         // y nadie más la suelta cuando se le acaba el tiempo.
         if shell.toasts_vivos().1 {
@@ -159,6 +162,9 @@ pub fn escena(
     renderer: &mut GlesRenderer,
     output: &Output,
 ) -> Vec<OverlayElement> {
+    if state.salvapantallas.activo() {
+        return state.salvapantallas.elementos(renderer, output);
+    }
     // Si se acaba de pasar de claro a oscuro, antes de pintar el tema nuevo se
     // vuelve un instante al viejo para fotografiar la pantalla tal como está.
     // Ver `crate::fundido`.
@@ -260,14 +266,22 @@ fn componer(
     // Lo andado de la entrada de tres dedos, de 0 a 1. Las ventanas salen de
     // donde estaban y la tarjeta aparece con ellas: sin viaje, la exposición
     // brotaba de golpe y no se veía qué miniatura era qué ventana.
-    let entrada = match state.conmutador_entrada {
-        Some(desde) if state.conmutador_pegado && !bookos_shell::tema::efectos_reducidos() => {
+    let entrada = match (state.conmutador_salida, state.conmutador_entrada) {
+        (Some(desde), _) => {
+            1.0 - bookos_shell::tema::C_SUAVE.eval(bookos_shell::tema::avance(
+                desde.elapsed(),
+                bookos_shell::tema::D_VENTANA,
+            )) as f64
+        }
+        (None, Some(desde))
+            if state.conmutador_pegado && !bookos_shell::tema::efectos_reducidos() =>
+        {
             bookos_shell::tema::C_SUAVE.eval(bookos_shell::tema::avance(
                 desde.elapsed(),
                 bookos_shell::tema::D_VENTANA,
             )) as f64
         }
-        _ => 1.0,
+        (None, _) => 1.0,
     };
     if mostrando_ventanas {
         let huecos = state
@@ -364,7 +378,7 @@ fn componer(
     if vista_escritorios && let Some(shell) = state.shell.as_ref() {
         elementos.extend(
             shell
-                .elements(renderer, false, crate::shell::CapaShell::SoloIsla)
+                .elements(renderer, false, crate::shell::CapaShell::SoloIsla, scale)
                 .into_iter()
                 .map(OverlayElement::Memory),
         );
@@ -543,7 +557,7 @@ fn componer(
                 } else {
                     crate::shell::CapaShell::Todo
                 };
-                shell.elements(renderer, completa && !vista_escritorios, capa)
+                shell.elements(renderer, completa && !vista_escritorios, capa, scale)
             })
             .unwrap_or_default()
             .into_iter()
@@ -638,11 +652,10 @@ fn componer(
     // que dibuja este compositor —copia el framebuffer y lo vuelve a muestrear
     // por cada zona— y el panel y el dock se ven igual de bien con su color
     // plano, que es lo que hacían antes de que existiera.
-    if (vista_escritorios || !completa)
-        && !bookos_shell::tema::efectos_reducidos()
+    if !bookos_shell::tema::efectos_reducidos()
         && let (Some(cristal), Some(shell)) = (state.cristal.clone(), state.shell.as_ref())
     {
-        let zonas = shell.zonas_cristal();
+        let zonas = shell.zonas_cristal(completa && !vista_escritorios);
         // El commit **no** sube por frame: el cristal desenfoca el fondo,
         // que no cambia. Solo se invalida cuando la barra se mueve, y de eso
         // se encarga el propio rectángulo del elemento.
@@ -718,6 +731,7 @@ fn componer(
             .space
             .elements()
             .rev()
+            .filter(|w| crate::multitarea::visible(state, w))
             .filter_map(|w| state.space.element_location(w).map(|loc| (w.clone(), loc)))
             .collect()
     };
@@ -828,6 +842,22 @@ fn componer(
             centro
         };
 
+        if encogido.is_none()
+            && let Some((id, rect)) = crate::multitarea::separador_de(state, &window)
+        {
+            let color = bookos_shell::tema::card();
+            elementos.push(OverlayElement::Color(SolidColorRenderElement::new(
+                id,
+                Rectangle::new(
+                    rect.loc.to_f64().to_physical_precise_round(scale),
+                    rect.size.to_f64().to_physical_precise_round(scale),
+                ),
+                0,
+                [color.r, color.g, color.b, 1.0],
+                Kind::Unspecified,
+            )));
+        }
+
         // La barra va **delante de su ventana y detrás de las de encima**, así
         // que se emite aquí dentro y no con el resto del shell: en
         // `custom_elements` la barra de una ventana tapada se dibujaría sobre la
@@ -895,6 +925,48 @@ fn componer(
                 escala_ventana,
             ))
         }));
+    }
+
+    // Las apartadas por «mostrar escritorio», asomando por el borde y detrás
+    // de todo lo que se abra mientras tanto. Su superficie sigue viva aunque
+    // no estén en el `Space`, igual que en la vista de escritorios.
+    if !bloqueado && !completa && !vista_escritorios {
+        for (window, loc) in crate::escritorios::asomadas(state, &output.name()) {
+            let origen =
+                (loc.to_f64() - window.geometry().loc.to_f64()).to_physical_precise_round(scale);
+            if crate::decoracion::decorada(&window) {
+                let barra = crate::decoracion::estado_de(state, &window);
+                let origen_barra = Point::<f64, Logical>::from((
+                    loc.x as f64,
+                    (loc.y - crate::decoracion::ALTO) as f64,
+                ))
+                .to_physical_precise_round(scale);
+                if let (Some(id), Some(shell)) =
+                    (crate::decoracion::id(&window), state.shell.as_mut())
+                    && let Some(elemento) = shell.barra_ventana(
+                        renderer,
+                        id,
+                        window.geometry().size.w,
+                        barra,
+                        origen_barra,
+                        1.0,
+                    )
+                {
+                    elementos.push(OverlayElement::Memory(elemento));
+                }
+            }
+            elementos.extend(
+                window
+                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                        renderer,
+                        origen,
+                        Scale::from(scale),
+                        1.0,
+                    )
+                    .into_iter()
+                    .map(OverlayElement::Surface),
+            );
+        }
     }
 
     if !bloqueado {
@@ -1567,7 +1639,7 @@ pub fn actualizar_acento_del_fondo(state: &mut BookosComp) {
 /// El bloqueo, la vista de escritorios y el deslizamiento entre escritorios lo
 /// enseñan aunque haya una ventana a pantalla completa.
 fn fondo_visible(state: &BookosComp) -> bool {
-    if !state.dpms_encendido {
+    if !state.dpms_encendido || state.salvapantallas.activo() {
         return false;
     }
     if state
@@ -1787,6 +1859,7 @@ pub fn programar_bloqueo_inactividad(state: &mut BookosComp) {
         state.loop_handle.remove(token);
     }
     state.idle_inhibidores.retain(|s| s.alive());
+    crate::salvapantallas::programar(state);
     crate::atenuacion::programar(state);
     if state.bloqueo_inactividad.is_zero()
         || !state.idle_inhibidores.is_empty()
@@ -1828,6 +1901,12 @@ pub fn programar_bloqueo_inactividad(state: &mut BookosComp) {
                 .unwrap_or(false);
             if inactivo {
                 crate::keybinds::ejecutar(state, crate::keybinds::Accion::Bloquear);
+                // El bloqueo a mano apaga la pantalla a los 10 s; el
+                // automático no, porque detrás vienen el salvapantallas y
+                // `apagado_inactividad`, que es quien la apaga.
+                if let Some(token) = state.tick_dpms.take() {
+                    state.loop_handle.remove(token);
+                }
                 tracing::info!(
                     segundos = state.bloqueo_inactividad.as_secs(),
                     "bloqueo automático por inactividad"
@@ -1861,6 +1940,7 @@ pub fn programar_suspension_inactividad(state: &mut BookosComp) {
     cancelar_suspension_inactividad(state);
     state.idle_inhibidores.retain(|s| s.alive());
     if state.suspension_inactividad.is_zero()
+        || state.salvapantallas.pantalla_apagada()
         || !state.idle_inhibidores.is_empty()
         || bookos_shell::mantener_despierto()
         || state
@@ -1881,7 +1961,10 @@ pub fn programar_suspension_inactividad(state: &mut BookosComp) {
                 .shell
                 .as_ref()
                 .is_some_and(|shell| shell.esta_bloqueado());
-            if bloqueado && state.idle_inhibidores.is_empty() && !bookos_shell::mantener_despierto()
+            if bloqueado
+                && !state.salvapantallas.pantalla_apagada()
+                && state.idle_inhibidores.is_empty()
+                && !bookos_shell::mantener_despierto()
             {
                 tracing::info!(
                     segundos = state.suspension_inactividad.as_secs(),

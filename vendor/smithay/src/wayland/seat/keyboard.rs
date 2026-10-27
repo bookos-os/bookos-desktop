@@ -186,10 +186,10 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
         // text-input global bound due to clients doing lazy global binding.
         text_input.set_focus(Some(self.clone()));
 
-        // Only notify on `enter` once we have an actual IME.
-        if input_method.has_instance() {
-            text_input.enter();
-        }
+        // BookOS: upstream solo manda `enter` con un IME conectado. El teclado
+        // en pantalla del compositor no es un cliente IME y necesita que el
+        // campo se habilite para saber que hay uno.
+        text_input.enter();
     }
 
     fn leave(&self, seat: &Seat<D>, state: &mut D, serial: Serial) {
@@ -200,8 +200,9 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
 
         if input_method.has_instance() {
             input_method.deactivate_input_method(state);
-            text_input.leave();
         }
+        // BookOS: simétrico con `enter`, ver arriba.
+        text_input.leave();
 
         text_input.set_focus(None);
     }

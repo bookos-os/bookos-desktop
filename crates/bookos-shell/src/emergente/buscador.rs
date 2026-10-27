@@ -40,13 +40,18 @@ use super::{Ancla, Tecla};
 /// Ancho de referencia del diálogo. El valor real se adapta a la pantalla
 /// lógica: en un monitor grande no se queda como una miniatura centrada y en
 /// una salida pequeña no se sale por los lados.
-pub const ANCHO: f32 = 640.0;
-const ANCHO_MIN: f32 = 420.0;
-const ANCHO_MAX: f32 = 720.0;
+///
+/// Del tamaño de Spotlight: con 640 y texto de 16 se leía como un campo de
+/// formulario, no como el sitio desde el que se hace todo.
+pub const ANCHO: f32 = 720.0;
+const ANCHO_MIN: f32 = 600.0;
+const ANCHO_MAX: f32 = 820.0;
 /// Alto del campo de texto.
-const CAMPO: f32 = 60.0;
+const CAMPO: f32 = 68.0;
+/// Cuerpo de lo que se escribe.
+const TEXTO_CAMPO: f32 = 22.0;
 /// Alto de una fila de resultado.
-const FILA: f32 = 52.0;
+const FILA: f32 = 54.0;
 /// Márgenes internos.
 const MARGEN: f32 = 10.0;
 /// Línea y aire entre el campo y los resultados.
@@ -56,7 +61,9 @@ const SEPARACION: f32 = 8.0;
 /// es justo lo que un buscador de teclado no quiere.
 const MAXIMO: usize = 6;
 /// Lado del icono de una fila.
-const ICONO: f32 = 28.0;
+const ICONO: f32 = 30.0;
+/// Cuántas aplicaciones se sugieren con el campo vacío.
+const SUGERENCIAS: usize = 4;
 
 #[derive(Clone, Copy)]
 struct Colores {
@@ -133,6 +140,9 @@ pub enum Resultado {
         nombre: String,
         exec: String,
         icono: Option<Icono>,
+        /// El `app_id` de su ventana si ya está abierta: entonces elegirla te
+        /// lleva a ella en vez de abrir otra.
+        abierta: Option<String>,
     },
     /// Una orden para el intérprete.
     Comando(String),
@@ -166,6 +176,9 @@ impl Resultado {
     /// El renglón pequeño de debajo: qué es esto y qué va a pasar al pulsarlo.
     fn detalle(&self) -> String {
         match self {
+            Self::App {
+                abierta: Some(_), ..
+            } => "Abierta · ir a la ventana".to_string(),
             Self::App { exec, .. } => exec.clone(),
             Self::Comando(_) => "Ejecutar orden".to_string(),
             Self::Accion { detalle, .. } => detalle.clone(),
@@ -184,6 +197,14 @@ impl Resultado {
     /// Qué hacer al elegirlo. Un dato no lanza nada: ya ha contestado.
     fn accion(&self) -> Option<Accion> {
         match self {
+            Self::App {
+                exec,
+                abierta: Some(app_id),
+                ..
+            } => Some(Accion::Mostrar {
+                app_id: app_id.clone(),
+                exec: exec.clone(),
+            }),
             Self::App { exec, .. } => Some(Accion::Lanzar(exec.clone())),
             Self::Comando(orden) => Some(Accion::Lanzar(orden.clone())),
             Self::Accion { accion, .. } => Some(accion.clone()),
@@ -201,6 +222,11 @@ pub struct Buscador {
     /// Las aplicaciones, leídas una vez al abrir: igual que el launchpad, que
     /// no vigila el directorio con inotify por un `dnf install` al mes.
     apps: Vec<apps::App>,
+    /// Lanzamientos por `exec`, los mismos que ordenan el launchpad: entre dos
+    /// que encajan igual de bien va primero la que usas.
+    usos: std::collections::HashMap<String, u32>,
+    /// `(exec, app_id)` de lo que tiene ventana, sacado del dock al abrir.
+    abiertas: Vec<(String, String)>,
     resultados: Vec<Resultado>,
     /// Cuál está elegido. Siempre hay uno mientras haya resultados: el buscador
     /// se usa con Intro, y sin selección Intro no haría nada.
@@ -214,13 +240,15 @@ pub struct Buscador {
 }
 
 impl Buscador {
-    pub fn new(pantalla: (f32, f32)) -> Self {
+    pub fn new(pantalla: (f32, f32), abiertas: Vec<(String, String)>) -> Self {
         crate::icono::olvidar_ausentes();
         let apps = apps::leer();
         let mut buscador = Self {
             ancho: ancho_para(pantalla.0),
             consulta: String::new(),
             apps,
+            usos: crate::config::cargar_usos(),
+            abiertas,
             resultados: Vec::new(),
             seleccion: 0,
             señalada: None,
@@ -271,18 +299,16 @@ impl Buscador {
         CAMPO
     }
 
-    /// El velo de detrás. Más flojo que el del launchpad: esto no ocupa la
-    /// pantalla, solo pide atención mientras escribes.
+    /// Sin velo, como Spotlight: el buscador es algo que se consulta de paso,
+    /// y oscurecer la pantalla lo convertía en un modal que tapa lo que estás
+    /// haciendo —que a menudo es justo de donde sale lo que vas a escribir—.
     pub fn velo(&self) -> iced_core::Color {
-        // Overlay estándar del HIG. El cristal se aplica al rectángulo del
-        // diálogo en la GPU; el velo mantiene el resto del escritorio en
-        // segundo plano sin oscurecerlo en exceso.
-        tema::alfa(iced_core::Color::BLACK, 0.45)
+        iced_core::Color::TRANSPARENT
     }
 
     /// Rehace la lista con lo que hay escrito.
     fn buscar(&mut self) {
-        self.resultados = resultados(&self.apps, &self.consulta);
+        self.resultados = resultados(&self.apps, &self.usos, &self.abiertas, &self.consulta);
         self.seleccion = 0;
         self.señalada = None;
     }
@@ -392,21 +418,21 @@ impl Buscador {
     pub fn view(&self) -> PanelElement<'_> {
         let colores = Colores::actuales();
         let lupa = icono::propio("buscar")
-            .map(|ic| icono::ver_teñido_propio(&ic, 22.0, colores.secundario))
+            .map(|ic| icono::ver_teñido_propio(&ic, 26.0, colores.secundario))
             .unwrap_or_else(crate::widget::vacio);
         // El cursor va pegado al texto y siempre a la vista: no parpadea. Un
         // parpadeo son dos repintados por segundo de una tarjeta de 640 px
         // mientras no haces nada, y este compositor no despierta para eso.
         let escrito: PanelElement<'_> = if self.consulta.is_empty() {
-            text("Buscar aplicaciones, comandos o estados")
-                .size(16.0)
+            text("Buscar apps, ajustes o acciones")
+                .size(TEXTO_CAMPO)
                 .color(colores.secundario)
                 .into()
         } else if self.todo_seleccionado {
             let acento = colores.acento;
             container(
                 text(&self.consulta)
-                    .size(16.0)
+                    .size(TEXTO_CAMPO)
                     .color(tema::tinta_sobre(acento)),
             )
             .padding([0, 2])
@@ -421,7 +447,7 @@ impl Buscador {
             .into()
         } else {
             text(format!("{}▏", self.consulta))
-                .size(16.0)
+                .size(TEXTO_CAMPO)
                 .color(colores.texto)
                 .into()
         };
@@ -508,16 +534,16 @@ impl Buscador {
             text(super::recortar_texto(
                 resultado.nombre(),
                 self.ancho - 140.0,
-                14.0
+                15.0
             ))
-            .size(14.0)
+            .size(15.0)
             .color(colores.texto),
             text(super::recortar_texto(
                 &resultado.detalle(),
                 self.ancho - 140.0,
-                11.0
+                12.0
             ))
-            .size(11.0)
+            .size(12.0)
             .color(colores.secundario),
         ];
         // El realce va **dentro** de un margen y con esquinas: pegado a los
@@ -562,10 +588,32 @@ fn ancho_para(pantalla_logica: f32) -> f32 {
 
 /// La lista de resultados para una consulta. Suelta para poder probarla sin
 /// leer los `.desktop` de la máquina.
-fn resultados(apps: &[apps::App], consulta: &str) -> Vec<Resultado> {
+fn resultados(
+    apps: &[apps::App],
+    usos: &std::collections::HashMap<String, u32>,
+    abiertas: &[(String, String)],
+    consulta: &str,
+) -> Vec<Resultado> {
+    let app_id = |exec: &str| {
+        abiertas
+            .iter()
+            .find(|(e, _)| e.trim() == exec.trim())
+            .map(|(_, id)| id.clone())
+    };
     let consulta = consulta.trim();
+    // Con el campo vacío, lo que más abres: es lo que se busca casi siempre, y
+    // así Meta+Espacio e Intro relanza tu aplicación de cada día.
     if consulta.is_empty() {
-        return Vec::new();
+        let mut usadas: Vec<(&apps::App, u32)> = apps
+            .iter()
+            .filter_map(|app| Some((app, *usos.get(&app.exec)?)))
+            .collect();
+        usadas.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.nombre.cmp(&b.0.nombre)));
+        return usadas
+            .into_iter()
+            .take(SUGERENCIAS)
+            .map(|(app, _)| resultado_app(app, app_id(&app.exec)))
+            .collect();
     }
     // Con `>` delante no se busca nada: es una orden, tal cual, con sus
     // argumentos. Es lo que permite escribir algo que además es el nombre de
@@ -580,28 +628,62 @@ fn resultados(apps: &[apps::App], consulta: &str) -> Vec<Resultado> {
     }
 
     let mut lista = Vec::new();
-    if let Some(accion) = accion_sistema(consulta) {
-        lista.push(accion);
+    if let Some(valor) = calcular(consulta) {
+        lista.push(Resultado::Dato {
+            titulo: format!("= {}", formatear_numero(valor)),
+            valor: format!("Resultado de {consulta}"),
+            icono: icono::propio("control"),
+        });
     }
     if let Some(dato) = estado(consulta) {
         lista.push(dato);
     }
 
-    let mut encajan: Vec<(u32, &apps::App)> = apps
+    // Aplicaciones y acciones compiten en la misma lista con la regla del
+    // launchpad: primero lo que encaja bien (prefijo, palabra, iniciales), y
+    // dentro de eso lo que ya está abierto y luego lo más usado. Antes salía
+    // una sola acción y siempre delante: «son» daba Sonido, pero «so» ya no
+    // daba nada.
+    let mut encajan: Vec<(bool, bool, std::cmp::Reverse<u32>, u32, Resultado)> = apps
         .iter()
-        .filter_map(|app| apps::puntuar(app, consulta).map(|p| (p, app)))
+        .filter_map(|app| {
+            let p = apps::puntuar(app, consulta)?;
+            let n = usos.get(&app.exec).copied().unwrap_or(0);
+            let abierta = app_id(&app.exec);
+            Some((
+                p > 3,
+                abierta.is_none(),
+                std::cmp::Reverse(n),
+                p,
+                resultado_app(app, abierta),
+            ))
+        })
         .collect();
-    encajan.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.nombre.cmp(&b.1.nombre)));
-    lista.extend(
-        encajan
-            .into_iter()
-            .take(MAXIMO)
-            .map(|(_, app)| Resultado::App {
-                nombre: app.nombre.clone(),
-                exec: app.exec.clone(),
-                icono: icono::cargar(&app.icono),
-            }),
-    );
+    encajan.extend(atajos().into_iter().filter_map(|atajo| {
+        let p = puntuar_atajo(&atajo, consulta)?;
+        let n = match &atajo.accion {
+            Accion::Lanzar(exec) => usos.get(exec).copied().unwrap_or(0),
+            _ => 0,
+        };
+        Some((
+            p > 3,
+            true,
+            std::cmp::Reverse(n),
+            p,
+            Resultado::Accion {
+                nombre: atajo.nombre,
+                detalle: atajo.detalle.to_string(),
+                icono: icono::propio(atajo.icono),
+                accion: atajo.accion,
+            },
+        ))
+    }));
+    encajan.sort_by(|a, b| {
+        (a.0, a.1, a.2, a.3)
+            .cmp(&(b.0, b.1, b.2, b.3))
+            .then_with(|| a.4.nombre().cmp(b.4.nombre()))
+    });
+    lista.extend(encajan.into_iter().take(MAXIMO).map(|(.., r)| r));
 
     // Y si además es un ejecutable, se ofrece: `htop` no tiene `.desktop` y sin
     // esto habría que acordarse del prefijo `>` para lanzarlo.
@@ -622,57 +704,448 @@ fn resultados(apps: &[apps::App], consulta: &str) -> Vec<Resultado> {
     lista
 }
 
-/// Acciones frecuentes del escritorio. No se ejecutan como texto arbitrario:
-/// cada una viaja como [`Accion`] hasta el compositor, lo que permite que
-/// apagar, bloquear o abrir una tarjeta mantenga el mismo control de foco y
-/// entorno que el resto del shell.
-fn accion_sistema(consulta: &str) -> Option<Resultado> {
-    let q = consulta.to_lowercase();
-    let coincide =
-        |claves: &[&str]| q.len() >= 3 && claves.iter().any(|clave| clave.starts_with(&q));
-    let (nombre, detalle, icono, accion) = if coincide(&["bloquear", "bloqueo", "lock"]) {
-        (
+fn resultado_app(app: &apps::App, abierta: Option<String>) -> Resultado {
+    Resultado::App {
+        nombre: app.nombre.clone(),
+        exec: app.exec.clone(),
+        icono: icono::cargar(&app.icono),
+        abierta,
+    }
+}
+
+/// Una acción del escritorio que se puede pedir por su nombre.
+struct Atajo {
+    nombre: String,
+    detalle: &'static str,
+    icono: &'static str,
+    /// Otras formas de llamarlo: quien quiere quitar el adorno no tiene por
+    /// qué saber cómo lo llamamos aquí.
+    claves: &'static [&'static str],
+    accion: Accion,
+}
+
+/// Las acciones del escritorio. No se ejecutan como texto arbitrario: cada una
+/// viaja como [`Accion`] hasta el compositor, lo que permite que apagar,
+/// bloquear o abrir una tarjeta mantenga el mismo control de foco y entorno
+/// que el resto del shell.
+///
+/// Se construye en cada pulsación porque unas cuantas dependen del estado
+/// —los efectos, la luz nocturna, el tema—; son unas cuarenta y cuesta menos
+/// que leer el `PATH`, que ya se hace también.
+fn atajos() -> Vec<Atajo> {
+    let atajo = |nombre: &str, detalle, icono, claves, accion| Atajo {
+        nombre: nombre.to_string(),
+        detalle,
+        icono,
+        claves,
+        accion,
+    };
+    let tarjeta = |nombre: &str, detalle, icono, claves, widget| {
+        atajo(nombre, detalle, icono, claves, Accion::Emergente(widget))
+    };
+    let tema = |nombre: &str, claves, modo| {
+        atajo(
+            nombre,
+            "Apariencia del escritorio",
+            "apariencia",
+            claves,
+            Accion::Apariencia {
+                modo,
+                acento: crate::tema::acento_actual(),
+            },
+        )
+    };
+    let reducidos = crate::tema::efectos_reducidos();
+    let nocturna = crate::luz_nocturna_encendida();
+    let mut lista = vec![
+        atajo(
             "Bloquear sesión",
             "Pedir contraseña para volver",
             "bloquear",
+            &["bloqueo", "lock"],
             Accion::Bloquear,
-        )
-    } else if coincide(&["apagar", "apagado", "poweroff"]) {
-        (
+        ),
+        atajo(
             "Apagar o reiniciar",
             "Abrir controles de energía",
             "apagar",
+            &[
+                "apagado",
+                "poweroff",
+                "reiniciar",
+                "suspender",
+                "cerrar sesion",
+            ],
             Accion::Emergente("apagar"),
-        )
-    } else if coincide(&["efectos", "animaciones", "desenfoque"]) {
-        let (nombre, detalle) = if crate::tema::efectos_reducidos() {
-            (
-                "Efectos completos",
-                "Devolver el desenfoque y las animaciones",
-            )
-        } else {
-            (
-                "Reducir efectos",
-                "Quitar el desenfoque y las animaciones de ventana",
-            )
-        };
-        (nombre, detalle, "apariencia", Accion::AlternarEfectos)
-    } else if coincide(&["energia", "energía", "power"]) {
-        (
+        ),
+        atajo(
+            if reducidos {
+                "Efectos completos"
+            } else {
+                "Reducir efectos"
+            },
+            if reducidos {
+                "Devolver el desenfoque y las animaciones"
+            } else {
+                "Quitar el desenfoque y las animaciones de ventana"
+            },
+            "apariencia",
+            &["efectos", "animaciones", "desenfoque"],
+            Accion::AlternarEfectos,
+        ),
+        atajo(
+            if nocturna {
+                "Apagar luz nocturna"
+            } else {
+                "Encender luz nocturna"
+            },
+            "Tono cálido en la pantalla",
+            "noche",
+            &["luz nocturna", "night", "calido"],
+            Accion::LuzNocturna(!nocturna),
+        ),
+        atajo(
+            "Mantener despierto",
+            "Que la pantalla no se apague sola",
+            "mantener",
+            &["cafeina", "no dormir", "despierto"],
+            Accion::MantenerDespierto,
+        ),
+        atajo(
+            "Captura de pantalla",
+            "Elegir zona, ventana o pantalla",
+            "captura",
+            &["screenshot", "capturar", "foto"],
+            Accion::AbrirCaptura,
+        ),
+        atajo(
+            "Vista de escritorios",
+            "Todos los escritorios y sus ventanas",
+            "control",
+            &["escritorios", "mission control", "ventanas"],
+            Accion::VistaEscritorios,
+        ),
+        atajo(
+            "Nuevo escritorio",
+            "Añadir un escritorio vacío",
+            "vista-anadir",
+            &["crear escritorio", "anadir escritorio"],
+            Accion::CrearEscritorio,
+        ),
+        atajo(
+            "Launchpad",
+            "Todas las aplicaciones",
+            "launchpad",
+            &["aplicaciones", "apps"],
+            Accion::Launchpad,
+        ),
+        atajo(
+            "Borrar notificaciones",
+            "Vaciar el centro de notificaciones",
+            "papelera",
+            &["limpiar notificaciones"],
+            Accion::BorrarNotificaciones,
+        ),
+        atajo(
+            "Acerca de este equipo",
+            "Versión de BookOS y hardware",
+            "acerca",
+            &["sistema", "version", "about"],
+            Accion::Acerca,
+        ),
+        tarjeta(
+            "Sonido",
+            "Volumen y salida de audio",
+            "volumen-alto",
+            &["volumen", "audio", "altavoces"],
+            "volumen",
+        ),
+        tarjeta(
+            "Brillo",
+            "Brillo de la pantalla",
+            "brillo",
+            &["pantalla"],
+            "brillo",
+        ),
+        tarjeta(
+            "Wi-Fi y red",
+            "Redes disponibles",
+            "wifi",
+            &["wifi", "red", "internet"],
+            "red",
+        ),
+        tarjeta(
+            "Bluetooth",
+            "Dispositivos cercanos",
+            "bluetooth",
+            &["auriculares", "buds"],
+            "bluetooth",
+        ),
+        tarjeta(
             "Energía",
             "Batería y perfil de rendimiento",
             "bateria-carga",
-            Accion::Emergente("energia"),
+            &["energia", "bateria", "power", "rendimiento"],
+            // El widget se llama «bateria»: con «energia», que era lo que
+            // mandaba esto antes, el shell no encontraba tarjeta y no abría nada.
+            "bateria",
+        ),
+        tarjeta(
+            "Notificaciones",
+            "Avisos y no molestar",
+            "notificaciones",
+            &["no molestar", "avisos"],
+            "notificaciones",
+        ),
+        tarjeta(
+            "Calendario",
+            "Fecha y eventos",
+            "emoji-clock",
+            &["fecha", "eventos"],
+            "reloj",
+        ),
+        tarjeta(
+            "Centro de control",
+            "Interruptores rápidos",
+            "control",
+            &["control"],
+            "control",
+        ),
+        tema(
+            "Modo oscuro",
+            &["oscuro", "dark", "tema"],
+            crate::tema::ModoTema::Oscuro,
+        ),
+        tema(
+            "Modo claro",
+            &["claro", "light", "tema"],
+            crate::tema::ModoTema::Claro,
+        ),
+        tema(
+            "Tema automático",
+            &["automatico", "auto", "tema"],
+            crate::tema::ModoTema::Automatico,
+        ),
+    ];
+    // Las páginas de Ajustes, por los ids de BookOS-Settings (`pages` en
+    // src/main.js): uno que no esté ahí se ignora en silencio.
+    const PAGINAS: &[(&str, &str, &str, &[&str])] = &[
+        ("Conexiones", "conexiones", "wifi", &["wifi", "red"]),
+        (
+            "Pantalla",
+            "pantalla",
+            "pantalla",
+            &["resolucion", "escala", "monitor"],
+        ),
+        ("Sonido", "sonido", "volumen-alto", &["audio", "volumen"]),
+        ("Batería", "bateria", "bateria-100", &["energia", "bateria"]),
+        ("Notificaciones", "notificaciones", "notificaciones", &[]),
+        (
+            "Temas",
+            "temas",
+            "apariencia",
+            &["apariencia", "acento", "colores"],
+        ),
+        (
+            "Fondos de pantalla",
+            "fondos",
+            "fondo",
+            &["fondo", "wallpaper"],
+        ),
+        ("Bloqueo de pantalla", "bloqueo", "bloquear", &["bloqueo"]),
+        ("Bluetooth", "bluetooth", "bluetooth", &[]),
+        ("Teclado", "teclado", "teclado", &["distribucion", "idioma"]),
+        (
+            "Touchpad y ratón",
+            "touchpadmouse",
+            "touchpad",
+            &["raton", "gestos", "mouse"],
+        ),
+        ("Huella", "huella", "bloquear", &["huella", "dactilar"]),
+        ("Cuentas", "cuentas", "acerca", &["usuario", "contrasena"]),
+        (
+            "Aplicaciones",
+            "aplicaciones",
+            "launchpad",
+            &["predeterminadas"],
+        ),
+        (
+            "Actualizaciones",
+            "actualizacion",
+            "reiniciar",
+            &["actualizar", "update"],
+        ),
+        (
+            "Accesibilidad",
+            "accesibilidad",
+            "ojo",
+            &["zoom", "contraste"],
+        ),
+        ("Seguridad", "seguridad", "bloquear", &["privacidad"]),
+        (
+            "Fecha, idioma y general",
+            "general",
+            "preferencias",
+            &["fecha", "idioma", "hora"],
+        ),
+    ];
+    lista.extend(PAGINAS.iter().map(|(nombre, id, icono, claves)| {
+        atajo(
+            &format!("Ajustes de {}", nombre.to_lowercase()),
+            "Abrir en Ajustes",
+            icono,
+            claves,
+            Accion::Lanzar(format!("bookos-settings --page {id}")),
         )
-    } else {
+    }));
+    lista
+}
+
+/// Lo mismo que [`apps::puntuar`] para una acción: menor es mejor.
+///
+/// Cuenta el nombre y las claves, y una consulta de varias palabras encaja si
+/// cada palabra empieza alguna de ellas: «luz noc» encuentra la luz nocturna y
+/// «ajustes tecl» el teclado. Con menos de dos letras no hay acciones: con una
+/// sola encajaría media lista y taparía las aplicaciones.
+fn puntuar_atajo(atajo: &Atajo, consulta: &str) -> Option<u32> {
+    let q = apps::normalizar(consulta);
+    if q.chars().count() < 2 {
         return None;
+    }
+    let nombre = apps::normalizar(&atajo.nombre);
+    if nombre == q {
+        return Some(0);
+    }
+    if nombre.starts_with(&q) {
+        return Some(1);
+    }
+    let claves: Vec<String> = atajo.claves.iter().map(|c| apps::normalizar(c)).collect();
+    if claves.iter().any(|c| c.starts_with(&q)) {
+        return Some(1);
+    }
+    let palabras: Vec<&str> = nombre
+        .split_whitespace()
+        .chain(claves.iter().flat_map(|c| c.split_whitespace()))
+        .collect();
+    if q.split_whitespace()
+        .all(|p| palabras.iter().any(|w| w.starts_with(p)))
+    {
+        return Some(2);
+    }
+    (q.len() >= 3 && nombre.contains(&q)).then_some(4)
+}
+
+/// Evalúa una cuenta: `+ - * / ^ %`, paréntesis, `x` y `×` como por, `÷`, y la
+/// coma decimal española. `None` si no es una cuenta —hace falta al menos un
+/// operador, o «2024» sería una calculadora— o si no da un número finito.
+fn calcular(consulta: &str) -> Option<f64> {
+    let texto: String = consulta
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| match c {
+            ',' => '.',
+            'x' | 'X' | '×' => '*',
+            '÷' => '/',
+            otro => otro,
+        })
+        .collect();
+    if !texto
+        .chars()
+        .all(|c| c.is_ascii_digit() || "+-*/^%().".contains(c))
+        || !texto.chars().any(|c| c.is_ascii_digit())
+        || !texto.chars().skip(1).any(|c| "+-*/^%".contains(c))
+    {
+        return None;
+    }
+    let mut cuenta = Cuenta {
+        texto: texto.as_bytes(),
+        i: 0,
     };
-    Some(Resultado::Accion {
-        nombre: nombre.to_string(),
-        detalle: detalle.to_string(),
-        icono: icono::propio(icono),
-        accion,
-    })
+    let valor = cuenta.suma()?;
+    (cuenta.i == texto.len() && valor.is_finite()).then_some(valor)
+}
+
+/// Descenso recursivo de toda la vida: suma → producto → potencia → factor.
+struct Cuenta<'a> {
+    texto: &'a [u8],
+    i: usize,
+}
+
+impl Cuenta<'_> {
+    fn ver(&self) -> Option<u8> {
+        self.texto.get(self.i).copied()
+    }
+
+    fn suma(&mut self) -> Option<f64> {
+        let mut valor = self.producto()?;
+        while let Some(op @ (b'+' | b'-')) = self.ver() {
+            self.i += 1;
+            let otro = self.producto()?;
+            valor = if op == b'+' {
+                valor + otro
+            } else {
+                valor - otro
+            };
+        }
+        Some(valor)
+    }
+
+    fn producto(&mut self) -> Option<f64> {
+        let mut valor = self.potencia()?;
+        while let Some(op @ (b'*' | b'/' | b'%')) = self.ver() {
+            self.i += 1;
+            let otro = self.potencia()?;
+            valor = match op {
+                b'*' => valor * otro,
+                b'/' => valor / otro,
+                _ => valor % otro,
+            };
+        }
+        Some(valor)
+    }
+
+    /// Asocia por la derecha: `2^3^2` es 2⁹, como en cualquier calculadora.
+    fn potencia(&mut self) -> Option<f64> {
+        let base = self.factor()?;
+        if self.ver() == Some(b'^') {
+            self.i += 1;
+            return Some(base.powf(self.potencia()?));
+        }
+        Some(base)
+    }
+
+    fn factor(&mut self) -> Option<f64> {
+        match self.ver()? {
+            b'-' => {
+                self.i += 1;
+                Some(-self.factor()?)
+            }
+            b'(' => {
+                self.i += 1;
+                let valor = self.suma()?;
+                (self.ver()? == b')').then(|| self.i += 1)?;
+                Some(valor)
+            }
+            _ => {
+                let inicio = self.i;
+                while self.ver().is_some_and(|c| c.is_ascii_digit() || c == b'.') {
+                    self.i += 1;
+                }
+                std::str::from_utf8(&self.texto[inicio..self.i])
+                    .ok()?
+                    .parse()
+                    .ok()
+            }
+        }
+    }
+}
+
+/// Con coma decimal y sin ceros de relleno: `2,5`, no `2.500000`.
+fn formatear_numero(valor: f64) -> String {
+    let texto = format!("{:.10}", valor);
+    let texto = texto.trim_end_matches('0').trim_end_matches('.');
+    let texto = if texto == "-0" { "0" } else { texto };
+    texto.replace('.', ",")
 }
 
 /// ¿Existe un ejecutable con ese nombre en el `PATH`?
@@ -917,7 +1390,7 @@ mod pruebas {
     #[test]
     fn ctrl_a_y_escribir_sustituye_la_consulta() {
         use crate::TeclaPulsada as T;
-        let mut b = Buscador::new((1920.0, 1080.0));
+        let mut b = Buscador::new((1920.0, 1080.0), Vec::new());
         for c in "firefox".chars() {
             b.tecla(T::Caracter(c));
         }
@@ -937,13 +1410,13 @@ mod pruebas {
 
     #[test]
     fn sin_consulta_no_hay_lista() {
-        assert!(resultados(&[app("Konsole", "konsole")], "").is_empty());
+        assert!(resultados(&[app("Konsole", "konsole")], &Default::default(), &[], "").is_empty());
     }
 
     #[test]
     fn el_prefijo_manda_ejecutar_sin_buscar_aplicaciones() {
         let apps = [app("Konsole", "konsole")];
-        let lista = resultados(&apps, "> ls -la");
+        let lista = resultados(&apps, &Default::default(), &[], "> ls -la");
         assert_eq!(lista.len(), 1, "con `>` solo hay orden");
         assert!(matches!(&lista[0], Resultado::Comando(o) if o == "ls -la"));
     }
@@ -951,7 +1424,7 @@ mod pruebas {
     #[test]
     fn una_aplicacion_se_encuentra_por_su_nombre() {
         let apps = [app("Konsole", "konsole"), app("Kate", "kate")];
-        let lista = resultados(&apps, "kon");
+        let lista = resultados(&apps, &Default::default(), &[], "kon");
         assert!(
             matches!(&lista[0], Resultado::App { nombre, .. } if nombre == "Konsole"),
             "la que empieza por lo escrito va primera"
@@ -961,7 +1434,7 @@ mod pruebas {
     /// `sh` existe en cualquier Linux, así que esto no depende de la máquina.
     #[test]
     fn un_ejecutable_del_path_se_ofrece_como_comando() {
-        let lista = resultados(&[], "sh");
+        let lista = resultados(&[], &Default::default(), &[], "sh");
         assert!(
             lista
                 .iter()
@@ -980,7 +1453,7 @@ mod pruebas {
 
     #[test]
     fn los_comandos_del_escritorio_son_acciones_controladas() {
-        let lista = resultados(&[], "bloquear");
+        let lista = resultados(&[], &Default::default(), &[], "bloquear");
         assert!(matches!(
             lista.first(),
             Some(Resultado::Accion {
@@ -995,7 +1468,7 @@ mod pruebas {
     #[test]
     fn los_efectos_se_encuentran_por_lo_que_quitan() {
         for consulta in ["efectos", "animaciones", "desenfoque"] {
-            let lista = resultados(&[], consulta);
+            let lista = resultados(&[], &Default::default(), &[], consulta);
             assert!(
                 matches!(
                     lista.first(),
@@ -1006,6 +1479,94 @@ mod pruebas {
                 ),
                 "«{consulta}» no encuentra el interruptor de efectos"
             );
+        }
+    }
+
+    #[test]
+    fn con_el_campo_vacio_sugiere_lo_mas_usado() {
+        let apps = [
+            app("Kate", "kate"),
+            app("Konsole", "konsole"),
+            app("Gimp", "gimp"),
+        ];
+        let usos =
+            std::collections::HashMap::from([("kate".to_string(), 2), ("konsole".to_string(), 9)]);
+        let nombres: Vec<_> = resultados(&apps, &usos, &[], "")
+            .iter()
+            .map(|r| r.nombre().to_string())
+            .collect();
+        assert_eq!(nombres, ["Konsole", "Kate"], "sin usos no se sugiere");
+    }
+
+    #[test]
+    fn entre_dos_que_encajan_igual_va_la_mas_usada() {
+        let apps = [app("Kate", "kate"), app("Konsole", "konsole")];
+        let usos = std::collections::HashMap::from([("konsole".to_string(), 5)]);
+        let lista = resultados(&apps, &usos, &[], "k");
+        assert_eq!(lista[0].nombre(), "Konsole");
+    }
+
+    #[test]
+    fn las_acciones_se_encuentran_por_cualquier_palabra() {
+        for (consulta, buscada) in [
+            ("luz noc", "luz nocturna"),
+            ("oscuro", "Modo oscuro"),
+            ("ajustes tecl", "Ajustes de teclado"),
+            ("volumen", "Sonido"),
+            ("captura", "Captura de pantalla"),
+        ] {
+            let lista = resultados(&[], &Default::default(), &[], consulta);
+            assert!(
+                lista.iter().any(|r| r.nombre().contains(buscada)),
+                "«{consulta}» no encuentra «{buscada}»"
+            );
+        }
+    }
+
+    #[test]
+    fn energia_abre_la_tarjeta_de_la_bateria() {
+        let lista = resultados(&[], &Default::default(), &[], "energía");
+        assert!(lista.iter().any(|r| matches!(
+            r,
+            Resultado::Accion {
+                accion: Accion::Emergente("bateria"),
+                ..
+            }
+        )));
+    }
+
+    /// Una aplicación abierta va delante y lleva a su ventana, no a otra nueva.
+    #[test]
+    fn una_app_abierta_va_delante_y_se_muestra() {
+        let apps = [app("Kate", "kate"), app("Konsole", "konsole")];
+        let abiertas = [("konsole".to_string(), "org.kde.konsole".to_string())];
+        let lista = resultados(&apps, &Default::default(), &abiertas, "k");
+        assert_eq!(lista[0].nombre(), "Konsole");
+        assert_eq!(
+            lista[0].accion(),
+            Some(Accion::Mostrar {
+                app_id: "org.kde.konsole".into(),
+                exec: "konsole".into()
+            })
+        );
+        assert_eq!(lista[1].accion(), Some(Accion::Lanzar("kate".into())));
+    }
+
+    #[test]
+    fn calcula_cuentas_con_coma_y_precedencia() {
+        assert_eq!(calcular("2+3*4"), Some(14.0));
+        assert_eq!(calcular("(2+3)*4"), Some(20.0));
+        assert_eq!(calcular("1,5 x 2"), Some(3.0));
+        assert_eq!(calcular("2^3^2"), Some(512.0));
+        assert_eq!(calcular("-3+1"), Some(-2.0));
+        assert_eq!(formatear_numero(10.0 / 4.0), "2,5");
+        assert_eq!(formatear_numero(1.0 / 3.0), "0,3333333333");
+    }
+
+    #[test]
+    fn un_numero_suelto_o_un_texto_no_son_cuentas() {
+        for consulta in ["2024", "firefox", "1/0", "2+", "(1+2", "-5"] {
+            assert_eq!(calcular(consulta), None, "«{consulta}»");
         }
     }
 

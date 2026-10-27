@@ -4,7 +4,7 @@
 
 **A Wayland compositor with the desktop drawn inside it.**
 
-[![License](https://img.shields.io/badge/license-GPL--3.0-green?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-proprietary-lightgrey?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2024%20edition-000000?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Smithay](https://img.shields.io/badge/Smithay-0.7-orange?style=flat-square)](https://github.com/Smithay/smithay)
 [![iced](https://img.shields.io/badge/iced-0.14%20·%20tiny--skia-6c7fd6?style=flat-square)](https://iced.rs)
@@ -145,6 +145,15 @@ minimise/restore toggling and frosted glass behind it.
 **Search** — <kbd>Meta</kbd>+<kbd>Space</kbd> opens a KRunner-style card in the
 middle of the screen. It finds applications and settings, takes commands and
 shows system state without having to open a full application first.
+
+**Emojis** — <kbd>Meta</kbd>+<kbd>.</kbd> abre un popover HIG con el acento actual,
+354 emojis Noto en color, búsqueda en castellano e inglés y recientes de la sesión.
+Las flechas recorren la rejilla, Tab cambia de categoría, Intro inserta y Esc cierra.
+Usa text-input-v3 cuando el campo lo admite; en los demás clientes pega desde el
+portapapeles, que conserva el emoji elegido. Sin una ventana enfocada, lo copia.
+`cargo run -p bookos-shell --example emojis --offline` genera las vistas de prueba
+en `/tmp/bookos-emojis`. El atlas y sus licencias están en `assets/emojis` del shell;
+el script `scripts/generar_emojis.py` permite regenerarlo con Pango/Cairo y Noto.
 
 **Launchpad** — every installed application, paginated, with search and an
 animated transition between pages. **Folders**: created by dragging one icon onto
@@ -355,6 +364,7 @@ translates the saved floating geometry using logical coordinates.
 | <kbd>Meta</kbd>+<kbd>Return</kbd>, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd> | Open a terminal (`BOOKOS_TERMINAL`, `bookos-shell` by default) |
 | <kbd>Meta</kbd> alone | Open or close the launchpad |
 | <kbd>Meta</kbd>+<kbd>Space</kbd> | Central search: applications, settings, commands and states |
+| <kbd>Meta</kbd>+<kbd>.</kbd> | Selector de emojis: búsqueda, categorías y recientes de la sesión; Intro inserta y Esc cierra |
 | <kbd>Meta</kbd>+<kbd>W</kbd> | The overview: desktop thumbnails and the current desktop's windows in a grid |
 | <kbd>Alt</kbd>+<kbd>Tab</kbd> · <kbd>Meta</kbd>+<kbd>Tab</kbd> | Window switcher: icons or live thumbnails (with <kbd>Shift</kbd>, backwards) |
 | <kbd>Meta</kbd>+<kbd>1</kbd>…<kbd>9</kbd> | Go to that desktop |
@@ -368,6 +378,8 @@ translates the saved floating geometry using logical coordinates.
 | <kbd>Meta</kbd>+<kbd>E</kbd> | Open the BookOS file explorer |
 | <kbd>Meta</kbd>+<kbd>Z</kbd> | The BookOS menu (About, Settings…), same as clicking the logo |
 | <kbd>Meta</kbd>+<kbd>L</kbd> | Lock straight away (password or fingerprint unlocks it) |
+| <kbd>Meta</kbd>+<kbd>Alt</kbd>+<kbd>O</kbd> | Apagar solo las pantallas; el equipo continúa trabajando. Una entrada las enciende tras el margen inicial de dos segundos. Requiere la sesión DRM. |
+| <kbd>Meta</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> | Salvapantallas: «BookOS» en texto sobre negro. Una tecla o un movimiento lo retira. |
 | <kbd>Meta</kbd>+<kbd>Esc</kbd> · power button | The power dialog: sleep, lock, log out, restart, shut down |
 | <kbd>Meta</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd> | Start or finish a spoken command for the BookOS assistant |
 | <kbd>Meta</kbd>+<kbd>Alt</kbd>+<kbd>B</kbd> / <kbd>D</kbd> | The panel / the dock: dodge windows or always visible |
@@ -437,6 +449,9 @@ bloqueo_medios_y = 0.68
 bloqueo_reloj_tamano = 144
 bloqueo_avatar_tamano = 132
 bloqueo_inactividad = 900
+# Salvapantallas a los cinco minutos; cero desactiva la entrada automática.
+# Respeta los inhibidores y no sustituye el bloqueo de seguridad.
+salvapantallas_inactividad = 300
 # Zero turns automatic suspend off. When on, it counts from the moment the
 # session is locked and respects Wayland and logind inhibitors.
 suspension_inactividad = 0
@@ -864,24 +879,16 @@ compositor binaries are changed by the tests.
 
 ## License
 
-**GNU General Public License, version 3 or later.** The full text is in
+Proprietary: all rights reserved (`LicenseRef-BookOS`). The terms are in
 [`LICENSE`](LICENSE).
 
 ```
-Copyright (C) 2026 Evelynx08 and the BookOS contributors
-
-This program is free software: you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free Software
-Foundation, either version 3 of the License, or (at your option) any later
-version.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
-PARTICULAR PURPOSE. See the GNU General Public License for more details.
+Copyright (C) 2026 BookOS. All rights reserved.
 ```
 
 The design system's icons come from [Heroicons](https://heroicons.com) (MIT).
-Dependencies keep their own licences.
+Smithay (`vendor/smithay`, MIT), Cage (`bookos-cage`, MIT) and the emoji atlas
+(`assets/emojis`) keep their own licences, and so do all dependencies.
 
 ---
 
@@ -890,3 +897,41 @@ Dependencies keep their own licences.
 **[BookOS](https://github.com/Evelynx08)** · Built to run on a real laptop
 
 </div>
+
+## Grupos de multitarea
+
+Al encajar una ventana en la mitad izquierda y otra en la derecha del mismo
+monitor se forma un grupo. El separador central ajusta ambos anchos y respeta
+los mínimos declarados por las aplicaciones cuando caben en la pantalla.
+Meta + botón derecho permite ajustar el reparto desde cualquiera de los paneles.
+
+El menú de ventana (`Alt+F3` o clic derecho en la barra de BookOS) permite unir
+la ventana con la última utilizada en ese monitor, cambiar entre dos paneles y
+pestañas, y separar el grupo. Los grupos de más de dos ventanas usan pestañas.
+Arrastrar una barra mueve el grupo y minimizarlo o trasladarlo a otro escritorio
+o monitor conserva sus ventanas juntas. Maximizar o solicitar pantalla completa
+en una ventana separa el grupo.
+
+Alt+Tab y Meta+Tab muestran una entrada por grupo y reúnen cada diálogo con su
+ventana principal. Volver desde el dock o el conmutador recupera el diálogo;
+cambiar de pestaña oculta también sus diálogos. Se usan las relaciones de padre
+que declaran Wayland y X11; dos documentos independientes del mismo proceso
+siguen siendo unidades distintas hasta que se unen explícitamente.
+
+Prueba con clientes Qt reales (requiere el PySide6 ya utilizado por la pantalla
+de recuperación):
+
+```bash
+cargo test --workspace --offline
+cargo build -p bookos-comp --offline
+# Usar directorios temporales existentes para configuración y capturas.
+XDG_CONFIG_HOME=/tmp/bookos-prueba/config XDG_PICTURES_DIR=/tmp/bookos-prueba/imagenes \
+  BOOKOS_INPUT_SELFTEST=1 BOOKOS_SELFTEST_MULTITAREA=wayland \
+  dbus-run-session -- ./target/debug/bookos-comp
+# Repetir con BOOKOS_SELFTEST_MULTITAREA=x11 para comprobar Xwayland.
+```
+
+El autotest comprueba encaje, redimensionado con ratón, pestañas, cierre de la
+pestaña activa, diálogos, conmutación, minimizar/restaurar y cambio de escritorio.
+Guarda capturas del reparto y de las pestañas para inspección visual. La prueba
+se ejecuta en el backend anidado; no comprueba una sesión DRM física.
