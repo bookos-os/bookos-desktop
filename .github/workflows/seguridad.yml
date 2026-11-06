@@ -17,7 +17,7 @@ jobs:
   cargo-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Instalar cargo-audit
         run: cargo install --locked cargo-audit
       # Mira `Cargo.lock` contra la base de RustSec. No compila nada, así que
