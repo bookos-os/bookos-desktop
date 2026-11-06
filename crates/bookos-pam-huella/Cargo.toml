@@ -18,4 +18,4 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 libc = "0.2"
 
 [dev-dependencies]
-libloading = "0.8"
+libloading = "0.9"
