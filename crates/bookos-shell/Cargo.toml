@@ -24,7 +24,7 @@ tiny-skia = "0.11"
 # SVG y que el compositor declara igual. Hace falta tenerlo a mano para
 # rasterizar las miniaturas de los fondos a píxeles y recortarles las esquinas,
 # que iced no hace con las imágenes. Ver `emergente::apariencia::vistas_de`.
-resvg = "0.45"
+resvg = "0.49"
 # iced_graphics mete el crate `image` sin códecs: por eso `Handle::from_path`
 # de un PNG falla y iced entra en panic ("Image should be allocated"). Aquí se
 # decodifica antes y se le pasan píxeles ya listos, así esa ruta no existe.
