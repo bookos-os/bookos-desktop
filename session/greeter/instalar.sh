@@ -15,9 +15,9 @@ if [ -z "$destino" ]; then
         echo "Hace falta root: sudo bash session/greeter/instalar.sh" >&2
         exit 1
     fi
-    for programa in greetd cage dbus-run-session; do
+    for programa in greetd cage; do
         if ! command -v "$programa" >/dev/null 2>&1; then
-            echo "Falta $programa; instala greetd, cage y dbus antes de continuar." >&2
+            echo "Falta $programa; instala greetd y cage antes de continuar." >&2
             exit 1
         fi
     done
@@ -33,6 +33,14 @@ if [ -z "$destino" ]; then
 fi
 
 install -Dm755 "$binario" "$destino/usr/local/libexec/bookos-greeter"
+# Contraseña o huella a la vez: ver README.md.
+modulo="${BOOKOS_PAM_HUELLA:-$aqui/../../target/release/libpam_bookos_huella.so}"
+if [ ! -f "$modulo" ]; then
+    echo "Compila primero: cargo build --release -p bookos-pam-huella" >&2
+    exit 1
+fi
+install -Dm755 "$modulo" "$destino/usr/lib64/security/pam_bookos_huella.so"
+install -Dm644 "$aqui/bookos-greetd.pam" "$destino/etc/pam.d/bookos-greetd"
 # Sin el cage parcheado se arranca con el de serie: funciona, pero con el
 # touchpad lento y sin toque para hacer clic.
 cage_bin="${BOOKOS_CAGE_BIN:-$aqui/../../target/bookos-cage}"
@@ -48,6 +56,15 @@ install -Dm755 "$aqui/bookos-greeter-start" "$destino/usr/local/libexec/bookos-g
 # La reinstalación actualiza el ejecutable, pero conserva los ajustes locales.
 if [ ! -e "$destino/etc/greetd/bookos.toml" ]; then
     install -Dm644 "$aqui/bookos.toml" "$destino/etc/greetd/bookos.toml"
+fi
+# Las instalaciones de antes de pam_bookos_huella no tienen `service`: sin él
+# greetd usa el `greetd` de Fedora y la huella vuelve a ir antes que la
+# contraseña. Se añade sin tocar lo demás que haya en el fichero.
+if ! grep -q '^\[general\]' "$destino/etc/greetd/bookos.toml"; then
+    printf '[general]\nservice = "bookos-greetd"\n\n%s\n' \
+        "$(cat "$destino/etc/greetd/bookos.toml")" > "$destino/etc/greetd/bookos.toml.nuevo"
+    mv "$destino/etc/greetd/bookos.toml.nuevo" "$destino/etc/greetd/bookos.toml"
+    chmod 644 "$destino/etc/greetd/bookos.toml"
 fi
 # /etc/default/bookos-greeter ya no se crea: con XKB_DEFAULT_LAYOUT=es dentro
 # tapaba la distribución del sistema, la que deja el asistente de primer

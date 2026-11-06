@@ -10,6 +10,7 @@ use crate::config::BrilloAutomatico;
 /// que `tema::aplicar_modo`. Bit 0 pantalla, bit 1 teclado.
 static AUTOMATICO: AtomicU8 = AtomicU8::new(0);
 
+// 0.1.0
 pub fn automatico() -> BrilloAutomatico {
     let bits = AUTOMATICO.load(Ordering::Relaxed);
     BrilloAutomatico {
@@ -18,6 +19,7 @@ pub fn automatico() -> BrilloAutomatico {
     }
 }
 
+// 0.1.0
 pub fn aplicar_automatico(elegido: BrilloAutomatico) {
     let bits = u8::from(elegido.pantalla) | u8::from(elegido.teclado) << 1;
     AUTOMATICO.store(bits, Ordering::Relaxed);
@@ -29,16 +31,19 @@ pub fn aplicar_automatico(elegido: BrilloAutomatico) {
 /// movido el usuario respecto a él.
 static OBJETIVO_SENSOR: AtomicU8 = AtomicU8::new(0);
 
+// 0.1.0
 pub fn objetivo_sensor() -> Option<u8> {
     Some(OBJETIVO_SENSOR.load(Ordering::Relaxed)).filter(|&n| n > 0)
 }
 
+// 0.1.0
 pub fn poner_objetivo_sensor(nivel: Option<u8>) {
     OBJETIVO_SENSOR.store(nivel.unwrap_or(0), Ordering::Relaxed);
 }
 
 /// ¿Hay sensor de luz ambiente? Se mira en sysfs y no en iio-sensor-proxy para
 /// que la tarjeta no espere al bus: un `readdir` de `/sys/bus/iio/devices`.
+// 0.1.0
 pub fn hay_sensor_luz() -> bool {
     std::fs::read_dir("/sys/bus/iio/devices").is_ok_and(|dir| {
         // `raw` en los sensores HID, como el del ISH; `input` en otros
@@ -55,6 +60,7 @@ type Cola = (Mutex<BTreeMap<(String, String), u32>>, Condvar);
 
 /// Conserva el último valor solicitado por dispositivo. Un arrastre no crea
 /// procesos en paralelo ni permite que una escritura antigua termine después.
+// 0.1.0
 pub fn solicitar(subsistema: &str, dispositivo: &str, nivel: u32) {
     if !matches!(subsistema, "backlight" | "leds") || dispositivo.contains('/') {
         return;

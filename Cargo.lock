@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "bookos-budsd"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "libc",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "bookos-comp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "bookos-greeter"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bookos-shell",
@@ -409,8 +409,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookos-pam-huella"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "libloading",
+ "zbus",
+]
+
+[[package]]
 name = "bookos-shell"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64",
  "bookos-system",
@@ -429,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "bookos-system"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "serde",

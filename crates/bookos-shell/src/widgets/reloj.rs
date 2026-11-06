@@ -20,6 +20,7 @@ pub struct Reloj {
 }
 
 impl Reloj {
+    // 0.1.0
     pub fn new() -> Self {
         Self {
             texto: ahora(),
@@ -36,6 +37,7 @@ const SUBIDA: f32 = 6.0;
 /// ancla el lado derecho. Los mismos 14/Semibold que el título de fila y los
 /// botones del sistema de diseño.
 const TAMANO: f32 = 14.0;
+// 0.1.0
 fn fuente() -> iced_core::Font {
     iced_core::Font {
         weight: iced_core::font::Weight::Semibold,
@@ -45,6 +47,7 @@ fn fuente() -> iced_core::Font {
 
 /// `d/M/yy H:mm`, el formato del plasmoide: la hora **sin** cero delante,
 /// `1:54` y no `01:54`, como la fecha.
+// 0.1.0
 fn ahora() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let f = Fecha::hoy();
@@ -57,10 +60,12 @@ fn ahora() -> String {
 }
 
 impl Widget for Reloj {
+    // 0.1.0
     fn nombre(&self) -> &'static str {
         "reloj"
     }
 
+    // 0.1.0
     fn refrescar(&mut self) -> bool {
         let texto = ahora();
         if texto == self.texto {
@@ -71,6 +76,7 @@ impl Widget for Reloj {
         true
     }
 
+    // 0.1.0
     fn animando(&self) -> bool {
         self.cambio.is_some_and(|t| t.elapsed() < tema::D_TARJETA)
     }
@@ -79,6 +85,7 @@ impl Widget for Reloj {
     ///
     /// Son 59 despertares menos por minuto. Cada uno saca a la CPU de su
     /// C-state, y ese goteo es justo lo que arruina la autonomía en reposo.
+    // 0.1.0
     fn proxima_alarma(&self) -> Option<Duration> {
         use std::time::{SystemTime, UNIX_EPOCH};
         let secs = SystemTime::now()
@@ -89,10 +96,12 @@ impl Widget for Reloj {
     }
 
     /// Lo que ocupa su texto: "15/8/26 19:23" son trece caracteres.
+    // 0.1.0
     fn ancho(&self) -> f32 {
         crate::widget::ancho_con_fuente(&self.texto, TAMANO, fuente())
     }
 
+    // 0.1.0
     fn ver(&self) -> PanelElement<'_> {
         let t = self.cambio.map_or(1.0, |desde| {
             tema::C_ENTRADA.eval(tema::fraccion(desde.elapsed(), tema::D_TARJETA))

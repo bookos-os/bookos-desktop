@@ -69,6 +69,7 @@ const SOBRE_PIE: f32 = 12.0;
 const PIE: f32 = 44.0;
 
 /// Un porcentaje como se escribe en cada idioma: «80 %» y «80%».
+// 0.1.0
 fn por_ciento(n: u8) -> String {
     if *ES {
         format!("{n} %")
@@ -79,6 +80,7 @@ fn por_ciento(n: u8) -> String {
 
 /// Una duración legible: «4 h 12 min», «45 min». No «4:12», que se confunde
 /// con una hora.
+// 0.1.0
 fn duracion(min: u32) -> String {
     match (min / 60, min % 60) {
         (0, m) => format!("{m} min"),
@@ -87,11 +89,13 @@ fn duracion(min: u32) -> String {
     }
 }
 
+// 0.1.0
 fn peso(w: Weight) -> iced_core::Font {
     control::peso(w)
 }
 
 /// El icono teñido, o un hueco de su tamaño si falta.
+// 0.1.0
 fn icono_o_hueco(icono: Option<&Icono>, px: f32, color: Color) -> PanelElement<'_> {
     match icono {
         Some(i) => icono::ver_teñido(i, px, Some(color)),
@@ -120,6 +124,7 @@ struct Perfil {
 /// el relleno, y uno de solo trazo saldría hueco. Balanza y cohete son los
 /// `24/solid` de Heroicons; la hoja no existe allí y es la silueta de la de
 /// Lucide, sin el nervio.
+// 0.1.0
 fn icono_perfil(clave: &str) -> Option<Icono> {
     let d = match clave {
         "power-saver" => {
@@ -145,6 +150,7 @@ const RAYO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 2
 const AVISO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>"##;
 
 /// Traduce la clave del daemon: rótulo, qué hace y color.
+// 0.1.0
 fn nombrar(clave: &str) -> (&'static str, &'static str, Color) {
     match clave {
         "power-saver" => (
@@ -180,6 +186,7 @@ fn nombrar(clave: &str) -> (&'static str, &'static str, Color) {
 
 /// Los perfiles que ofrece el daemon, en el orden en que los da: de menos a más
 /// consumo.
+// 0.1.0
 fn perfiles() -> Vec<Perfil> {
     let salida = Command::new("busctl")
         .args([
@@ -227,6 +234,7 @@ fn perfiles() -> Vec<Perfil> {
 }
 
 /// Qué perfil está puesto ahora.
+// 0.1.0
 pub(super) fn perfil_activo() -> Option<String> {
     let salida = Command::new("busctl")
         .args([
@@ -260,6 +268,7 @@ enum Fase {
 }
 
 impl Fase {
+    // 0.1.0
     fn de(bateria: Option<Battery>) -> Self {
         match bateria {
             None => Fase::SinBateria,
@@ -279,6 +288,18 @@ pub struct Energia {
     activo: Option<String>,
     /// Sobre qué fila está el ratón, para el realce.
     señalado: tema::Realce,
+    /// Cuánto de «elegido» lleva cada perfil, en el orden de `perfiles`: el
+    /// fondo y la marca se funden de uno a otro en vez de saltar.
+    // añadido en la 0.2.0
+    seleccion: Vec<tema::Transicion>,
+    /// El porcentaje que dibuja la barra, de 0 a 1. Sigue a la batería con un
+    /// muelle: al enchufar o al refrescar, la barra se desliza.
+    nivel: tema::Transicion,
+    /// El color de la barra va de `tinte_desde` a `tinte_hasta` según `tinte`
+    /// (0 a 1). Cambia al cambiar de perfil, de fase o de carga.
+    tinte: tema::Transicion,
+    tinte_desde: Color,
+    tinte_hasta: Color,
     /// Se cargan una vez: son los mismos en cada repintado.
     marca: Option<Icono>,
     flecha: Option<Icono>,
@@ -287,22 +308,80 @@ pub struct Energia {
 }
 
 impl Energia {
+    // 0.1.0
+    // modified 0.2.0 -- transiciones de perfil elegido, nivel y color de la barra
     pub fn new() -> Self {
-        Self {
-            // Con tiempo restante: es la tarjeta que lo enseña, y solo se lee
-            // mientras está abierta.
-            bateria: Battery::read(true),
+        let perfiles = perfiles();
+        let activo = perfil_activo();
+        let seleccion = perfiles
+            .iter()
+            .map(|p| {
+                let elegido = activo.as_deref() == Some(p.clave.as_str());
+                tema::Transicion::nueva(elegido as u8 as f32, tema::M_RAPIDO)
+            })
+            .collect();
+        // Con tiempo restante: es la tarjeta que lo enseña, y solo se lee
+        // mientras está abierta.
+        let bateria = Battery::read(true);
+        let nivel = bateria.map_or(0.0, |b| b.percent.min(100) as f32 / 100.0);
+        let mut e = Self {
+            bateria,
             umbral: crate::state::charge_limit(),
-            perfiles: perfiles(),
-            activo: perfil_activo(),
+            perfiles,
+            activo,
             señalado: tema::Realce::nuevo(),
+            seleccion,
+            nivel: tema::Transicion::nueva(nivel, tema::M_SUAVE),
+            tinte: tema::Transicion::nueva(1.0, tema::M_SUAVE),
+            tinte_desde: tema::TEXTO2,
+            tinte_hasta: tema::TEXTO2,
             marca: icono::propio("comprobado"),
             flecha: icono::propio("chevron-derecha"),
             rayo: icono::desde_svg(RAYO),
             aviso: icono::desde_svg(AVISO),
+        };
+        // Al abrir, el color ya es el que toca: nada que animar delante de quien
+        // acaba de abrir la tarjeta.
+        e.tinte_desde = e.color_barra();
+        e.tinte_hasta = e.tinte_desde;
+        e
+    }
+
+    /// El color al que tiende la barra: rojo bajo, verde enchufado, el del
+    /// perfil si descarga.
+    // añadido en la 0.2.0
+    fn color_barra(&self) -> Color {
+        match Fase::de(self.bateria) {
+            Fase::Baja => tema::rojo(),
+            Fase::Cargando | Fase::Enchufado => tema::verde(),
+            _ => self.color_activo(),
         }
     }
 
+    /// Si el color de destino ha cambiado, arranca el fundido desde el que se
+    /// veía en ese instante.
+    // añadido en la 0.2.0
+    fn sincronizar_color(&mut self) {
+        let destino = self.color_barra();
+        if destino == self.tinte_hasta {
+            return;
+        }
+        self.tinte_desde = self.color_barra_ahora();
+        self.tinte_hasta = destino;
+        self.tinte.fijar(0.0);
+        self.tinte.ir_a(1.0);
+    }
+
+    // añadido en la 0.2.0
+    fn color_barra_ahora(&self) -> Color {
+        tema::mezclar(
+            self.tinte_desde,
+            self.tinte_hasta,
+            self.tinte.valor().clamp(0.0, 1.0),
+        )
+    }
+
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let perfiles = if self.perfiles.is_empty() {
             0.0
@@ -316,6 +395,7 @@ impl Energia {
     }
 
     /// La cabecera entera: título, nivel, barra si hay batería y estado.
+    // 0.1.0
     fn alto_cabecera(&self) -> f32 {
         let barra = if self.bateria.is_some() {
             SOBRE_BARRA + BARRA
@@ -326,6 +406,7 @@ impl Energia {
     }
 
     /// Lo que ocupan las piezas de la lista.
+    // 0.1.0
     fn alto_lista(&self) -> f32 {
         let filas = self.perfiles.len() as f32;
         if filas == 0.0 {
@@ -334,16 +415,19 @@ impl Energia {
         filas * FILA + (filas - 1.0) * HUECO_FILA
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::BajoWidget("bateria")
     }
 
     /// La `y` donde empieza la lista de perfiles, relativa a la emergente.
+    // 0.1.0
     fn y_lista(&self) -> f32 {
         MARGEN + self.alto_cabecera() + SOBRE_SECCION + SECCION + BAJO_SECCION
     }
 
     /// Qué fila de perfil cae en ese punto.
+    // 0.1.0
     fn fila_en(&self, x: f32, y: f32) -> Option<usize> {
         if !(MARGEN..=ANCHO - MARGEN).contains(&x) {
             return None;
@@ -363,21 +447,29 @@ impl Energia {
 
     /// ¿Cae el punto en el pie? Incluye el margen de debajo: es el borde de la
     /// tarjeta y apuntar al botón desde abajo no debe fallar por 16 px.
+    // 0.1.0
     fn en_pie(&self, x: f32, y: f32) -> bool {
         let alto = self.size().1;
         y >= alto - MARGEN - PIE && (MARGEN..=ANCHO - MARGEN).contains(&x)
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         self.señalado
             .señalar(punto.and_then(|(x, y)| self.fila_en(x, y)))
     }
 
     /// ¿Se mueve algo dentro de la tarjeta?
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.señalado.animando()
+            || self.nivel.animando()
+            || self.tinte.animando()
+            || self.seleccion.iter().any(|t| t.animando())
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- recoge busctl en otro hilo sin dejar zombis
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         if self.en_pie(x, y) {
             // `bateria` es el id de la página en BookOS Settings (`pages` en su
@@ -416,7 +508,11 @@ impl Energia {
         // Se da por puesto sin releer: la lectura tardaría lo que tarde el
         // daemon en aplicarlo y la fila se quedaría sin marcar hasta el
         // siguiente refresco. Si la llamada falla, el próximo `new` lo corrige.
+        for (p, t) in self.perfiles.iter().zip(self.seleccion.iter_mut()) {
+            t.ir_a((p.clave == clave) as u8 as f32);
+        }
         self.activo = Some(clave);
+        self.sincronizar_color();
         None
     }
 
@@ -424,6 +520,7 @@ impl Energia {
     /// cuando se mira el tiempo: sin esto se quedaba con la foto del instante
     /// en que se abrió y el panel, debajo, seguía contando. El tope también,
     /// porque se cambia en Ajustes con la tarjeta a la vista.
+    // 0.1.0
     pub fn refrescar(&mut self) -> bool {
         let fresca = Battery::read(true);
         let umbral = crate::state::charge_limit();
@@ -432,9 +529,13 @@ impl Energia {
         }
         self.bateria = fresca;
         self.umbral = umbral;
+        self.nivel
+            .ir_a(fresca.map_or(0.0, |b| b.percent.min(100) as f32 / 100.0));
+        self.sincronizar_color();
         true
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         match tecla {
             crate::TeclaPulsada::Escape => Tecla::Cerrar,
@@ -445,6 +546,7 @@ impl Energia {
     /// El color del perfil que está puesto, con el que se rellena la barra
     /// mientras descarga: el mismo que lleva el pictograma del panel, para que
     /// las dos cosas se lean como una.
+    // 0.1.0
     fn color_activo(&self) -> Color {
         self.activo
             .as_deref()
@@ -454,12 +556,14 @@ impl Energia {
 
     /// El tope solo cuenta enchufado: descargando no frena nada y dibujarlo
     /// sería ruido.
+    // 0.1.0
     fn tope_visible(&self) -> Option<u8> {
         self.umbral
             .filter(|_| self.bateria.is_some_and(|b| b.plugged))
     }
 
     /// La pastilla de la derecha del título: rótulo, icono y su color.
+    // 0.1.0
     fn pastilla(&self) -> Option<(&'static str, &Icono, Color)> {
         match Fase::de(self.bateria) {
             Fase::Descargando => None,
@@ -471,6 +575,7 @@ impl Energia {
     }
 
     /// El renglón de debajo de la barra.
+    // 0.1.0
     fn estado(&self) -> String {
         let Some(bat) = self.bateria else {
             return t(
@@ -513,6 +618,7 @@ impl Energia {
     }
 
     /// Título y pastilla, el porcentaje grande, la barra y el renglón.
+    // 0.1.0
     fn cabecera(&self) -> PanelElement<'_> {
         let mut titulo = row![
             text(t("Batería", "Battery"))
@@ -574,10 +680,10 @@ impl Energia {
             .height(Length::Fixed(NIVEL))
             .center_y(Length::Fixed(NIVEL)),
         ];
-        if let Some(bat) = self.bateria {
+        if self.bateria.is_some() {
             cabecera = cabecera
                 .push(Space::new().height(Length::Fixed(SOBRE_BARRA)))
-                .push(self.barra(bat, fase));
+                .push(self.barra());
         }
 
         let mut renglon = row![
@@ -607,15 +713,12 @@ impl Energia {
     /// Va en un `stack` de la altura de la marca, con la barra centrada, y no
     /// en la altura de la barra: así la marca sobresale 3 px por cada lado sin
     /// que la cabecera tenga que reservar ese aire en otro sitio.
-    fn barra(&self, bat: Battery, fase: Fase) -> PanelElement<'_> {
-        let color = match fase {
-            Fase::Baja => tema::rojo(),
-            Fase::Cargando | Fase::Enchufado => tema::verde(),
-            _ => self.color_activo(),
-        };
+    // 0.1.0
+    fn barra(&self) -> PanelElement<'_> {
+        let color = self.color_barra_ahora();
         // Nunca más estrecho que alto: con menos, iced recorta el radio y
         // asoma una barrita recta por las curvas (ver `control::pildora`).
-        let lleno = (INTERIOR * bat.percent.min(100) as f32 / 100.0).max(BARRA);
+        let lleno = (INTERIOR * self.nivel.valor().clamp(0.0, 1.0)).max(BARRA);
         let pista = container(
             container(Space::new())
                 .width(Length::Fixed(lleno))
@@ -666,9 +769,12 @@ impl Energia {
     }
 
     /// Una pieza de la lista segmentada.
+    // 0.1.0
+    // modified 0.1.1 -- en oscuro el acento al 20 %, como control::seleccionada
     fn fila(&self, i: usize) -> PanelElement<'_> {
         let perfil = &self.perfiles[i];
-        let activo = self.activo.as_deref() == Some(perfil.clave.as_str());
+        // 0 a 1; con el muelle se pasa un poco, y un color no admite eso.
+        let elegido = self.seleccion[i].valor().clamp(0.0, 1.0);
         let señalado = self.señalado.intensidad(i);
         let base = tema::superficie_en_tarjeta();
 
@@ -676,17 +782,12 @@ impl Energia {
         // lista del sistema —al 20 % en oscuro, por lo mismo que en
         // `control::seleccionada`—; el color del perfil se queda en el círculo.
         let mezcla = if tema::es_claro() { 0.10 } else { 0.20 };
-        let (fondo, color) = if activo {
-            (
-                tema::mezclar(base, tema::acento(), mezcla + 0.06 * señalado),
-                tema::acento(),
-            )
-        } else {
-            (
-                tema::mezclar(base, tema::tinta(), 0.05 * señalado),
-                tema::texto(),
-            )
-        };
+        let fondo = tema::mezclar(
+            tema::mezclar(base, tema::tinta(), 0.05 * señalado),
+            tema::mezclar(base, tema::acento(), mezcla + 0.06 * señalado),
+            elegido,
+        );
+        let color = tema::mezclar(tema::texto(), tema::acento(), elegido);
         // Esquinas de control por fuera del bloque y de chip donde se tocan
         // dos piezas: las tres forman una sola figura.
         let ultima = i + 1 == self.perfiles.len();
@@ -747,8 +848,14 @@ impl Energia {
             Space::new().width(Length::Fill),
         ]
         .align_y(Vertical::Center);
-        if activo {
-            contenido = contenido.push(icono_o_hueco(self.marca.as_ref(), MARCA, tema::acento()));
+        // La marca se enciende con el fundido; el hueco que deja el spacer
+        // `Fill` hace que su ausencia no mueva el texto.
+        if elegido > 0.01 {
+            contenido = contenido.push(icono_o_hueco(
+                self.marca.as_ref(),
+                MARCA,
+                tema::alfa(tema::acento(), elegido),
+            ));
         }
         container(contenido)
             .width(Length::Fixed(INTERIOR))
@@ -768,6 +875,7 @@ impl Energia {
 
     /// El pie: «Preferencias de batería», que abre su página en Ajustes. En el
     /// color del texto y no en gris: es un botón, y en gris parecía apagado.
+    // 0.1.0
     fn pie(&self) -> PanelElement<'_> {
         control::grupo(
             container(
@@ -790,6 +898,7 @@ impl Energia {
         )
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let mut contenido = column![self.cabecera()];
         if !self.perfiles.is_empty() {

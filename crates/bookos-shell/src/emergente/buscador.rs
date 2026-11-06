@@ -28,14 +28,14 @@
 
 use iced_core::alignment::Vertical;
 use iced_core::{Border, Color, Length};
-use iced_widget::{Space, column, container, row, text};
+use iced_widget::{Space, column, container, row, stack, text};
 
-use crate::icono::{self, Icono};
+use crate::icono::{self, COLOR_TEMAS, Icono, insignia};
 use crate::tema;
 use crate::view::PanelElement;
 use crate::{Accion, PanelData, apps};
 
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 
 /// Ancho de referencia del diálogo. El valor real se adapta a la pantalla
 /// lógica: en un monitor grande no se queda como una miniatura centrada y en
@@ -77,6 +77,7 @@ struct Colores {
 }
 
 impl Colores {
+    // 0.1.0
     fn actuales() -> Self {
         let respaldo = Self {
             tarjeta: tema::card(),
@@ -99,10 +100,11 @@ impl Colores {
         paleta.unwrap_or(respaldo)
     }
 
+    // 0.1.0
     fn desde_json(json: &str, claro: bool) -> Option<Self> {
         let paleta: serde_json::Value = serde_json::from_str(json).ok()?;
         let roles = paleta.get(if claro { "light" } else { "dark" })?;
-        let rol = |nombre| color_css(roles.get(nombre)?.as_str()?);
+        let rol = |nombre| tema::color_css(roles.get(nombre)?.as_str()?);
         Some(Self {
             tarjeta: rol("card")?,
             texto: rol("tx")?,
@@ -113,24 +115,6 @@ impl Colores {
             acento: rol("blue")?,
         })
     }
-}
-
-fn color_css(valor: &str) -> Option<Color> {
-    if let Some(hex) = valor.strip_prefix('#') {
-        return (hex.len() == 6)
-            .then(|| u32::from_str_radix(hex, 16).ok())
-            .flatten()
-            .map(tema::hex);
-    }
-    let rgba = valor.strip_prefix("rgba(")?.strip_suffix(')')?;
-    let mut canales = rgba.split(',').map(str::trim);
-    let mut canal = || canales.next()?.parse::<u8>().ok().map(|n| n as f32 / 255.0);
-    let (r, g, b) = (canal()?, canal()?, canal()?);
-    let a = canales.next()?.parse::<f32>().ok()?;
-    if canales.next().is_some() || !(0.0..=1.0).contains(&a) {
-        return None;
-    }
-    Some(Color::from_rgba(r, g, b, a))
 }
 
 /// Lo que se puede encontrar.
@@ -164,6 +148,7 @@ pub enum Resultado {
 }
 
 impl Resultado {
+    // 0.1.0
     fn nombre(&self) -> &str {
         match self {
             Self::App { nombre, .. } => nombre,
@@ -174,6 +159,8 @@ impl Resultado {
     }
 
     /// El renglón pequeño de debajo: qué es esto y qué va a pasar al pulsarlo.
+    // 0.1.0
+    // modified 0.1.1 -- las abiertas dicen «Abierta · ir a la ventana»
     fn detalle(&self) -> String {
         match self {
             Self::App {
@@ -186,6 +173,7 @@ impl Resultado {
         }
     }
 
+    // 0.1.0
     fn icono(&self) -> Option<&Icono> {
         match self {
             Self::App { icono, .. } | Self::Dato { icono, .. } => icono.as_ref(),
@@ -195,6 +183,8 @@ impl Resultado {
     }
 
     /// Qué hacer al elegirlo. Un dato no lanza nada: ya ha contestado.
+    // 0.1.0
+    // modified 0.1.1 -- una app abierta lleva a su ventana en vez de abrir otra
     fn accion(&self) -> Option<Accion> {
         match self {
             Self::App {
@@ -233,13 +223,25 @@ pub struct Buscador {
     seleccion: usize,
     /// Lo señalado con el ratón, que es otra cosa que lo elegido con el
     /// teclado: mover el ratón por encima no debe cambiar lo que Intro lanza.
-    señalada: Option<usize>,
+    // modificado en la 0.2.0 -- con realce que se funde, como las listas de las tarjetas
+    señalada: tema::Realce,
+    /// Dónde está el fondo de la elegida, en filas. Es uno solo que se
+    /// desliza: apagar una fila y encender otra no decía hacia dónde ibas.
+    // añadido en la 0.2.0
+    elegida_y: tema::Transicion,
+    /// El alto de la tarjeta. El buffer se reserva al máximo y la tarjeta se
+    /// recorta dentro: rehacer la superficie en cada fotograma del crecimiento
+    /// costaría una textura nueva por fotograma.
+    // añadido en la 0.2.0
+    alto: tema::Transicion,
     /// Tras Ctrl+A: lo siguiente que se escriba o borre sustituye la consulta
     /// entera. No hay cursor movible, así que basta con esto y no un rango.
     todo_seleccionado: bool,
 }
 
 impl Buscador {
+    // 0.1.0
+    // modified 0.1.1 -- conoce las abiertas y los usos, y olvida iconos que no estaban
     pub fn new(pantalla: (f32, f32), abiertas: Vec<(String, String)>) -> Self {
         crate::icono::olvidar_ausentes();
         let apps = apps::leer();
@@ -251,19 +253,35 @@ impl Buscador {
             abiertas,
             resultados: Vec::new(),
             seleccion: 0,
-            señalada: None,
+            señalada: tema::Realce::nuevo(),
+            elegida_y: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
+            alto: tema::Transicion::nueva(CAMPO, tema::M_RAPIDO),
             todo_seleccionado: false,
         };
         buscador.buscar();
+        // Al abrir ya tiene su alto: la tarjeta entra entera, no creciendo.
+        buscador
+            .alto
+            .fijar(Self::alto_para(buscador.resultados.len()));
         buscador
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Centrada
     }
 
+    // 0.1.0
+    // modified 0.2.0 -- el alto máximo: lo visible lo da `alto_visible`
     pub fn size(&self) -> (f32, f32) {
-        (self.ancho, Self::alto_para(self.resultados.len()))
+        (self.ancho, Self::alto_para(MAXIMO))
+    }
+
+    /// Lo que ocupa la tarjeta ahora, dentro del buffer. Por debajo es
+    /// transparente y un clic ahí tiene que contar como fuera.
+    // añadido en la 0.2.0
+    pub fn alto_visible(&self) -> f32 {
+        self.alto.valor()
     }
 
     /// Lo que mide la tarjeta con esa cantidad de resultados.
@@ -278,6 +296,7 @@ impl Buscador {
     /// buffer, se dibujaba cuatro píxeles y medio por encima de donde tocaba.
     /// El respiro sí se quiere —pegada al borde, la última fila se comía su
     /// esquina redondeada—, así que ahora está dentro de la tarjeta y contado.
+    // 0.1.0
     fn alto_para(resultados: usize) -> f32 {
         let filas = resultados.min(MAXIMO) as f32;
         // Sin resultados no hay lista: la tarjeta es solo el campo, y así el
@@ -295,6 +314,7 @@ impl Buscador {
     /// el alto del **campo**, no el máximo de toda la lista: así lo que se
     /// centra al abrir Spotlight es aquello con lo que se interactúa. Los
     /// resultados crecen hacia abajo sin desplazarlo.
+    // 0.1.0
     pub fn alto_colocacion() -> f32 {
         CAMPO
     }
@@ -302,24 +322,34 @@ impl Buscador {
     /// Sin velo, como Spotlight: el buscador es algo que se consulta de paso,
     /// y oscurecer la pantalla lo convertía en un modal que tapa lo que estás
     /// haciendo —que a menudo es justo de donde sale lo que vas a escribir—.
+    // 0.1.0
+    // modified 0.1.1 -- sin velo oscuro detrás
     pub fn velo(&self) -> iced_core::Color {
         iced_core::Color::TRANSPARENT
     }
 
     /// Rehace la lista con lo que hay escrito.
+    // 0.1.0
+    // modified 0.1.1 -- ordena con usos y abiertas
     fn buscar(&mut self) {
         self.resultados = resultados(&self.apps, &self.usos, &self.abiertas, &self.consulta);
         self.seleccion = 0;
-        self.señalada = None;
+        // Las filas ya son otras: ni el realce ni la elegida vienen de la
+        // anterior, así que no se deslizan desde ella.
+        self.señalada = tema::Realce::nuevo();
+        self.elegida_y.fijar(0.0);
+        self.alto.ir_a(Self::alto_para(self.resultados.len()));
     }
 
     /// Dónde empieza la lista dentro de la tarjeta. Tiene que incluir todo el
     /// aire que apila `view()` entre el campo y los resultados.
+    // 0.1.0
     fn y_lista(&self) -> f32 {
         CAMPO + DIVISOR + SEPARACION
     }
 
     /// Qué fila cae en `y`, si cae en alguna.
+    // 0.1.0
     fn fila_en(&self, x: f32, y: f32) -> Option<usize> {
         if x < 0.0 || x > self.ancho {
             return None;
@@ -332,20 +362,21 @@ impl Buscador {
         (i < self.resultados.len().min(MAXIMO)).then_some(i)
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let nueva = punto.and_then(|(x, y)| self.fila_en(x, y));
-        if nueva == self.señalada {
-            return false;
-        }
-        self.señalada = nueva;
-        true
+        self.señalada.señalar(nueva)
     }
 
+    // 0.1.0
+    // modificado en la 0.2.0 -- aplica lo que la acción no lleva consigo
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let i = self.fila_en(x, y)?;
-        self.resultados.get(i)?.accion()
+        self.resultados.get(i)?.accion().map(aplicar)
     }
 
+    // 0.1.0
+    // modificado en la 0.2.0 -- Intro aplica lo que la acción no lleva consigo
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
         let visibles = self.resultados.len().min(MAXIMO);
@@ -391,15 +422,22 @@ impl Buscador {
             }
             T::Abajo if visibles > 0 => {
                 self.seleccion = (self.seleccion + 1) % visibles;
-                self.señalada = None;
+                self.señalada.señalar(None);
+                self.elegida_y.ir_a(self.seleccion as f32);
                 Tecla::Consumida
             }
             T::Arriba if visibles > 0 => {
                 self.seleccion = (self.seleccion + visibles - 1) % visibles;
-                self.señalada = None;
+                self.señalada.señalar(None);
+                self.elegida_y.ir_a(self.seleccion as f32);
                 Tecla::Consumida
             }
-            T::Intro => match self.resultados.get(self.seleccion).and_then(|r| r.accion()) {
+            T::Intro => match self
+                .resultados
+                .get(self.seleccion)
+                .and_then(|r| r.accion())
+                .map(aplicar)
+            {
                 Some(accion) => Tecla::Hacer(accion),
                 // Un dato ya ha contestado: Intro sobre él no cierra la
                 // ventana, porque lo que quieres es seguir leyéndolo.
@@ -411,10 +449,13 @@ impl Buscador {
         }
     }
 
+    // modified 0.2.0 -- elegida, realce y alto
     pub fn animando(&self) -> bool {
-        false
+        self.elegida_y.animando() || self.señalada.animando() || self.alto.animando()
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- campo más grande y texto de ayuda nuevo
     pub fn view(&self) -> PanelElement<'_> {
         let colores = Colores::actuales();
         let lupa = icono::propio("buscar")
@@ -424,10 +465,13 @@ impl Buscador {
         // parpadeo son dos repintados por segundo de una tarjeta de 640 px
         // mientras no haces nada, y este compositor no despierta para eso.
         let escrito: PanelElement<'_> = if self.consulta.is_empty() {
-            text("Buscar apps, ajustes o acciones")
-                .size(TEXTO_CAMPO)
-                .color(colores.secundario)
-                .into()
+            text(t(
+                "Buscar apps, ajustes o acciones",
+                "Search apps, settings or actions",
+            ))
+            .size(TEXTO_CAMPO)
+            .color(colores.secundario)
+            .into()
         } else if self.todo_seleccionado {
             let acento = colores.acento;
             container(
@@ -479,7 +523,30 @@ impl Buscador {
             for (i, resultado) in self.resultados.iter().take(MAXIMO).enumerate() {
                 lista = lista.push(self.fila(i, resultado, colores));
             }
-            contenido = contenido.push(lista);
+            // El acento se reserva para lo que Intro va a lanzar; va debajo de
+            // las filas para que el realce del ratón no lo tape.
+            let acento = tema::alfa(colores.acento, 0.10);
+            let elegida = column![
+                Space::new().height(Length::Fixed(self.elegida_y.valor() * FILA)),
+                container(Space::new())
+                    .width(Length::Fixed(self.ancho - MARGEN * 2.0))
+                    .height(Length::Fixed(FILA))
+                    .style(move |_theme| container::Style {
+                        background: Some(acento.into()),
+                        border: Border {
+                            radius: tema::R_ITEM_POPOVER.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+            ]
+            .padding([0, MARGEN as u16])
+            // `stack!` mide lo que su primera capa: sin el alto de la lista
+            // entera, recortaba las filas por debajo de la elegida.
+            .height(Length::Fixed(
+                self.resultados.len().min(MAXIMO) as f32 * FILA,
+            ));
+            contenido = contenido.push(stack![elegida, lista]);
             // El respiro bajo la última fila: sin él su realce llega al borde y
             // se come la esquina redondeada de la tarjeta. Va aquí y no como
             // alto de más en `size()`, que es donde estaba: allí eran píxeles
@@ -489,6 +556,8 @@ impl Buscador {
 
         container(contenido)
             .width(Length::Fixed(self.ancho))
+            .height(Length::Fixed(self.alto.valor()))
+            .clip(true)
             .style(move |_theme| container::Style {
                 // El HIG reserva el cristal para la superficie temporal que
                 // está detrás (el overlay). La tarjeta propia permanece
@@ -504,31 +573,40 @@ impl Buscador {
             .into()
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- texto de las filas un punto más grande
     fn fila<'a>(
         &'a self,
         i: usize,
         resultado: &'a Resultado,
         colores: Colores,
     ) -> PanelElement<'a> {
-        let elegida = i == self.seleccion;
-        let señalada = self.señalada == Some(i);
-        // El acento se reserva para lo que Intro va a lanzar. El ratón por
-        // encima solo levanta un velo de tinta: si las dos cosas se pintaran
-        // igual, pasar el ratón parecería cambiar lo que va a ejecutarse.
-        let fondo = match (elegida, señalada) {
-            (true, _) => tema::alfa(colores.acento, 0.10),
-            (false, true) => colores.hover,
-            (false, false) => iced_core::Color::TRANSPARENT,
+        // El ratón por encima solo levanta un velo de tinta, y no sobre la
+        // elegida: si las dos cosas se pintaran igual, pasar el ratón parecería
+        // cambiar lo que va a ejecutarse.
+        let fondo = if i == self.seleccion {
+            iced_core::Color::TRANSPARENT
+        } else {
+            Color {
+                a: colores.hover.a * self.señalada.intensidad(i),
+                ..colores.hover
+            }
         };
         let dibujo: PanelElement<'a> = match resultado.icono() {
             // Los de aplicación no se tiñen —el zorro de Firefox en silueta
             // blanca no lo quiere nadie—; los propios sí, que son monocromos.
-            Some(ic) if matches!(resultado, Resultado::App { .. }) => icono::ver(ic, ICONO, ICONO),
-            Some(ic @ Icono::Raster(_)) => icono::ver(ic, ICONO, ICONO),
-            Some(ic) => icono::ver_teñido(ic, ICONO, Some(colores.texto)),
-            None => icono::propio("terminal")
-                .map(|ic| icono::ver_teñido_propio(&ic, ICONO, colores.texto))
-                .unwrap_or_else(crate::widget::vacio),
+            // Las acciones y los datos ya llegan como insignia (ver [`insignia`]),
+            // con su color: van sin teñir, igual que los de aplicación.
+            Some(ic) => icono::ver(ic, ICONO, ICONO),
+            // `ver` ata el elemento al préstamo; aquí la insignia es temporal y
+            // basta con clonar el `Handle`, que es lo que hace `ver` por dentro.
+            None => match insignia("terminal") {
+                Some(Icono::Svg(handle)) => iced_widget::svg(handle)
+                    .width(Length::Fixed(ICONO))
+                    .height(Length::Fixed(ICONO))
+                    .into(),
+                _ => crate::widget::vacio(),
+            },
         };
         let textos = column![
             text(super::recortar_texto(
@@ -582,12 +660,16 @@ impl Buscador {
 /// dos escritorios lógicos distintos, que es exactamente lo que espera el
 /// usuario. El límite superior conserva la lectura de una fila y evita que el
 /// buscador se convierta en una barra gigantesca en un ultrawide.
+// 0.1.0
 fn ancho_para(pantalla_logica: f32) -> f32 {
     (pantalla_logica * ANCHO / 1920.0).clamp(ANCHO_MIN, ANCHO_MAX)
 }
 
 /// La lista de resultados para una consulta. Suelta para poder probarla sin
 /// leer los `.desktop` de la máquina.
+// 0.1.0
+// modified 0.1.1 -- sugerencias por uso con el campo vacío, calculadora y acciones mezcladas con las apps
+// modificado en la 0.2.0 -- «brillo 30» y «volumen 50» arriba del todo
 fn resultados(
     apps: &[apps::App],
     usos: &std::collections::HashMap<String, u32>,
@@ -628,11 +710,14 @@ fn resultados(
     }
 
     let mut lista = Vec::new();
+    if let Some(ajuste) = ajuste(consulta) {
+        lista.push(ajuste);
+    }
     if let Some(valor) = calcular(consulta) {
         lista.push(Resultado::Dato {
             titulo: format!("= {}", formatear_numero(valor)),
             valor: format!("Resultado de {consulta}"),
-            icono: icono::propio("control"),
+            icono: insignia("control"),
         });
     }
     if let Some(dato) = estado(consulta) {
@@ -673,7 +758,12 @@ fn resultados(
             Resultado::Accion {
                 nombre: atajo.nombre,
                 detalle: atajo.detalle.to_string(),
-                icono: icono::propio(atajo.icono),
+                icono: match atajo.accion {
+                    Accion::Apariencia { .. } => {
+                        crate::icono::insignia_con(atajo.icono, COLOR_TEMAS)
+                    }
+                    _ => insignia(atajo.icono),
+                },
                 accion: atajo.accion,
             },
         ))
@@ -704,6 +794,7 @@ fn resultados(
     lista
 }
 
+// 0.1.1
 fn resultado_app(app: &apps::App, abierta: Option<String>) -> Resultado {
     Resultado::App {
         nombre: app.nombre.clone(),
@@ -732,6 +823,7 @@ struct Atajo {
 /// Se construye en cada pulsación porque unas cuantas dependen del estado
 /// —los efectos, la luz nocturna, el tema—; son unas cuarenta y cuesta menos
 /// que leer el `PATH`, que ya se hace también.
+// 0.1.1
 fn atajos() -> Vec<Atajo> {
     let atajo = |nombre: &str, detalle, icono, claves, accion| Atajo {
         nombre: nombre.to_string(),
@@ -743,11 +835,17 @@ fn atajos() -> Vec<Atajo> {
     let tarjeta = |nombre: &str, detalle, icono, claves, widget| {
         atajo(nombre, detalle, icono, claves, Accion::Emergente(widget))
     };
+    // Cada modo con su dibujo: con la paleta en los tres, «Modo claro» y
+    // «Modo oscuro» salían seguidos con el mismo icono.
     let tema = |nombre: &str, claves, modo| {
         atajo(
             nombre,
             "Apariencia del escritorio",
-            "apariencia",
+            match modo {
+                crate::tema::ModoTema::Claro => "brillo",
+                crate::tema::ModoTema::Oscuro => "noche",
+                crate::tema::ModoTema::Automatico => "brillo-automatico",
+            },
             claves,
             Accion::Apariencia {
                 modo,
@@ -757,6 +855,7 @@ fn atajos() -> Vec<Atajo> {
     };
     let reducidos = crate::tema::efectos_reducidos();
     let nocturna = crate::luz_nocturna_encendida();
+    let despierto = super::mantener_despierto();
     let mut lista = vec![
         atajo(
             "Bloquear sesión",
@@ -805,7 +904,11 @@ fn atajos() -> Vec<Atajo> {
             Accion::LuzNocturna(!nocturna),
         ),
         atajo(
-            "Mantener despierto",
+            if despierto {
+                "Dejar de mantener despierto"
+            } else {
+                "Mantener despierto"
+            },
             "Que la pantalla no se apague sola",
             "mantener",
             &["cafeina", "no dormir", "despierto"],
@@ -852,6 +955,13 @@ fn atajos() -> Vec<Atajo> {
             "acerca",
             &["sistema", "version", "about"],
             Accion::Acerca,
+        ),
+        atajo(
+            "Atajos de teclado",
+            "Todos los atajos y gestos",
+            "teclado",
+            &["atajos", "teclas", "shortcuts", "gestos", "ayuda"],
+            Accion::Atajos,
         ),
         tarjeta(
             "Sonido",
@@ -1001,12 +1111,25 @@ fn atajos() -> Vec<Atajo> {
     lista
 }
 
+/// Lo que una acción elegida tiene que cambiar aquí antes de salir hacia el
+/// compositor. «Mantener despierto» no lleva el estado nuevo dentro, como
+/// sí lo lleva la luz nocturna: lo cambia quien la pide, y desde el buscador
+/// no lo cambiaba nadie, así que no hacía nada.
+// añadido en la 0.2.0
+fn aplicar(accion: Accion) -> Accion {
+    if accion == Accion::MantenerDespierto {
+        super::alternar_mantener_despierto();
+    }
+    accion
+}
+
 /// Lo mismo que [`apps::puntuar`] para una acción: menor es mejor.
 ///
 /// Cuenta el nombre y las claves, y una consulta de varias palabras encaja si
 /// cada palabra empieza alguna de ellas: «luz noc» encuentra la luz nocturna y
 /// «ajustes tecl» el teclado. Con menos de dos letras no hay acciones: con una
 /// sola encajaría media lista y taparía las aplicaciones.
+// 0.1.1
 fn puntuar_atajo(atajo: &Atajo, consulta: &str) -> Option<u32> {
     let q = apps::normalizar(consulta);
     if q.chars().count() < 2 {
@@ -1038,6 +1161,7 @@ fn puntuar_atajo(atajo: &Atajo, consulta: &str) -> Option<u32> {
 /// Evalúa una cuenta: `+ - * / ^ %`, paréntesis, `x` y `×` como por, `÷`, y la
 /// coma decimal española. `None` si no es una cuenta —hace falta al menos un
 /// operador, o «2024» sería una calculadora— o si no da un número finito.
+// 0.1.1
 fn calcular(consulta: &str) -> Option<f64> {
     let texto: String = consulta
         .chars()
@@ -1072,10 +1196,12 @@ struct Cuenta<'a> {
 }
 
 impl Cuenta<'_> {
+    // 0.1.1
     fn ver(&self) -> Option<u8> {
         self.texto.get(self.i).copied()
     }
 
+    // 0.1.1
     fn suma(&mut self) -> Option<f64> {
         let mut valor = self.producto()?;
         while let Some(op @ (b'+' | b'-')) = self.ver() {
@@ -1090,6 +1216,7 @@ impl Cuenta<'_> {
         Some(valor)
     }
 
+    // 0.1.1
     fn producto(&mut self) -> Option<f64> {
         let mut valor = self.potencia()?;
         while let Some(op @ (b'*' | b'/' | b'%')) = self.ver() {
@@ -1105,6 +1232,7 @@ impl Cuenta<'_> {
     }
 
     /// Asocia por la derecha: `2^3^2` es 2⁹, como en cualquier calculadora.
+    // 0.1.1
     fn potencia(&mut self) -> Option<f64> {
         let base = self.factor()?;
         if self.ver() == Some(b'^') {
@@ -1114,6 +1242,7 @@ impl Cuenta<'_> {
         Some(base)
     }
 
+    // 0.1.1
     fn factor(&mut self) -> Option<f64> {
         match self.ver()? {
             b'-' => {
@@ -1141,6 +1270,7 @@ impl Cuenta<'_> {
 }
 
 /// Con coma decimal y sin ceros de relleno: `2,5`, no `2.500000`.
+// 0.1.1
 fn formatear_numero(valor: f64) -> String {
     let texto = format!("{:.10}", valor);
     let texto = texto.trim_end_matches('0').trim_end_matches('.');
@@ -1149,14 +1279,10 @@ fn formatear_numero(valor: f64) -> String {
 }
 
 /// ¿Existe un ejecutable con ese nombre en el `PATH`?
+// 0.1.0
+// modificado en la 0.2.0 -- la búsqueda es la de apps, compartida con TryExec
 fn en_el_path(orden: &str) -> bool {
-    if orden.is_empty() || orden.contains('/') {
-        return false;
-    }
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| dir.join(orden).is_file())
+    !orden.contains('/') && crate::apps::existe_programa(orden)
 }
 
 /// La respuesta a una pregunta de estado, si la consulta es una de ellas.
@@ -1164,6 +1290,7 @@ fn en_el_path(orden: &str) -> bool {
 /// Los datos son los mismos que enseña el panel ([`PanelData`]), leídos de
 /// sysfs en el momento: preguntar por la batería en el buscador y mirar el
 /// icono del panel tienen que decir lo mismo.
+// 0.1.0
 fn estado(consulta: &str) -> Option<Resultado> {
     let q = consulta.to_lowercase();
     let quiere = |claves: &[&str]| claves.iter().any(|c| c.starts_with(&q) && q.len() >= 3);
@@ -1185,7 +1312,7 @@ fn estado(consulta: &str) -> Option<Resultado> {
         return Some(Resultado::Dato {
             titulo: format!("Batería al {} %", bat.percent),
             valor: format!("{como}{restante}"),
-            icono: icono::propio(if bat.charging {
+            icono: insignia(if bat.charging {
                 "bateria-carga"
             } else if bat.percent > 60 {
                 "bateria-100"
@@ -1211,7 +1338,7 @@ fn estado(consulta: &str) -> Option<Resultado> {
         return Some(Resultado::Dato {
             titulo: titulo.to_string(),
             valor: "Estado de la red".to_string(),
-            icono: icono::propio(icono),
+            icono: insignia(icono),
         });
     }
     if quiere(&["brillo", "pantalla"]) {
@@ -1219,14 +1346,14 @@ fn estado(consulta: &str) -> Option<Resultado> {
         return Some(Resultado::Dato {
             titulo: format!("Brillo al {brillo} %"),
             valor: "Retroiluminación de la pantalla".to_string(),
-            icono: icono::propio("brillo"),
+            icono: insignia("brillo"),
         });
     }
     if quiere(&["hora", "fecha", "reloj"]) {
         return Some(Resultado::Dato {
             titulo: PanelData::read().clock,
             valor: "Hora local".to_string(),
-            icono: icono::propio("acerca"),
+            icono: insignia("acerca"),
         });
     }
     if quiere(&["memoria", "ram"]) {
@@ -1234,7 +1361,7 @@ fn estado(consulta: &str) -> Option<Resultado> {
         return Some(Resultado::Dato {
             titulo: format!("{:.1} de {:.1} GiB en uso", usada, total),
             valor: format!("{} % de la memoria", (usada / total * 100.0).round() as u32),
-            icono: icono::propio("cpu"),
+            icono: insignia("cpu"),
         });
     }
     if quiere(&["cpu", "procesador", "carga"]) {
@@ -1242,7 +1369,7 @@ fn estado(consulta: &str) -> Option<Resultado> {
         return Some(Resultado::Dato {
             titulo: format!("CPU al {:.0} %", (carga / hilos as f32 * 100.0).min(999.0)),
             valor: format!("carga de 1 minuto · {hilos} hilos lógicos"),
-            icono: icono::propio("cpu"),
+            icono: insignia("cpu"),
         });
     }
     if quiere(&["gpu", "grafica", "gráfica"]) {
@@ -1250,10 +1377,37 @@ fn estado(consulta: &str) -> Option<Resultado> {
         return Some(Resultado::Dato {
             titulo: format!("GPU al {uso} %"),
             valor: "ocupación del motor gráfico".to_string(),
-            icono: icono::propio("control"),
+            icono: insignia("control"),
         });
     }
     None
+}
+
+/// «brillo 30» o «volumen 50%»: una fila que lo pone al pulsar Intro. Va
+/// arriba del todo porque quien escribe un número tras la palabra no está
+/// buscando la aplicación que se llame así.
+// añadido en la 0.2.0
+fn ajuste(consulta: &str) -> Option<Resultado> {
+    let (palabra, numero) = consulta.split_once(char::is_whitespace)?;
+    let nivel: u8 = numero.trim().trim_end_matches('%').trim().parse().ok()?;
+    let nivel = nivel.min(100);
+    match apps::normalizar(palabra).as_str() {
+        // El mismo suelo que el deslizador y las teclas: a cero no se ve ni la
+        // pantalla con la que volver a subirlo.
+        "brillo" | "brightness" => Some(Resultado::Accion {
+            nombre: format!("{} {} %", t("Brillo al", "Brightness to"), nivel.max(5)),
+            detalle: t("Pulsa Intro para ponerlo", "Press Enter to set it").into(),
+            icono: insignia("brillo"),
+            accion: Accion::Brillo(nivel.max(5)),
+        }),
+        "volumen" | "volume" | "vol" => Some(Resultado::Accion {
+            nombre: format!("{} {nivel} %", t("Volumen al", "Volume to")),
+            detalle: t("Pulsa Intro para ponerlo", "Press Enter to set it").into(),
+            icono: insignia("volumen-alto"),
+            accion: Accion::Volumen(nivel),
+        }),
+        _ => None,
+    }
 }
 
 /// Memoria usada y total, en GiB, de `/proc/meminfo`.
@@ -1261,6 +1415,7 @@ fn estado(consulta: &str) -> Option<Resultado> {
 /// «Usada» es total menos `MemAvailable`, que es lo que dice el kernel que se
 /// puede repartir sin ir a swap — no `MemFree`, que en Linux siempre parece
 /// poca porque la caché cuenta como ocupada.
+// 0.1.0
 fn memoria() -> Option<(f32, f32)> {
     let texto = std::fs::read_to_string("/proc/meminfo").ok()?;
     let campo = |nombre: &str| {
@@ -1280,6 +1435,7 @@ fn memoria() -> Option<(f32, f32)> {
 
 /// Carga media del último minuto y número de hilos lógicos. Es una lectura
 /// barata de procfs y no despierta ningún servicio externo.
+// 0.1.0
 fn cpu_estado() -> Option<(f32, usize)> {
     let texto = std::fs::read_to_string("/proc/loadavg").ok()?;
     let carga = texto.split_whitespace().next()?.parse::<f32>().ok()?;
@@ -1292,6 +1448,7 @@ fn cpu_estado() -> Option<(f32, usize)> {
 /// No se inventa una cifra a partir de la carga de la CPU: si el kernel no
 /// ofrece `gpu_busy_percent`, el resultado no aparece y el buscador sigue
 /// siendo honesto.
+// 0.1.0
 fn gpu_estado() -> Option<u32> {
     let entradas = std::fs::read_dir("/sys/class/drm").ok()?;
     for entrada in entradas.flatten() {
@@ -1313,6 +1470,7 @@ fn gpu_estado() -> Option<u32> {
 
 /// Quita la última palabra y los espacios que la siguen, que es lo que hace
 /// Ctrl+Retroceso en GTK y en Qt: «abrir ajustes  » queda en «abrir ».
+// 0.1.0
 fn borrar_palabra(texto: &mut String) {
     let sin_espacios = texto.trim_end().len();
     let corte = texto[..sin_espacios]
@@ -1326,6 +1484,24 @@ fn borrar_palabra(texto: &mut String) {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn brillo_y_volumen_con_numero_dan_un_ajuste() {
+        let accion = |consulta| match ajuste(consulta) {
+            Some(Resultado::Accion { accion, .. }) => Some(accion),
+            _ => None,
+        };
+        assert_eq!(accion("brillo 30"), Some(Accion::Brillo(30)));
+        assert_eq!(accion("Brillo 30%"), Some(Accion::Brillo(30)));
+        assert_eq!(accion("brightness 70"), Some(Accion::Brillo(70)));
+        // El suelo del deslizador y el techo del tanto por ciento.
+        assert_eq!(accion("brillo 0"), Some(Accion::Brillo(5)));
+        assert_eq!(accion("volumen 250"), Some(Accion::Volumen(100)));
+        assert_eq!(accion("vol 0"), Some(Accion::Volumen(0)));
+        assert_eq!(accion("brillo"), None);
+        assert_eq!(accion("brillo alto"), None);
+        assert_eq!(accion("firefox 30"), None);
+    }
 
     #[test]
     fn ctrl_retroceso_borra_la_ultima_palabra() {
@@ -1374,7 +1550,7 @@ mod pruebas {
             assert!(Colores::desde_json(json, false).is_none());
         }
         for color in ["#zzzzzz", "#fff", "rgba(256,0,0,1)", "rgba(0,0,0,NaN)"] {
-            assert!(color_css(color).is_none(), "color inválido: {color}");
+            assert!(tema::color_css(color).is_none(), "color inválido: {color}");
         }
     }
 

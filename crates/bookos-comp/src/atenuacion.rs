@@ -59,6 +59,7 @@ pub struct Estado {
 }
 
 impl Estado {
+    // 0.1.1
     pub fn nuevo(segundos: u64) -> Self {
         Self {
             inactividad: Duration::from_secs(segundos),
@@ -68,6 +69,7 @@ impl Estado {
         }
     }
 
+    // 0.1.0
     pub fn activa(&self) -> bool {
         self.atenuada.is_some()
     }
@@ -77,6 +79,8 @@ impl Estado {
 /// que el bloqueo (`backend::programar_bloqueo_inactividad`, que la llama): una
 /// alarma única que al vencer comprueba la edad de la última entrada en vez de
 /// reiniciarse con cada movimiento del ratón.
+// 0.1.0
+// modified 0.1.1 -- la atenuación tiene su propio plazo, ya no cuelga del bloqueo
 pub fn programar(state: &mut BookosComp) {
     if let Some(token) = state.atenuacion.alarma.take() {
         state.loop_handle.remove(token);
@@ -124,6 +128,7 @@ pub fn programar(state: &mut BookosComp) {
     }
 }
 
+// 0.1.0
 fn atenuar(state: &mut BookosComp, motivo: Motivo) {
     if state.atenuacion.atenuada.is_some() || !state.dpms_encendido {
         return;
@@ -178,6 +183,7 @@ fn atenuar(state: &mut BookosComp, motivo: Motivo) {
 
 /// Devuelve el brillo de antes. Sin rampa y sin comprobar nada más: la
 /// escritura es la misma que la de la rampa de bajada y la última gana.
+// 0.1.0
 fn restaurar(state: &mut BookosComp) {
     let Some(atenuada) = state.atenuacion.atenuada.take() else {
         return;
@@ -197,6 +203,7 @@ fn restaurar(state: &mut BookosComp) {
 
 /// Cualquier entrada del usuario. Es lo primero que hace `input::handle`, así
 /// que la comprobación de reposo tiene que costar un `match`: llega a 1 kHz.
+// 0.1.0
 pub fn actividad(state: &mut BookosComp) {
     if matches!(&state.atenuacion.atenuada, Some(a) if a.motivo == Motivo::Inactividad) {
         restaurar(state);
@@ -205,6 +212,7 @@ pub fn actividad(state: &mut BookosComp) {
 
 /// El usuario ha elegido un brillo con la tecla: lo atenuado ya no es lo que
 /// había que devolver.
+// 0.1.0
 pub fn olvidar(state: &mut BookosComp) {
     if state.atenuacion.atenuada.take().is_some() {
         if let Some(token) = state.atenuacion.rampa.take() {
@@ -216,6 +224,7 @@ pub fn olvidar(state: &mut BookosComp) {
 
 /// Se mira en cada aviso de hardware, junto al cargador: la batería cambia de
 /// porcentaje y de adaptador por udev y no hay que sondearla.
+// 0.1.0
 pub fn bateria(state: &mut BookosComp) {
     let Some((enchufado, porciento)) = bookos_shell::cargador() else {
         return;

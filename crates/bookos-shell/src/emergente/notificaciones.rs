@@ -93,6 +93,7 @@ pub struct Notificaciones {
 }
 
 impl Notificaciones {
+    // 0.1.0
     pub fn poner_silencio(&mut self, silencio: Option<(Instant, Option<Duration>)>) {
         self.silencio = silencio;
         self.interruptor.fijar(self.silenciado() as u8 as f32);
@@ -100,6 +101,7 @@ impl Notificaciones {
 
     /// El silencio tal y como estaba, para que abrir y cerrar la tarjeta no lo
     /// olvide: su dueño es el shell, que sigue vivo con la tarjeta cerrada.
+    // 0.1.0
     pub fn con_silencio(silencio: Option<(Instant, Option<Duration>)>) -> Self {
         let mut n = Self::new();
         n.silencio = silencio;
@@ -108,10 +110,12 @@ impl Notificaciones {
     }
 
     /// Cómo está el silencio ahora, para que el shell se lo quede.
+    // 0.1.0
     pub fn silencio(&self) -> Option<(Instant, Option<Duration>)> {
         self.silencio
     }
 
+    // 0.1.0
     pub fn new() -> Self {
         Self {
             silencio: None,
@@ -120,7 +124,7 @@ impl Notificaciones {
             duracion: 3,
             señalada: tema::Realce::nuevo(),
             sobre_interruptor: false,
-            interruptor: tema::Transicion::nueva(0.0, tema::D_MODAL, tema::C_MUELLE),
+            interruptor: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
             lista: Vec::new(),
             fila: tema::Realce::nuevo(),
             seleccionada: None,
@@ -129,6 +133,7 @@ impl Notificaciones {
     }
 
     /// El cuerpo partido en renglones del ancho de la fila.
+    // 0.1.0
     fn detalle(notif: &crate::notificaciones::Notificacion) -> Vec<String> {
         crate::escritorio::lineas(&notif.cuerpo, ANCHO_TEXTO, 11.0, MAX_LINEAS)
     }
@@ -137,6 +142,7 @@ impl Notificaciones {
     /// y, si la tiene, «Abrir» por la acción `default`, que la especificación
     /// reserva para pulsar el aviso y que en la lista ya no se dispara al pulsar
     /// la fila —pulsarla ahora despliega—.
+    // 0.1.0
     fn botones(notif: &crate::notificaciones::Notificacion) -> Vec<(String, String)> {
         let mut botones: Vec<_> = notif
             .acciones
@@ -152,16 +158,19 @@ impl Notificaciones {
 
     /// ¿Tiene algo más que enseñar al desplegarse? Si no, la fila se comporta
     /// como siempre: un toque la ejecuta o la cierra.
+    // 0.1.0
     fn desplegable(notif: &crate::notificaciones::Notificacion) -> bool {
         !Self::botones(notif).is_empty() || Self::detalle(notif).len() > 1
     }
 
+    // 0.1.0
     fn esta_desplegada(&self, notif: &crate::notificaciones::Notificacion) -> bool {
         self.desplegada == Some(notif.id) && Self::desplegable(notif)
     }
 
     /// Alto de una fila: la de siempre, o la que pide su cuerpo entero y sus
     /// botones si está desplegada.
+    // 0.1.0
     fn alto_fila(&self, notif: &crate::notificaciones::Notificacion) -> f32 {
         if !self.esta_desplegada(notif) {
             return FILA_NOTIF;
@@ -175,6 +184,7 @@ impl Notificaciones {
     }
 
     /// Dónde empieza cada fila visible, relativo a la lista, y cuánto mide.
+    // 0.1.0
     fn geometria_filas(&self) -> Vec<(f32, f32)> {
         let mut y = 0.0;
         self.lista
@@ -195,6 +205,7 @@ impl Notificaciones {
         self.fila_en(x, y).and_then(|i| self.boton_en(i, x, y))
     }
 
+    // 0.1.0
     fn boton_en(&self, i: usize, x: f32, y: f32) -> Option<String> {
         let notif = self.lista.get(i)?;
         let botones = Self::botones(notif);
@@ -221,6 +232,7 @@ impl Notificaciones {
         })
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         // Las duraciones solo ocupan sitio cuando el silencio está puesto: es
         // lo que dice el diseño y evita cuatro botones que no hacen nada.
@@ -238,6 +250,7 @@ impl Notificaciones {
     /// Lo que ocupa la lista. Vacía sigue midiendo una fila: es donde va el
     /// «No hay notificaciones», y sin ese hueco la tarjeta daría un salto al
     /// llegar la primera.
+    // 0.1.0
     fn alto_lista(&self) -> f32 {
         let filas = self.geometria_filas();
         match filas.last() {
@@ -247,11 +260,13 @@ impl Notificaciones {
     }
 
     /// La `y` donde empieza la lista: bajo la cabecera y dentro del grupo.
+    // 0.1.0
     fn y_lista(&self) -> f32 {
         lista::MARGEN + lista::CABECERA + lista::BAJO_CABECERA + GRUPO
     }
 
     /// Cambia lo que se enseña. Lo llama el shell cuando la cola cambia.
+    // 0.1.0
     pub fn actualizar(&mut self, nueva: Vec<crate::notificaciones::Notificacion>) {
         self.lista = nueva;
         // Lo señalado se apaga: la fila que había bajo el puntero puede haber
@@ -266,6 +281,7 @@ impl Notificaciones {
     }
 
     /// Qué fila de la lista cae en un punto.
+    // 0.1.0
     fn fila_en(&self, x: f32, y: f32) -> Option<usize> {
         if x < lista::MARGEN + GRUPO || x > lista::ANCHO - lista::MARGEN - GRUPO {
             return None;
@@ -281,6 +297,7 @@ impl Notificaciones {
 
     /// El «Borrar todo» de la cabecera. Se mide desde el borde derecho porque
     /// es donde está anclado, igual que se dibuja.
+    // 0.1.0
     fn rect_borrar(&self) -> iced_core::Rectangle {
         let ancho = control::ancho_chip(BORRAR);
         iced_core::Rectangle {
@@ -292,6 +309,7 @@ impl Notificaciones {
     }
 
     /// El «Config» de la cabecera, a la izquierda del «Borrar todo».
+    // 0.1.0
     fn rect_config(&self) -> iced_core::Rectangle {
         let borrar = self.rect_borrar();
         let ancho = control::ancho_chip("Config");
@@ -302,6 +320,7 @@ impl Notificaciones {
         }
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::BajoWidget("notificaciones")
     }
@@ -311,6 +330,7 @@ impl Notificaciones {
     /// Se calcula en vez de guardarse porque caduca solo: un temporizador que
     /// despierte al shell a la hora en punto para apagar un booleano es
     /// exactamente el despertar de más que este compositor evita.
+    // 0.1.0
     pub fn silenciado(&self) -> bool {
         match self.silencio {
             None => false,
@@ -324,6 +344,7 @@ impl Notificaciones {
     /// Va en la fila de «No molestar» y no en la cabecera, que es donde estaba:
     /// allí parecía apagar las notificaciones enteras —al lado de «Borrar
     /// todo»— cuando lo que hace es silenciarlas.
+    // 0.1.0
     fn rect_interruptor(&self) -> iced_core::Rectangle {
         iced_core::Rectangle {
             x: lista::ANCHO - lista::MARGEN - GRUPO - 8.0 - lista::INTERRUPTOR_ANCHO,
@@ -336,16 +357,19 @@ impl Notificaciones {
     /// La `y` donde empieza la fila de «No molestar»: tras la lista entera y
     /// el divisor. Contaba una sola fila, y con dos notificaciones o más el
     /// interruptor se dibujaba más abajo de donde se pulsaba.
+    // 0.1.0
     fn y_bloque(&self) -> f32 {
         self.y_lista() + self.alto_lista() + lista::PIE_AIRE
     }
 
     /// La `y` donde empieza la rejilla de duraciones.
+    // 0.1.0
     fn y_duraciones(&self) -> f32 {
         self.y_bloque() + BLOQUE + HUECO
     }
 
     /// Qué botón de duración cae en un punto.
+    // 0.1.0
     fn duracion_en(&self, x: f32, y: f32) -> Option<usize> {
         if !self.silenciado() {
             return None;
@@ -363,6 +387,7 @@ impl Notificaciones {
         Some(fila * 2 + columna)
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let señalada = punto.and_then(|(x, y)| self.duracion_en(x, y));
         let sobre = punto.is_some_and(|(x, y)| {
@@ -385,10 +410,12 @@ impl Notificaciones {
     }
 
     /// ¿Se mueve algo dentro de la tarjeta?
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.señalada.animando() || self.fila.animando() || self.interruptor.animando()
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let punto = iced_core::Point::new(x, y);
         // La ✕ queda en el extremo derecho. Si la aplicación ofrece acciones,
@@ -449,6 +476,7 @@ impl Notificaciones {
         None
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         match tecla {
             crate::TeclaPulsada::Escape => Tecla::Cerrar,
@@ -531,6 +559,7 @@ impl Notificaciones {
     /// su cuerpo en pequeño. La ✕ solo aparece con el puntero encima, como en
     /// las miniaturas de escritorio: cuatro cruces permanentes compiten con lo
     /// único que hay que leer, que es el texto.
+    // 0.1.0
     fn fila_notificacion<'a>(
         &self,
         notif: &'a crate::notificaciones::Notificacion,
@@ -718,6 +747,7 @@ impl Notificaciones {
             .into()
     }
 
+    // 0.1.0
     fn boton_duracion(&self, i: usize) -> PanelElement<'_> {
         let (etiqueta, _) = DURACIONES[i];
         let elegido = self.duracion == i && self.silenciado();
@@ -757,6 +787,7 @@ impl Notificaciones {
     }
 
     /// Una fila de dos botones de duración con su hueco en medio.
+    // 0.1.0
     fn fila_duraciones(&self, i: usize) -> PanelElement<'_> {
         row![
             self.boton_duracion(i),
@@ -766,6 +797,7 @@ impl Notificaciones {
         .into()
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let cabecera = container(
             row![

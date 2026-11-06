@@ -12,6 +12,9 @@
 //! Se activa con `BOOKOS_INPUT_SELFTEST=1` y no se compila fuera de depuración
 //! de este binario: es una herramienta de diagnóstico, no una función del DE.
 
+// añadido en la 0.2.0
+mod gestos;
+
 use std::time::Duration;
 
 use smithay::input::pointer::{ButtonEvent, MotionEvent};
@@ -24,6 +27,7 @@ use crate::state::BookosComp;
 /// Botón izquierdo, según linux/input-event-codes.h.
 const BTN_LEFT: u32 = 0x110;
 
+// 0.1.0
 pub fn schedule(state: &mut BookosComp) {
     if std::env::var_os("BOOKOS_INPUT_SELFTEST").is_none() {
         return;
@@ -53,6 +57,8 @@ pub fn schedule(state: &mut BookosComp) {
 /// el ratón —`pulsar`, `puntero`, `soltar`— porque lo que se comprueba no es la
 /// lógica de `Dock`, que ya tiene sus tests, sino el enrutado: con el launchpad
 /// abierto la emergente ocupa la pantalla entera y se comía el clic del dock.
+// 0.1.0
+// modified 0.1.1 -- usa DestinoCaptura en vez de un booleano
 fn comprobar_anclar(state: &mut BookosComp) {
     let Some(shell) = state.shell.as_mut() else {
         tracing::error!("no hay shell");
@@ -91,7 +97,7 @@ fn comprobar_anclar(state: &mut BookosComp) {
             y: 0,
             ancho: w,
             alto: h,
-            guardar: true,
+            destino: crate::state::DestinoCaptura::Archivo,
         });
         state.needs_redraw = true;
         return;
@@ -166,6 +172,8 @@ fn comprobar_anclar(state: &mut BookosComp) {
 ///
 /// `BOOKOS_SELFTEST_CARPETA=1`. Recorre el gesto por el camino del ratón, que es
 /// donde puede fallar: la lógica de `soltar_en` ya tiene su test en el shell.
+// 0.1.0
+// modified 0.1.1 -- usa DestinoCaptura en vez de un booleano
 fn comprobar_carpeta(state: &mut BookosComp) {
     let Some(shell) = state.shell.as_mut() else {
         tracing::error!("no hay shell");
@@ -201,7 +209,7 @@ fn comprobar_carpeta(state: &mut BookosComp) {
             y: 0,
             ancho: w,
             alto: h,
-            guardar: true,
+            destino: crate::state::DestinoCaptura::Archivo,
         });
         state.needs_redraw = true;
         return;
@@ -217,6 +225,8 @@ fn comprobar_carpeta(state: &mut BookosComp) {
     state.needs_redraw = true;
 }
 
+// 0.1.0
+// modified 0.1.1 -- el dock lanza al soltar, no al pulsar
 fn comprobar_dock(state: &mut BookosComp) {
     let Some((dx, dy, dw, dh)) = state.shell.as_ref().map(|s| s.dock_rect()) else {
         tracing::error!("no hay shell: nada que comprobar en el dock");
@@ -263,6 +273,7 @@ fn comprobar_dock(state: &mut BookosComp) {
 
 /// Usa el enrutado completo y el fichero real de la sesión de prueba: una
 /// llamada directa al dock no detectaría un clic lanzado antes del arrastre.
+// 0.1.1
 fn comprobar_orden_dock(state: &mut BookosComp) {
     use smithay::backend::input::ButtonState;
     let config = bookos_shell::Config::cargar();
@@ -297,7 +308,7 @@ fn comprobar_orden_dock(state: &mut BookosComp) {
             y: 0,
             ancho: w,
             alto: h,
-            guardar: true,
+            destino: crate::state::DestinoCaptura::Archivo,
         });
         state.needs_redraw = true;
         return;
@@ -366,6 +377,7 @@ fn comprobar_orden_dock(state: &mut BookosComp) {
 /// Es el caso que se siente lento y no se puede reproducir desde un script sin
 /// esto: hace falta mover el ratón de verdad por encima de las filas, que es
 /// cuando el shell repinta y el compositor recompone.
+// 0.1.0
 fn recorrer_menu(state: &mut BookosComp) {
     tracing::info!("--- recorrido del menú ---");
     if let Some(shell) = state.shell.as_mut() {
@@ -380,6 +392,7 @@ fn recorrer_menu(state: &mut BookosComp) {
 }
 
 /// Un movimiento del puntero por el menú, y se programa el siguiente.
+// 0.1.0
 fn programar_paso(state: &mut BookosComp, i: u32) {
     const PASOS: u32 = 500;
     if i >= PASOS {
@@ -417,6 +430,7 @@ fn programar_paso(state: &mut BookosComp, i: u32) {
 /// `EwResize` a doscientos píxeles del borde de verdad, su geometría y la
 /// nuestra han dejado de coincidir. Cada paso va en su propio temporizador
 /// porque el cliente contesta por el socket y no en la misma vuelta del bucle.
+// 0.1.0
 fn comprobar_bordes(state: &mut BookosComp, paso: u32) {
     const PASOS: u32 = 40;
     const ESPERA: Duration = Duration::from_millis(120);
@@ -465,6 +479,7 @@ fn comprobar_bordes(state: &mut BookosComp, paso: u32) {
 /// Es la prueba que faltaba y que costó un encierro: con el bloqueo echado
 /// ninguna tecla llegaba a resolverse como atajo, así que ni Escape ni el
 /// cambio de TTY funcionaban y la sesión se quedaba muerta.
+// 0.1.0
 fn comprobar_encierro(state: &mut BookosComp) {
     tracing::info!("--- salidas del bloqueo ---");
     crate::keybinds::ejecutar(state, crate::keybinds::Accion::Bloquear);
@@ -517,6 +532,7 @@ fn comprobar_encierro(state: &mut BookosComp) {
 /// cliente que lo gaste—, y de las cuatro solo dos son código de aquí.
 ///
 /// `BOOKOS_SELFTEST_ACTIVACION=1`, con un cliente en la línea de órdenes.
+// 0.1.0
 fn comprobar_activacion(state: &mut BookosComp) {
     tracing::info!("--- activación al lanzar ---");
 
@@ -572,6 +588,7 @@ fn comprobar_activacion(state: &mut BookosComp) {
 /// empaquetado D-Bus —que sí se puede mirar desde fuera con `busctl`—.
 ///
 /// Se ejecuta con `BOOKOS_SELFTEST_COMPARTIR=1`.
+// 0.1.0
 fn comprobar_compartir(state: &mut BookosComp) {
     tracing::info!("--- permiso de compartir pantalla ---");
 
@@ -669,6 +686,7 @@ fn comprobar_compartir(state: &mut BookosComp) {
 /// tampoco lo necesita: cuando llega aquí, quien tenía que contestar ya lo ha
 /// hecho. Un `poll` con un waker que no hace nada lo saca sin bloquear, y si
 /// sale `Pending` es que el fallo es justo que nadie contestó.
+// 0.1.0
 fn futuro_ya_resuelto<T>(promesa: crate::portal::Promesa<T>) -> Option<T> {
     use std::task::{Context, Poll};
     let waker = std::task::Waker::noop();
@@ -684,6 +702,7 @@ fn futuro_ya_resuelto<T>(promesa: crate::portal::Promesa<T>) -> Option<T> {
 /// Es lo que hacen Meta+Alt+B y Meta+Alt+D. Se prueba aquí y no con un test
 /// porque hace falta una ventana de verdad ocupando sitio: el solape se mide
 /// contra las geometrías del espacio.
+// 0.1.0
 fn comprobar_barras(state: &mut BookosComp) {
     use crate::shell::{Barra, Visibilidad};
 
@@ -855,6 +874,8 @@ fn comprobar_barras(state: &mut BookosComp) {
 }
 
 /// Comprueba el doble clic en la barra de título: maximiza y restaura.
+// 0.1.0
+// modified 0.1.1 -- pulsa en la barra del compositor y espera a que el cliente confirme el tamaño
 fn comprobar_doble_clic(state: &mut BookosComp) {
     tracing::info!("--- doble clic ---");
     let Some(window) = state.space.elements().next_back().cloned() else {
@@ -942,6 +963,7 @@ fn comprobar_doble_clic(state: &mut BookosComp) {
 ///
 /// El cliente de prueba tiene que entender `xdg-decoration` —konsole sí, GTK
 /// no—; con uno que se decore solo, esto solo puede decir que no lleva barra.
+// 0.1.0
 fn comprobar_decoracion(state: &mut BookosComp) {
     use bookos_shell::decoracion::Boton;
 
@@ -1010,6 +1032,8 @@ fn comprobar_decoracion(state: &mut BookosComp) {
 
 /// El detector debe recibir también las sueltas: llamar solo a su función
 /// auxiliar no comprueba si el enrutado roba eventos al cliente.
+// 0.1.0
+// modified 0.1.1 -- pulsa de verdad por input::boton en vez de simular el doble clic
 fn pulsar_dos_veces(state: &mut BookosComp) {
     use smithay::backend::input::ButtonState;
 
@@ -1027,6 +1051,7 @@ fn pulsar_dos_veces(state: &mut BookosComp) {
 /// en I, salías al fondo y la barra en I seguía puesta por todo el escritorio.
 /// El cliente que la pidió ya no tiene el puntero y no vuelve a pedir nada, así
 /// que si el compositor no repone, no repone nadie.
+// 0.1.0
 fn comprobar_cursor(state: &mut BookosComp) {
     use smithay::input::pointer::CursorImageStatus;
 
@@ -1081,6 +1106,7 @@ const FUNDIDO_MARGEN: Duration = Duration::from_millis(500);
 /// La capa de captura, por el camino de verdad: se abre con el atajo, se marca
 /// un recuadro arrastrando y se comprueba que el PNG acaba en el disco con las
 /// medidas que se pidieron.
+// 0.1.0
 fn comprobar_captura(state: &mut BookosComp) {
     use crate::keybinds::{Accion, ejecutar};
 
@@ -1156,6 +1182,8 @@ fn comprobar_captura(state: &mut BookosComp) {
                     ancho,
                     alto,
                     guardar: true,
+                    cursor: true,
+                    retardo: 0,
                 }),
             );
             let _ = state.loop_handle.insert_source(
@@ -1189,6 +1217,7 @@ fn comprobar_captura(state: &mut BookosComp) {
 /// recarga pasa por el backend, que es quien tiene el `GlesRenderer`. Aquí se
 /// pulsa por el camino de verdad —la misma `Accion` que manda la tarjeta de
 /// apariencia— y se mira qué fichero acabó puesto.
+// 0.1.0
 fn comprobar_apariencia(state: &mut BookosComp) {
     use crate::keybinds::hacer;
     use bookos_shell::tema::{Tema, actual};
@@ -1296,6 +1325,7 @@ fn comprobar_apariencia(state: &mut BookosComp) {
 /// El selector de fondo de la tarjeta de Apariencia, por el camino de verdad:
 /// se abre la tarjeta, se pulsa una miniatura y se mira qué imagen acabó
 /// puesta.
+// 0.1.0
 fn comprobar_selector_de_fondo(
     state: &mut BookosComp,
     modo_original: bookos_shell::tema::ModoTema,
@@ -1361,6 +1391,7 @@ fn comprobar_selector_de_fondo(
 /// no una mezcla: el autotest usó `Accion::Apariencia` y `Accion::Fondo`, y las
 /// dos escriben. Sin esto, pasar las pruebas le dejaba al usuario otro tema y
 /// otro fondo puestos.
+// 0.1.0
 fn restaurar_apariencia(
     state: &mut BookosComp,
     modo: bookos_shell::tema::ModoTema,
@@ -1396,6 +1427,8 @@ fn restaurar_apariencia(
 /// Se provoca desde aquí y no esperando a que un cliente pulse F11 porque el
 /// camino que hay que probar es el del compositor; que Firefox pida
 /// `set_fullscreen` ya lo hace Firefox.
+// 0.1.0
+// modified 0.1.1 -- variante «encaje» que mira las barras tras encajar
 fn comprobar_pantalla_completa(state: &mut BookosComp) {
     tracing::info!("--- pantalla completa ---");
     let Some(window) = state.space.elements().next_back().cloned() else {
@@ -1464,6 +1497,7 @@ fn comprobar_pantalla_completa(state: &mut BookosComp) {
 
 /// El tamaño encajado y la marca de pantalla completa no pueden coexistir:
 /// la escena ocultaría las barras aunque la ventana ya dejara su sitio libre.
+// 0.1.1
 fn comprobar_barras_tras_encajar(
     state: &mut BookosComp,
     ventana: &smithay::desktop::Window,
@@ -1545,6 +1579,7 @@ fn comprobar_barras_tras_encajar(
 /// obedecer un encaje, que es donde X11 se separa de Wayland porque no hay
 /// configure diferido. Se lanza el cliente aquí y no como cliente inicial
 /// porque al arrancar el compositor todavía no hay `DISPLAY` que darle.
+// 0.1.0
 fn comprobar_xwayland(state: &mut BookosComp) {
     tracing::info!("--- xwayland ---");
     match state.display_x11 {
@@ -1575,6 +1610,7 @@ fn comprobar_xwayland(state: &mut BookosComp) {
     }
 }
 
+// 0.1.0
 fn revisar_x11(state: &mut BookosComp) {
     let x11: Vec<_> = state
         .space
@@ -1635,6 +1671,7 @@ fn revisar_x11(state: &mut BookosComp) {
 /// Lo que se comprueba es lo que se rompe sin avisar: que la lista sale por
 /// **uso reciente** y no en el orden en que se abrieron las ventanas, y que
 /// soltar el modificador enfoca de verdad la elegida.
+// 0.1.0
 fn comprobar_conmutador(state: &mut BookosComp) {
     comprobar_conmutador_tras(state, 0)
 }
@@ -1644,6 +1681,7 @@ fn comprobar_conmutador(state: &mut BookosComp) {
 /// El segundo cliente se lanza a mano desde fuera y una aplicación de KDE tarda
 /// varios segundos en mapearse: sin esta espera, la prueba se ejecutaba siempre
 /// antes de que llegara y no comprobaba nada.
+// 0.1.0
 fn comprobar_conmutador_tras(state: &mut BookosComp, intento: u32) {
     use crate::keybinds::{Accion, ejecutar};
     const INTENTOS: u32 = 8;
@@ -1750,6 +1788,7 @@ fn comprobar_conmutador_tras(state: &mut BookosComp, intento: u32) {
 /// `escritorios::cambiar_a`—. Se muestrea la posición de la ventana mientras
 /// dura la transición: si el deslizamiento no ocurre, todas las muestras salen
 /// iguales y se ve en la traza.
+// 0.1.0
 fn comprobar_escritorios(state: &mut BookosComp) {
     use crate::keybinds::{Accion, ejecutar};
 
@@ -1779,6 +1818,7 @@ fn comprobar_escritorios(state: &mut BookosComp) {
 /// Cada muestra va en su propio temporizador porque la animación avanza al
 /// componer cada frame: en un bucle cerrado no se movería nada y la prueba
 /// mediría su propia impaciencia.
+// 0.1.0
 fn muestrear_deslizamiento(
     state: &mut BookosComp,
     window: smithay::desktop::Window,
@@ -1868,6 +1908,7 @@ fn muestrear_deslizamiento(
     }
 }
 
+// 0.1.0
 fn comprobar_ventanas(state: &mut BookosComp) {
     use crate::ventanas::Modo;
 
@@ -2078,6 +2119,7 @@ fn comprobar_ventanas(state: &mut BookosComp) {
     tracing::info!("--- fin de ventanas ---");
 }
 
+// 0.1.0
 fn comprobar_organizacion(state: &mut BookosComp, intento: u32) {
     use crate::escritorios;
     use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
@@ -2181,6 +2223,7 @@ fn comprobar_organizacion(state: &mut BookosComp, intento: u32) {
 /// igual desde fuera, y hasta ahora ninguno de los dos dejaba rastro.
 ///
 /// Lo que se espera es que el intento termine en «fallo» en unos segundos.
+// 0.1.0
 fn comprobar_bloqueo_pam(state: &mut BookosComp) {
     use crate::keybinds::Accion;
 
@@ -2259,6 +2302,7 @@ fn comprobar_bloqueo_pam(state: &mut BookosComp) {
 /// captura              # pantalla entera a $XDG_PICTURES_DIR/Capturas
 /// fin                  # cierra el compositor
 /// ```
+// 0.1.0
 fn guion(state: &mut BookosComp, ruta: &str) {
     let pasos: Vec<String> = match std::fs::read_to_string(ruta) {
         Ok(texto) => texto
@@ -2274,6 +2318,8 @@ fn guion(state: &mut BookosComp, ruta: &str) {
     paso_de_guion(state, std::rc::Rc::new(pasos), 0);
 }
 
+// 0.1.0
+// modified 0.1.1 -- órdenes toque, arrastre y rueda; respeta el salvapantallas
 fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usize) {
     use smithay::backend::input::ButtonState;
     const BTN_IZQUIERDO: u32 = 0x110;
@@ -2301,6 +2347,61 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
     // Los tiempos solo tienen que crecer: los clientes los usan para ordenar.
     let t = 100_000 + i as u32 * 50;
     let espera = match partes.as_slice() {
+        // añadido en la 0.2.0 -- separar apoyo y liberación permite verificar que el botón aún no se ha confirmado.
+        ["dedo", fase, ..] => {
+            let slot = smithay::backend::input::TouchSlot::from(Some(0));
+            match *fase {
+                "apoyar" | "mover" => {
+                    let (Some(x), Some(y)) = (numero(2), numero(3)) else {
+                        panic!("el dedo del guion necesita dos coordenadas");
+                    };
+                    if *fase == "apoyar" {
+                        crate::input::toque_abajo(state, slot, (x, y).into(), t);
+                    } else {
+                        crate::input::toque_mueve(state, slot, (x, y).into(), t);
+                    }
+                }
+                "widget" => {
+                    let (x0, x1) = state
+                        .shell
+                        .as_ref()
+                        .and_then(|s| s.zona_widget(partes[2]))
+                        .expect("el widget del guion está visible en el panel");
+                    crate::input::toque_abajo(state, slot, ((x0 + x1) / 2.0, 16.0).into(), t);
+                }
+                "soltar" => crate::input::toque_arriba(state, slot, t),
+                "cancelar" => crate::input::toque_cancelar(state, t),
+                _ => panic!("fase del dedo desconocida: {fase}"),
+            }
+            if let Some(touch) = state.seat.get_touch() {
+                touch.frame(state);
+            }
+            despues(if *fase == "apoyar" || *fase == "mover" {
+                4
+            } else if *fase == "widget" {
+                3
+            } else {
+                2
+            })
+        }
+        // añadido en la 0.2.0 -- una regresión de activación táctil hace fallar el recorrido real.
+        ["comprobar", "emergente", nombre, ..] => {
+            let esperada = (*nombre != "ninguna").then_some(*nombre);
+            assert_eq!(
+                state.shell.as_ref().and_then(|s| s.emergente_nombre()),
+                esperada,
+                "la tarjeta visible debe coincidir con el resultado del gesto"
+            );
+            despues(3)
+        }
+        // añadido en la 0.2.0 -- inicio, avance y fin pasan por la ruta real de entrada.
+        ["deslizar", ..] | ["pellizcar", ..] => match gestos::orden(state, &partes) {
+            Ok(fijas) => despues(fijas),
+            Err(error) => {
+                tracing::error!(linea, error);
+                return;
+            }
+        },
         ["espera", ms] => ms.parse::<u64>().unwrap_or(RESPIRO),
         ["pulsar", ..] => {
             let (Some(x), Some(y)) = (numero(1), numero(2)) else {
@@ -2409,6 +2510,30 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
             state.needs_redraw = true;
             despues(2)
         }
+        // Pulsar y soltar por separado, para mantener una tecla: la hoja de
+        // atajos sale con Meta mantenida (`apretar meta`, `espera 1500`,
+        // `captura`, `levantar meta`).
+        // añadido en la 0.2.0
+        [orden @ ("apretar" | "levantar"), nombre, ..] => {
+            use smithay::backend::input::KeyState;
+            let Some(codigo) = codigo_tecla(nombre) else {
+                tracing::error!(nombre, "tecla de guion desconocida");
+                return;
+            };
+            let estado = if *orden == "apretar" {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            };
+            crate::input::tecla(
+                state,
+                smithay::input::keyboard::Keycode::new(codigo + 8),
+                estado,
+                t,
+            );
+            state.needs_redraw = true;
+            despues(2)
+        }
         // Lo que hacen tres dedos hacia arriba, que en el anidado no llegan.
         // Echar y quitar el bloqueo, para mirar sus animaciones. Quitarlo salta
         // PAM, como el autotest del bloqueo: esto solo existe bajo
@@ -2492,7 +2617,7 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
                 y: 0,
                 ancho: g.size.w,
                 alto: g.size.h,
-                guardar: true,
+                destino: crate::state::DestinoCaptura::Archivo,
             });
             // Pedida como la pide el portal, que es la vía que no notifica:
             // si no, el aviso de «Captura guardada» saldría en la siguiente.
@@ -2524,6 +2649,8 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
     }
 }
 
+// 0.1.0
+// modified 0.1.1 -- autotests de multitarea, orden del dock, teclado táctil y salvapantallas
 fn run(state: &mut BookosComp) {
     if let Ok(modo) = std::env::var("BOOKOS_SELFTEST_MULTITAREA") {
         if matches!(modo.as_str(), "x11" | "wayland") {
@@ -2954,6 +3081,7 @@ fn run(state: &mut BookosComp) {
 ///
 /// Con un solo vistazo no se distingue "anima" de "salta": lo que dice que hay
 /// animación es la serie de valores intermedios entre el factor inicial y 1.
+// 0.1.0
 fn muestrear_resize(state: &mut BookosComp, window: smithay::desktop::Window, i: u32) {
     const PASOS: u32 = 12;
     let escala = crate::ventanas::escala_resize(&window, window.geometry().size);
@@ -2979,6 +3107,7 @@ fn muestrear_resize(state: &mut BookosComp, window: smithay::desktop::Window, i:
 
 /// El código evdev de una tecla del guion; xkb los numera 8 más arriba. Las
 /// letras van por filas de un teclado QWERTY, que es donde están en evdev.
+// 0.1.1
 fn comprobar_toques_teclado(state: &mut BookosComp, paso: u8) {
     use smithay::backend::input::TouchSlot;
     use smithay::wayland::text_input::TextInputSeat;
@@ -3045,7 +3174,7 @@ fn comprobar_toques_teclado(state: &mut BookosComp, paso: u8) {
                 y: 0,
                 ancho: g.size.w,
                 alto: g.size.h,
-                guardar: true,
+                destino: crate::state::DestinoCaptura::Archivo,
             });
             let (emisario, _) = crate::portal::promesa();
             state.captura_portal = Some(emisario);
@@ -3076,6 +3205,7 @@ fn comprobar_toques_teclado(state: &mut BookosComp, paso: u8) {
 
 /// Bloqueo, salvapantallas encima y apagado, con plazos de milisegundos. La
 /// atenuación no entra: en anidado escribiría el brillo real del portátil.
+// 0.1.1
 fn comprobar_escalones(state: &mut BookosComp) {
     state.aplicar_dpms = Some(Box::new(|_| Ok(())));
     state.salvapantallas.inactividad = Duration::from_millis(150);
@@ -3124,6 +3254,7 @@ fn comprobar_escalones(state: &mut BookosComp) {
         .expect("temporizador del autotest insertado");
 }
 
+// 0.1.1
 fn comprobar_salvapantallas(state: &mut BookosComp) {
     use smithay::backend::input::KeyState;
     use smithay::input::keyboard::Keycode;
@@ -3204,11 +3335,20 @@ fn comprobar_salvapantallas(state: &mut BookosComp) {
         .expect("temporizador del autotest insertado");
 }
 
+// 0.1.0
+// modified 0.1.1 -- entiende el punto, para Meta+.
+// modificado en la 0.2.0 -- y las cifras, para «brillo 30» en el buscador
 fn codigo_tecla(nombre: &str) -> Option<u32> {
     if matches!(nombre, "." | "punto") {
         return Some(52);
     }
-    const FILAS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
+    const FILAS: [(&str, u32); 4] = [
+        // La fila de las cifras: KEY_1 es 2 y KEY_0 va al final, 11.
+        ("1234567890", 2),
+        ("qwertyuiop", 16),
+        ("asdfghjkl", 30),
+        ("zxcvbnm", 44),
+    ];
     if let [letra] = nombre.as_bytes() {
         return FILAS.iter().find_map(|(fila, primero)| {
             fila.bytes()
@@ -3235,6 +3375,7 @@ fn codigo_tecla(nombre: &str) -> Option<u32> {
     })
 }
 
+// 0.1.1
 fn comprobar_multitarea(state: &mut BookosComp, paso: u32) {
     use crate::multitarea as m;
     use smithay::backend::input::ButtonState;
@@ -3348,6 +3489,22 @@ fn comprobar_multitarea(state: &mut BookosComp, paso: u32) {
             captura_multitarea(state);
         }
         3 => {
+            let sitio = state.space.element_location(&referencia);
+            state.alternar_maximizada(&editor);
+            assert!(
+                !m::misma_unidad(state, &editor, &referencia),
+                "maximizar saca la ventana del grupo"
+            );
+            assert_eq!(
+                state.space.element_location(&referencia),
+                sitio,
+                "la otra se queda en su mitad"
+            );
+            state.alternar_maximizada(&editor);
+            assert!(
+                m::misma_unidad(state, &editor, &referencia),
+                "restaurar la maximizada rehace el grupo"
+            );
             m::cambiar_disposicion(state, &editor, true);
             assert!(!m::visible(state, &referencia));
             assert!(m::visible(state, &dialogo));
@@ -3442,6 +3599,7 @@ fn comprobar_multitarea(state: &mut BookosComp, paso: u32) {
         .expect("temporizador de multitarea insertado");
 }
 
+// 0.1.1
 fn captura_multitarea(state: &mut BookosComp) {
     let area = state.pantalla();
     state.captura_pedida = Some(crate::state::CapturaPedida {
@@ -3449,7 +3607,7 @@ fn captura_multitarea(state: &mut BookosComp) {
         y: area.loc.y,
         ancho: area.size.w,
         alto: area.size.h,
-        guardar: true,
+        destino: crate::state::DestinoCaptura::Archivo,
     });
     let (emisario, _) = crate::portal::promesa();
     state.captura_portal = Some(emisario);

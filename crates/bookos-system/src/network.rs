@@ -8,11 +8,13 @@ use zbus::{
 type Settings = HashMap<String, HashMap<String, OwnedValue>>;
 const NAME: &str = "org.freedesktop.NetworkManager";
 const ROOT: &str = "/org/freedesktop/NetworkManager";
+// 0.1.0
 async fn proxy<'a>(c: &'a Connection, path: &'a str, iface: &'a str) -> Result<Proxy<'a>, String> {
     Proxy::new(c, NAME, path, iface)
         .await
         .map_err(|e| e.to_string())
 }
+// 0.1.0
 async fn devices(c: &Connection) -> Result<Vec<OwnedObjectPath>, String> {
     proxy(c, ROOT, NAME)
         .await?
@@ -20,6 +22,7 @@ async fn devices(c: &Connection) -> Result<Vec<OwnedObjectPath>, String> {
         .await
         .map_err(|e| e.to_string())
 }
+// 0.1.0
 async fn wifi_device(c: &Connection) -> Result<OwnedObjectPath, String> {
     for d in devices(c).await? {
         let p = proxy(c, d.as_str(), "org.freedesktop.NetworkManager.Device").await?;
@@ -33,6 +36,8 @@ async fn wifi_device(c: &Connection) -> Result<OwnedObjectPath, String> {
     }
     Err("No hay adaptador Wi-Fi".into())
 }
+// 0.1.0
+// modified 0.1.1 -- marca qué redes están guardadas y si se conectan solas
 pub async fn state(c: &Connection) -> Result<Json, String> {
     let manager = proxy(c, ROOT, NAME).await?;
     let enabled: bool = manager
@@ -123,6 +128,7 @@ pub async fn state(c: &Connection) -> Result<Json, String> {
     )
 }
 /// Perfiles Wi-Fi guardados: SSID, ruta y ajustes (sin secretos).
+// 0.1.1
 async fn wifi_profiles(c: &Connection) -> Result<Vec<(Vec<u8>, OwnedObjectPath, Settings)>, String> {
     let settings = proxy(
         c,
@@ -156,6 +162,8 @@ async fn wifi_profiles(c: &Connection) -> Result<Vec<(Vec<u8>, OwnedObjectPath, 
     }
     Ok(result)
 }
+// 0.1.0
+// modified 0.1.1 -- sale de wifi_profiles, compartida
 async fn profiles(c: &Connection, ssid: &str) -> Result<Vec<OwnedObjectPath>, String> {
     Ok(wifi_profiles(c)
         .await?
@@ -166,12 +174,15 @@ async fn profiles(c: &Connection, ssid: &str) -> Result<Vec<OwnedObjectPath>, St
 }
 /// NetworkManager no manda las propiedades que están en su valor por
 /// defecto, y `connection.autoconnect` lo tiene a `true`.
+// 0.1.1
 fn autoconnect(s: &Settings) -> bool {
     s.get("connection")
         .and_then(|c| c.get("autoconnect"))
         .and_then(|v| bool::try_from(v).ok())
         .unwrap_or(true)
 }
+// 0.1.0
+// modified 0.1.1 -- activar o desactivar la conexión automática a una wifi guardada
 pub async fn perform(c: &Connection, op: &Operation) -> Result<(), String> {
     let manager = proxy(c, ROOT, NAME).await?;
     match op {
@@ -344,6 +355,7 @@ pub async fn perform(c: &Connection, op: &Operation) -> Result<(), String> {
     }
 }
 
+// 0.1.0
 pub async fn details(c: &Connection, kind: &str) -> Result<Json, String> {
     let wanted = match kind {
         "wifi" => 2,
@@ -429,6 +441,7 @@ pub async fn details(c: &Connection, kind: &str) -> Result<Json, String> {
     }
     Err("No hay dispositivo de red".into())
 }
+// 0.1.0
 pub async fn secret(c: &Connection, ssid: &str) -> Result<String, String> {
     let paths = profiles(c, ssid).await?;
     let path = paths.first().ok_or("No hay perfil guardado para esa red")?;

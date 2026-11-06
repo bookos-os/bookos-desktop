@@ -46,6 +46,7 @@ pub const MARGIN: f32 = 12.0;
 
 /// El `card` del sistema de diseño, oscurecido en el tema oscuro y con una
 /// opacidad algo menor para que el dock siga flotando sobre el fondo.
+// 0.1.0
 fn fondo() -> Color {
     Color {
         a: 0.75,
@@ -60,6 +61,7 @@ fn fondo() -> Color {
 /// El mismo fondo cuando el dock está pegado al borde. Más cuerpo que el
 /// flotante: apoyado en el borde deja de leerse como algo que va y viene y pasa
 /// a ser parte del marco de la pantalla.
+// 0.1.0
 fn fondo_pegado() -> Color {
     Color {
         a: 0.75,
@@ -107,6 +109,7 @@ const PAD_V_ABAJO: f32 = PAD_V - PUNTO / 2.0;
 /// El juego de caracteres de un `app_id` de verdad —`org.kde.konsole`,
 /// `firefox`, `code-oss`— y ni uno más. Nada de espacios, comillas, `;`, `|`,
 /// `$` ni `&`: eso ya no es un nombre de programa, es una orden.
+// 0.1.0
 fn lanzable(id: &str) -> bool {
     !id.is_empty()
         && id
@@ -145,6 +148,8 @@ impl DockItem {
     /// Busca el icono en los temas del sistema. Si no aparece, el item se
     /// dibuja igual con una baldosa y su inicial: un icono que falta no puede
     /// dejar un hueco en el dock.
+    // 0.1.0
+    // modified 0.1.1 -- recuerda cuándo cambió un icono dinámico y si se acaba de lanzar
     pub fn new(exec: &str, label: &str, icon_name: &str, app_id: &str) -> Self {
         let icon = icono::cargar(icon_name);
         Self {
@@ -161,36 +166,44 @@ impl DockItem {
     }
 
     /// ¿Es este `app_id` de Wayland el de este lanzador?
+    // 0.1.0
     fn es_suya(&self, app_id: &str) -> bool {
         crate::mismo_programa(&self.app_id, app_id)
     }
 
+    // 0.1.0
     pub fn exec(&self) -> &str {
         &self.exec
     }
 
+    // 0.1.0
     pub fn icono_nombre(&self) -> &str {
         &self.icono_nombre
     }
 
+    // 0.1.0
     pub fn app_id(&self) -> &str {
         &self.app_id
     }
 
     /// ¿Tiene ya alguna ventana abierta? Lo fija [`Dock::set_abiertas`].
+    // 0.1.0
     pub fn anclada(&self) -> bool {
         self.anclada
     }
 
+    // 0.1.0
     pub fn abierta(&self) -> bool {
         self.abierta
     }
 
+    // 0.1.0
     pub fn has_icon(&self) -> bool {
         self.icon.is_some()
     }
 
     /// Cuánto se levanta ahora mismo, de 0 a [`BOTE`].
+    // 0.1.1
     fn salto(&self) -> f32 {
         let Some(desde) = self.lanzado else {
             return 0.0;
@@ -219,9 +232,11 @@ pub struct Dock {
 }
 
 impl Dock {
+    // 0.1.0
     pub fn tamano_actual(&self) -> u32 {
         self.tamano as u32
     }
+    // 0.1.0
     pub fn tamano(&mut self, tamano: u32) {
         self.tamano = tamano.clamp(32, 80) as f32;
         self.hover.señalar(None);
@@ -230,6 +245,7 @@ impl Dock {
     /// Ancla sin alternar. Es lo que hace arrastrar un icono del launchpad
     /// hasta el dock: soltar algo que ya estaba anclado no puede desanclarlo,
     /// que es lo que haría [`Self::alternar_anclado`]. `true` si cambió algo.
+    // 0.1.0
     pub fn anclar(&mut self, app_id: &str, exec: &str, icono: &str) -> bool {
         match self.indice_de(app_id) {
             Some(i) if self.items[i].anclada => false,
@@ -248,6 +264,7 @@ impl Dock {
     ///
     /// El launchpad no se puede sacar —es la única forma de abrir lo que no
     /// está en el dock— y por eso se comprueba aquí y no en quien llama.
+    // 0.1.0
     pub fn desanclar(&mut self, app_id: &str) -> bool {
         let Some(i) = self.indice_de(app_id) else {
             return false;
@@ -270,6 +287,7 @@ impl Dock {
     /// El launchpad no se toca: es parte del escritorio, no un lanzador que se
     /// quita. Y lo anclado se añade al final, que es donde la mano espera
     /// encontrar lo último que puso.
+    // 0.1.0
     pub fn alternar_anclado(&mut self, app_id: &str, exec: &str, icono: &str) {
         if let Some(i) = self.indice_de(app_id) {
             // El launchpad no es una aplicación: quitarlo dejaría el dock sin
@@ -294,27 +312,32 @@ impl Dock {
         self.items.push(DockItem::new(exec, app_id, icono, app_id));
     }
 
+    // 0.1.0
     pub fn esta_anclada(&self, app_id: &str) -> bool {
         self.indice_de(app_id)
             .is_some_and(|i| self.items[i].anclada)
     }
 
+    // 0.1.0
     fn indice_de(&self, app_id: &str) -> Option<usize> {
         self.items
             .iter()
             .position(|i| crate::mismo_programa(i.app_id(), app_id) || i.app_id() == app_id)
     }
 
+    // 0.1.1
     pub fn arrastrar(&mut self, app_id: Option<&str>) {
         self.arrastrado = app_id.map(str::to_owned);
         self.hover.señalar(None);
     }
 
+    // 0.1.1
     pub fn vista_agarrado(&self) -> Option<PanelElement<'_>> {
         let i = self.indice_de(self.arrastrado.as_deref()?)?;
         Some(contenido_icono(&self.items[i], self.tamano))
     }
 
+    // 0.1.1
     pub fn mover(&mut self, app_id: &str, x: f32) -> bool {
         let Some(origen) = self.indice_de(app_id) else {
             return false;
@@ -334,6 +357,7 @@ impl Dock {
     }
 
     /// La lista tal y como se escribe en `panel.conf`, para poder guardarla.
+    // 0.1.0
     pub fn como_configuracion(&self) -> Vec<String> {
         self.items
             .iter()
@@ -343,6 +367,8 @@ impl Dock {
     }
 
     /// Los lanzadores que diga la configuración.
+    // 0.1.0
+    // modified 0.1.1 -- sin icono arrastrado al empezar
     pub fn from_config(specs: &[crate::config::Lanzador]) -> Self {
         let items = specs
             .iter()
@@ -364,6 +390,8 @@ impl Dock {
     /// al día y esto se llama cada minuto y con cada aviso del kernel. Sin la
     /// comprobación, cada llamada decodificaba el PNG en un `Handle` de id
     /// nuevo —iced vuelve a subir la imagen— y repintaba el dock entero.
+    // 0.1.0
+    // modified 0.1.1 -- solo recarga los iconos dinámicos que cambiaron en disco
     pub fn refrescar_dinamicos(&mut self) -> bool {
         let mut cambio = false;
         for item in self
@@ -383,6 +411,7 @@ impl Dock {
     }
 
     /// Vuelve a cargar todos los iconos, tras cambiar el tema de iconos.
+    // 0.1.0
     pub fn recargar_iconos(&mut self) {
         for item in &mut self.items {
             item.icon = icono::cargar(&item.icono_nombre);
@@ -395,6 +424,8 @@ impl Dock {
     /// Recibe los `app_id` y no una lista de índices para que el compositor no
     /// tenga que saber cómo está montado el dock: él sabe qué ventanas hay, el
     /// dock sabe a quién corresponden.
+    // 0.1.0
+    // modified 0.1.1 -- el bote de lanzamiento para al abrirse la ventana
     pub fn set_abiertas(&mut self, app_ids: &[String]) -> bool {
         let mut cambio = false;
         for item in &mut self.items {
@@ -448,6 +479,7 @@ impl Dock {
         cambio
     }
 
+    // 0.1.0
     pub fn items(&self) -> &[DockItem] {
         &self.items
     }
@@ -462,6 +494,7 @@ impl Dock {
     /// usamos y a sincronizar la caché entre `update` y `draw`. Cuando haya un
     /// widget con estado interno de verdad —un deslizador de volumen— entonces
     /// sí hará falta el camino de iced.
+    // 0.1.0
     pub fn item_en(&self, x: f32, y: f32) -> Option<usize> {
         // La banda del indicador cuenta como parte del icono: pulsar el punto
         // de "abierta" es pulsar la aplicación, no un hueco muerto.
@@ -482,8 +515,57 @@ impl Dock {
         (i < self.items.len()).then_some(i)
     }
 
+    // añadido en la 0.2.0 -- la geometría comparte los mismos márgenes que el dibujo y el hit-test.
+    pub fn capas(&self) -> Vec<(f32, f32, f32, f32, f32)> {
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                (
+                    PAD + i as f32 * (self.tamano + GAP),
+                    PAD_V_ARRIBA,
+                    self.tamano,
+                    self.tamano + PUNTO,
+                    if tema::efectos_reducidos() {
+                        0.0
+                    } else {
+                        item.salto()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    // añadido en la 0.2.0
+    pub fn realces(&self) -> Vec<(usize, f32)> {
+        (0..self.items.len())
+            .filter_map(|i| {
+                let alfa = self.hover.intensidad(i);
+                (alfa > 0.001).then_some((i, alfa))
+            })
+            .collect()
+    }
+
+    // añadido en la 0.2.0 -- los iconos se pintan apoyados; la GPU aplica el salto después.
+    pub fn view_icono(&self, indice: usize) -> PanelElement<'_> {
+        let item = &self.items[indice];
+        if self.arrastrado.as_deref() == Some(item.app_id()) {
+            Space::new()
+                .width(Length::Fixed(self.tamano))
+                .height(Length::Fixed(self.tamano + PUNTO))
+                .into()
+        } else {
+            column![
+                contenido_icono(item, self.tamano),
+                punto(item.abierta, self.tamano)
+            ]
+            .into()
+        }
+    }
+
     /// Marca qué icono está señalado. Devuelve `true` si cambió, que es la
     /// señal de que hay que repintar.
+    // 0.1.0
     pub fn set_hover(&mut self, hover: Option<usize>) -> bool {
         self.hover.señalar(hover)
     }
@@ -492,6 +574,8 @@ impl Dock {
     /// repintarlo aunque no llegue ningún evento: es la única superficie del
     /// shell que se anima sin que nadie la toque después del último movimiento
     /// del ratón.
+    // 0.1.0
+    // modified 0.1.1 -- cuenta el bote del icono al lanzar
     pub fn animando(&self) -> bool {
         // Un fotograma de margen tras el límite: es el que deja el icono
         // apoyado, que si no se quedaría congelado a media altura.
@@ -507,6 +591,7 @@ impl Dock {
     /// aún no tiene ventana, rebota hasta que aparezca: sin esto, una
     /// aplicación pesada tardaba segundos en dar señales y se volvía a pulsar.
     /// Devuelve `true` si hay que repintar.
+    // 0.1.1
     pub fn lanzando(&mut self, exec: &str) -> bool {
         let Some(item) = self
             .items
@@ -525,12 +610,14 @@ impl Dock {
     /// Devuelve el item entero y no solo su `exec` porque pulsar un programa ya
     /// abierto no es lanzarlo otra vez: hay que traer su ventana al frente, y
     /// para eso quien decide necesita el `app_id`.
+    // 0.1.0
     pub fn pulsado(&self, x: f32, y: f32) -> Option<&DockItem> {
         self.item_en(x, y).map(|i| &self.items[i])
     }
 
     /// El centro **horizontal** del icono `i`, relativo al dock. Lo necesita el
     /// menú contextual para salir justo encima de él.
+    // 0.1.0
     pub fn centro_de(&self, i: usize) -> f32 {
         PAD + i as f32 * (self.tamano + GAP) + self.tamano / 2.0
     }
@@ -539,6 +626,7 @@ impl Dock {
     ///
     /// El alto lleva la banda del indicador de ventana abierta además del
     /// icono: el punto no cabe en el padding sin comerse el borde redondeado.
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let n = self.items.len().max(1) as f32;
         (
@@ -547,7 +635,19 @@ impl Dock {
         )
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- hueco donde iba el icono que se arrastra y aire para el bote
     pub fn view(&self) -> PanelElement<'_> {
+        self.componer(false)
+    }
+
+    // añadido en la 0.2.0 -- conserva el hueco y el fondo sin rasterizar iconos en movimiento.
+    pub fn view_fondo(&self) -> PanelElement<'_> {
+        self.componer(true)
+    }
+
+    // añadido en la 0.2.0 -- comparte geometría entre la vista completa y las capas.
+    fn componer(&self, solo_fondo: bool) -> PanelElement<'_> {
         // Todos los lanzadores comparten el mismo eje vertical, aunque el
         // contenido interno de algún icono tenga transparencias distintas.
         let mut fila = row![]
@@ -573,6 +673,11 @@ impl Dock {
                     punto(item.abierta, self.tamano)
                 ]
                 .into()
+            } else if solo_fondo {
+                Space::new()
+                    .width(Length::Fixed(self.tamano))
+                    .height(Length::Fixed(BOTE + self.tamano + PUNTO))
+                    .into()
             } else {
                 icon_view(item, self.hover.intensidad(i), self.tamano)
             };
@@ -613,6 +718,7 @@ impl Dock {
 
     /// Dice si el dock está apoyado en el borde de la pantalla. `true` si eso
     /// cambia el dibujo.
+    // 0.1.0
     pub fn set_pegado(&mut self, pegado: bool) -> bool {
         if self.pegado == pegado {
             return false;
@@ -628,6 +734,7 @@ impl Dock {
 /// el icono se salga de su slot, y el buffer del dock hoy mide exactamente
 /// `PAD_V*2 + self.tamano` de alto, así que lo ampliado quedaría cortado. Reservar ese
 /// hueco cambia la geometría ya calibrada y va aparte.
+// 0.1.1
 fn contenido_icono(item: &DockItem, tamano: f32) -> PanelElement<'_> {
     match &item.icon {
         Some(Icono::Svg(handle)) => svg(handle.clone())
@@ -672,6 +779,8 @@ fn contenido_icono(item: &DockItem, tamano: f32) -> PanelElement<'_> {
     }
 }
 
+// 0.1.0
+// modified 0.1.1 -- el icono bota al lanzar la aplicación
 fn icon_view(item: &DockItem, señalado: f32, tamano: f32) -> PanelElement<'_> {
     let contenido = contenido_icono(item, tamano);
     // La placa se desvanece en vez de encenderse de golpe: el dock es lo que
@@ -709,6 +818,7 @@ fn icon_view(item: &DockItem, señalado: f32, tamano: f32) -> PanelElement<'_> {
 ///
 /// Siempre ocupa su sitio, esté encendido o no: si el hueco apareciera y
 /// desapareciera, el dock entero cambiaría de alto al abrir una ventana.
+// 0.1.0
 fn punto<'a>(encendida: bool, tamano: f32) -> PanelElement<'a> {
     let color = if encendida {
         Color { a: 0.85, ..TEXT() }
@@ -737,6 +847,7 @@ fn punto<'a>(encendida: bool, tamano: f32) -> PanelElement<'a> {
 }
 
 /// Ayuda para depurar la resolución de iconos desde fuera del crate.
+// 0.1.0
 pub fn icon_path(name: &str) -> Option<PathBuf> {
     icono::resolve_icon(name)
 }

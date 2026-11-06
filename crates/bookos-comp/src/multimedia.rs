@@ -47,6 +47,7 @@ pub enum Tecla {
     FnLock,
 }
 
+// 0.1.0
 pub fn resolver(sym: u32) -> Option<Tecla> {
     Some(match sym {
         XF86_SUBIR_VOLUMEN => Tecla::Volumen(1),
@@ -67,6 +68,7 @@ pub fn resolver(sym: u32) -> Option<Tecla> {
     })
 }
 
+// 0.1.0
 pub fn ejecutar(state: &mut BookosComp, tecla: Tecla) {
     let osd = match tecla {
         Tecla::Volumen(sentido) => {
@@ -100,6 +102,7 @@ pub fn ejecutar(state: &mut BookosComp, tecla: Tecla) {
 /// pulsado daba un solo paso. Empieza tras el retardo de repetición del
 /// teclado, como cualquier tecla, y la corta la siguiente pulsación o suelta
 /// (`input::tecla`).
+// 0.1.0
 pub fn repetir_al_mantener(state: &mut BookosComp, tecla: Tecla) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     /// Diez repeticiones por segundo y no el ritmo del teclado (25 por
@@ -133,6 +136,7 @@ pub fn repetir_al_mantener(state: &mut BookosComp, tecla: Tecla) {
 }
 
 /// Enseña el aviso y programa su salida.
+// 0.1.0
 pub(crate) fn avisar(
     state: &mut BookosComp,
     (icono, nivel, texto): (&'static str, Option<u8>, Option<String>),
@@ -160,6 +164,7 @@ const TAPA_CAMARA: &str = "Samsung Galaxy Book Camera Lens Cover";
 /// ese camino y logind no entrega dos veces el mismo dispositivo. El permiso lo
 /// da la regla de udev `session/70-bookos-camara.rules`; sin ella se avisa en
 /// el registro y la cámara sigue funcionando, solo que sin aviso.
+// 0.1.0
 pub fn vigilar_tapa_camara(state: &mut BookosComp) {
     use smithay::reexports::calloop::generic::Generic;
     use smithay::reexports::calloop::{Interest, Mode, PostAction};
@@ -219,6 +224,7 @@ pub fn vigilar_tapa_camara(state: &mut BookosComp) {
 const EVENTO: usize = 24;
 
 /// Si el evento es el interruptor de la tapa, dice si la cámara queda activa.
+// 0.1.0
 fn camara_activa(evento: &[u8; EVENTO]) -> Option<bool> {
     const EV_SW: u16 = 5;
     const SW_CAMERA_LENS_COVER: u16 = 9;
@@ -230,6 +236,7 @@ fn camara_activa(evento: &[u8; EVENTO]) -> Option<bool> {
 }
 
 /// El `/dev/input/eventN` del dispositivo de entrada con ese nombre.
+// 0.1.0
 fn buscar_evento(nombre: &str) -> Option<std::path::PathBuf> {
     std::fs::read_dir("/sys/class/input")
         .ok()?
@@ -258,6 +265,8 @@ fn buscar_evento(nombre: &str) -> Option<std::path::PathBuf> {
 /// tras una recarga a las 05:26 el hilo seguía dormido en el nodo muerto y
 /// Fn+F9 dejó de enseñar el aviso.
 #[cfg(feature = "udev")]
+// 0.1.0
+// modified 0.1.1 -- reabre la luz del teclado si se recarga el driver
 pub fn vigilar_luz_teclado(state: &mut BookosComp) {
     use smithay::reexports::calloop::channel;
     let Some((dispositivo, _, maximo)) = bookos_shell::brillo_teclado_actual() else {
@@ -369,6 +378,7 @@ pub fn vigilar_luz_teclado(state: &mut BookosComp) {
 /// Sin esto, el compositor se duerme con el OSD en pantalla y no vuelve a
 /// dibujar: el aviso se quedaría puesto hasta que otra cosa provocara un
 /// frame. Con esto es un solo despertar, no un temporizador que repita.
+// 0.1.0
 fn despertar_para_la_salida(state: &mut BookosComp) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     let Some(queda) = state.shell.as_ref().and_then(|s| s.osd_queda()) else {
@@ -392,10 +402,12 @@ fn despertar_para_la_salida(state: &mut BookosComp) {
 /// Se lee **antes** de escribir en vez de llevar la cuenta aquí: el volumen lo
 /// puede haber cambiado otro programa, y sumarle el paso a un número viejo da
 /// saltos raros.
+// 0.1.0
 fn volumen(paso: i32) {
     bookos_system::request(bookos_system::Operation::VolumeStep { step: paso });
 }
 
+// 0.1.0
 fn silenciar(destino: &str) {
     bookos_system::request(bookos_system::Operation::Mute {
         target: destino.into(),
@@ -403,6 +415,7 @@ fn silenciar(destino: &str) {
     });
 }
 
+// 0.1.0
 pub fn recibir_sistema(state: &mut BookosComp) {
     use bookos_system::Operation;
     let mut mostro_osd = false;
@@ -476,6 +489,7 @@ pub fn recibir_sistema(state: &mut BookosComp) {
 /// Suena aquí y no en `bookos-system` porque es el compositor quien lee
 /// `panel.conf`. Suena tras aplicar el paso, no al pulsar: antes sonaría al
 /// volumen viejo. Los pasos seguidos llegan ya sumados en uno.
+// 0.1.0
 fn chasquido(state: &mut BookosComp) {
     if !state.sonido_volumen {
         return;
@@ -501,6 +515,7 @@ pub enum Chasquido {
 }
 
 /// Se pulsó una tecla de volumen.
+// 0.1.0
 pub fn retener_chasquido(state: &mut BookosComp) {
     if let Chasquido::Aplazado(token) = std::mem::replace(&mut state.chasquido, Chasquido::Retenido)
     {
@@ -514,6 +529,7 @@ pub fn retener_chasquido(state: &mut BookosComp) {
 /// No suena en el mismo instante de soltar porque los pasos van por una cola
 /// a `bookos-system` y el último puede confirmarse después: se oiría el nivel
 /// anterior, o dos veces.
+// 0.1.0
 pub fn soltar_chasquido(state: &mut BookosComp) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     const MARGEN: std::time::Duration = std::time::Duration::from_millis(60);
@@ -537,6 +553,7 @@ pub fn soltar_chasquido(state: &mut BookosComp) {
 
 /// Un sonido de los que acompañan un gesto (bloquear, desbloquear, capturar,
 /// iniciar sesión), si `sonidos_interfaz` está puesto.
+// 0.1.0
 pub fn sonar_interfaz(state: &mut BookosComp, nombre: &str) {
     if state.sonidos_interfaz {
         sonar(state, nombre);
@@ -550,6 +567,7 @@ pub fn sonar_interfaz(state: &mut BookosComp, nombre: &str) {
 /// `canberra-gtk-play` tarda en arrancar más que `pw-play`. Antes la ruta de
 /// freedesktop estaba escrita tal cual, y con el tema de BookOS instalado el
 /// volumen y el cargador seguían sonando con los de serie.
+// 0.1.0
 fn ruta_sonido(nombre: &str) -> Option<std::path::PathBuf> {
     let mut bases = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
@@ -572,6 +590,7 @@ fn ruta_sonido(nombre: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Toca un sonido del tema sin esperar a que acabe.
+// 0.1.0
 pub fn sonar(state: &mut BookosComp, nombre: &str) {
     state
         .hijos
@@ -580,13 +599,20 @@ pub fn sonar(state: &mut BookosComp, nombre: &str) {
         tracing::warn!(nombre, "sin sonido: no está en ningún tema");
         return;
     };
-    match std::process::Command::new("pw-play")
+    // modificado en la 0.2.0 -- conserva la medida del arranque antes de plantear un flujo propio.
+    let desde = std::time::Instant::now();
+    let resultado = std::process::Command::new("pw-play")
         .arg(ruta)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-    {
+        .spawn();
+    tracing::debug!(
+        nombre,
+        arranque_ms = desde.elapsed().as_secs_f64() * 1000.0,
+        "arranque del sonido de interfaz"
+    );
+    match resultado {
         Ok(hijo) => state.hijos.push(hijo),
         Err(err) => tracing::warn!(nombre, "sin sonido: {err}"),
     }
@@ -599,7 +625,10 @@ pub fn sonar(state: &mut BookosComp, nombre: &str) {
 /// porcentaje): por eso se compara con lo último visto y no se avisa por
 /// evento. Se mira el estado de la batería y no solo el del adaptador porque
 /// es lo que ya usa el widget del panel, y así los dos nunca se contradicen.
+// 0.1.0
+// modificado en la 0.2.0 -- en el idioma de la sesión, como el resto del shell
 pub fn cargador(state: &mut BookosComp) {
+    use bookos_shell::t;
     let Some((enchufado, porciento)) = bookos_shell::cargador() else {
         return;
     };
@@ -608,14 +637,14 @@ pub fn cargador(state: &mut BookosComp) {
     }
     let (resumen, cuerpo, sonido) = if enchufado {
         (
-            "Cargador conectado",
-            format!("{porciento} % · cargando"),
+            t("Cargador conectado", "Charger connected"),
+            format!("{porciento} % · {}", t("cargando", "charging")),
             "power-plug",
         )
     } else {
         (
-            "Cargador desconectado",
-            format!("{porciento} % de batería"),
+            t("Cargador desconectado", "Charger disconnected"),
+            format!("{porciento} % {}", t("de batería", "battery")),
             "power-unplug",
         )
     };
@@ -649,6 +678,7 @@ pub fn cargador(state: &mut BookosComp) {
 /// hay muchos caminos para abrirla (clic, atajo, cambio desde otra tarjeta) y
 /// todos acaban pintando. El temporizador se suelta solo al cerrarla: con el
 /// centro cerrado no hay nada despertando cada segundo.
+// 0.1.0
 pub fn vigilar_centro(state: &mut BookosComp) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     const CADA: std::time::Duration = std::time::Duration::from_secs(1);
@@ -676,6 +706,7 @@ pub fn vigilar_centro(state: &mut BookosComp) {
     }
 }
 
+// 0.1.0
 fn icono_volumen(nivel: u8, silenciado: bool) -> &'static str {
     match (silenciado, nivel) {
         (true, _) | (_, 0) => "volumen-silencio",
@@ -687,6 +718,8 @@ fn icono_volumen(nivel: u8, silenciado: bool) -> &'static str {
 
 /// Sube o baja el brillo de la pantalla por logind, que es quien tiene el
 /// permiso: `/sys/class/backlight/*/brightness` es de root.
+// 0.1.0
+// modificado en la 0.2.0 -- el cambio va por poner_brillo, compartido con el buscador
 fn brillo(state: &mut BookosComp, paso: i32) -> (&'static str, Option<u8>, Option<String>) {
     let Some(actual) = crate::brillo_auto::partida_tecla(state) else {
         return (
@@ -695,17 +728,34 @@ fn brillo(state: &mut BookosComp, paso: i32) -> (&'static str, Option<u8>, Optio
             Some("Brillo de pantalla no disponible".into()),
         );
     };
-    let nuevo = (actual as i32 + paso).clamp(5, 100) as u8;
-    if let Some((dispositivo, maximo)) = bookos_shell::backlight() {
-        let crudo = (maximo as f64 * nuevo as f64 / 100.0).round() as u32;
-        bookos_shell::retroiluminacion::solicitar("backlight", &dispositivo, crudo);
-    }
+    poner_brillo(state, (actual as i32 + paso).clamp(5, 100) as u8)
+}
+
+/// Pone el brillo en `nivel` %, como si se hubiera llegado con las teclas: el
+/// brillo automático lo toma por un ajuste a mano. Lo usan las teclas y el
+/// buscador («brillo 30»).
+// añadido en la 0.2.0
+pub fn poner_brillo(
+    state: &mut BookosComp,
+    nivel: u8,
+) -> (&'static str, Option<u8>, Option<String>) {
+    let nuevo = nivel.clamp(5, 100);
+    let Some((dispositivo, maximo)) = bookos_shell::backlight() else {
+        return (
+            "brillo",
+            None,
+            Some("Brillo de pantalla no disponible".into()),
+        );
+    };
+    let crudo = (maximo as f64 * nuevo as f64 / 100.0).round() as u32;
+    bookos_shell::retroiluminacion::solicitar("backlight", &dispositivo, crudo);
     crate::brillo_auto::tecla(state, nuevo);
     ("brillo", Some(nuevo), None)
 }
 
 /// El teclado tiene su propia retroiluminación, con niveles enteros (0..max) y
 /// no un tanto por ciento: en este portátil son cuatro pasos.
+// 0.1.0
 fn brillo_teclado(state: &mut BookosComp, paso: i32) -> (&'static str, Option<u8>, Option<String>) {
     let Some((dispositivo, actual, maximo)) = bookos_shell::brillo_teclado_actual() else {
         return ("teclado", None, Some("Sin luz de teclado".into()));
@@ -720,6 +770,7 @@ fn brillo_teclado(state: &mut BookosComp, paso: i32) -> (&'static str, Option<u8
     ("teclado", Some(porciento), None)
 }
 
+// 0.1.0
 fn alternar_brillo_teclado(state: &mut BookosComp) -> (&'static str, Option<u8>, Option<String>) {
     let Some((dispositivo, actual, maximo)) = bookos_shell::brillo_teclado_actual() else {
         return ("teclado", None, Some("Sin luz de teclado".into()));
@@ -732,6 +783,7 @@ fn alternar_brillo_teclado(state: &mut BookosComp) -> (&'static str, Option<u8>,
     ("teclado", Some(porciento), None)
 }
 
+// 0.1.0
 fn camara(estado: Option<bool>) -> (&'static str, Option<u8>, Option<String>) {
     let (icono, texto) = match estado {
         Some(true) => ("camara", "Cámara activada"),
@@ -745,6 +797,7 @@ fn camara(estado: Option<bool>) -> (&'static str, Option<u8>, Option<String>) {
 
 /// Enciende y apaga el touchpad. El cambio se guarda en el estado para que los
 /// dispositivos que aparezcan después —tras un cambio de TTY— nazcan igual.
+// 0.1.0
 fn touchpad(state: &mut BookosComp) -> (&'static str, Option<u8>, Option<String>) {
     state.touchpad_activo = !state.touchpad_activo;
     // A los que ya están abiertos hay que decírselo ahora: `DeviceAdded` solo

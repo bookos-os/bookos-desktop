@@ -1,0 +1,19 @@
+# Avisa de dependencias con vulnerabilidades conocidas y propone las
+# actualizaciones. `vendor/smithay` queda fuera del workspace y es una copia
+# parcheada a mano: Dependabot no la toca, así que sus avisos de seguridad hay
+# que mirarlos a mano contra el upstream.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # Las actualizaciones menores y de parche van juntas: un PR por cada
+    # dependencia de un workspace tan grande no se revisa.
+    groups:
+      menores-y-parches:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -21,6 +21,7 @@ pub use tema::rojo as PELIGRO;
 pub use tema::texto as TEXT;
 pub use tema::verde as OK;
 
+// 0.1.0
 pub fn theme() -> Theme {
     Theme::custom(
         "BookOS",
@@ -68,6 +69,7 @@ pub const LADO_LOGO: f32 = 20.0;
 /// hueco de la izquierda sin nada que la justificara.
 pub const ANCHO_LOGO: f32 = 44.0;
 
+// 0.1.0
 pub fn panel(widgets: &Panel) -> PanelElement<'_> {
     // Los widgets se montan en una lista y no en un `row!` fijo porque casi
     // todos pueden faltar: sin batería, sin red o sin retroiluminación no se

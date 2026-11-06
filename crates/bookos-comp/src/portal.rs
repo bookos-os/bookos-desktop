@@ -86,6 +86,7 @@ struct Buzon<T> {
 pub struct Emisario<T>(Arc<Mutex<Buzon<T>>>);
 
 impl<T> Emisario<T> {
+    // 0.1.0
     pub fn entregar(self, valor: T) {
         // El bloque cierra el préstamo antes de que corra el `Drop` de `self`,
         // que vuelve a coger el mismo mutex.
@@ -103,6 +104,7 @@ impl<T> Emisario<T> {
 }
 
 impl<T> Drop for Emisario<T> {
+    // 0.1.0
     fn drop(&mut self) {
         let mut buzon = self
             .0
@@ -121,6 +123,7 @@ pub struct Promesa<T>(Arc<Mutex<Buzon<T>>>);
 impl<T> std::future::Future for Promesa<T> {
     type Output = Option<T>;
 
+    // 0.1.0
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
         let mut buzon = self
             .0
@@ -137,6 +140,7 @@ impl<T> std::future::Future for Promesa<T> {
     }
 }
 
+// 0.1.0
 pub fn promesa<T>() -> (Emisario<T>, Promesa<T>) {
     let buzon = Arc::new(Mutex::new(Buzon {
         valor: None,
@@ -180,6 +184,7 @@ struct Estado {
 }
 
 impl Estado {
+    // 0.1.0
     fn avisar(&self, aviso: Aviso) -> bool {
         self.canal.send(aviso).is_ok()
     }
@@ -193,6 +198,7 @@ struct ScreenCast {
 impl ScreenCast {
     /// Solo pantallas enteras (`MONITOR`).
     #[zbus(property)]
+    // 0.1.0
     fn available_source_types(&self) -> u32 {
         1
     }
@@ -200,6 +206,7 @@ impl ScreenCast {
     /// Solo `EMBEDDED`: el cursor va pintado dentro del fotograma y no hay
     /// forma de sacarlo aparte sin componer la salida dos veces.
     #[zbus(property)]
+    // 0.1.0
     fn available_cursor_modes(&self) -> u32 {
         2
     }
@@ -207,10 +214,12 @@ impl ScreenCast {
     /// En minúscula: así se llama la propiedad en el XML del portal, y zbus
     /// convertiría `version` en `Version` si no se le dice.
     #[zbus(property, name = "version")]
+    // 0.1.0
     fn version(&self) -> u32 {
         4
     }
 
+    // 0.1.0
     async fn create_session(
         &self,
         _handle: ObjectPath<'_>,
@@ -243,6 +252,7 @@ impl ScreenCast {
 
     /// No hay nada que elegir todavía: la pantalla se elige en el diálogo de
     /// `Start`, que es donde el usuario está mirando. Se acepta y ya.
+    // 0.1.0
     fn select_sources(
         &self,
         _handle: ObjectPath<'_>,
@@ -253,6 +263,7 @@ impl ScreenCast {
         (CORRECTO, HashMap::new())
     }
 
+    // 0.1.0
     async fn start(
         &self,
         handle: ObjectPath<'_>,
@@ -337,6 +348,7 @@ impl ScreenCast {
         resultado
     }
 
+    // 0.1.0
     async fn open_pipe_wire_remote(
         &self,
         _session_handle: ObjectPath<'_>,
@@ -358,6 +370,7 @@ impl ScreenCast {
     }
 }
 
+// 0.1.0
 fn respuesta_start(
     sesion: u32,
     node_id: u32,
@@ -403,6 +416,7 @@ enum AlCerrar {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl Solicitud {
+    // 0.1.0
     async fn close(&self, #[zbus(object_server)] servidor: &zbus::ObjectServer) {
         self.cancelada.store(true, Ordering::Release);
         match &self.al_cerrar {
@@ -434,10 +448,12 @@ struct Sesion {
 #[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
 impl Sesion {
     #[zbus(property, name = "version")]
+    // 0.1.0
     fn version(&self) -> u32 {
         1
     }
 
+    // 0.1.0
     async fn close(&self, #[zbus(object_server)] servidor: &zbus::ObjectServer) {
         let sesion = self
             .estado
@@ -480,12 +496,14 @@ const APARIENCIA: &str = "org.freedesktop.appearance";
 
 impl Ajustes {
     /// `color-scheme`: 0 sin preferencia, 1 oscuro, 2 claro.
+    // 0.1.0
     fn color_scheme() -> u32 {
         if bookos_shell::tema::es_claro() { 2 } else { 1 }
     }
 
     /// `accent-color` es una tupla de tres dobles de 0 a 1, no un entero de 32
     /// bits: comprobado contra lo que sirve el portal de KDE en esta máquina.
+    // 0.1.0
     fn accent_color() -> (f64, f64, f64) {
         let c = bookos_shell::tema::acento();
         (c.r as f64, c.g as f64, c.b as f64)
@@ -494,10 +512,12 @@ impl Ajustes {
     /// `reduced-motion`: 0 no, 1 sí. Sale de los efectos reducidos de BookOS,
     /// así que apagarlos en el escritorio también calma las animaciones de las
     /// aplicaciones que lo respetan.
+    // 0.1.0
     fn reduced_motion() -> u32 {
         u32::from(bookos_shell::tema::efectos_reducidos())
     }
 
+    // 0.1.0
     fn valores() -> HashMap<String, OwnedValue> {
         let mut m = HashMap::new();
         let mete = |m: &mut HashMap<String, OwnedValue>, k: &str, v: Value<'_>| {
@@ -523,6 +543,7 @@ impl Ajustes {
         m
     }
 
+    // 0.1.0
     fn uno(clave: &str) -> Option<OwnedValue> {
         let v = match clave {
             "color-scheme" => Value::from(Self::color_scheme()),
@@ -538,10 +559,12 @@ impl Ajustes {
 #[zbus::interface(name = "org.freedesktop.impl.portal.Settings")]
 impl Ajustes {
     #[zbus(property, name = "version")]
+    // 0.1.0
     fn version(&self) -> u32 {
         2
     }
 
+    // 0.1.0
     fn read_all(&self, namespaces: Vec<String>) -> HashMap<String, HashMap<String, OwnedValue>> {
         // La lista admite comodines por prefijo y la vacía significa «todo».
         let quiere = namespaces.is_empty()
@@ -557,6 +580,7 @@ impl Ajustes {
 
     /// `ReadOne` es la de la versión 2. `Read` hace lo mismo y sigue viva
     /// porque las aplicaciones antiguas solo conocen esa.
+    // 0.1.0
     fn read_one(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
         if namespace != APARIENCIA {
             return Err(zbus::fdo::Error::UnknownProperty(format!(
@@ -567,11 +591,13 @@ impl Ajustes {
             .ok_or_else(|| zbus::fdo::Error::UnknownProperty(format!("no hay ajuste «{key}»")))
     }
 
+    // 0.1.0
     fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
         self.read_one(namespace, key)
     }
 
     #[zbus(signal)]
+    // 0.1.0
     async fn setting_changed(
         emisor: &zbus::object_server::SignalEmitter<'_>,
         namespace: &str,
@@ -584,6 +610,7 @@ impl Ajustes {
 ///
 /// Se llama desde el bucle de frames al aplicar apariencia o efectos. Sin la
 /// señal, una app GTK ya abierta se queda con el tema con el que arrancó.
+// 0.1.0
 pub fn apariencia_cambiada(conexion: Option<&zbus::blocking::Connection>) {
     tema_gtk();
     let Some(conexion) = conexion else {
@@ -621,6 +648,8 @@ pub fn apariencia_cambiada(conexion: Option<&zbus::blocking::Connection>) {
 ///
 /// Solo en la sesión de BookOS: el compositor anidado corre dentro de KDE y
 /// esto reescribiría el tema GTK del anfitrión.
+// 0.1.0
+// modified 0.1.1 -- pasa el tema y tamaño de cursor a GTK y recoge los gsettings sin dejar zombis
 pub fn tema_gtk() {
     if std::env::var("XDG_CURRENT_DESKTOP").as_deref() != Ok("BookOS") {
         return;
@@ -717,6 +746,7 @@ pub fn tema_gtk() {
 /// Si no, `None` y no se toca nada: nombrar un tema que no existe dejaría a
 /// libcanberra cayendo a freedesktop, pero también pisaría el que el usuario
 /// tuviera puesto (en esta máquina, `ocean` de KDE).
+// 0.1.0
 fn tema_sonido() -> Option<&'static str> {
     let mut bases = vec![std::path::PathBuf::from("/usr/share/sounds")];
     if let Some(home) = std::env::var_os("HOME") {
@@ -733,6 +763,7 @@ fn tema_sonido() -> Option<&'static str> {
 /// Lo que al pack le falte ya lo busca GTK en Breeze por el `Inherits` de su
 /// `index.theme`. Aquí solo hay que evitar nombrar un tema que no existe: GTK
 /// no cae a nada razonable y las apps se quedan sin iconos.
+// 0.1.0
 fn tema_iconos(claro: bool) -> &'static str {
     let (bookos, breeze) = if claro {
         ("BookOS-Light", "breeze")
@@ -761,6 +792,7 @@ fn tema_iconos(claro: bool) -> &'static str {
 
 /// Sustituye esas claves en un `settings.ini` de GTK, o las añade bajo
 /// `[Settings]`, sin tocar el resto: lo escriben también KDE y el usuario.
+// 0.1.0
 fn reescribir_ini(ruta: &std::path::Path, valores: &[(&str, &str)]) -> std::io::Result<()> {
     let anterior = match std::fs::read_to_string(ruta) {
         Ok(t) => t,
@@ -805,10 +837,12 @@ impl Screenshot {
     /// La 1 y no la 2: la 2 añade `PickColor`, que aquí no existe. Anunciar una
     /// versión que no se cumple es peor que anunciar la que sí.
     #[zbus(property, name = "version")]
+    // 0.1.0
     fn version(&self) -> u32 {
         1
     }
 
+    // 0.1.0
     async fn screenshot(
         &self,
         _handle: ObjectPath<'_>,
@@ -871,6 +905,7 @@ enum Modo {
 type Filtro = (String, Vec<(u32, String)>);
 
 impl Selector {
+    // 0.1.0
     async fn elegir(
         &self,
         handle: ObjectPath<'_>,
@@ -1006,6 +1041,7 @@ impl Selector {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.FileChooser")]
 impl Selector {
+    // 0.1.0
     async fn open_file(
         &self,
         handle: ObjectPath<'_>,
@@ -1028,6 +1064,7 @@ impl Selector {
         }
     }
 
+    // 0.1.0
     async fn save_file(
         &self,
         handle: ObjectPath<'_>,
@@ -1048,6 +1085,7 @@ impl Selector {
 
     /// Se elige una carpeta y cada nombre de `files` se cuelga de ella, en el
     /// mismo orden, que es lo que pide la especificación.
+    // 0.1.0
     async fn save_files(
         &self,
         handle: ObjectPath<'_>,
@@ -1083,6 +1121,7 @@ impl Selector {
     }
 }
 
+// 0.1.0
 fn cadena(opciones: &mut HashMap<String, OwnedValue>, clave: &str) -> Option<String> {
     opciones
         .remove(clave)
@@ -1090,6 +1129,7 @@ fn cadena(opciones: &mut HashMap<String, OwnedValue>, clave: &str) -> Option<Str
         .filter(|s| !s.is_empty())
 }
 
+// 0.1.0
 fn booleano(opciones: &mut HashMap<String, OwnedValue>, clave: &str) -> bool {
     opciones
         .remove(clave)
@@ -1099,12 +1139,14 @@ fn booleano(opciones: &mut HashMap<String, OwnedValue>, clave: &str) -> bool {
 
 /// Las rutas del portal viajan como `ay` terminado en NUL: no tienen por qué
 /// ser UTF-8.
+// 0.1.0
 fn bytes_ruta(opciones: &mut HashMap<String, OwnedValue>, clave: &str) -> Option<PathBuf> {
     let bytes: Vec<u8> = opciones.remove(clave).and_then(|v| Vec::try_from(v).ok())?;
     let ruta = ruta_de_bytes(&bytes);
     (!ruta.as_os_str().is_empty()).then_some(ruta)
 }
 
+// 0.1.0
 fn ruta_de_bytes(bytes: &[u8]) -> PathBuf {
     use std::os::unix::ffi::OsStrExt;
     let hasta = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
@@ -1113,6 +1155,7 @@ fn ruta_de_bytes(bytes: &[u8]) -> PathBuf {
 
 /// Un nombre de archivo sin más: un único componente normal, ni absoluto, ni
 /// `..`, ni con barras.
+// 0.1.0
 fn nombre_base(bytes: &[u8]) -> Option<PathBuf> {
     let ruta = ruta_de_bytes(bytes);
     let mut componentes = ruta.components();
@@ -1124,6 +1167,7 @@ fn nombre_base(bytes: &[u8]) -> Option<PathBuf> {
 
 /// El que pide la aplicación con `current_filter` y, si no dice nada, el
 /// primero de la lista, que es el que enseñaría cualquier diálogo.
+// 0.1.0
 fn filtro_inicial(opciones: &mut HashMap<String, OwnedValue>) -> Option<Filtro> {
     let actual = opciones
         .remove("current_filter")
@@ -1136,6 +1180,7 @@ fn filtro_inicial(opciones: &mut HashMap<String, OwnedValue>) -> Option<Filtro> 
     })
 }
 
+// 0.1.0
 fn respuesta_uris(rutas: &[PathBuf]) -> (u32, HashMap<String, OwnedValue>) {
     let uris: Vec<String> = rutas.iter().map(|r| uri_de_archivo(r)).collect();
     match OwnedValue::try_from(Value::from(uris)) {
@@ -1149,6 +1194,7 @@ fn respuesta_uris(rutas: &[PathBuf]) -> (u32, HashMap<String, OwnedValue>) {
 
 /// `file://` con los bytes escapados. Una ruta con espacios o acentos metida
 /// tal cual no es una URI: GLib la rechaza y la aplicación no abre nada.
+// 0.1.0
 fn uri_de_archivo(ruta: &std::path::Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     let mut uri = String::from("file://");
@@ -1168,6 +1214,7 @@ fn uri_de_archivo(ruta: &std::path::Path) -> String {
 /// cadena vacía si la aplicación no está en un contenedor y el portal no pudo
 /// averiguarlo. Sin nombre, «Una aplicación»: es más honesto que enseñar un
 /// hueco.
+// 0.1.0
 fn nombre_legible(app_id: &str) -> String {
     if app_id.is_empty() {
         return "Una aplicación".into();
@@ -1182,6 +1229,7 @@ fn nombre_legible(app_id: &str) -> String {
 
 /// Devuelve la conexión, que hay que **guardar**: al soltarla se cierra el bus
 /// y el nombre se pierde.
+// 0.1.0
 pub fn arrancar(
     canal: Sender<Aviso>,
     socket: &std::ffi::OsStr,
@@ -1236,6 +1284,7 @@ pub fn arrancar(
 }
 
 /// Lo que llega del hilo del portal, ya en el hilo del compositor.
+// 0.1.0
 pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
     match aviso {
         Aviso::Consentir {
@@ -1263,6 +1312,7 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
     }
 }
 
+// 0.1.0
 fn cancelar(state: &mut crate::state::BookosComp, sesion: u32) {
     if state
         .consentimiento
@@ -1279,6 +1329,7 @@ fn cancelar(state: &mut crate::state::BookosComp, sesion: u32) {
     state.emisiones.quitar(sesion);
 }
 
+// 0.1.0
 fn consentir(
     state: &mut crate::state::BookosComp,
     sesion: u32,
@@ -1325,6 +1376,7 @@ fn consentir(
 }
 
 /// La respuesta del usuario a la tarjeta.
+// 0.1.0
 pub fn responder(state: &mut crate::state::BookosComp, sesion: u32, pantalla: Option<usize>) {
     let Some(consentimiento) = state.consentimiento.take() else {
         return;
@@ -1383,6 +1435,7 @@ pub fn responder(state: &mut crate::state::BookosComp, sesion: u32, pantalla: Op
 /// Avisa al portal cuando el compositor tiene que cortar una sesión por su
 /// cuenta, por ejemplo porque el modo de la salida ya no coincide con el
 /// formato negociado con PipeWire.
+// 0.1.0
 pub fn sesion_cerrada(conexion: Option<&zbus::blocking::Connection>, ruta: &OwnedObjectPath) {
     let Some(conexion) = conexion else { return };
     if let Err(err) = conexion.emit_signal(
@@ -1403,6 +1456,7 @@ pub fn sesion_cerrada(conexion: Option<&zbus::blocking::Connection>, ruta: &Owne
 /// acción, y pasaría también si el shell se cayera con la tarjeta abierta. El
 /// hilo del portal está bloqueado esperando y dejarlo hasta que venza el plazo
 /// se ve, desde la aplicación, como que el escritorio se ha colgado.
+// 0.1.0
 pub fn denegar_si_se_cerro(state: &mut crate::state::BookosComp) {
     if state.consentimiento.is_none() {
         return;
@@ -1420,6 +1474,8 @@ pub fn denegar_si_se_cerro(state: &mut crate::state::BookosComp) {
 }
 
 /// La captura de pantalla que pide el portal: la principal entera, a fichero.
+// 0.1.0
+// modified 0.1.1 -- usa DestinoCaptura en vez de un booleano
 fn capturar(state: &mut crate::state::BookosComp, respuesta: Emisario<PathBuf>) {
     // La principal tiene el origen en (0,0); es la única que sabe capturar
     // `servir_captura_propia`, y sus coordenadas son las de esa pantalla.
@@ -1440,7 +1496,7 @@ fn capturar(state: &mut crate::state::BookosComp, respuesta: Emisario<PathBuf>) 
         y: 0,
         ancho: geometria.size.w,
         alto: geometria.size.h,
-        guardar: true,
+        destino: crate::state::DestinoCaptura::Archivo,
     });
     state.needs_redraw = true;
 }

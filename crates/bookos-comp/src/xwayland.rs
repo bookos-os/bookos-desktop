@@ -43,6 +43,7 @@ use crate::state::BookosComp;
 /// El `XWaylandEvent::Ready` no llega hasta que el servidor está escuchando, y
 /// hasta entonces no hay con quién hablar X11: por eso el gestor se crea en el
 /// callback y no aquí.
+// 0.1.0
 pub fn arrancar(state: &mut BookosComp) {
     let (xwayland, cliente) = match XWayland::spawn(
         &state.display_handle,
@@ -107,6 +108,8 @@ pub fn arrancar(state: &mut BookosComp) {
 /// verán grandes, pero nítidas; al revés se verían borrosas en el panel, que
 /// es donde se trabaja. Las ventanas X11 ya abiertas no se redibujan con el
 /// DPI nuevo hasta que se reinician: `Xft.dpi` se lee al arrancar.
+// 0.1.0
+// modified 0.1.1 -- reenvía el tamaño de salida a XWayland (puntero muerto fuera de un cuarto) y publica el cursor a X11
 pub fn actualizar_escala(state: &mut BookosComp) {
     let Some(cliente) = state.cliente_x11.as_ref() else {
         return;
@@ -189,6 +192,7 @@ pub fn actualizar_escala(state: &mut BookosComp) {
 /// En X11 el par que identifica al programa es `WM_CLASS`, y de sus dos campos
 /// el que se parece a un `app_id` de Wayland es la clase: `firefox` da
 /// `instance="Navigator"` pero `class="firefox"`, que es lo que el dock busca.
+// 0.1.0
 pub fn clase(window: &smithay::desktop::Window) -> Option<String> {
     let x11 = window.x11_surface()?;
     let clase = x11.class();
@@ -197,6 +201,7 @@ pub fn clase(window: &smithay::desktop::Window) -> Option<String> {
 
 impl BookosComp {
     /// La ventana que envuelve a una superficie X11.
+    // 0.1.0
     fn window_de_x11(&self, surface: &X11Surface) -> Option<smithay::desktop::Window> {
         self.space
             .elements()
@@ -206,6 +211,7 @@ impl BookosComp {
 }
 
 impl smithay::xwayland::XwmHandler for BookosComp {
+    // 0.1.0
     fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
         self.xwm
             .as_mut()
@@ -216,13 +222,16 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     /// se crean para no enseñarse nunca —diálogos que el programa se guarda,
     /// ventanas de utilidad de las toolkits— y mapearlas aquí llenaría el
     /// escritorio de cosas invisibles ocupando sitio en el espacio.
+    // 0.1.0
     fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
+    // 0.1.0
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     /// La ventana pide enseñarse. Hay que concedérselo explícitamente: en X11
     /// el gestor de ventanas puede decir que no, y si nadie dice que sí la
     /// ventana no aparece nunca.
+    // 0.1.0
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         let _ = window.set_mapped(true);
         let area = self.work_area();
@@ -252,6 +261,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     /// Ya está enseñada de verdad. Aquí es donde se coloca, y no en
     /// `map_window_request`: hasta este momento la geometría que anuncia puede
     /// ser todavía la de fábrica (1x1 en varias toolkits).
+    // 0.1.0
     fn map_window_notify(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(elemento) = self.window_de_x11(&window) {
             self.colocar_si_es_nueva(&elemento);
@@ -261,6 +271,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
 
     /// Las override-redirect son menús, tooltips y demás: el gestor no manda
     /// sobre ellas y se limita a ponerlas donde el cliente diga.
+    // 0.1.0
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let geo = window.geometry();
         let elemento = smithay::desktop::Window::new_x11_window(window);
@@ -268,6 +279,8 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         self.needs_redraw = true;
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- saca la ventana de su grupo
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if self.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
             crate::keybinds::ejecutar(self, crate::keybinds::Accion::ConmutarCancelar);
@@ -284,6 +297,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         self.actualizar_dock();
     }
 
+    // 0.1.0
     fn destroyed_window(&mut self, _xwm: XwmId, _window: X11Surface) {
         if self.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
             crate::keybinds::ejecutar(self, crate::keybinds::Accion::ConmutarCancelar);
@@ -297,6 +311,8 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     /// El cliente pide un tamaño o una posición. Se le concede tal cual salvo
     /// que esté encajado: ahí manda el compositor, o una ventana a media
     /// pantalla se saldría de su zona en cuanto el programa decidiera crecer.
+    // 0.1.0
+    // modified 0.1.1 -- las ventanas de un grupo no se recolocan a petición del cliente
     fn configure_request(
         &mut self,
         _xwm: XwmId,
@@ -332,6 +348,8 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     /// El cliente ya se movió o cambió de tamaño. Para las override-redirect
     /// esto es lo único que hay: se mueven cuando quieren y el espacio tiene
     /// que seguirlas o el menú se queda pintado donde ya no está.
+    // 0.1.0
+    // modified 0.1.1 -- confirmar la posición no altera el orden de apilado
     fn configure_notify(
         &mut self,
         _xwm: XwmId,
@@ -359,6 +377,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         self.needs_redraw = true;
     }
 
+    // 0.1.0
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(elemento) = self.window_de_x11(&window)
             && !crate::ventanas::maximizada(&elemento)
@@ -367,6 +386,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         }
     }
 
+    // 0.1.0
     fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(elemento) = self.window_de_x11(&window)
             && crate::ventanas::maximizada(&elemento)
@@ -375,12 +395,14 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         }
     }
 
+    // 0.1.0
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(elemento) = self.window_de_x11(&window) {
             self.pantalla_completa(&elemento, true);
         }
     }
 
+    // 0.1.0
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(elemento) = self.window_de_x11(&window) {
             self.pantalla_completa(&elemento, false);
@@ -390,6 +412,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     /// Mover y redimensionar pedidos por el cliente, que en X11 llegan con el
     /// botón ya agarrado. Se reutiliza el mismo arrastre que el resto: la
     /// ventana ya está en el espacio y el cursor ya está donde tiene que estar.
+    // 0.1.0
     fn resize_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32, edge: ResizeEdge) {
         let Some(elemento) = self.window_de_x11(&window) else {
             return;
@@ -402,6 +425,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         self.arrastrar_ventana(&elemento, modo, true);
     }
 
+    // 0.1.0
     fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {
         if let Some(elemento) = self.window_de_x11(&window) {
             self.arrastrar_ventana(&elemento, crate::ventanas::Modo::Mover, true);
@@ -415,10 +439,12 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     /// y en ese momento quien tiene el foco es la ventana donde se copió, no
     /// la máquina virtual: atado al foco, el invitado no se entera nunca. Entre
     /// programas X11 tampoco hay más barrera que esta.
+    // 0.1.0
     fn allow_selection_access(&mut self, _xwm: XwmId, _selection: SelectionTarget) -> bool {
         true
     }
 
+    // 0.1.0
     fn send_selection(
         &mut self,
         _xwm: XwmId,
@@ -472,6 +498,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
 
     /// Un programa X11 copia: los clientes Wayland lo ven como selección del
     /// compositor, y al pegar se le pide a XWayland (`Seleccion::X11`).
+    // 0.1.0
     fn new_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_types: Vec<String>) {
         use smithay::wayland::selection::data_device::set_data_device_selection;
         use smithay::wayland::selection::primary_selection::set_primary_selection;
@@ -490,6 +517,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
 
     /// El programa X11 soltó su selección. Solo se borra la de Wayland si
     /// seguía siendo la suya: si entretanto copió un cliente Wayland, esa manda.
+    // 0.1.0
     fn cleared_selection(&mut self, _xwm: XwmId, selection: SelectionTarget) {
         use smithay::wayland::selection::data_device::{
             clear_data_device_selection, current_data_device_selection_userdata,
@@ -520,6 +548,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     /// XWayland se ha caído. Se suelta el gestor para que nadie siga mandándole
     /// órdenes —`enfocar` le pide subir ventanas en cada clic— y la sesión
     /// continúa sin X11, que es lo mismo que si nunca hubiera arrancado.
+    // 0.1.0
     fn disconnected(&mut self, _xwm: XwmId) {
         tracing::warn!("XWayland se desconectó; la sesión sigue sin X11");
         self.xwm = None;
@@ -528,6 +557,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
 }
 
 impl smithay::wayland::xwayland_shell::XWaylandShellHandler for BookosComp {
+    // 0.1.0
     fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
         &mut self.xwayland_shell_state
     }
@@ -536,6 +566,7 @@ impl smithay::wayland::xwayland_shell::XWaylandShellHandler for BookosComp {
     /// ventana X11 todavía no tiene `wl_surface` y el foco de teclado se queda
     /// en nada: no se podía escribir en ella hasta hacerle clic. Se repite
     /// aquí, que es cuando ya hay a quién dárselo.
+    // 0.1.1
     fn surface_associated(
         &mut self,
         _xwm: XwmId,

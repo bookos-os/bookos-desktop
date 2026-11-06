@@ -27,6 +27,7 @@ pub struct Distribucion {
 }
 
 impl Distribucion {
+    // 0.1.1
     pub fn xkb(&self) -> XkbConfig<'_> {
         XkbConfig {
             layout: &self.layout,
@@ -38,6 +39,7 @@ impl Distribucion {
 
 /// Sin caché: el proxy de zbus guarda las propiedades y solo las refresca con
 /// las señales que él mismo ve, y aquí se lee justo después de una.
+// 0.1.1
 fn proxy(conexion: &Connection) -> zbus::Result<Proxy<'static>> {
     zbus::blocking::proxy::Builder::<Proxy>::new(conexion)
         .destination(LOCALED)?
@@ -47,6 +49,7 @@ fn proxy(conexion: &Connection) -> zbus::Result<Proxy<'static>> {
         .build()
 }
 
+// 0.1.1
 fn leer(proxy: &Proxy) -> Option<Distribucion> {
     let layout: String = proxy.get_property("X11Layout").ok()?;
     let variant: String = proxy.get_property("X11Variant").unwrap_or_default();
@@ -56,6 +59,7 @@ fn leer(proxy: &Proxy) -> Option<Distribucion> {
 }
 
 /// La de ahora, si localed contesta y tiene alguna.
+// 0.1.1
 pub fn actual() -> Option<Distribucion> {
     let conexion = Connection::system()
         .inspect_err(|err| tracing::warn!("sin bus del sistema, no se lee locale1: {err}"))
@@ -65,6 +69,7 @@ pub fn actual() -> Option<Distribucion> {
 
 /// Aplica cada cambio de distribución que haga localed mientras dure el
 /// compositor.
+// 0.1.1
 pub fn escuchar(loop_handle: &LoopHandle<'static, BookosComp>) {
     let (aviso, fuente) = smithay::reexports::calloop::channel::channel::<Distribucion>();
     let insertado = loop_handle.insert_source(fuente, |evento, _, state| {
@@ -115,6 +120,7 @@ pub fn escuchar(loop_handle: &LoopHandle<'static, BookosComp>) {
     }
 }
 
+// 0.1.1
 fn aplicar(state: &mut BookosComp, nueva: &Distribucion) {
     let Some(teclado) = state.seat.get_keyboard() else {
         return;

@@ -5,6 +5,7 @@ No compositor or DE is started when importing this module or running tests.
 Exit 10 means retry BookOS; 0 means return to the display manager.
 """
 import argparse
+import csv
 import os
 from pathlib import Path
 import re
@@ -24,6 +25,25 @@ def sessions():
     ]
     return [(name, desktop, [shutil.which(cmd[0]), *cmd[1:]])
             for name, desktop, cmd in candidates if shutil.which(cmd[0])]
+
+
+def restore_helper():
+    return Path(__file__).resolve().with_name("bookos-restaurar")
+
+
+def parse_points(text):
+    """snapper's CSV, newest first. Snapshot 0 is the running system."""
+    rows = [r for r in csv.DictReader(text.splitlines()) if r.get("number", "0") != "0"]
+    return list(reversed(rows))
+
+
+def restore_points():
+    """Empty when snapper is missing or unreadable: then there is nothing to offer."""
+    try:
+        out = subprocess.run([str(restore_helper()), "listar"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_points(out.stdout)[:6] if out.returncode == 0 else []
 
 
 def clean_environment():
@@ -77,8 +97,9 @@ def palette():
 
 
 def window(args):
-    from PySide6.QtCore import Qt, QTimer
-    from PySide6.QtWidgets import QApplication, QWidget, QFrame, QVBoxLayout, QLabel, QPushButton
+    from PySide6.QtCore import Qt, QTimer, QProcess
+    from PySide6.QtWidgets import (QApplication, QWidget, QFrame, QVBoxLayout, QLabel, QPushButton,
+                                   QListWidget, QListWidgetItem, QLineEdit)
     app = QApplication([])
     p = palette()
     screen = QWidget()
@@ -95,6 +116,11 @@ def window(args):
                        padding: 0 18px; min-height: 48px; font-size: 15px; font-weight: 600; }}
         QPushButton:focus {{ border: 2px solid {p['blue']}; }}
         QPushButton#primary {{ background: {p['blue']}; color: {p['on-accent']}; }}
+        QPushButton:disabled {{ color: {p['tx2']}; }}
+        QListWidget, QLineEdit {{ background: {p['hov']}; border: none; border-radius: 14px; padding: 8px; }}
+        QLineEdit {{ min-height: 32px; }}
+        QListWidget::item {{ padding: 8px; border-radius: 10px; }}
+        QListWidget::item:selected {{ background: {p['blue']}; color: {p['on-accent']}; }}
     """)
     layout = QVBoxLayout(screen)
     layout.setAlignment(Qt.AlignCenter)
@@ -129,6 +155,9 @@ def window(args):
     if not args.locked:
         choices += [(f"Continuar en {name}", name) for name, _, _ in sessions()]
     choices += [("Volver al inicio de sesión", "login")]
+    # A locked session must authenticate at the login screen first, like every
+    # other way out of this window.
+    points = [] if args.locked else restore_points()
     for index, (label, value) in enumerate(choices):
         button = QPushButton(label)
         if index == 0:
@@ -136,6 +165,101 @@ def window(args):
         button.clicked.connect(lambda checked=False, v=value: choose(v))
         contents.addWidget(button)
     layout.addWidget(card)
+
+    restore = QFrame()
+    restore.setObjectName("card")
+    restore.setFixedWidth(420)
+    restore.hide()
+    panel = QVBoxLayout(restore)
+    panel.setContentsMargins(24, 28, 24, 20)
+    panel.setSpacing(10)
+    restore_title = QLabel("Restaurar el sistema")
+    restore_title.setObjectName("title")
+    restore_title.setAlignment(Qt.AlignCenter)
+    panel.addWidget(restore_title)
+    note = QLabel("Programas y ajustes del sistema volverán a ese momento. Tus archivos personales no cambian, "
+                  "y antes se guarda otro punto para poder deshacerlo.")
+    note.setObjectName("body")
+    note.setWordWrap(True)
+    note.setAlignment(Qt.AlignCenter)
+    panel.addWidget(note)
+    items = QListWidget()
+    for point in points:
+        item = QListWidgetItem(f"{point.get('description') or 'Punto de restauración'}\n{point.get('date', '')}")
+        item.setData(Qt.UserRole, point["number"])
+        items.addItem(item)
+    items.setCurrentRow(0)
+    # Sin tope se comía la tarjeta entera con dos puntos: seis filas caben en 330.
+    items.setMaximumHeight(min(330, 56 * max(len(points), 1) + 16))
+    panel.addWidget(items)
+    password = QLineEdit()
+    password.setEchoMode(QLineEdit.Password)
+    password.setPlaceholderText("Contraseña de administrador")
+    panel.addWidget(password)
+    error = QLabel()
+    error.setObjectName("body")
+    error.setWordWrap(True)
+    error.setAlignment(Qt.AlignCenter)
+    error.hide()
+    panel.addWidget(error)
+    run = QPushButton("Restaurar")
+    run.setObjectName("primary")
+    panel.addWidget(run)
+    back = QPushButton("Volver")
+    panel.addWidget(back)
+
+    def show_restore(visible):
+        card.setVisible(not visible)
+        restore.setVisible(visible)
+        if visible:
+            password.setFocus()
+
+    process = QProcess(screen)
+
+    def finished(code, _status):
+        password.clear()
+        if code == 0:
+            restore_title.setText("Reinicia para terminar")
+            note.setText("El sistema está restaurado.")
+            for widget in (items, password, error, back):
+                widget.hide()
+            run.setText("Reiniciar ahora")
+            run.setEnabled(True)
+            run.clicked.disconnect()
+            run.clicked.connect(lambda: choose("reboot"))
+            return
+        lines = bytes(process.readAllStandardError()).decode(errors="replace").strip().splitlines()
+        error.setText(lines[-1] if lines else "No se pudo restaurar")
+        error.show()
+        run.setEnabled(True)
+        back.setEnabled(True)
+        run.setText("Restaurar")
+
+    def start_restore():
+        if not password.text() or not items.currentItem():
+            return
+        error.hide()
+        run.setEnabled(False)
+        back.setEnabled(False)
+        run.setText("Restaurando…")
+        # The password goes through stdin, never through a visible argv.
+        process.start("sudo", ["-k", "-S", "-p", "", str(restore_helper()), "restaurar",
+                               items.currentItem().data(Qt.UserRole)])
+        process.write((password.text() + "\n").encode())
+        process.closeWriteChannel()
+
+    process.finished.connect(finished)
+    run.clicked.connect(start_restore)
+    password.returnPressed.connect(start_restore)
+    back.clicked.connect(lambda: show_restore(False))
+    layout.addWidget(restore, 0, Qt.AlignCenter)
+    if points:
+        # Before "back to login", the last and least committal way out.
+        open_restore = QPushButton("Restaurar un punto anterior")
+        open_restore.clicked.connect(lambda: show_restore(True))
+        contents.insertWidget(contents.count() - 1, open_restore)
+        if args.preview_restore:
+            show_restore(True)
     screen.showFullScreen()
     if args.preview:
         QTimer.singleShot(300, lambda: (screen.grab().save(args.preview), app.quit()))
@@ -193,6 +317,9 @@ def prompt(args):
 
 def recover(args):
     choice = prompt(args)
+    if choice == "reboot":
+        subprocess.call(["systemctl", "reboot"])
+        return 0
     if choice == "retry" and not args.locked:
         return 10
     if not args.locked:
@@ -213,6 +340,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ui", action="store_true")
     parser.add_argument("--preview")
+    parser.add_argument("--preview-restore", action="store_true")
     parser.add_argument("--choice", default="")
     parser.add_argument("--ready", default="")
     parser.add_argument("--status", type=int, default=1)

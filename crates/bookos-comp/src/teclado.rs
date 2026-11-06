@@ -52,6 +52,7 @@ struct Toques {
 }
 
 impl Toques {
+    // 0.1.1
     fn iniciar(&mut self, slot: TouchSlot, origen: Point<f64, Logical>, time: u32) {
         self.activos.push(slot);
         self.candidato = (self.activos.len() == 1).then_some(Toque {
@@ -61,6 +62,7 @@ impl Toques {
         });
     }
 
+    // 0.1.1
     fn mover(&mut self, slot: TouchSlot, punto: Point<f64, Logical>) {
         if self.candidato.as_ref().is_some_and(|t| {
             let delta = punto - t.origen;
@@ -70,6 +72,7 @@ impl Toques {
         }
     }
 
+    // 0.1.1
     fn terminar(&mut self, slot: TouchSlot, time: u32) -> bool {
         self.activos.retain(|s| *s != slot);
         self.candidato
@@ -101,6 +104,7 @@ pub struct Estado {
 }
 
 /// Un dedo o un clic en `punto`. Devuelve si era del teclado.
+// 0.1.1
 pub fn pulsar(state: &mut BookosComp, punto: Point<f64, Logical>, dedo: Dedo) -> bool {
     let Some(shell) = state.shell.as_mut() else {
         return false;
@@ -123,6 +127,7 @@ pub fn pulsar(state: &mut BookosComp, punto: Point<f64, Logical>, dedo: Dedo) ->
 }
 
 /// El dedo o el botón se levanta. Devuelve si era del teclado.
+// 0.1.1
 pub fn soltar(state: &mut BookosComp, dedo: Dedo) -> bool {
     if state.teclado.pulsado != Some(dedo) {
         return false;
@@ -136,6 +141,7 @@ pub fn soltar(state: &mut BookosComp, dedo: Dedo) -> bool {
     true
 }
 
+// 0.1.1
 pub fn iniciar_toque(
     state: &mut BookosComp,
     slot: TouchSlot,
@@ -149,14 +155,17 @@ pub fn iniciar_toque(
 }
 
 /// El destino se conserva sin abrir nada hasta distinguir toque de arrastre.
+// 0.1.1
 pub fn tocado(state: &mut BookosComp, surface: &WlSurface) {
     state.teclado.superficie_toque = Some(surface.clone());
 }
 
+// 0.1.1
 pub fn mover_toque(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Logical>) {
     state.teclado.toques.mover(slot, punto);
 }
 
+// 0.1.1
 pub fn terminar_toque(state: &mut BookosComp, slot: TouchSlot, time: u32) {
     let superficie = state.teclado.superficie_toque.take();
     if state.teclado.toques.terminar(slot, time) {
@@ -164,6 +173,7 @@ pub fn terminar_toque(state: &mut BookosComp, slot: TouchSlot, time: u32) {
     }
 }
 
+// 0.1.1
 pub fn cancelar_toques(state: &mut BookosComp) {
     state.teclado.toques = Toques::default();
     state.teclado.superficie_toque = None;
@@ -172,6 +182,7 @@ pub fn cancelar_toques(state: &mut BookosComp) {
 
 /// Se dejó de escribir con el dedo —se tocó el teclado físico o se apagó la
 /// pantalla táctil—: el teclado en pantalla sobra.
+// 0.1.1
 pub fn retirar(state: &mut BookosComp) {
     cancelar_toques(state);
     state.teclado.tactil = false;
@@ -184,6 +195,7 @@ pub fn retirar(state: &mut BookosComp) {
 ///
 /// Se llama tras cada tanda de peticiones de clientes: el aviso de un campo
 /// nuevo es un `enable` de text-input, que llega por ahí.
+// 0.1.1
 pub fn revisar(state: &mut BookosComp) {
     if state
         .teclado
@@ -207,7 +219,8 @@ pub fn revisar(state: &mut BookosComp) {
         .tocada
         .as_ref()
         .is_some_and(|(t, _)| t.id().same_client_as(&campo.surface.id()));
-    if !tocada || !state.teclado.tactil {
+    // modificado en la 0.2.0 -- respeta el interruptor de Ajustes
+    if !tocada || !state.teclado.tactil || !state.entrada.teclado_pantalla {
         return;
     }
     state.teclado.tocada = None;
@@ -231,6 +244,7 @@ pub fn revisar(state: &mut BookosComp) {
     }
 }
 
+// 0.1.1
 fn ocultar(state: &mut BookosComp) {
     if let Some(shell) = state.shell.as_mut() {
         shell.ocultar_teclado();
@@ -245,6 +259,7 @@ fn ocultar(state: &mut BookosComp) {
 /// encima del teclado, como `adjustPan` en Android. No se redimensiona: un
 /// cliente que cambia de tamaño reflota el contenido y el campo puede acabar
 /// en otro sitio, mientras que moverla deja todo donde el usuario lo veía.
+// 0.1.1
 fn subir_ventana(state: &mut BookosComp, surface: &WlSurface, cursor_abajo: i32) {
     let Some(window) = state.window_for_surface(surface) else {
         return;
@@ -266,6 +281,7 @@ fn subir_ventana(state: &mut BookosComp, surface: &WlSurface, cursor_abajo: i32)
     state.space.map_element(window, nuevo, false);
 }
 
+// 0.1.1
 fn hacer(state: &mut BookosComp, accion: Accion) {
     match accion {
         Accion::Escribe(salida) => escribir(state, salida, Fase::Entera),
@@ -285,6 +301,7 @@ enum Fase {
 }
 
 /// Pulsa y suelta lo que haga falta para que salga `salida`.
+// 0.1.1
 fn escribir(state: &mut BookosComp, salida: Salida, fase: Fase) {
     let Some(keyboard) = state.seat.get_keyboard() else {
         return;
@@ -329,6 +346,7 @@ fn escribir(state: &mut BookosComp, salida: Salida, fase: Fase) {
     }
 }
 
+// 0.1.1
 fn enviar(
     state: &mut BookosComp,
     keyboard: &smithay::input::keyboard::KeyboardHandle<BookosComp>,
@@ -352,6 +370,7 @@ fn enviar(
 /// Las teclas que producen `salida`: una por paso, con los modificadores que
 /// hay que mantener durante ella. Una letra con tilde que no esté en el
 /// keymap son dos pasos: la muerta y la vocal, como en un teclado físico.
+// 0.1.1
 fn pasos(
     keymap: &xkb::Keymap,
     layout: u32,
@@ -382,6 +401,7 @@ fn pasos(
 /// `TWO_LEVEL`, `ALPHABETIC` y `FOUR_LEVEL` de xkeyboard-config: nivel 2 con
 /// Mayúsculas, 3 con AltGr y 4 con los dos. Es lo que tienen todas las teclas
 /// de escribir de las distribuciones latinas.
+// 0.1.1
 fn tecla_para(keymap: &xkb::Keymap, layout: u32, sym: Keysym) -> Option<(Keycode, Vec<Keycode>)> {
     let buscar = |sym: Keysym, solo_base: bool| {
         let mut mejor: Option<(u32, Keycode)> = None;
@@ -417,6 +437,7 @@ fn tecla_para(keymap: &xkb::Keymap, layout: u32, sym: Keysym) -> Option<(Keycode
 }
 
 /// La tecla muerta y la letra base de una vocal acentuada.
+// 0.1.1
 fn descomponer(c: char) -> Option<(&'static str, char)> {
     const TABLA: [(&str, &str, &str); 4] = [
         ("dead_acute", "áéíóúÁÉÍÓÚ", "aeiouAEIOU"),

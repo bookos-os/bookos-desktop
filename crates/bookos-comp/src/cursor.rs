@@ -82,6 +82,7 @@ smithay::render_elements! {
 /// cubre los cursores raros que BookOS no dibuja.
 const TEMA: &str = "BookOS-Dark";
 
+// 0.1.1
 pub fn nombre_tema() -> String {
     std::env::var("XCURSOR_THEME").unwrap_or_else(|_| TEMA.to_string())
 }
@@ -133,6 +134,8 @@ impl CursorTheme {
     /// El límite de arriba tiene una razón medida: por encima de 128 el cursor
     /// deja de caber en el plano de hardware y pasa a componerse en la GPU,
     /// con lo que mover el ratón vuelve a costar un frame entero.
+    // 0.1.0
+    // modified 0.1.1 -- el nombre del tema sale de nombre_tema()
     pub fn con_tamano(scale: f64, nominal: u32) -> Self {
         let nominal = nominal.clamp(8, 128);
         let objetivo = (nominal as f64 * scale).round().max(1.0) as u32;
@@ -159,6 +162,7 @@ impl CursorTheme {
     }
 
     /// El nombre del tema en uso, para pasárselo a los clientes.
+    // 0.1.0
     pub fn nombre(&self) -> &str {
         &self.nombre
     }
@@ -167,6 +171,7 @@ impl CursorTheme {
     ///
     /// `XCURSOR_SIZE` va en lógicos: el cliente lo multiplica él por la escala
     /// de la pantalla. Pasarle el físico da un cursor del doble de grande.
+    // 0.1.0
     pub fn tamano_logico(&self) -> u32 {
         self.nominal
     }
@@ -175,6 +180,7 @@ impl CursorTheme {
     ///
     /// Devuelve `None` si no existe ni con alias: el llamante decide si eso
     /// merece la flecha de reserva o no dibujar nada.
+    // 0.1.0
     fn buscar(&self, nombre: &str) -> Option<Rc<Imagen>> {
         if let Some(hallado) = self.cache.borrow().get(nombre) {
             return hallado.clone();
@@ -196,6 +202,7 @@ impl CursorTheme {
         imagen
     }
 
+    // 0.1.0
     pub fn element(
         &self,
         renderer: &mut GlesRenderer,
@@ -232,6 +239,8 @@ impl CursorTheme {
 /// Existe por lo mismo que `--drm-info`: cuando el cursor sale mal, la pregunta
 /// es si el tema no está instalado, si le falta ese nombre o si lo estamos
 /// pidiendo con el nombre equivocado, y las tres se parecen desde fuera.
+// 0.1.0
+// modified 0.1.1 -- el nombre del tema sale de nombre_tema()
 pub fn info() -> anyhow::Result<()> {
     let tema = nombre_tema();
     println!("tema: {tema}\n");
@@ -295,6 +304,7 @@ pub fn info() -> anyhow::Result<()> {
 /// La lista no es exhaustiva a propósito: cubre los que un escritorio usa de
 /// verdad. Lo que falte cae en el `Inherits` del tema o, en último caso, en la
 /// flecha — que es mejor que un cursor invisible.
+// 0.1.0
 fn equivalente(nombre: &str) -> Option<&'static str> {
     Some(match nombre {
         "default" | "arrow" => "left_ptr",
@@ -332,6 +342,7 @@ fn equivalente(nombre: &str) -> Option<&'static str> {
 
 /// Saca una imagen del tema del sistema, a la resolución más cercana a la que
 /// hace falta.
+// 0.1.0
 fn cargar(tema: &str, nombre: &str, objetivo: u32, nominal: u32) -> Option<Imagen> {
     let path = xcursor::CursorTheme::load(tema).load_icon(nombre)?;
 
@@ -379,6 +390,7 @@ fn cargar(tema: &str, nombre: &str, objetivo: u32, nominal: u32) -> Option<Image
 /// se piden 84 px, el tema llega hasta 64 y salía un cursor de 39×54 px —un
 /// 24% más pequeño de lo pedido— porque se dibujaba a resolución nativa en vez
 /// de al tamaño que se había pedido.
+// 0.1.0
 fn a_logico((w, h): (u32, u32), del_fichero: u32, nominal: u32) -> (i32, i32) {
     let factor = nominal as f64 / del_fichero.max(1) as f64;
     (
@@ -388,6 +400,7 @@ fn a_logico((w, h): (u32, u32), del_fichero: u32, nominal: u32) -> (i32, i32) {
 }
 
 /// Flecha mínima dibujada a mano, por si el sistema no tiene tema de cursores.
+// 0.1.0
 fn fallback_arrow(size: u32, nominal: u32) -> Imagen {
     let size = size.max(8);
     let mut pixels = vec![0u8; (size * size * 4) as usize];
@@ -430,6 +443,8 @@ fn fallback_arrow(size: u32, nominal: u32) -> Imagen {
 /// Devuelve vacío cuando el cursor está oculto: hay clientes que lo esconden a
 /// propósito (una terminal mientras escribes, un vídeo a pantalla completa) y
 /// respetarlo es parte de comportarse como un escritorio.
+// 0.1.0
+// modified 0.1.1 -- amplía el cursor de los programas X11 a la escala de XWayland
 pub fn elements(
     renderer: &mut GlesRenderer,
     status: &smithay::input::pointer::CursorImageStatus,

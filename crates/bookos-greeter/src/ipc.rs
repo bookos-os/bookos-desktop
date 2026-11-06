@@ -15,6 +15,7 @@ pub struct Cliente {
 }
 
 impl Cliente {
+    // 0.1.1
     pub fn nuevo(ruta: PathBuf) -> Self {
         let (envio, recepcion) = mpsc::channel::<Trabajo>();
         // PAM puede esperar por hardware o aplicar una demora tras un fallo.
@@ -32,6 +33,7 @@ impl Cliente {
         Self { envio }
     }
 
+    // 0.1.1
     pub fn enviar(
         &self,
         peticion: Request,
@@ -49,6 +51,7 @@ impl Cliente {
     }
 }
 
+// 0.1.1
 fn intercambiar(
     ruta: &std::path::Path,
     socket: &mut Option<UnixStream>,
@@ -78,6 +81,7 @@ fn intercambiar(
     Response::read_from(socket).context("No se pudo recibir la respuesta de greetd")
 }
 
+// 0.1.1
 pub fn iniciar_sesion(programa: &str, teclado: &str, locale: &str) -> Request {
     Request::StartSession {
         cmd: vec![programa.into()],

@@ -86,6 +86,7 @@ impl Cierre {
     /// Se queda con las texturas de la ventana tal como están ahora. `None` si
     /// no hay nada que guardar: sin contexto GL, con los efectos reducidos o
     /// con una ventana que ya no tenía buffer.
+    // 0.1.0
     pub fn capturar(
         contexto: &ContextId<GlesTexture>,
         window: &Window,
@@ -148,29 +149,34 @@ impl Cierre {
         })
     }
 
+    // 0.1.0
     pub fn terminado(&self) -> bool {
         self.inicio.elapsed() >= DURACION
     }
 
     /// Alfa y zoom de ahora, con la curva de la entrada recorrida al revés.
+    // 0.1.0
     fn momento(&self) -> (f32, f64) {
         let t = tema::C_SUAVE.eval(tema::avance(self.inicio.elapsed(), DURACION));
         (1.0 - t, 1.0 - (1.0 - ZOOM_FINAL) * t as f64)
     }
 
     /// El centro de la ventana visible, que es desde donde encoge.
+    // 0.1.0
     fn centro(&self) -> Point<f64, Logical> {
         let v = self.visible.to_f64();
         (v.loc.x + v.size.w / 2.0, v.loc.y + v.size.h / 2.0).into()
     }
 
     /// Lleva un punto del escritorio a donde cae con el zoom de este momento.
+    // 0.1.0
     fn encoger(&self, punto: Point<f64, Logical>, zoom: f64) -> Point<f64, Logical> {
         let c = self.centro();
         (c.x + (punto.x - c.x) * zoom, c.y + (punto.y - c.y) * zoom).into()
     }
 
     /// Los elementos de este fotograma, de delante hacia atrás.
+    // 0.1.0
     pub fn elementos(
         &self,
         contexto: &ContextId<GlesTexture>,
@@ -206,6 +212,7 @@ impl Cierre {
 
     /// Dónde y cómo va la barra de título ahora. `None` si la ventana no
     /// llevaba barra.
+    // 0.1.0
     pub fn barra_ahora(&self, escala: f64) -> Option<BarraAhora> {
         self.barra.as_ref()?;
         let (alfa, zoom) = self.momento();

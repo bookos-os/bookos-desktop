@@ -76,6 +76,7 @@ pub struct Emisor {
 }
 
 impl Emisor {
+    // 0.1.0
     pub fn enviar(&self, orden: Orden) {
         // Si el canal está roto es que el hilo se cayó; el compositor sigue sin
         // compartir pantalla, que es mejor que llevárselo por delante.
@@ -104,6 +105,7 @@ pub type Reciclado = mpsc::Receiver<(u32, Vec<u8>)>;
 
 /// Arranca el hilo. Devuelve por dónde hablarle y por dónde recoger los `Vec`
 /// reciclados.
+// 0.1.0
 pub fn arrancar() -> Option<(Emisor, Reciclado)> {
     let (canal, receptor) = pw::channel::channel::<Orden>();
     let (devolver, reciclado) = mpsc::channel::<(u32, Vec<u8>)>();
@@ -125,6 +127,7 @@ pub fn arrancar() -> Option<(Emisor, Reciclado)> {
     }
 }
 
+// 0.1.0
 fn bucle(
     receptor: pw::channel::Receiver<Orden>,
     devolver: mpsc::Sender<(u32, Vec<u8>)>,
@@ -212,6 +215,7 @@ fn bucle(
 /// propia biblioteca. Lo que sí vale es conectar un `core` de usar y tirar y
 /// **robarle** el descriptor, que es para lo que existe `pw_core_steal_fd`:
 /// deja el `core` sin socket, así que al soltarlo no se cierra nada.
+// 0.1.0
 fn descriptor(contexto: &pw::context::ContextRc) -> anyhow::Result<OwnedFd> {
     let core = contexto.connect_rc(None)?;
     let fd: RawFd = unsafe { pw::sys::pw_core_steal_fd(core.as_raw_ptr()) };
@@ -223,6 +227,7 @@ fn descriptor(contexto: &pw::context::ContextRc) -> anyhow::Result<OwnedFd> {
 }
 
 #[allow(clippy::too_many_arguments)]
+// 0.1.0
 fn abrir(
     core: &pw::core::CoreRc,
     nodos: &Nodos,
@@ -379,6 +384,7 @@ fn abrir(
 /// El tamaño va fijo y no como rango porque no hay escalador en este camino: lo
 /// que sale del compositor mide lo que mide la pantalla. El `framerate` a 0/1
 /// dice «variable»; el tope real va en `maxFramerate`.
+// 0.1.0
 fn pod_formato(ancho: u32, alto: u32, fps: u32) -> Vec<u8> {
     let obj = pod::object! {
         SpaTypes::ObjectParamFormat,
@@ -414,6 +420,7 @@ fn pod_formato(ancho: u32, alto: u32, fps: u32) -> Vec<u8> {
 /// Tres buffers, no uno: con uno solo el compositor se queda esperando a que el
 /// consumidor suelte el que tiene y se pierden fotogramas en cada hipo. Se
 /// aceptan `MemFd` y `MemPtr`, que con `MAP_BUFFERS` llegan ya mapeados.
+// 0.1.0
 fn pod_buffers(stride: u32, bytes: u32) -> Vec<u8> {
     use libspa::sys as spa_sys;
     use libspa::utils::{Choice, ChoiceEnum, ChoiceFlags};
@@ -463,6 +470,7 @@ fn pod_buffers(stride: u32, bytes: u32) -> Vec<u8> {
     serializar(pod::Value::Object(obj))
 }
 
+// 0.1.0
 fn serializar(valor: pod::Value) -> Vec<u8> {
     pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &valor)
         .expect("serializar a un Vec en memoria no puede fallar")

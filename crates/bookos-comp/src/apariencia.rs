@@ -35,6 +35,7 @@ const MINIMO: std::time::Duration = std::time::Duration::from_secs(70);
 /// Se llama al arrancar, al elegir en la tarjeta de Apariencia y cada vez que
 /// el propio temporizador salta. Es idempotente: siempre suelta el anterior
 /// antes de poner otro, así que llamarla de más no acumula temporizadores.
+// 0.1.0
 pub fn programar_cambio(state: &mut BookosComp) {
     if let Some(token) = state.tick_tema.take() {
         state.loop_handle.remove(token);
@@ -71,6 +72,7 @@ pub fn programar_cambio(state: &mut BookosComp) {
 /// Es lo mismo que hace la tarjeta de Apariencia al pulsar, menos guardar: aquí
 /// no ha elegido nadie nada, solo ha pasado el tiempo, y reescribir el fichero
 /// en cada amanecer sería tocar el disco para no decir nada nuevo.
+// 0.1.0
 pub fn aplicar_el_que_toca(state: &mut BookosComp) {
     let tema = state.tema_que_toca();
     if bookos_shell::tema::actual() == tema {

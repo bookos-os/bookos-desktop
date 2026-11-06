@@ -1,0 +1,31 @@
+#%PAM-1.0
+# El servicio con el que greetd abre la sesión del usuario (`service` en
+# /etc/greetd/bookos.toml). Es el `greetd` de Fedora con otra sección `auth`.
+#
+# El de Fedora incluye system-auth, donde authselect pone pam_fprintd delante
+# de pam_unix: greetd lleva una sola conversación y no se podía escribir la
+# contraseña hasta que la huella acertaba o se agotaba su tiempo.
+# pam_bookos_huella pide la contraseña y lee el lector a la vez:
+#   - si casa la huella devuelve éxito y `done` termina aquí;
+#   - si llega una contraseña la deja como PAM_AUTHTOK y devuelve «ignorar», y
+#     la comprueba pam_unix con use_first_pass, como siempre.
+auth       required    pam_env.so
+auth       [success=done ignore=ignore default=die] pam_bookos_huella.so
+auth       required    pam_unix.so use_first_pass
+-auth      optional    pam_gnome_keyring.so
+auth       include     postlogin
+
+account    required    pam_sepermit.so
+account    required    pam_nologin.so
+account    include     system-auth
+
+password   include     system-auth
+
+session    required    pam_selinux.so close
+session    required    pam_loginuid.so
+session    required    pam_selinux.so open
+session    optional    pam_keyinit.so force revoke
+session    required    pam_namespace.so
+session    include     system-auth
+-session   optional    pam_gnome_keyring.so auto_start
+session    include     postlogin

@@ -126,6 +126,7 @@ pub struct Estado {
 /// dock, que se quedaba a la vista encima de ella. El tamaño de verdad llega en
 /// un commit posterior, y ahí es donde hay que volver a mirar. Solo cuando
 /// cambia: un vídeo hace sesenta commits por segundo sin moverse.
+// 0.1.0
 pub fn tamano_nuevo(window: &Window) -> bool {
     let tamano = window.geometry().size;
     estado(window).tamano_visto.replace(tamano) != tamano
@@ -152,6 +153,7 @@ pub struct Encogido {
 const ENCOGIDO: Duration = tema::D_PAGINA;
 
 /// Empieza el encogido hacia el dock, o el crecimiento de vuelta.
+// 0.1.0
 pub fn encoger(
     window: &Window,
     origen: Rectangle<i32, Logical>,
@@ -167,6 +169,7 @@ pub fn encoger(
 }
 
 /// El encogido en marcha, o `None` si ya terminó.
+// 0.1.0
 pub fn encogido(window: &Window) -> Option<Encogido> {
     let e = estado(window).encogido.get()?;
     // Con los efectos reducidos el minimizar no tiene recorrido: la ventana se
@@ -183,10 +186,12 @@ pub fn encogido(window: &Window) -> Option<Encogido> {
 ///
 /// Va con la curva de entrada y no lineal, que es la misma que usa el resto del
 /// recorrido: el shader del genio recibe esto y no el tiempo crudo.
+// 0.1.0
 pub fn progreso_encogido(e: Encogido) -> f32 {
     avance_encogido(tema::avance(e.desde.elapsed(), ENCOGIDO), e.hacia_el_dock)
 }
 
+// 0.1.0
 fn avance_encogido(t: f32, hacia_el_dock: bool) -> f32 {
     tema::C_ENTRADA.eval(if hacia_el_dock { t } else { 1.0 - t })
 }
@@ -197,6 +202,7 @@ fn avance_encogido(t: f32, hacia_el_dock: bool) -> f32 {
 /// del **ancho**: encoger a la vez por los dos ejes con proporciones distintas
 /// deforma el buffer, y lo que se busca es que la ventana se vaya achicando
 /// hacia su icono, no que se aplaste.
+// 0.1.0
 pub fn encogido_ahora(e: Encogido) -> (Point<f64, Logical>, f64, f32) {
     // De ida el tiempo corre hacia delante y de vuelta hacia atrás: es la misma
     // curva recorrida al revés, y por eso no hay dos animaciones que mantener.
@@ -219,6 +225,8 @@ pub fn encogido_ahora(e: Encogido) -> (Point<f64, Logical>, f64, f32) {
 /// El desmapeo **no** ocurre aquí sino cuando la animación termina, en
 /// [`animar_minimizados`]: si se sacara ya del `Space` no habría nada que
 /// dibujar y el encogido no se vería.
+// 0.1.0
+// modified 0.1.1 -- minimiza la ventana con sus diálogos y su grupo
 pub fn minimizar(state: &mut BookosComp, window: Window) {
     let familia = crate::multitarea::familia(state, &window);
     for w in familia {
@@ -239,6 +247,7 @@ pub fn minimizar(state: &mut BookosComp, window: Window) {
     }
 }
 
+// 0.1.1
 fn minimizar_una(state: &mut BookosComp, window: Window) {
     // El botón puede recibir otro clic mientras la lámpara sigue en marcha.
     // No debemos arrancar una segunda animación ni guardar la misma ventana
@@ -260,6 +269,7 @@ fn minimizar_una(state: &mut BookosComp, window: Window) {
 }
 
 /// ¿Tiene esta aplicación alguna ventana minimizada?
+// 0.1.0
 pub fn hay_minimizada(state: &BookosComp, app_id: &str) -> bool {
     state.minimizadas.iter().any(|(w, _)| {
         crate::handlers::app_id(w).is_some_and(|suyo| bookos_shell::mismo_programa(app_id, &suyo))
@@ -271,6 +281,7 @@ pub fn hay_minimizada(state: &BookosComp, app_id: &str) -> bool {
 /// Durante esos 280 ms la ventana aún pertenece al `Space`, así que buscarla
 /// como una ventana abierta también la encuentra. Ignorar un segundo clic evita
 /// insertar dos veces la misma ventana en `minimizando`.
+// 0.1.0
 pub fn esta_minimizando(state: &BookosComp, app_id: &str) -> bool {
     state.minimizando.iter().any(|(w, _)| {
         crate::handlers::app_id(w).is_some_and(|suyo| bookos_shell::mismo_programa(app_id, &suyo))
@@ -282,6 +293,8 @@ pub fn esta_minimizando(state: &BookosComp, app_id: &str) -> bool {
 /// La última y no la primera porque el icono del dock se pulsa para recuperar
 /// «lo que acabo de guardar», que es lo que espera cualquiera con tres ventanas
 /// del mismo programa escondidas.
+// 0.1.0
+// modified 0.1.1 -- restaura la ventana con su grupo
 pub fn restaurar_minimizada(state: &mut BookosComp, app_id: &str) -> bool {
     let Some(i) = state.minimizadas.iter().rposition(|(w, _)| {
         crate::handlers::app_id(w).is_some_and(|suyo| bookos_shell::mismo_programa(app_id, &suyo))
@@ -319,6 +332,7 @@ pub fn restaurar_minimizada(state: &mut BookosComp, app_id: &str) -> bool {
 /// Su icono del dock si lo tiene, y si no el borde de abajo justo debajo de
 /// ella: una ventana sin icono no puede irse a ninguna parte concreta, y bajarla
 /// en vertical al menos dice hacia dónde se fue.
+// 0.1.0
 fn destino_dock(
     state: &BookosComp,
     app_id: &str,
@@ -344,6 +358,7 @@ fn destino_dock(
 ///
 /// Devuelve `true` mientras quede alguno moviéndose, que es lo que mantiene el
 /// bucle dibujando hasta el final de la animación.
+// 0.1.0
 pub fn animar_minimizados(state: &mut BookosComp) -> bool {
     if state.minimizando.is_empty() {
         return false;
@@ -373,27 +388,32 @@ pub fn animar_minimizados(state: &mut BookosComp) -> bool {
 }
 
 /// Cuándo se enfocó por última vez. `None` = nunca ha tenido el foco.
+// 0.1.0
 pub fn enfocada_en(window: &Window) -> Option<Instant> {
     estado(window).enfocada.get()
 }
 
 /// El estado de una ventana, creándolo la primera vez.
+// 0.1.0
 pub fn estado(window: &Window) -> &Estado {
     window.user_data().get_or_insert(Estado::default)
 }
 
 /// ¿Ya se colocó esta ventana? Mientras no, no se dibuja: no tiene sitio.
+// 0.1.0
 pub fn colocada(window: &Window) -> bool {
     estado(window).nacida.get().is_some()
 }
 
 /// Marca la ventana como colocada y arranca su animación de entrada.
+// 0.1.0
 pub fn nace(window: &Window) {
     estado(window).nacida.set(Some(Instant::now()));
 }
 
 /// Apunta que la ventana viene de `origen` y tiene que llegar animada a su
 /// posición actual.
+// 0.1.0
 pub fn mover_desde(window: &Window, origen: Rectangle<i32, Logical>) {
     estado(window).desde.set(Some((origen, Instant::now())));
 }
@@ -403,11 +423,13 @@ pub fn mover_desde(window: &Window, origen: Rectangle<i32, Logical>) {
 /// Mantenerlo en una función evita que maximizar use una curva para la esquina
 /// y otra para los bordes. Es una cubic-bezier sin rebote: el contenido del
 /// cliente ya está rasterizado y cualquier sobrepaso se leería como borrosidad.
+// 0.1.0
 fn avance_movimiento(pasado: Duration) -> f64 {
     tema::C_VENTANA.eval(tema::avance(pasado, MOVIMIENTO)) as f64
 }
 
 /// Interpola las cuatro aristas de un rectángulo con una sola fracción.
+// 0.1.0
 fn interpolar_rect(
     origen: Rectangle<i32, Logical>,
     destino: Rectangle<i32, Logical>,
@@ -430,6 +452,7 @@ fn interpolar_rect(
 
 /// Geometría que se está viendo ahora, aunque el `Space` ya guarde el destino.
 /// Sirve para redirigir maximizar/restaurar sin saltar al extremo anterior.
+// 0.1.0
 fn geometria_visual(window: &Window, destino: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
     let Some((origen, t0)) = estado(window).desde.get() else {
         return destino;
@@ -441,10 +464,12 @@ fn geometria_visual(window: &Window, destino: Rectangle<i32, Logical>) -> Rectan
 }
 
 /// Guarda —o consume— la geometría a la que hay que volver al desmaximizar.
+// 0.1.0
 pub fn guardar_restaurar(window: &Window, geo: Rectangle<i32, Logical>) {
     estado(window).restaurar.set(Some(geo));
 }
 
+// 0.1.0
 pub fn tomar_restaurar(window: &Window) -> Option<Rectangle<i32, Logical>> {
     estado(window).restaurar.take()
 }
@@ -454,6 +479,7 @@ pub fn tomar_restaurar(window: &Window) -> Option<Rectangle<i32, Logical>> {
 /// Mira si la animación **está en marcha**, no si existe: preguntar por
 /// `is_some()` deja al compositor dibujando para siempre, que es exactamente el
 /// ciclo que ya se coló una vez en las emergentes del shell.
+// 0.1.0
 pub fn animando(window: &Window) -> bool {
     if tema::efectos_reducidos() {
         return false;
@@ -477,6 +503,7 @@ pub fn animando(window: &Window) -> bool {
 ///
 /// No se repinta nada: el cliente ya dibujó su buffer y lo único que cambia es
 /// cómo lo compone la GPU.
+// 0.1.0
 pub fn animacion(window: &Window) -> (f32, f64) {
     let Some(nacida) = estado(window).nacida.get() else {
         // Sin colocar todavía: invisible. Devolver 1.0 la enseñaría un
@@ -493,6 +520,7 @@ pub fn animacion(window: &Window) -> (f32, f64) {
 ///
 /// `destino` es dónde dice el `Space` que está; durante una animación se dibuja
 /// en el camino entre el origen guardado y ese destino.
+// 0.1.0
 pub fn posicion(window: &Window, destino: Point<i32, Logical>) -> Point<f64, Logical> {
     let estado = estado(window);
     let Some((origen, t0)) = estado.desde.get() else {
@@ -525,6 +553,7 @@ pub fn posicion(window: &Window, destino: Point<i32, Logical>) -> Point<f64, Log
 /// Los dos ejes se interpolan por separado. Antes se usaba la media geométrica,
 /// que convertía maximizar en un zoom uniforme: el ancho podía haber llegado
 /// mientras el alto aún no, y la barra se despegaba visualmente del contenido.
+// 0.1.0
 pub fn escala_resize(window: &Window, actual: Size<i32, Logical>) -> Scale<f64> {
     let Some((origen, t0)) = estado(window).desde.get() else {
         return Scale::from(1.0);
@@ -604,6 +633,7 @@ const VISIBLE: i32 = 96;
 /// del que se la puede agarrar — se queda ahí para siempre. Por los lados y por
 /// abajo sí se la deja salir, que es cómodo para apartarla, dejando `VISIBLE`
 /// dentro para poder traerla de vuelta.
+// 0.1.0
 fn confinar(
     loc: Point<i32, Logical>,
     size: Size<i32, Logical>,
@@ -638,6 +668,7 @@ impl Modo {
     /// De qué borde se está tirando, según en qué cuadrante de la ventana
     /// empezó el arrastre. Es la regla de KWin y de i3: no hace falta acertarle
     /// a un borde de tres píxeles, basta con estar en la mitad correcta.
+    // 0.1.0
     pub fn por_cuadrante(punto: Point<f64, Logical>, geo: Rectangle<i32, Logical>) -> Modo {
         Modo::Redimensionar {
             izquierda: punto.x < geo.loc.x as f64 + geo.size.w as f64 / 2.0,
@@ -648,6 +679,7 @@ impl Modo {
 
 impl Arrastre {
     /// La geometría que le toca a la ventana con el puntero en `puntero`.
+    // 0.1.0
     pub fn geometria(
         &self,
         puntero: Point<f64, Logical>,
@@ -662,6 +694,7 @@ impl Arrastre {
 /// Va suelto para poder probarlo: fabricar una `Window` en un test exige un
 /// cliente Wayland vivo, y esta es justamente la parte que ya se equivocó una
 /// vez —el borde de arriba se metía bajo el panel.
+// 0.1.0
 fn geometria_de(
     modo: Modo,
     inicio: Point<f64, Logical>,
@@ -751,6 +784,7 @@ impl Zona {
     /// Las mitades se reparten con `w - w/2` en la de la derecha para que dos
     /// ventanas encajadas no dejen una raya de fondo entre ellas cuando el
     /// ancho es impar.
+    // 0.1.0
     pub fn rect(self, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
         let (x, y, w, h) = (area.loc.x, area.loc.y, area.size.w, area.size.h);
         let (mitad_w, resto_w) = (w / 2, w - w / 2);
@@ -774,6 +808,7 @@ const MARCO: i32 = 2;
 impl Arrastre {
     /// El rectángulo que enseña la vista previa ahora mismo, deslizándose si
     /// viene de otra zona.
+    // 0.1.0
     fn previa_rect(&self, area: Rectangle<i32, Logical>) -> Option<Rectangle<i32, Logical>> {
         let destino = self.zona?.rect(area);
         let Some((origen, t0)) = self.previa_desde else {
@@ -796,6 +831,7 @@ impl Arrastre {
     }
 
     /// ¿Sigue moviéndose la vista previa?
+    // 0.1.0
     pub fn animando(&self) -> bool {
         if tema::efectos_reducidos() {
             return false;
@@ -815,6 +851,7 @@ impl Arrastre {
     /// del arrastre y no lleva ni texto ni esquinas redondeadas: rasterizarlo
     /// en CPU sería pagar un repintado por movimiento del ratón para dibujar
     /// cinco rectángulos que la GPU compone gratis.
+    // 0.1.0
     pub fn previa(
         &self,
         area: Rectangle<i32, Logical>,
@@ -891,6 +928,7 @@ pub enum Direccion {
 /// de Windows: la primera flecha manda a media pantalla y la perpendicular
 /// parte esa mitad en un cuarto, así que Meta+Izquierda y luego Meta+Arriba
 /// dejan la ventana arriba a la izquierda. Volver sobre los pasos deshace.
+// 0.1.0
 pub fn empujar(actual: Option<Zona>, hacia: Direccion) -> Option<Zona> {
     use Direccion as D;
     use Zona::*;
@@ -934,6 +972,7 @@ pub fn empujar(actual: Option<Zona>, hacia: Direccion) -> Option<Zona> {
 /// Se mira el **cursor** y no el borde de la ventana, igual que KWin: si se
 /// mirara la ventana, arrastrar una que ya ocupa media pantalla dispararía el
 /// encaje sin haberla movido.
+// 0.1.0
 pub fn zona_en(punto: Point<f64, Logical>, area: Rectangle<i32, Logical>) -> Option<Zona> {
     let (x, y) = (punto.x as i32, punto.y as i32);
     let izquierda = x <= area.loc.x + BORDE;
@@ -967,6 +1006,7 @@ pub fn zona_en(punto: Point<f64, Logical>, area: Rectangle<i32, Logical>) -> Opt
 /// ventana ya colocada. Se compara la esquina y no el solape entero porque dos
 /// terminales del mismo tamaño se tapan por completo: lo que molesta no es que
 /// se solapen, es que no se distingan.
+// 0.1.0
 pub fn hueco(
     tam: Size<i32, Logical>,
     area: Rectangle<i32, Logical>,
@@ -1000,6 +1040,7 @@ pub fn hueco(
 /// Si no cabe, manda la esquina de arriba a la izquierda: es donde suelen estar
 /// el título y los campos, y un diálogo con la cabecera bajo el panel no se
 /// puede ni mover.
+// 0.1.1
 pub(crate) fn encima_de(
     tam: Size<i32, Logical>,
     sobre: Rectangle<i32, Logical>,
@@ -1025,6 +1066,7 @@ pub enum Duena {
 }
 
 impl Duena {
+    // 0.1.1
     pub fn ventana(&self) -> &Window {
         match self {
             Duena::Padre(w) | Duena::Proceso(w) => w,
@@ -1041,6 +1083,7 @@ impl Duena {
 ///
 /// Solo se agrupan ventanas del **mismo** proceso, no de procesos hijos: todo lo
 /// que se lanza desde una terminal es hijo suyo, y acabaría colgando de ella.
+// 0.1.1
 pub fn duena(state: &BookosComp, window: &Window) -> Option<Duena> {
     if let Some(mut padre) = padre(state, window) {
         // Un diálogo abierto desde otro diálogo cuelga de la principal. El tope
@@ -1080,12 +1123,14 @@ pub fn duena(state: &BookosComp, window: &Window) -> Option<Duena> {
 }
 
 /// El `app_id` con el que la ventana cuenta en el dock: el de su principal.
+// 0.1.1
 pub fn app_id_de_grupo(state: &BookosComp, window: &Window) -> Option<String> {
     duena(state, window)
         .and_then(|d| crate::handlers::app_id(d.ventana()))
         .or_else(|| crate::handlers::app_id(window))
 }
 
+// 0.1.1
 fn padre(state: &BookosComp, window: &Window) -> Option<Window> {
     let todas = || {
         state
@@ -1111,6 +1156,7 @@ fn padre(state: &BookosComp, window: &Window) -> Option<Window> {
 /// En X11 sale de `_NET_WM_PID` y no de las credenciales del cliente Wayland:
 /// todas las ventanas X11 llegan por la misma conexión, la de Xwayland, y con su
 /// pid todos los programas X11 serían uno.
+// 0.1.1
 fn pid_de(state: &BookosComp, window: &Window) -> Option<u32> {
     use smithay::reexports::wayland_server::Resource as _;
     if let Some(x11) = window.x11_surface() {
@@ -1134,6 +1180,8 @@ impl BookosComp {
     /// dice en pantalla. Sin el aviso no había forma de saber si el atajo había
     /// hecho algo —una ventana que ya estaba delante no cambia nada a la vista—
     /// y sin recordarlo había que volver a pedirlo cada vez que se abría.
+    // 0.1.0
+    // modified 0.1.1 -- «siempre encima» se recuerda por aplicación y lo anuncia el OSD
     pub fn alternar_encima(&mut self, window: &Window) {
         let encima = !siempre_encima(window);
         self.marcar_encima(window, encima);
@@ -1164,6 +1212,7 @@ impl BookosComp {
         }
     }
 
+    // 0.1.1
     fn marcar_encima(&mut self, window: &Window, encima: bool) {
         for window in crate::multitarea::familia(self, window) {
             estado(&window).encima.set(encima);
@@ -1176,6 +1225,8 @@ impl BookosComp {
 
     /// Traslada coordenadas lógicas y conserva maximizado/fullscreen y el
     /// rectángulo flotante al que volver. El destino puede tener otra escala.
+    // 0.1.0
+    // modified 0.1.1 -- mueve la ventana con su grupo
     pub fn mover_a_monitor(&mut self, window: &Window, nombre: &str) {
         let familia = crate::multitarea::familia(self, window);
         for w in familia {
@@ -1184,6 +1235,7 @@ impl BookosComp {
         crate::multitarea::ajustar_monitor(self, window, nombre);
     }
 
+    // 0.1.1
     fn mover_a_monitor_una(&mut self, window: &Window, nombre: &str) {
         if self.minimizando.iter().any(|(w, _)| w == window) {
             return;
@@ -1245,11 +1297,13 @@ impl BookosComp {
     /// funcionando eso no es un problema — basta pulsarla para sacarla.
     /// El tamaño lógico de la pantalla. Lo usan el bloqueo y las emergentes a
     /// pantalla completa.
+    // 0.1.0
     pub fn pantalla_logica(&self) -> (f32, f32) {
         let r = self.pantalla();
         (r.size.w as f32, r.size.h as f32)
     }
 
+    // 0.1.0
     pub fn work_area(&self) -> Rectangle<i32, Logical> {
         let pantalla = self.pantalla();
         // Un panel que esquiva ventanas **no reserva sitio**: si lo reservara
@@ -1294,6 +1348,8 @@ impl BookosComp {
     /// adjuntado buffer y `geometry()` mide 0×0, así que centrarla la dejaría en
     /// la esquina inferior derecha. El primer commit con contenido es el primer
     /// momento en que hay un tamaño real que centrar.
+    // 0.1.0
+    // modified 0.1.1 -- respeta menús X11, kiosko a pantalla completa, diálogos sobre su dueña y «siempre encima» recordado
     pub fn colocar_si_es_nueva(&mut self, window: &Window) {
         if colocada(window) {
             return;
@@ -1382,6 +1438,7 @@ impl BookosComp {
         self.enfocar(window);
     }
 
+    // 0.1.0
     fn esquinas_ocupadas(&self, window: &Window) -> Vec<Point<i32, Logical>> {
         self.space
             .elements()
@@ -1399,6 +1456,8 @@ impl BookosComp {
     /// salía por la derecha y por abajo. Los dos primeros segundos son la ventana de
     /// tiempo: pasados, un cambio de tamaño es del usuario o de la propia aplicación y se
     /// respeta donde esté.
+    // 0.1.0
+    // modified 0.1.1 -- no toca grupos ni menús X11 y avisa a X del sitio nuevo
     pub fn recolocar_si_creció(&mut self, window: &Window) {
         const VENTANA_DE_CRECIMIENTO: Duration = Duration::from_secs(2);
         let Some(nacida) = estado(window).nacida.get() else {
@@ -1441,7 +1500,19 @@ impl BookosComp {
     /// Lo de `Activated` no es cosmético: es cómo el cliente sabe si pintar su
     /// barra de título viva o apagada. Sin actualizarlo, todas las ventanas se
     /// dibujan como si tuvieran el foco a la vez.
+    // 0.1.0
+    // modified 0.1.1 -- enfocar una ventana de un grupo enfoca la que toca de la unidad
+    // modified 0.2.0 -- cierra el menú contextual abierto
     pub fn enfocar(&mut self, window: &Window) {
+        // Un menú contextual abierto es de «antes de esto»: si una ventana
+        // vuelve del dock o recibe el foco, el usuario ya ha pasado a otra
+        // cosa y el menú se quedaba flotando encima hasta el siguiente clic.
+        if let Some(shell) = self.shell.as_mut()
+            && shell.emergente_nombre() == Some("menu-dock")
+        {
+            shell.cerrar_emergente();
+            self.needs_redraw = true;
+        }
         let destino = crate::multitarea::preparar_foco(self, window);
         let window = &destino;
         self.space.raise_element(window, true);
@@ -1480,6 +1551,7 @@ impl BookosComp {
     /// Además de soltar el foco, las desactiva. Sin eso la de antes seguía con
     /// la barra de título encendida y el cursor de texto parpadeando, como si
     /// lo que se tecleara fuera a ir a ella.
+    // 0.1.1
     pub fn desenfocar(&mut self) {
         let todas: Vec<Window> = self.space.elements().cloned().collect();
         for ventana in &todas {
@@ -1496,6 +1568,7 @@ impl BookosComp {
     }
 
     /// La ventana con el foco de teclado, si la hay.
+    // 0.1.0
     pub fn ventana_con_foco(&self) -> Option<Window> {
         let surface = self.seat.get_keyboard()?.current_focus()?;
         self.window_for_surface(&surface)
@@ -1506,6 +1579,7 @@ impl BookosComp {
     /// Se recorre al revés porque `elements()` va de abajo arriba: con tres
     /// terminales abiertas, pulsar el icono del dock tiene que traer la que ya
     /// estaba delante, no la del fondo.
+    // 0.1.0
     pub fn ventana_de_app(&self, app_id: &str) -> Option<Window> {
         self.space
             .elements()
@@ -1519,6 +1593,7 @@ impl BookosComp {
 
     /// Todas las ventanas de una aplicación. Es lo que necesita el "Cerrar"
     /// del menú del dock: cerrar la aplicación, no una de sus ventanas.
+    // 0.1.0
     pub fn ventanas_de_app(&self, app_id: &str) -> Vec<Window> {
         self.space
             .elements()
@@ -1531,6 +1606,7 @@ impl BookosComp {
     }
 
     /// La ventana de un toplevel concreto.
+    // 0.1.0
     pub fn window_de_toplevel(&self, toplevel: &ToplevelSurface) -> Option<Window> {
         self.space
             .elements()
@@ -1543,6 +1619,7 @@ impl BookosComp {
     /// A diferencia de Meta+ratón, aquí la ventana ya se sabe —la manda el
     /// cliente— y el punto de partida es donde esté el cursor: el clic que lo
     /// desencadenó ya ocurrió.
+    // 0.1.0
     pub fn arrastrar_toplevel(&mut self, toplevel: &ToplevelSurface, modo: Modo) {
         if let Some(window) = self.window_de_toplevel(toplevel) {
             self.arrastrar_ventana(&window, modo, true);
@@ -1556,6 +1633,8 @@ impl BookosComp {
     /// evento llega al cliente: si lo pidió él, ya vio la pulsación y necesita
     /// ver también la suelta. Arrastrando de **nuestra** barra de título el
     /// clic no ha existido para él.
+    // 0.1.0
+    // modified 0.1.1 -- redimensiona grupos y suelta del encaje o del grupo al empezar a mover
     pub fn arrastrar_ventana(&mut self, window: &Window, modo: Modo, del_cliente: bool) {
         if modo != Modo::Mover && crate::multitarea::empezar_redimension(self, window, del_cliente)
         {
@@ -1586,6 +1665,7 @@ impl BookosComp {
     /// suelta, como en KWin: recupera su tamaño flotante y se queda colgando
     /// del cursor. Sin esto arrastrarías media pantalla entera, que además no
     /// cabe en ningún sitio y vuelve a encajarse al primer roce con un borde.
+    // 0.1.1
     fn soltar_para_arrastrar(
         &mut self,
         window: &Window,
@@ -1623,6 +1703,8 @@ impl BookosComp {
     ///
     /// Devuelve `false` si no había ninguna: el llamante sigue con el reenvío
     /// normal del clic.
+    // 0.1.0
+    // modified 0.1.1 -- suelta del encaje o del grupo al mover y redimensiona grupos
     pub fn empezar_arrastre(&mut self, modo: Modo) -> bool {
         let punto = self.pointer_location;
         let Some((window, loc)) = self.ventana_bajo(punto) else {
@@ -1668,6 +1750,8 @@ impl BookosComp {
 
     /// Lleva la ventana arrastrada a donde diga el puntero. `true` si había
     /// arrastre, en cuyo caso el evento no debe llegar al cliente.
+    // 0.1.0
+    // modified 0.1.1 -- mueve y redimensiona grupos y arrastra los diálogos con su ventana
     pub fn seguir_arrastre(&mut self) -> bool {
         let Some(arrastre) = self.arrastre.clone() else {
             return false;
@@ -1722,6 +1806,7 @@ impl BookosComp {
     /// El deslizamiento de un rectángulo a otro es lo que hace legible el
     /// encaje: sin él, pasar de "media izquierda" a "cuarto superior" es un
     /// salto y hay que mirar dos veces para entender qué va a ocurrir.
+    // 0.1.0
     fn actualizar_previa(&mut self, zona: Option<Zona>) {
         let area = self.work_area();
         let Some(arrastre) = self.arrastre.as_mut() else {
@@ -1752,6 +1837,7 @@ impl BookosComp {
     /// Devuelve si el evento de soltar debe **tragarse**. Cuando el arrastre lo
     /// pidió el propio cliente, no: él vio la pulsación y tiene que ver también
     /// el soltar.
+    // 0.1.0
     pub fn soltar_arrastre(&mut self) -> bool {
         let Some(arrastre) = self.arrastre.take() else {
             return false;
@@ -1770,6 +1856,8 @@ impl BookosComp {
     }
 
     /// Pone la ventana en una zona de la pantalla, animando el recorrido.
+    // 0.1.0
+    // modified 0.1.1 -- separa del grupo, sale de pantalla completa y forma grupo con la complementaria
     pub fn encajar(&mut self, window: &Window, zona: Zona) {
         crate::multitarea::separar(self, window);
         salir_de_pantalla_completa(window);
@@ -1824,6 +1912,8 @@ impl BookosComp {
     }
 
     /// Devuelve la ventana a su tamaño flotante, si estaba encajada.
+    // 0.1.0
+    // modified 0.1.1 -- sale también de pantalla completa
     pub fn desencajar(&mut self, window: &Window) {
         let Some(previa) = tomar_restaurar(window) else {
             return;
@@ -1867,12 +1957,22 @@ impl BookosComp {
     /// Sobre una ventana a pantalla completa, sale de ella: es lo que espera
     /// cualquiera al pulsar el atajo de tamaño, y además es la única salida a
     /// mano si el cliente que la puso ahí deja de responder.
+    // modified 0.1.1 -- maximizar una del grupo lado a lado lo aparca y restaurarla lo rehace
     pub fn alternar_maximizada(&mut self, window: &Window) {
         if completa(window) {
             self.pantalla_completa(window, false);
         } else if maximizada(window) {
-            self.desencajar(window);
+            if crate::multitarea::desaparcar(self, window) {
+                // Lo guardado para volver era su mitad del grupo, que ya ha
+                // repuesto `desaparcar`.
+                tomar_restaurar(window);
+            } else {
+                self.desencajar(window);
+            }
         } else {
+            // Antes de `encajar`, que separa el grupo devolviendo cada ventana
+            // a su sitio flotante: aparcado, la otra se queda en su mitad.
+            crate::multitarea::aparcar(self, window);
             self.encajar(window, Zona::Maxima);
         }
     }
@@ -1882,6 +1982,8 @@ impl BookosComp {
     /// A diferencia de maximizar, aquí se ocupa la pantalla **entera** y el
     /// shell deja de dibujarse: un vídeo o un juego con el panel encima no
     /// está a pantalla completa, está maximizado.
+    // 0.1.0
+    // modified 0.1.1 -- separa del grupo al ponerla a pantalla completa
     pub fn pantalla_completa(&mut self, window: &Window, activar: bool) {
         if activar {
             crate::multitarea::separar(self, window);
@@ -1939,6 +2041,8 @@ impl BookosComp {
 
     /// La pantalla entera, en lógicos: lo mismo que `work_area` pero sin
     /// descontar el panel ni el dock.
+    // 0.1.0
+    // modified 0.1.1 -- visible para otros módulos
     pub(crate) fn pantalla(&self) -> Rectangle<i32, Logical> {
         // Las acciones se aplican a la pantalla bajo el puntero. Esto hace que
         // maximizar, pantalla completa y encajar funcionen en salidas situadas
@@ -1966,6 +2070,8 @@ impl BookosComp {
     /// Hace falta cuando el área cambia de tamaño, que hoy solo pasa al
     /// alternar la visibilidad del panel: una ventana maximizada con el panel
     /// fijo se queda 32 px corta cuando el panel deja de reservar sitio.
+    // 0.1.0
+    // modified 0.1.1 -- ajusta también las áreas de los grupos
     pub fn recolocar_encajadas(&mut self) {
         crate::multitarea::ajustar_areas(self);
         let encajadas: Vec<(Window, Zona)> = self
@@ -1984,6 +2090,7 @@ impl BookosComp {
     /// ventana esté colocada: el cliente crea su `xdg_toplevel`, lo mapeamos, y
     /// solo entonces pide (o acepta) que la decoremos. Sin esto, la barra de la
     /// primera ventana de cada sesión aparecía metida bajo el panel.
+    // 0.1.0
     pub fn recolocar_por_barra(&mut self, window: &Window) {
         if !colocada(window) || encajada(window) || completa(window) {
             return;
@@ -2010,6 +2117,8 @@ impl BookosComp {
     /// Se llama al mover, mapear o cerrar ventanas, no por frame: recorrer el
     /// espacio sesenta veces por segundo para comprobar un solape que casi
     /// nunca cambia es justo lo que este compositor evita.
+    // 0.1.0
+    // modified 0.1.1 -- no espera a las ventanas que se apartan ni cuenta pestañas ocultas
     pub fn revisar_barras(&mut self) {
         let Some(zonas) = self.shell.as_ref().map(|s| s.zonas_barras()) else {
             return;
@@ -2058,6 +2167,7 @@ impl BookosComp {
     /// ¿Hay alguna ventana a pantalla completa tapándolo todo?
     ///
     /// Lo pregunta la escena para no dibujar el shell encima.
+    // 0.1.0
     pub fn hay_pantalla_completa(&self) -> bool {
         self.space.elements().any(completa)
     }
@@ -2065,6 +2175,7 @@ impl BookosComp {
     /// ¿Hay una ventana a pantalla completa sobre esta salida concreta?
     /// Una aplicación fullscreen en el proyector no debe esconder el panel del
     /// portátil ni alterar la composición de los demás monitores.
+    // 0.1.0
     pub fn hay_pantalla_completa_en(&self, output: &Output) -> bool {
         let Some(salida) = self.space.output_geometry(output) else {
             return false;
@@ -2078,35 +2189,42 @@ impl BookosComp {
 }
 
 /// En qué zona está encajada, si lo está.
+// 0.1.1
 pub fn soltar_encaje(window: &Window) {
     estado(window).zona.set(None);
     estado(window).desde.set(None);
     estado(window).encogido.set(None);
 }
 
+// 0.1.0
 pub fn zona_de(window: &Window) -> Option<Zona> {
     estado(window).zona.get()
 }
 
 /// ¿Está esta ventana encajada en alguna zona?
+// 0.1.0
 pub fn siempre_encima(window: &Window) -> bool {
     estado(window).encima.get()
 }
 
+// 0.1.0
 pub fn encajada(window: &Window) -> bool {
     estado(window).zona.get().is_some()
 }
 
 /// ¿Está maximizada, o sea encajada ocupando el área entera?
+// 0.1.0
 pub fn maximizada(window: &Window) -> bool {
     estado(window).zona.get() == Some(Zona::Maxima)
 }
 
 /// ¿Está a pantalla completa?
+// 0.1.0
 pub fn completa(window: &Window) -> bool {
     estado(window).completa.get()
 }
 
+// 0.1.1
 fn salir_de_pantalla_completa(window: &Window) {
     if !completa(window) {
         return;

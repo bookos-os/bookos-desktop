@@ -125,6 +125,7 @@ pub struct Genio {
 impl Genio {
     /// Compila el shader. `None` si el driver no lo acepta: el minimizar sigue
     /// funcionando, encogiendo la ventana sin deformarla.
+    // 0.1.0
     pub fn new(renderer: &mut GlesRenderer) -> Option<Self> {
         if std::env::var_os("BOOKOS_SIN_GENIO").is_some() {
             tracing::info!("magic lamp desactivado por BOOKOS_SIN_GENIO");
@@ -162,6 +163,7 @@ pub struct Captura {
 /// Se llama una sola vez por minimizado, no por frame: es un render completo de
 /// la ventana a un framebuffer aparte, y repetirlo sesenta veces por segundo
 /// costaría más que la animación entera.
+// 0.1.0
 pub fn capturar(renderer: &mut GlesRenderer, window: &Window, scale: f64) -> Option<Captura> {
     let geo = window.geometry();
     let tam: smithay::utils::Size<i32, Physical> = (
@@ -232,6 +234,7 @@ pub struct Elemento {
 
 impl Elemento {
     /// `origen` y `destino` van en lógicos, como todo lo que sale del `Space`.
+    // 0.1.0
     pub fn new(
         captura: &Captura,
         genio: &Genio,
@@ -287,14 +290,17 @@ impl Elemento {
 }
 
 impl Element for Elemento {
+    // 0.1.0
     fn id(&self) -> &Id {
         &self.id
     }
 
+    // 0.1.0
     fn current_commit(&self) -> CommitCounter {
         self.commit
     }
 
+    // 0.1.0
     fn src(&self) -> Rectangle<f64, BufferCoords> {
         // La textura entera: así `v_coords` recorre de 0 a 1 el rectángulo de
         // destino, que es el sistema de coordenadas en el que están escritos los
@@ -302,24 +308,29 @@ impl Element for Elemento {
         Rectangle::from_size((self.rect.size.w as f64, self.rect.size.h as f64).into())
     }
 
+    // 0.1.0
     fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.rect
     }
 
+    // 0.1.0
     fn location(&self, _scale: Scale<f64>) -> smithay::utils::Point<i32, Physical> {
         self.rect.loc
     }
 
+    // 0.1.0
     fn transform(&self) -> Transform {
         Transform::Normal
     }
 
+    // 0.1.0
     fn kind(&self) -> Kind {
         Kind::Unspecified
     }
 }
 
 impl RenderElement<GlesRenderer> for Elemento {
+    // 0.1.0
     fn draw(
         &self,
         frame: &mut <GlesRenderer as smithay::backend::renderer::RendererSuper>::Frame<'_, '_>,

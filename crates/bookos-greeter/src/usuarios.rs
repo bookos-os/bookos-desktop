@@ -23,6 +23,7 @@ pub struct Paleta {
 
 impl Paleta {
     /// De `palette.css`, que trae un bloque por tema con los mismos nombres.
+    // 0.1.1
     pub fn leer(css: &str, tema: Tema) -> Option<Self> {
         let (marca, tono) = match tema {
             Tema::Claro => (":root.light-mode{", "--accent-container"),
@@ -64,6 +65,7 @@ pub struct Persona {
 }
 
 impl Persona {
+    // 0.1.1
     pub fn nueva(cuenta: &str, nombre: &str, uid: Option<u32>, publicado: &Path) -> Self {
         let carpeta = uid.and_then(|uid| carpeta_de(publicado, cuenta, uid));
         let propio = |archivo: &str, tope: u64| {
@@ -111,6 +113,7 @@ impl Persona {
         }
     }
 
+    // 0.1.1
     pub fn iniciales(&self) -> String {
         self.nombre
             .split_whitespace()
@@ -121,6 +124,7 @@ impl Persona {
     }
 }
 
+// 0.1.1
 pub fn raiz_publicada() -> PathBuf {
     std::env::var_os("BOOKOS_APARIENCIA_PUBLICA").map_or_else(
         || PathBuf::from(bookos_shell::APARIENCIA_PUBLICA),
@@ -128,6 +132,7 @@ pub fn raiz_publicada() -> PathBuf {
     )
 }
 
+// 0.1.1
 pub fn leer() -> Vec<Persona> {
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
     let publicado = raiz_publicada();
@@ -139,6 +144,7 @@ pub fn leer() -> Vec<Persona> {
 
 /// Las cuentas de persona: el rango de `UID_MIN`…`UID_MAX` de `login.defs` y un
 /// shell con el que se pueda entrar.
+// 0.1.1
 pub fn listables(passwd: &str) -> Vec<(String, u32, String)> {
     passwd
         .lines()
@@ -160,17 +166,20 @@ pub fn listables(passwd: &str) -> Vec<(String, u32, String)> {
 
 /// La carpeta publicada solo vale si es de quien dice ser. La raíz admite
 /// escritura de cualquiera, así que el nombre de la carpeta no prueba nada.
+// 0.1.1
 fn carpeta_de(publicado: &Path, cuenta: &str, uid: u32) -> Option<PathBuf> {
     let carpeta = publicado.join(cuenta);
     let datos = std::fs::symlink_metadata(&carpeta).ok()?;
     (datos.is_dir() && datos.uid() == uid).then_some(carpeta)
 }
 
+// 0.1.1
 pub fn publicado_valido(ruta: &Path, uid: u32, tope: u64) -> Option<PathBuf> {
     let datos = std::fs::symlink_metadata(ruta).ok()?;
     (datos.is_file() && datos.uid() == uid && datos.len() <= tope).then(|| ruta.to_path_buf())
 }
 
+// 0.1.1
 fn miniatura(foto: &Handle) -> Option<Handle> {
     let Handle::Rgba {
         width,
@@ -206,9 +215,13 @@ pub struct Fondo {
 }
 
 type ClaveCache = (PathBuf, u32, u32, u32, bool);
-static CACHE_FONDOS: std::sync::Mutex< Vec<(ClaveCache, Fondo)> > =
-    std::sync::Mutex::new(Vec::new());
+/// El último fondo cargado, para no volver a decodificarlo si se pide igual.
+/// Uno solo: con seis, cada fondo que ya no se ve seguía ocupando sus 20,7 MB
+/// (2880×1800×4), incluida la carga provisional a 1280×800 del arranque.
+static CACHE_FONDOS: std::sync::Mutex<Option<(ClaveCache, Fondo)>> = std::sync::Mutex::new(None);
 
+// 0.1.1
+// modificado en la 0.2.0 -- sin copias intermedias del fondo y caché de uno
 pub fn cargar_fondo(
     ruta: &Path,
     (ancho, alto): (u32, u32),
@@ -223,7 +236,8 @@ pub fn cargar_fondo(
         automatico,
     );
     if let Ok(guard) = CACHE_FONDOS.lock()
-        && let Some((_, fondo)) = guard.iter().find(|(k, _)| *k == clave)
+        && let Some((k, fondo)) = guard.as_ref()
+        && *k == clave
     {
         return Some(fondo.clone());
     }
@@ -245,16 +259,23 @@ pub fn cargar_fondo(
         ((ancho as f32 / escala) as u32).clamp(1, w),
         ((alto as f32 / escala) as u32).clamp(1, h),
     );
-    let recorte = image::imageops::crop_imm(&imagen, (w - rw) / 2, (h - rh) / 2, rw, rh);
-    let entero = if (rw, rh) == (ancho, alto) {
-        recorte.to_image()
+    // Sin copia si ya viene al tamaño de la pantalla; si no, el original se
+    // suelta en cuanto existe la versión escalada. Antes vivían a la vez el
+    // original, la escalada y las losas: tres fondos enteros de memoria.
+    let entero = if (w, h) == (ancho, alto) {
+        imagen
     } else {
-        image::imageops::resize(
-            &*recorte,
-            ancho,
-            alto,
-            image::imageops::FilterType::Triangle,
-        )
+        let recorte = image::imageops::crop_imm(&imagen, (w - rw) / 2, (h - rh) / 2, rw, rh);
+        if (rw, rh) == (ancho, alto) {
+            recorte.to_image()
+        } else {
+            image::imageops::resize(
+                &*recorte,
+                ancho,
+                alto,
+                image::imageops::FilterType::Triangle,
+            )
+        }
     };
     let lado = ((LOSA as f32 * densidad).round() as u32).max(1);
     let raw = entero.as_raw();
@@ -282,16 +303,15 @@ pub fn cargar_fondo(
                 .collect()
         })
         .collect();
+    drop(entero);
     let fondo = Fondo { losas };
     if let Ok(mut guard) = CACHE_FONDOS.lock() {
-        if guard.len() >= 6 {
-            guard.remove(0);
-        }
-        guard.push((clave, fondo.clone()));
+        *guard = Some((clave, fondo.clone()));
     }
     Some(fondo)
 }
 
+// 0.1.1
 pub fn fondo_por_defecto(tema: Tema) -> Option<PathBuf> {
     let claro = tema == Tema::Claro;
     let familia = bookos_shell::fondos::por_defecto(claro)?;

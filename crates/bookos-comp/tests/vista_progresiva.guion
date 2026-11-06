@@ -1,0 +1,35 @@
+# La pausa entre capturas mantiene los dedos apoyados: la vista no debe
+# completar la apertura hasta que el recorrido o la suelta lo indiquen.
+espera 1000
+captura
+deslizar inicio 4 16
+deslizar avance 0 -24 100
+captura
+deslizar avance 0 -96 100
+captura
+deslizar avance 0 -120 100
+captura
+deslizar avance 0 -192 100
+captura
+deslizar avance 0 312 100
+captura
+deslizar cancelar 900
+comprobar emergente ninguna 16
+captura
+deslizar inicio 4 16
+deslizar avance 0 -480 100
+deslizar fin 900
+comprobar emergente escritorios 16
+captura
+deslizar inicio 4 16
+deslizar avance 0 240 100
+captura
+deslizar cancelar 900
+comprobar emergente escritorios 16
+captura
+deslizar inicio 4 16
+deslizar avance 0 480 100
+deslizar fin 900
+comprobar emergente ninguna 16
+captura
+fin

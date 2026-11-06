@@ -17,6 +17,7 @@ pub struct Volumen {
 }
 
 impl Volumen {
+    // 0.1.0
     pub fn new() -> Self {
         let mut v = Self {
             nivel: None,
@@ -30,6 +31,7 @@ impl Volumen {
     }
 
     /// Guarda lo leído y elige el icono. `true` si cambió algo que se ve.
+    // 0.1.0
     fn aplicar(&mut self, nivel: u8, silenciado: bool) -> bool {
         if Some(nivel) == self.nivel && silenciado == self.silenciado {
             return false;
@@ -43,6 +45,7 @@ impl Volumen {
 
     /// Silenciado en gris: es la misma señal que da el plasmoide, y se
     /// distingue del aspa a distancia de un vistazo.
+    // 0.1.0
     fn color(&self) -> iced_core::Color {
         if self.nivel.is_none() || self.silenciado {
             tema::TEXTO2
@@ -51,6 +54,7 @@ impl Volumen {
         }
     }
 
+    // 0.1.0
     fn releer(&mut self) -> bool {
         if let Some((nivel, silenciado)) = consultar("@DEFAULT_AUDIO_SINK@") {
             self.aplicar(nivel, silenciado)
@@ -74,6 +78,7 @@ impl Volumen {
     ///
     /// Cruza solo al cambiar de escalón: mover el volumen punto a punto no
     /// cambia el dibujo y no tiene por qué animar nada.
+    // 0.1.0
     fn actualizar_icono(&mut self, color_previo: iced_core::Color) {
         let nombre = match (self.silenciado, self.nivel.unwrap_or(0)) {
             (true, _) | (_, 0) => "volumen-silencio",
@@ -91,20 +96,24 @@ impl Volumen {
 }
 
 impl Widget for Volumen {
+    // 0.1.0
     fn nombre(&self) -> &'static str {
         "volumen"
     }
 
+    // 0.1.0
     fn esperar_arranque(&mut self) {
         self.releer();
     }
 
+    // 0.1.0
     fn refrescar(&mut self) -> bool {
         self.releer()
     }
 
     /// Por lo mismo que en el bluetooth: sin icono no se dibuja nada, así que
     /// tampoco puede ocupar sitio ni recibir clics.
+    // 0.1.0
     fn ancho(&self) -> f32 {
         tema::ICONO_PANEL
     }
@@ -112,6 +121,7 @@ impl Widget for Volumen {
     /// Solo el icono, como el plasmoide en su forma compacta: el número vive en
     /// el emergente, y una fila de porcentajes seguidos —brillo, volumen,
     /// batería— se lee peor que un icono que ya dice el nivel por su forma.
+    // 0.1.0
     fn ver(&self) -> PanelElement<'_> {
         let Some(ic) = &self.icono else {
             return crate::widget::vacio();
@@ -119,12 +129,14 @@ impl Widget for Volumen {
         self.cruce.ver(ic, self.color())
     }
 
+    // 0.1.0
     fn animando(&self) -> bool {
         self.cruce.animando()
     }
 }
 
 /// Lee la copia en memoria, sin esperar al servicio.
+// 0.1.0
 pub(crate) fn consultar(destino: &str) -> Option<(u8, bool)> {
     bookos_system::volume(destino == "@DEFAULT_AUDIO_SOURCE@")
 }

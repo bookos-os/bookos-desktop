@@ -55,6 +55,7 @@ use smithay::{
 use crate::state::{BookosComp, ClientState};
 
 impl CompositorHandler for BookosComp {
+    // 0.1.0
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
     }
@@ -63,6 +64,7 @@ impl CompositorHandler for BookosComp {
     /// `ClientData` al lanzarlo, así que buscar aquí el nuestro devuelve `None`
     /// y antes eso era un `unwrap` — el compositor se caía en el primer commit
     /// de la primera ventana X11, antes incluso de que se viera.
+    // 0.1.0
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
         if let Some(datos) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
             return &datos.compositor_state;
@@ -73,6 +75,7 @@ impl CompositorHandler for BookosComp {
             .compositor_state
     }
 
+    // 0.1.0
     fn commit(&mut self, surface: &WlSurface) {
         use smithay::backend::renderer::utils::on_commit_buffer_handler;
         on_commit_buffer_handler::<Self>(surface);
@@ -154,6 +157,7 @@ impl BookosComp {
     ///
     /// Hace falta al cambiar de escala en caliente: `new_fractional_scale` solo
     /// cubre a los clientes que se conectan después.
+    // 0.1.0
     pub fn broadcast_preferred_scale(&mut self, scale: f64) {
         use smithay::wayland::compositor::with_states;
         let surfaces: Vec<_> = self
@@ -181,6 +185,7 @@ impl BookosComp {
     }
 
     /// El tema que toca ahora mismo con el modo elegido y el reloj.
+    // 0.1.0
     pub fn tema_que_toca(&self) -> bookos_shell::tema::Tema {
         self.modo_tema.resolver(
             self.horas_tema.0,
@@ -190,6 +195,7 @@ impl BookosComp {
     }
 
     /// Cuánto falta para el próximo cambio automático, si va a haberlo.
+    // 0.1.0
     pub fn hasta_el_cambio_de_tema(&self) -> Option<std::time::Duration> {
         self.modo_tema
             .minutos_al_cambio(
@@ -205,6 +211,7 @@ impl BookosComp {
     /// Es la salida sobre la que actúan las acciones que tienen que elegir una:
     /// cambiar de escritorio, maximizar, encajar. La principal se reconoce por
     /// tener el origen en (0,0) —`pantallas::normalizar` la lleva ahí—.
+    // 0.1.0
     pub fn salida_del_puntero(&self) -> Option<&smithay::output::Output> {
         self.space
             .outputs()
@@ -223,6 +230,7 @@ impl BookosComp {
 
     /// Escala de la salida bajo el puntero (o de la principal). Es la mejor
     /// aproximación antes de que una superficie nueva esté mapeada.
+    // 0.1.0
     pub fn output_scale(&self) -> f64 {
         self.space
             .outputs()
@@ -242,6 +250,7 @@ impl BookosComp {
     }
 
     /// La ventana cuya superficie raíz es `surface`.
+    // 0.1.0
     pub fn window_for_surface(&self, surface: &WlSurface) -> Option<Window> {
         self.space
             .elements()
@@ -255,6 +264,8 @@ impl BookosComp {
     /// por frame ni por commit: son los tres únicos momentos en que la lista
     /// puede cambiar, y recorrer las ventanas leyendo su estado no es algo que
     /// deba pasar sesenta veces por segundo.
+    // 0.1.0
+    // modified 0.1.1 -- cuenta las apartadas y agrupa por app del grupo
     pub fn actualizar_dock(&mut self) {
         use smithay::utils::IsAlive;
         // Una minimizada puede morir mientras está guardada —el cliente se
@@ -295,11 +306,14 @@ impl BookosComp {
     ///
     /// Sirve para no repintar por commits que no se ven: el cursor es la única
     /// superficie que se dibuja sin estar en el `Space`.
+    // 0.1.0
     fn cursor_surface_is(&self, surface: &WlSurface) -> bool {
         use smithay::input::pointer::CursorImageStatus;
         matches!(&self.cursor_status, CursorImageStatus::Surface(s) if s == surface)
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- en el kiosko la ventana nace a pantalla completa
     fn send_initial_configure(&mut self, window: &Window, surface: &WlSurface) {
         use smithay::wayland::compositor::with_states;
         use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
@@ -332,6 +346,7 @@ impl BookosComp {
 }
 
 /// El `app_id` que el cliente ha declarado, si ya lo ha hecho.
+// 0.1.0
 pub fn app_id(window: &Window) -> Option<String> {
     use smithay::wayland::compositor::with_states;
     use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
@@ -359,6 +374,7 @@ pub fn app_id(window: &Window) -> Option<String> {
 /// Mismo camino que [`app_id`]: X11 lo lleva en su propia propiedad y Wayland en
 /// el estado del `xdg_toplevel`. Un título vacío es `None` y no una cadena
 /// vacía — quien lo enseña tiene que poder caer al nombre de la aplicación.
+// 0.1.0
 pub fn titulo(window: &Window) -> Option<String> {
     use smithay::wayland::compositor::with_states;
     use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
@@ -381,10 +397,12 @@ pub fn titulo(window: &Window) -> Option<String> {
 }
 
 impl XdgShellHandler for BookosComp {
+    // 0.1.0
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
     }
 
+    // 0.1.0
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let area = self.work_area();
         surface.with_pending_state(|state| {
@@ -410,10 +428,13 @@ impl XdgShellHandler for BookosComp {
 
     /// El `app_id` llega en un commit posterior a `new_toplevel`, así que el
     /// dock no puede saber de quién es la ventana hasta aquí.
+    // 0.1.0
     fn app_id_changed(&mut self, _surface: ToplevelSurface) {
         self.actualizar_dock();
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- saca la ventana cerrada de su grupo
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         // Lo primero, mientras la superficie sigue viva con sus texturas: en
         // el mismo lote el cliente destruye la `wl_surface` y ya no quedaría
@@ -471,11 +492,13 @@ impl XdgShellHandler for BookosComp {
     /// puntero sin que lo hayan tocado; aquí el arrastre se cancela al soltar
     /// cualquier botón, así que lo peor que consigue es que la ventana siga al
     /// cursor hasta el siguiente clic.
+    // 0.1.0
     fn move_request(&mut self, surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
         self.arrastrar_toplevel(&surface, crate::ventanas::Modo::Mover);
     }
 
     /// Y lo mismo para el borde: GTK y Qt dibujan sus propios agarraderos.
+    // 0.1.0
     fn resize_request(
         &mut self,
         surface: ToplevelSurface,
@@ -493,6 +516,7 @@ impl XdgShellHandler for BookosComp {
         self.arrastrar_toplevel(&surface, modo);
     }
 
+    // 0.1.0
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_de_toplevel(&surface)
             && !crate::ventanas::maximizada(&window)
@@ -501,6 +525,7 @@ impl XdgShellHandler for BookosComp {
         }
     }
 
+    // 0.1.0
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_de_toplevel(&surface)
             && crate::ventanas::maximizada(&window)
@@ -512,6 +537,7 @@ impl XdgShellHandler for BookosComp {
     /// Las apps sin barra nuestra (Tauri con `decorations: false`) minimizan
     /// con `set_minimized` desde su propio botón. El trait lo ignora por
     /// defecto, así que ese botón no hacía nada.
+    // 0.1.0
     fn minimize_request(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_de_toplevel(&surface) {
             crate::ventanas::minimizar(self, window);
@@ -521,6 +547,7 @@ impl XdgShellHandler for BookosComp {
     /// Pantalla completa: el cliente la pide con F11, con su propio botón o al
     /// darle a "reproducir a pantalla completa". La salida `output` se ignora
     /// porque de momento solo hay una pantalla.
+    // 0.1.0
     fn fullscreen_request(
         &mut self,
         surface: ToplevelSurface,
@@ -531,12 +558,14 @@ impl XdgShellHandler for BookosComp {
         }
     }
 
+    // 0.1.0
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         if let Some(window) = self.window_de_toplevel(&surface) {
             self.pantalla_completa(&window, false);
         }
     }
 
+    // 0.1.0
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.recolocar_popup(&surface);
         if let Err(err) = self
@@ -551,6 +580,7 @@ impl XdgShellHandler for BookosComp {
     /// El menú se queda con el ratón y el teclado hasta que se cierra: un clic
     /// fuera lo descarta en vez de llegar a la ventana de debajo, y las flechas
     /// lo recorren. Sin esto un menú abierto no se cerraba nunca.
+    // 0.1.0
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
         use smithay::desktop::{
             PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy,
@@ -624,6 +654,7 @@ impl XdgShellHandler for BookosComp {
     /// aplicación había perdido el foco y cerraba también el menú que abría a
     /// continuación: con la flecha izquierda, de «Ayuda» a «Máquina», el
     /// segundo menú se destruía 3 ms después de crearse.
+    // 0.1.0
     fn popup_destroyed(&mut self, surface: PopupSurface) {
         use smithay::desktop::{PopupKind, find_popup_root_surface};
         let Some(teclado) = self.seat.get_keyboard() else {
@@ -642,6 +673,7 @@ impl XdgShellHandler for BookosComp {
         );
     }
 
+    // 0.1.0
     fn reposition_request(
         &mut self,
         surface: PopupSurface,
@@ -664,6 +696,7 @@ impl BookosComp {
     /// la vuelta, deslizarse— si no cabe; el compositor es el único que sabe
     /// dónde acaba la pantalla. Sin esto, un menú abierto cerca del borde de
     /// abajo salía cortado.
+    // 0.1.0
     fn recolocar_popup(&self, popup: &PopupSurface) {
         use smithay::desktop::{PopupKind, find_popup_root_surface, get_popup_toplevel_coords};
         let kind = PopupKind::Xdg(popup.clone());
@@ -701,10 +734,12 @@ impl SeatHandler for BookosComp {
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
+    // 0.1.0
     fn seat_state(&mut self) -> &mut SeatState<Self> {
         &mut self.seat_state
     }
 
+    // 0.1.0
     fn led_state_changed(
         &mut self,
         _seat: &Seat<Self>,
@@ -723,6 +758,8 @@ impl SeatHandler for BookosComp {
     /// Esto estaba vacío, y por eso copiar y pegar entre dos aplicaciones no
     /// terminaba de funcionar: sin este aviso, el `wl_data_device` del cliente
     /// nuevo nunca recibía la oferta de lo que había en el portapapeles.
+    // 0.1.0
+    // modified 0.1.1 -- da el foco de teclado de X11 a la ventana enfocada (iba a la del puntero)
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         use smithay::reexports::wayland_server::Resource as _;
         let cliente = focused.and_then(|s| self.display_handle.get_client(s.id()).ok());
@@ -751,6 +788,7 @@ impl SeatHandler for BookosComp {
         self.needs_redraw = true;
     }
 
+    // 0.1.0
     fn cursor_image(
         &mut self,
         _seat: &Seat<Self>,
@@ -769,6 +807,7 @@ impl SeatHandler for BookosComp {
 impl OutputHandler for BookosComp {}
 
 impl FractionalScaleHandler for BookosComp {
+    // 0.1.0
     fn new_fractional_scale(&mut self, surface: WlSurface) {
         // En cuanto un cliente pregunta, se le dice a qué escala va a dibujarse.
         // Si no, asume 1 y se ve borroso en un panel de 2880×1800.
@@ -782,16 +821,19 @@ impl FractionalScaleHandler for BookosComp {
 }
 
 impl BufferHandler for BookosComp {
+    // 0.1.0
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
 impl ShmHandler for BookosComp {
+    // 0.1.0
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
     }
 }
 
 impl smithay::wayland::dmabuf::DmabufHandler for BookosComp {
+    // 0.1.0
     fn dmabuf_state(&mut self) -> &mut smithay::wayland::dmabuf::DmabufState {
         &mut self.dmabuf_state
     }
@@ -807,6 +849,7 @@ impl smithay::wayland::dmabuf::DmabufHandler for BookosComp {
     /// Sin `EGLDisplay` (no debería pasar: el global lo crea el backend, que es
     /// quien la deja puesta) se rechaza en vez de aceptar a ciegas, que daría
     /// una ventana en negro en vez de un fallo que se ve.
+    // 0.1.0
     fn dmabuf_imported(
         &mut self,
         _global: &smithay::wayland::dmabuf::DmabufGlobal,
@@ -856,6 +899,7 @@ pub enum Seleccion {
 /// captura son varios megas: escribirla desde el bucle dejaría el compositor
 /// bloqueado hasta que el otro extremo terminara de leer, o sea el escritorio
 /// congelado mientras pegas. El hilo se muere solo al acabar.
+// 0.1.0
 pub fn escribir_seleccion(
     datos: std::sync::Arc<Vec<u8>>,
     mime_type: String,
@@ -894,6 +938,7 @@ impl SelectionHandler for BookosComp {
     /// Un cliente Wayland cambia la selección: X11 tiene que enterarse, o lo
     /// copiado en Firefox no llega nunca a VirtualBox ni a nada que vaya por
     /// XWayland. Con `None` el gestor suelta la selección X11 si era suya.
+    // 0.1.0
     fn new_selection(
         &mut self,
         ty: smithay::wayland::selection::SelectionTarget,
@@ -908,6 +953,7 @@ impl SelectionHandler for BookosComp {
     }
 
     /// Un cliente Wayland pega algo cuyo dueño somos nosotros.
+    // 0.1.0
     fn send_selection(
         &mut self,
         ty: smithay::wayland::selection::SelectionTarget,
@@ -933,18 +979,21 @@ impl SelectionHandler for BookosComp {
 }
 
 impl DataDeviceHandler for BookosComp {
+    // 0.1.0
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
     }
 }
 
 impl PrimarySelectionHandler for BookosComp {
+    // 0.1.0
     fn primary_selection_state(&self) -> &PrimarySelectionState {
         &self.primary_selection_state
     }
 }
 
 impl DataControlHandler for BookosComp {
+    // 0.1.0
     fn data_control_state(&self) -> &DataControlState {
         &self.data_control_state
     }
@@ -959,15 +1008,18 @@ impl ServerDndGrabHandler for BookosComp {}
 /// pelearse con GTK acaba en dos barras de título—, pero el que no diga nada o
 /// deje elegir se lleva la nuestra.
 impl smithay::wayland::shell::xdg::decoration::XdgDecorationHandler for BookosComp {
+    // 0.1.0
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         self.modo_decoracion(&toplevel, DecorationMode::ServerSide);
     }
 
+    // 0.1.0
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
         self.modo_decoracion(&toplevel, mode);
     }
 
     /// «Me da igual»: entonces la ponemos nosotros.
+    // 0.1.0
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         self.modo_decoracion(&toplevel, DecorationMode::ServerSide);
     }
@@ -979,6 +1031,7 @@ impl BookosComp {
     /// El `configure` sale aquí mismo salvo que el cliente aún no haya recibido
     /// el primero: en ese caso lo manda `send_initial_configure` con el modo ya
     /// puesto, que es lo que espera el protocolo.
+    // 0.1.0
     fn modo_decoracion(&mut self, toplevel: &ToplevelSurface, modo: DecorationMode) {
         toplevel.with_pending_state(|state| state.decoration_mode = Some(modo));
         if let Some(window) = self.window_de_toplevel(toplevel) {
@@ -1010,6 +1063,8 @@ delegate_viewporter!(BookosComp);
 delegate_presentation!(BookosComp);
 
 impl IdleInhibitHandler for BookosComp {
+    // 0.1.0
+    // modified 0.1.1 -- purga inhibidores muertos
     fn inhibit(&mut self, surface: WlSurface) {
         use smithay::reexports::wayland_server::Resource as _;
         self.idle_inhibidores.retain(|actual| actual.is_alive());
@@ -1026,6 +1081,8 @@ impl IdleInhibitHandler for BookosComp {
         }
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- purga inhibidores muertos
     fn uninhibit(&mut self, surface: WlSurface) {
         use smithay::reexports::wayland_server::Resource as _;
         self.idle_inhibidores
@@ -1045,6 +1102,7 @@ impl IdleInhibitHandler for BookosComp {
 delegate_idle_inhibit!(BookosComp);
 
 impl IdleNotifierHandler for BookosComp {
+    // 0.1.0
     fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
         &mut self.idle_notifier_state
     }
@@ -1055,10 +1113,12 @@ delegate_relative_pointer!(BookosComp);
 smithay::delegate_pointer_gestures!(BookosComp);
 
 impl WlrLayerShellHandler for BookosComp {
+    // 0.1.0
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
         &mut self.layer_shell_state
     }
 
+    // 0.1.0
     fn new_layer_surface(
         &mut self,
         surface: LayerSurface,
@@ -1082,6 +1142,7 @@ impl WlrLayerShellHandler for BookosComp {
         self.needs_redraw = true;
     }
 
+    // 0.1.0
     fn layer_destroyed(&mut self, surface: LayerSurface) {
         for output in self.space.outputs().cloned().collect::<Vec<_>>() {
             let mut map = layer_map_for_output(&output);
@@ -1101,6 +1162,7 @@ impl WlrLayerShellHandler for BookosComp {
 delegate_layer_shell!(BookosComp);
 
 impl ForeignToplevelListHandler for BookosComp {
+    // 0.1.0
     fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
         &mut self.foreign_toplevel_list_state
     }
@@ -1109,6 +1171,7 @@ impl ForeignToplevelListHandler for BookosComp {
 delegate_foreign_toplevel_list!(BookosComp);
 
 impl PointerConstraintsHandler for BookosComp {
+    // 0.1.0
     fn new_constraint(
         &mut self,
         surface: &WlSurface,
@@ -1126,6 +1189,7 @@ impl PointerConstraintsHandler for BookosComp {
         }
     }
 
+    // 0.1.0
     fn cursor_position_hint(
         &mut self,
         _surface: &WlSurface,
@@ -1142,9 +1206,13 @@ delegate_pointer_constraints!(BookosComp);
 delegate_text_input_manager!(BookosComp);
 
 impl InputMethodHandler for BookosComp {
+    // 0.1.0
     fn new_popup(&mut self, _surface: InputMethodPopupSurface) {}
+    // 0.1.0
     fn dismiss_popup(&mut self, _surface: InputMethodPopupSurface) {}
+    // 0.1.0
     fn popup_repositioned(&mut self, _surface: InputMethodPopupSurface) {}
+    // 0.1.0
     fn parent_geometry(
         &self,
         _parent: &WlSurface,
@@ -1171,10 +1239,12 @@ smithay::delegate_xdg_activation!(BookosComp);
 /// donde estabas escribiendo, no enfocar nunca deja lo que lanzas del dock sin
 /// responder—. El vale dice cuál de las dos es.
 impl smithay::wayland::xdg_activation::XdgActivationHandler for BookosComp {
+    // 0.1.0
     fn activation_state(&mut self) -> &mut smithay::wayland::xdg_activation::XdgActivationState {
         &mut self.activacion_state
     }
 
+    // 0.1.0
     fn request_activation(
         &mut self,
         token: smithay::wayland::xdg_activation::XdgActivationToken,

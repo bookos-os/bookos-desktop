@@ -41,6 +41,7 @@ struct Perfil {
 
 #[interface(name = "org.bluez.Profile1")]
 impl Perfil {
+    // 0.1.0
     async fn new_connection(
         &self,
         _device: OwnedObjectPath,
@@ -71,14 +72,17 @@ impl Perfil {
         Ok(())
     }
 
+    // 0.1.0
     async fn release(&self) {}
 
+    // 0.1.0
     async fn request_disconnection(&self, _device: OwnedObjectPath) {}
 }
 
 /// Publica los objetos de perfil en el bus de sistema. El registro en BlueZ
 /// se hace en cada intento (ver [`abrir`]) para sobrevivir a un reinicio de
 /// `bluetoothd`, que olvida los perfiles registrados.
+// 0.1.0
 pub async fn publicar_perfiles(sistema: &Connection) -> zbus::Result<Pendiente> {
     let pendiente: Pendiente = Arc::new(Mutex::new(None));
     for (ruta, _) in PERFILES {
@@ -106,6 +110,7 @@ pub struct Aparato {
     pub buds: bool,
 }
 
+// 0.1.0
 pub async fn aparato(sistema: &Connection, ruta: OwnedObjectPath) -> Result<Aparato, String> {
     let dev = zbus::Proxy::new(sistema, "org.bluez", ruta.clone(), "org.bluez.Device1")
         .await
@@ -132,6 +137,7 @@ pub async fn aparato(sistema: &Connection, ruta: OwnedObjectPath) -> Result<Apar
 }
 
 /// La ruta de BlueZ de un aparato por su MAC, sin suponer `hci0`.
+// 0.1.0
 pub async fn ruta_de(sistema: &Connection, mac: &str) -> Result<OwnedObjectPath, String> {
     let objetos: HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>> =
         zbus::Proxy::new(
@@ -164,6 +170,7 @@ pub async fn ruta_de(sistema: &Connection, mac: &str) -> Result<OwnedObjectPath,
 /// No hay barrido de canales RFCOMM 1-30 como en Ajustes: cada canal que no
 /// contesta cuesta 4,97 s (medido), así que el barrido podía bloquear más de
 /// dos minutos, y BlueZ ya sabe por SDP qué canal es el bueno.
+// 0.1.0
 pub async fn abrir(
     sistema: &Connection,
     pendiente: &Pendiente,
@@ -236,6 +243,7 @@ pub async fn abrir(
 
 /// Traduce el error de BlueZ a algo que se pueda leer en Ajustes, sin
 /// esconder el original.
+// 0.1.0
 pub fn error_legible(crudo: &str) -> String {
     let c = crudo.to_ascii_lowercase();
     let motivo = if c.contains("refused") || c.contains("busy") {
@@ -283,6 +291,7 @@ pub struct Conexion {
 }
 
 impl Drop for Conexion {
+    // 0.1.0
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         // `shutdown` actúa sobre el socket, no sobre este descriptor: despierta
@@ -296,6 +305,7 @@ impl Drop for Conexion {
     }
 }
 
+// 0.1.0
 fn enviar_fd(fd: &OwnedFd, msg_id: u8, payload: &[u8], legacy: bool) -> std::io::Result<()> {
     let pkt = protocolo::encode(msg_id, payload, legacy);
     // SAFETY: búfer válido durante la llamada; MSG_NOSIGNAL evita SIGPIPE si
@@ -318,6 +328,7 @@ fn enviar_fd(fd: &OwnedFd, msg_id: u8, payload: &[u8], legacy: bool) -> std::io:
 impl Conexion {
     /// Hace el saludo, reaplica las preferencias guardadas y arranca lector y
     /// keepalive.
+    // 0.1.0
     pub fn iniciar(
         fd: OwnedFd,
         aparato: &Aparato,
@@ -402,11 +413,13 @@ impl Conexion {
         })
     }
 
+    // 0.1.0
     pub fn enviar(&self, msg_id: u8, payload: &[u8]) -> Result<(), String> {
         enviar_fd(&self.fd, msg_id, payload, self.legacy)
             .map_err(|e| format!("No se pudo enviar a los auriculares: {e}"))
     }
 
+    // 0.1.0
     pub fn estado(&self) -> BudsStatus {
         self.status
             .lock()
@@ -417,6 +430,7 @@ impl Conexion {
 
 /// Las tramas antiguas llevan `[activado, preset + 5]`; el resto, `0` para
 /// plano o `preset + 1`.
+// 0.1.0
 pub fn payload_eq(preset: u8, enabled: bool, legacy: bool) -> Vec<u8> {
     if legacy {
         vec![enabled as u8, preset.saturating_add(5)]
@@ -425,6 +439,7 @@ pub fn payload_eq(preset: u8, enabled: bool, legacy: bool) -> Vec<u8> {
     }
 }
 
+// 0.1.0
 fn leer(
     fd: OwnedFd,
     mac: String,

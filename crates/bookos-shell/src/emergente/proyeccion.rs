@@ -38,6 +38,7 @@ impl Modo {
         Self::Extender,
         Self::SinCambios,
     ];
+    // 0.1.0
     fn nombre(self) -> &'static str {
         match self {
             Self::Principal => "Solo principal",
@@ -47,6 +48,7 @@ impl Modo {
             Self::SinCambios => "Sin cambios",
         }
     }
+    // 0.1.0
     fn simbolo(self) -> &'static str {
         match self {
             Self::Principal => "▣  □",
@@ -64,16 +66,19 @@ pub struct Proyeccion {
 }
 
 impl Proyeccion {
+    // 0.1.0
     pub fn new(conectadas: usize) -> Self {
         Self {
             conectadas,
             elegida: 3,
         }
     }
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let (w, h) = self.contenido_size();
         (w + MARGEN_SOMBRA * 2.0, h + MARGEN_SOMBRA * 2.0)
     }
+    // 0.1.0
     fn contenido_size(&self) -> (f32, f32) {
         if self.conectadas < 2 {
             (430.0, 180.0)
@@ -81,12 +86,15 @@ impl Proyeccion {
             (MARGEN * 2.0 + CELDA_W * 5.0 + HUECO * 4.0, 206.0)
         }
     }
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Centrada
     }
+    // 0.1.0
     pub fn animando(&self) -> bool {
         false
     }
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let Some((x, y)) = punto.map(|(x, y)| (x - MARGEN_SOMBRA, y - MARGEN_SOMBRA)) else {
             return false;
@@ -104,6 +112,7 @@ impl Proyeccion {
         self.elegida = i;
         cambio
     }
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let (w, h) = self.contenido_size();
         if x < MARGEN_SOMBRA
@@ -116,6 +125,7 @@ impl Proyeccion {
         self.puntero(Some((x, y)));
         (self.conectadas >= 2).then(|| Accion::Proyeccion(Modo::TODOS[self.elegida]))
     }
+    // 0.1.0
     pub fn tecla(&mut self, tecla: TeclaPulsada) -> Tecla {
         match tecla {
             TeclaPulsada::Escape => Tecla::Cerrar,
@@ -133,6 +143,7 @@ impl Proyeccion {
             _ => Tecla::Ignorada,
         }
     }
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let titulo = text("Proyección de pantalla")
             .size(tema::T_TITULO)
@@ -209,6 +220,7 @@ impl Proyeccion {
     }
 }
 
+// 0.1.0
 fn tarjeta(_: &iced_widget::Theme) -> iced_widget::container::Style {
     iced_widget::container::Style {
         background: Some(tema::card().into()),

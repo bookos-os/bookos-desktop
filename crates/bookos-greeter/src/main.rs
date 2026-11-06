@@ -18,6 +18,7 @@ use usuarios::Persona;
 
 const SACUDIDA: Duration = Duration::from_millis(520);
 
+// 0.1.1
 fn main() -> anyhow::Result<()> {
     let mut previa = false;
     let mut sesion = "/usr/local/bin/bookos-session".to_string();
@@ -88,6 +89,8 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+
+// 0.1.1
 fn tema_iced(_: &Acceso) -> Theme {
     Theme::custom(
         "BookOS",
@@ -102,6 +105,7 @@ fn tema_iced(_: &Acceso) -> Theme {
     )
 }
 
+// 0.1.1
 fn entrada(
     evento: iced::Event,
     estado: iced::event::Status,
@@ -147,6 +151,7 @@ fn entrada(
 
 /// Un aviso al empezar cada minuto. iced no trae temporizador con el ejecutor
 /// de hilos, y despertar cada segundo para un reloj sin segundos sobra.
+// 0.1.1
 fn minutos() -> iced::futures::channel::mpsc::UnboundedReceiver<Mensaje> {
     let (envio, recepcion) = iced::futures::channel::mpsc::unbounded();
     std::thread::spawn(move || {
@@ -158,6 +163,39 @@ fn minutos() -> iced::futures::channel::mpsc::UnboundedReceiver<Mensaje> {
             if envio.unbounded_send(Mensaje::Tic).is_err() {
                 return;
             }
+        }
+    });
+    recepcion
+}
+
+/// Lo que deja `pam_bookos_huella` sobre la huella y lo que pregunta. Están
+/// repetidos de `crates/bookos-pam-huella`: el módulo es una biblioteca de C
+/// (`cdylib`) y no se puede usar como dependencia.
+const ESTADO_HUELLA: &str = "/run/bookos-huella/estado";
+pub(crate) const PREGUNTA_HUELLA: &str = "Contraseña o huella";
+
+/// Vigila lo que el módulo PAM dice de la huella mientras greetd pregunta la
+/// contraseña. Cada 100 ms y no con inotify: es un fichero que cambia dos o
+/// tres veces por intento, y el chip ya tarda ~50 ms en decir que casa.
+// añadido en la 0.2.0
+fn huella() -> iced::futures::channel::mpsc::UnboundedReceiver<Mensaje> {
+    let (envio, recepcion) = iced::futures::channel::mpsc::unbounded();
+    std::thread::spawn(move || {
+        let mut visto = String::new();
+        // Se acaba cuando iced suelta la suscripción y con ella el receptor.
+        while !envio.is_closed() {
+            if let Ok(ahora) = std::fs::read_to_string(ESTADO_HUELLA)
+                && ahora != visto
+            {
+                visto = ahora;
+                if envio
+                    .unbounded_send(Mensaje::Huella(visto.clone()))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
     });
     recepcion
@@ -192,6 +230,7 @@ enum Respuesta {
 }
 
 impl From<Response> for Respuesta {
+    // 0.1.1
     fn from(respuesta: Response) -> Self {
         match respuesta {
             Response::Success => Self::Confirmado,
@@ -233,6 +272,9 @@ pub enum Panel {
 
 #[derive(Clone)]
 enum Mensaje {
+    /// Lo que dice `pam_bookos_huella` del lector: `coincide` o
+    /// `no-coincide N`.
+    Huella(String),
     Usuario(String),
     Respuesta(String),
     Continuar,
@@ -274,6 +316,7 @@ enum Mensaje {
 mod tests;
 
 impl std::fmt::Debug for Mensaje {
+    // 0.1.1
     fn fmt(&self, formato: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Iced puede incluir los mensajes en diagnósticos; nunca volcamos la
         // respuesta a PAM ni la contraseña Wi-Fi, aunque se dibujen como puntos.
@@ -368,6 +411,7 @@ struct Acceso {
 }
 
 impl Acceso {
+    // 0.1.1
     fn nuevo(
         socket: Option<PathBuf>,
         sesion: String,
@@ -392,8 +436,8 @@ impl Acceso {
             señalada: 0,
             de: 0,
             foco: Foco::Ninguno,
-            fuerza: Transicion::nueva(0.0, tema::D_HOVER, tema::C_SUAVE),
-            menu: Transicion::nueva(0.0, tema::D_POPOVER, tema::C_MUELLE_POPOVER),
+            fuerza: Transicion::nueva(0.0, tema::M_RAPIDO),
+            menu: Transicion::nueva(0.0, tema::M_SUAVE),
             panel_abierto: None,
             panel_visible: None,
             hora: Shell::hora_bloqueo(),
@@ -488,18 +532,26 @@ impl Acceso {
         (acceso, Task::batch([ventana, inicio]))
     }
 
+    // 0.1.1
+    // modificado en la 0.2.0 -- vigila la huella mientras pregunta pam_bookos_huella
     fn suscripcion(&self) -> Subscription<Mensaje> {
         let mut todas = vec![
             iced::event::listen_with(entrada),
             iced::window::resize_events().map(|(_, tamano)| Mensaje::Pantalla(tamano)),
             Subscription::run(minutos),
         ];
+        if self.cliente.is_some()
+            && matches!(&self.estado, Estado::Pregunta { texto, .. } if texto == PREGUNTA_HUELLA)
+        {
+            todas.push(Subscription::run(huella));
+        }
         if self.animando() {
             todas.push(iced::window::frames().map(|_| Mensaje::Fotograma));
         }
         Subscription::batch(todas)
     }
 
+    // 0.1.1
     fn animando(&self) -> bool {
         self.fuerza.animando()
             || self.menu.animando()
@@ -507,10 +559,12 @@ impl Acceso {
             || self.fallo_desde.is_some_and(|d| d.elapsed() < SACUDIDA)
     }
 
+    // 0.1.1
     fn en_lista(&self) -> bool {
         matches!(self.estado, Estado::Usuario) && !self.manual
     }
 
+    // 0.1.1
     fn leer_estado(&mut self) {
         self.bateria = Battery::read(false)
             .as_ref()
@@ -518,12 +572,14 @@ impl Acceso {
         self.red = Network::read();
     }
 
+    // 0.1.1
     fn fijar_teclado(&mut self, codigo: String) {
         self.teclado_codigo = codigo.trim().to_lowercase();
         self.teclado = (!self.teclado_codigo.is_empty()).then(|| self.teclado_codigo.to_uppercase());
     }
 
     /// Filas, factor de encogido y borde de arriba de la lista en reposo.
+    // 0.1.1
     fn lista(&self) -> (usize, f32, f32) {
         let filas = self.personas.len() + 1;
         let reposo = lente::alto_en_reposo(filas, 1.0);
@@ -534,6 +590,7 @@ impl Acceso {
     }
 
     /// Pone el tema y el acento de una persona. El fondo llega después.
+    // 0.1.1
     fn vestir(&mut self, de: usize) {
         self.de = de;
         let Some(persona) = self.personas.get(de) else {
@@ -547,6 +604,7 @@ impl Acceso {
         }
     }
 
+    // 0.1.1
     fn pedir_fondo(&mut self) -> Task<Mensaje> {
         let px = (
             (self.pantalla.width * self.densidad).round() as u32,
@@ -578,6 +636,7 @@ impl Acceso {
         )
     }
 
+    // 0.1.1
     fn elegir(&mut self, i: usize) -> Task<Mensaje> {
         self.error = None;
         self.mostrar_respuesta = false;
@@ -609,6 +668,7 @@ impl Acceso {
         Task::batch([fondo, acceso])
     }
 
+    // 0.1.1
     fn autenticar(&mut self) -> Task<Mensaje> {
         self.respondido = false;
         self.enviar(
@@ -619,6 +679,7 @@ impl Acceso {
         )
     }
 
+    // 0.1.1
     fn enviar(&mut self, operacion: Operacion, peticion: Request) -> Task<Mensaje> {
         let Some(cliente) = &self.cliente else {
             match operacion {
@@ -647,12 +708,14 @@ impl Acceso {
         })
     }
 
+    // 0.1.1
     fn volver(&mut self) {
         self.estado = Estado::Usuario;
         self.mostrar_respuesta = false;
         self.cambio_desde = Instant::now();
     }
 
+    // 0.1.1
     fn aplicar_traduccion_teclado(&mut self, valor: &mut String) {
         if self.teclado_base == self.teclado_codigo {
             return;
@@ -672,6 +735,7 @@ impl Acceso {
         }
     }
 
+    // 0.1.1
     fn abrir_o_cerrar_panel(&mut self, panel: Option<Panel>) -> Task<Mensaje> {
         let destino = if self.panel_abierto == panel {
             None
@@ -707,6 +771,7 @@ impl Acceso {
         Task::none()
     }
 
+    // 0.1.1
     fn actualizar(&mut self, mensaje: Mensaje) -> Task<Mensaje> {
         match mensaje {
             Mensaje::FocoAnterior => return iced::widget::operation::focus_previous(),
@@ -714,6 +779,31 @@ impl Acceso {
             Mensaje::TeclaTexto(texto, shift) => {
                 self.ultima_tecla = Some((texto, shift, Instant::now()));
             }
+            // La huella casó: se contesta vacío solo para soltar la conversación.
+            // Lo que abre la sesión es lo que vio el módulo en fprintd, no
+            // esta respuesta.
+            Mensaje::Huella(estado)
+                if estado == "coincide" && matches!(self.estado, Estado::Pregunta { .. }) =>
+            {
+                self.respondido = true;
+                self.respuesta.clear();
+                self.mostrar_respuesta = false;
+                return self.enviar(
+                    Operacion::Autenticar,
+                    Request::PostAuthMessageResponse {
+                        response: Some(String::new()),
+                    },
+                );
+            }
+            Mensaje::Huella(estado) if estado.starts_with("no-coincide") => {
+                self.error = Some(
+                    self.idioma
+                        .t("Huella no reconocida", "Fingerprint not recognized")
+                        .into(),
+                );
+                self.fallo_desde = Some(Instant::now());
+            }
+            Mensaje::Huella(_) => {}
             Mensaje::AlternarMayusculas => {
                 self.caps_lock = !self.caps_lock;
             }

@@ -33,6 +33,7 @@ pub enum Veredicto {
 }
 
 impl Veredicto {
+    // 0.1.0
     pub fn correcto(self) -> bool {
         self == Self::Correcto
     }
@@ -79,6 +80,7 @@ struct Secretos {
 /// se borre queda ahí legible. `write_volatile` es lo que impide que se optimice
 /// el bucle, porque escribir algo que nadie vuelve a leer es justo lo que un
 /// optimizador está deseando quitar.
+// 0.1.0
 fn borrar(bytes: &mut [u8]) {
     for b in bytes {
         // SAFETY: el puntero sale de una referencia mutable viva y válida.
@@ -92,6 +94,7 @@ pub struct Comprobacion {
 }
 
 impl Comprobacion {
+    // 0.1.0
     pub fn lanzar(usuario: &str, contrasena: &str) -> Option<Self> {
         let usuario = usuario.to_string();
         // En `Vec<u8>` y no en `String` porque hay que poder ponerlo a ceros al
@@ -117,12 +120,14 @@ impl Comprobacion {
 
     /// ¿Ha avisado PAM de un intento fallido desde la última vez que se
     /// preguntó? Solo en la huella; en la contraseña siempre `false`.
+    // 0.1.0
     pub fn dedo_no_casa(&mut self) -> bool {
         self.avisos
             .as_ref()
             .is_some_and(|r| r.try_iter().count() > 0)
     }
 
+    // 0.1.0
     pub fn resultado(&mut self) -> Option<Veredicto> {
         match self.resultado.try_recv() {
             Ok(vale) => Some(vale),
@@ -134,6 +139,7 @@ impl Comprobacion {
     /// Inicia la conversación PAM configurada por la distribución para el
     /// lector de huellas. El compositor nunca recibe ni almacena datos
     /// biométricos: solo recibe el resultado booleano.
+    // 0.1.0
     pub fn huella(usuario: &str) -> Option<Self> {
         // Como máximo una conversación con el sensor, incluso al bloquear
         // otra vez antes de que expire el intento anterior.
@@ -147,6 +153,7 @@ impl Comprobacion {
         }
         struct Liberar;
         impl Drop for Liberar {
+            // 0.1.0
             fn drop(&mut self) {
                 OCUPADO.store(false, Ordering::SeqCst);
             }
@@ -174,6 +181,7 @@ impl Comprobacion {
     }
 }
 
+// 0.1.0
 pub fn usuario() -> String {
     // La identidad autenticada es el UID de la sesión, nunca una variable
     // de entorno ni root como reserva. La variante reentrante sirve también
@@ -198,6 +206,7 @@ pub fn usuario() -> String {
         .into_owned()
 }
 
+// 0.1.0
 fn servicio() -> &'static str {
     if std::path::Path::new("/etc/pam.d/bookos").is_file() {
         "bookos"
@@ -212,6 +221,8 @@ fn servicio() -> &'static str {
     }
 }
 
+// 0.1.0
+// modified 0.1.1 -- acepta el PIN antes de preguntar a PAM
 fn autenticar(usuario: &str, contrasena: &[u8]) -> Veredicto {
     if pin_correcto(usuario, contrasena) {
         return Veredicto::Correcto;
@@ -224,6 +235,7 @@ fn autenticar(usuario: &str, contrasena: &[u8]) -> Veredicto {
 /// en la pila `bookos` haría falta `pam_exec` y un ayudante instalado, y el PIN
 /// solo debe abrir el bloqueo, no valer para sudo ni polkit. Lo que no son
 /// cifras ni se mira: una contraseña normal va directa a PAM.
+// 0.1.1
 fn pin_correcto(usuario: &str, intento: &[u8]) -> bool {
     if intento.is_empty() || !intento.iter().all(u8::is_ascii_digit) {
         return false;
@@ -234,6 +246,7 @@ fn pin_correcto(usuario: &str, intento: &[u8]) -> bool {
     pin_casa(guardado.trim(), intento)
 }
 
+// 0.1.1
 fn pin_casa(guardado: &str, intento: &[u8]) -> bool {
     let (Ok(hash), Ok(frase)) = (CString::new(guardado), CString::new(intento)) else {
         return false;
@@ -272,6 +285,7 @@ fn pin_casa(guardado: &str, intento: &[u8]) -> bool {
     }
 }
 
+// 0.1.0
 fn autenticar_servicio(
     nombre: &str,
     usuario: &str,
@@ -426,6 +440,7 @@ fn autenticar_servicio(
 
 /// La función que PAM llama en vez de dormir tras un fallo. No hace nada:
 /// la demora la pone el bloqueo.
+// 0.1.0
 unsafe extern "C" fn sin_demora(
     _estado: c_int,
     _microsegundos: std::ffi::c_uint,
@@ -433,6 +448,7 @@ unsafe extern "C" fn sin_demora(
 ) {
 }
 
+// 0.1.0
 unsafe extern "C" fn conversar(
     cuantos: c_int,
     mensajes: *mut *const PamMessage,
@@ -494,6 +510,7 @@ unsafe extern "C" fn conversar(
     PAM_SUCCESS
 }
 
+// 0.1.0
 fn copiar_cadena(texto: &CStr) -> *mut c_char {
     let bytes = texto.to_bytes_with_nul();
     let destino = unsafe { libc::malloc(bytes.len()).cast::<c_char>() };
@@ -503,6 +520,7 @@ fn copiar_cadena(texto: &CStr) -> *mut c_char {
     destino
 }
 
+// 0.1.0
 fn liberar_respuestas(respuestas: *mut PamResponse, cuantos: usize) {
     for i in 0..cuantos {
         unsafe { libc::free((*respuestas.add(i)).resp.cast()) };

@@ -65,6 +65,7 @@ pub struct Estado {
 }
 
 impl Estado {
+    // 0.1.0
     pub fn nuevo(config: LuzNocturna) -> Self {
         Self {
             config,
@@ -75,11 +76,13 @@ impl Estado {
         }
     }
 
+    // 0.1.0
     fn encendida(&self, ahora: bookos_shell::tema::HoraDelDia) -> bool {
         self.forzada.unwrap_or_else(|| self.config.toca(ahora))
     }
 
     /// La temperatura a la que hay que ir ahora.
+    // 0.1.0
     fn objetivo(&self, ahora: bookos_shell::tema::HoraDelDia) -> u32 {
         if self.encendida(ahora) {
             self.config.temperatura
@@ -97,7 +100,9 @@ impl Estado {
 /// de unidades sobre 255 entre 1000 y 40 000 K. Para teñir una pantalla es de
 /// sobra; la tabla exacta de redshift serían doscientas líneas de números para
 /// una diferencia que no se ve.
+// 0.1.0
 pub fn multiplicadores(kelvin: u32) -> [f32; 3] {
+    // 0.1.0
     fn crudo(kelvin: u32) -> [f32; 3] {
         let t = kelvin as f32 / 100.0;
         let r = if t <= 66.0 {
@@ -127,6 +132,7 @@ pub fn multiplicadores(kelvin: u32) -> [f32; 3] {
 }
 
 /// Una rampa de gamma de `n` entradas para un canal: la identidad escalada.
+// 0.1.0
 pub fn rampa(n: usize, multiplicador: f32) -> Vec<u16> {
     let ultimo = n.saturating_sub(1).max(1) as f32;
     (0..n)
@@ -137,6 +143,7 @@ pub fn rampa(n: usize, multiplicador: f32) -> Vec<u16> {
 /// Lee la configuración y va a lo que toque. Se llama al arrancar y al recargar
 /// los ajustes. Cambiar la configuración desde Ajustes descarta lo forzado a
 /// mano: quien acaba de elegir un modo quiere ver ese modo.
+// 0.1.0
 pub fn recargar(state: &mut BookosComp, config: LuzNocturna) {
     state.luz_nocturna.config = config;
     state.luz_nocturna.forzada = None;
@@ -145,6 +152,7 @@ pub fn recargar(state: &mut BookosComp, config: LuzNocturna) {
 }
 
 /// Encender o apagar desde la baldosa o la tarjeta de brillo.
+// 0.1.0
 pub fn alternar(state: &mut BookosComp, encender: bool) {
     let luz = &mut state.luz_nocturna;
     match luz.config.modo {
@@ -167,6 +175,7 @@ pub fn alternar(state: &mut BookosComp, encender: bool) {
 /// Vuelve a poner la curva que había, sin fundido. Hace falta después de que
 /// otro haya podido tocarla: al volver de otro TTY —el maestro de allí la deja
 /// como quiere— y al encender una pantalla nueva, que nace con la identidad.
+// 0.1.0
 pub fn reponer(state: &mut BookosComp) {
     let aplicada = state.luz_nocturna.aplicada;
     if aplicada != LuzNocturna::NEUTRA {
@@ -175,6 +184,7 @@ pub fn reponer(state: &mut BookosComp) {
 }
 
 /// Funde de lo que hay a lo que toca ahora.
+// 0.1.0
 fn ir_al_objetivo(state: &mut BookosComp) {
     let ahora = bookos_shell::hora_local_ahora();
     let objetivo = state.luz_nocturna.objetivo(ahora);
@@ -217,6 +227,7 @@ fn ir_al_objetivo(state: &mut BookosComp) {
     }
 }
 
+// 0.1.0
 fn poner(state: &mut BookosComp, kelvin: u32) {
     state.luz_nocturna.aplicada = kelvin;
     let Some(aplicar) = state.aplicar_gamma.as_mut() else {
@@ -228,6 +239,7 @@ fn poner(state: &mut BookosComp, kelvin: u32) {
 }
 
 /// Programa el despertar del próximo borde del horario, o lo quita.
+// 0.1.0
 fn programar(state: &mut BookosComp) {
     if let Some(token) = state.luz_nocturna.tick.take() {
         state.loop_handle.remove(token);

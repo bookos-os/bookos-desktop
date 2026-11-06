@@ -66,6 +66,7 @@ pub struct CapturaState {
 }
 
 impl CapturaState {
+    // 0.1.0
     pub fn new(dh: &DisplayHandle) -> Self {
         let global = dh.create_global::<BookosComp, ZwlrScreencopyManagerV1, _>(VERSION, ());
         Self { global }
@@ -103,6 +104,7 @@ pub struct Pendiente {
 }
 
 impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for BookosComp {
+    // 0.1.0
     fn bind(
         _state: &mut Self,
         _dh: &DisplayHandle,
@@ -116,6 +118,7 @@ impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for BookosComp {
 }
 
 impl Dispatch<ZwlrScreencopyManagerV1, ()> for BookosComp {
+    // 0.1.0
     fn request(
         state: &mut Self,
         _client: &Client,
@@ -192,6 +195,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for BookosComp {
 impl DatosFrame {
     /// Un frame que ya nace fallado: hace falta porque el protocolo obliga a
     /// crear el objeto antes de poder decirle que no.
+    // 0.1.0
     fn muerto() -> Self {
         Self {
             output: Output::new(
@@ -211,6 +215,7 @@ impl DatosFrame {
 }
 
 impl Dispatch<ZwlrScreencopyFrameV1, DatosFrame> for BookosComp {
+    // 0.1.0
     fn request(
         state: &mut Self,
         _client: &Client,
@@ -280,6 +285,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, DatosFrame> for BookosComp {
         state.needs_redraw = true;
     }
 
+    // 0.1.0
     fn destroyed(
         state: &mut Self,
         _client: smithay::reexports::wayland_server::backend::ClientId,
@@ -302,6 +308,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, DatosFrame> for BookosComp {
 ///
 /// Que los bytes lleguen de verdad se comprueba con un cliente que pegue; eso
 /// no cabe aquí dentro.
+// 0.1.0
 pub fn el_portapapeles_tiene_imagen(state: &crate::state::BookosComp) -> bool {
     use smithay::reexports::rustix;
     use smithay::wayland::selection::data_device::{
@@ -334,6 +341,7 @@ pub fn el_portapapeles_tiene_imagen(state: &crate::state::BookosComp) -> bool {
 ///   —que es lo que se hacía siempre— devolvía la franja simétrica, y es por
 ///   lo que en la sesión real la captura salía de otro sitio que el marcado.
 ///   La pantalla entera no lo notaba porque su rectángulo es simétrico.
+// 0.1.0
 pub fn region_gl(
     region: Rectangle<i32, BufferCoord>,
     alto_total: i32,
@@ -368,11 +376,13 @@ pub fn region_gl(
 ///
 /// Por eso el fallo no se veía probando en anidado, que es donde se comprobó
 /// en su día: las dos vueltas se compensaban y el PNG salía bien.
+// 0.1.0
 pub fn hay_que_voltear(output: &Output) -> bool {
     output.current_transform().flipped()
 }
 
 /// El tamaño del buffer de una salida, que es lo que se copia.
+// 0.1.0
 pub fn tamano_de(output: &Output) -> Size<i32, BufferCoord> {
     let modo = output.current_mode().map(|m| m.size).unwrap_or_default();
     let transformado = output.current_transform().transform_size(modo);
@@ -396,6 +406,7 @@ pub fn tamano_de(output: &Output) -> Size<i32, BufferCoord> {
 ///
 /// Devuelve `false` si el buffer se murió entre medias, que pasa cuando el
 /// cliente se va justo después de pedir la copia.
+// 0.1.0
 pub fn volcar(pendiente: &Pendiente, pixeles: &[u8], invertida: bool) -> bool {
     let (ancho, alto) = (
         pendiente.region.size.w as usize,
@@ -441,6 +452,7 @@ pub fn volcar(pendiente: &Pendiente, pixeles: &[u8], invertida: bool) -> bool {
 /// El instante va en el reloj monotónico, que es el mismo con el que se anuncia
 /// `wp_presentation`: para un cliente que graba, las dos marcas tienen que
 /// poder compararse.
+// 0.1.0
 pub fn contestar(pendiente: &Pendiente, tamano: Size<i32, BufferCoord>) {
     use zwlr_screencopy_frame_v1::Flags;
     // Sin `YInvert`: la vuelta se la damos nosotros en `volcar`, así que lo que
@@ -546,6 +558,7 @@ void main() {
 impl Velo {
     /// Compila el shader. `None` si el driver no lo acepta: el velo sale igual,
     /// con las esquinas rectas de `ShellHost::velo_captura`.
+    // 0.1.0
     pub fn new(renderer: &mut smithay::backend::renderer::gles::GlesRenderer) -> Option<Self> {
         use smithay::backend::renderer::element::Kind;
         use smithay::backend::renderer::gles::element::PixelShaderElement;
@@ -584,6 +597,7 @@ impl Velo {
 
     /// El elemento para este fotograma. `pantalla` va en físicos y el recuadro
     /// en lógicos, que es lo que da `ShellHost::datos_velo_captura`.
+    // 0.1.0
     pub fn elemento(
         &mut self,
         pantalla: (i32, i32),

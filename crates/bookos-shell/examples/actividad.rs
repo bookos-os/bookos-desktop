@@ -9,7 +9,7 @@
 //! del borde superior de la pantalla y su sombra tiene que verse contra lo que
 //! haya debajo.
 
-use bookos_shell::actividad::{Clase, Estado, ItemCola, Metrica, Portada};
+use bookos_shell::actividad::{Clase, Estado, Fase, ItemCola, Metrica, Portada};
 use bookos_shell::{Config, Shell};
 
 const ESCALA: f32 = 2.0;
@@ -24,6 +24,7 @@ fn base(clase: Clase) -> Estado {
             Clase::Calendar => "com.bookos.calendar",
             Clase::Monitor => "com.bookos.systemmonitor",
             Clase::Auriculares => "com.bookos.buds",
+            Clase::Asistente(_) => "com.bookos.assistant",
         }
         .into(),
         clase,
@@ -117,6 +118,17 @@ fn auriculares() -> Estado {
     }
 }
 
+// añadido en la 0.2.0 -- las fases de Zenith, con lo que publicaría en cada una.
+fn asistente(fase: Fase, titulo: &str, subtitulo: &str) -> Estado {
+    Estado {
+        titulo: titulo.into(),
+        subtitulo: subtitulo.into(),
+        portada: None,
+        cola: Vec::new(),
+        ..base(Clase::Asistente(fase))
+    }
+}
+
 fn item(id: &str, titulo: &str, artista: &str, favorita: bool, actual: bool) -> ItemCola {
     ItemCola {
         id: id.into(),
@@ -183,6 +195,16 @@ fn pinta_varias(
     estados: Vec<Estado>,
     clics: &[(f32, f32)],
 ) {
+    pinta_varias_a_escala(nombre, tema, estados, clics, ESCALA);
+}
+
+fn pinta_varias_a_escala(
+    nombre: &str,
+    tema: bookos_shell::tema::Tema,
+    estados: Vec<Estado>,
+    clics: &[(f32, f32)],
+    escala: f32,
+) {
     // El temporizador solo sale si la configuración lo deja verse siempre; sin
     // esto la vista del temporizador en marcha no se puede previsualizar.
     let actividades = bookos_shell::ConfigActividades {
@@ -194,7 +216,7 @@ fn pinta_varias(
         actividades,
         ..Config::default()
     };
-    let mut shell = Shell::con_config(1646, ESCALA, config);
+    let mut shell = Shell::con_config(1646, escala, config);
     for estado in estados {
         shell.publicar_actividad(estado);
     }
@@ -298,6 +320,81 @@ fn main() {
                 estado,
                 &[(180.0, 55.0)],
             );
+        }
+        for (nombre, estado) in [
+            (
+                "asistente-sin-voz",
+                Estado {
+                    nivel: 0.0,
+                    ..asistente(Fase::Escuchando, "", "")
+                },
+            ),
+            (
+                "asistente-escuchando",
+                asistente(Fase::Escuchando, "Pon el brillo al cincuenta", ""),
+            ),
+            (
+                "asistente-pensando",
+                asistente(
+                    Fase::Pensando,
+                    "Busca el horario de la biblioteca de Girona",
+                    "Buscando en la web…",
+                ),
+            ),
+            (
+                "asistente-hecho",
+                asistente(Fase::Hecho, "Brillo al 50 %", ""),
+            ),
+            ("asistente-minimizado", asistente(Fase::Minimizado, "", "")),
+            (
+                "asistente-respuesta",
+                asistente(
+                    Fase::Respuesta,
+                    "Recordatorio a las 18:00",
+                    "Llamar a mamá. Se pierde si cierras la sesión antes.",
+                ),
+            ),
+            (
+                "asistente-error",
+                asistente(
+                    Fase::Error,
+                    "El micrófono está silenciado",
+                    "Actívalo en Sonido para que pueda oírte.",
+                ),
+            ),
+            (
+                "asistente-transcribiendo",
+                asistente(Fase::Pensando, "", "Transcribiendo…"),
+            ),
+            (
+                "asistente-titulo-largo",
+                asistente(
+                    Fase::Escuchando,
+                    "WWW: mañana miércoles recuérdame revisar la documentación del proyecto",
+                    "Escuchando una petición con un título especialmente largo",
+                ),
+            ),
+            (
+                "asistente-respuesta-larga",
+                asistente(
+                    Fase::Respuesta,
+                    "Estas son las tareas pendientes para mañana por la mañana",
+                    "Primero, revisa la documentación del proyecto y prepara las notas de la reunión.\nDespués, confirma la hora con el equipo.\n\nTambién puedes reservar un rato para responder los correos pendientes y organizar los archivos de esta semana. Si queda tiempo, revisa el calendario y prepara los materiales de la próxima sesión de trabajo.",
+                ),
+            ),
+            (
+                "asistente-respuesta-vacia",
+                asistente(Fase::Respuesta, "", ""),
+            ),
+        ] {
+            pinta_varias_a_escala(
+                &format!("{nombre}-fraccionario-{etiqueta}"),
+                tema,
+                vec![estado.clone()],
+                &[],
+                1.25,
+            );
+            pinta(&format!("{nombre}-{etiqueta}"), tema, estado, &[]);
         }
         let mut pausado = base(Clase::Player);
         pausado.pausado = true;

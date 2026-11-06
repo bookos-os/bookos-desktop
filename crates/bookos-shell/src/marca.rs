@@ -48,6 +48,7 @@ impl Canal {
     /// `~/.config/bookos-update.conf` manda sobre `/etc/bookos-update.conf`
     /// —Settings escribe en el de casa cuando no puede en `/etc`—, después
     /// `/etc/bookos-release`, y sin nada, estable.
+    // 0.1.0
     pub fn leer() -> Self {
         let casa = std::env::var_os("HOME")
             .map(|h| std::path::Path::new(&h).join(".config/bookos-update.conf"));
@@ -63,6 +64,7 @@ impl Canal {
             .unwrap_or(Canal::Estable)
     }
 
+    // 0.1.0
     fn de_texto(valor: &str) -> Option<Self> {
         match valor.trim().trim_matches('"') {
             "stable" => Some(Canal::Estable),
@@ -74,6 +76,7 @@ impl Canal {
 
     /// El círculo y la onda. Sacados de los dibujos del diseño
     /// (`bookos-{stable,beta,dev}.png`); los de estable son los del SVG.
+    // 0.1.0
     fn colores(self) -> (&'static str, &'static str) {
         match self {
             Canal::Estable => ("#A4BBFE", "#7E9FFF"),
@@ -82,6 +85,7 @@ impl Canal {
         }
     }
 
+    // 0.1.0
     fn indice(self) -> usize {
         self as usize
     }
@@ -90,10 +94,12 @@ impl Canal {
 static CANAL: AtomicU8 = AtomicU8::new(0);
 
 /// Pone el canal del proceso. Quien lo llame tiene que repintar el panel.
+// 0.1.0
 pub fn aplicar_canal(canal: Canal) {
     CANAL.store(canal.indice() as u8, Ordering::Relaxed);
 }
 
+// 0.1.0
 pub fn canal_actual() -> Canal {
     Canal::TODOS[CANAL.load(Ordering::Relaxed) as usize]
 }
@@ -120,6 +126,7 @@ static DIBUJOS: LazyLock<[(svg::Handle, svg::Handle); 3]> = LazyLock::new(|| {
 /// A diferencia de los iconos de estado, este **no** se colorea: tiene su
 /// propia paleta —el círculo, la onda y el nombre en blanco— y pintarlo de un
 /// solo color lo convertiría en una mancha redonda.
+// 0.1.0
 pub fn ver<'a>(px: f32) -> crate::view::PanelElement<'a> {
     use iced_core::Length;
     let (logo, marca) = &DIBUJOS[canal_actual().indice()];

@@ -37,6 +37,7 @@ enum Chapa {
 }
 
 impl Chapa {
+    // 0.1.0
     fn duracion(self) -> std::time::Duration {
         match self {
             Self::Aparece | Self::Rebota => tema::D_MODAL,
@@ -56,6 +57,7 @@ pub struct Notificaciones {
 }
 
 impl Notificaciones {
+    // 0.1.0
     pub fn new() -> Self {
         let mut n = Self {
             // Escotilla para poder mirar la chapa sin provocar notificaciones
@@ -75,10 +77,12 @@ impl Notificaciones {
         n
     }
 
+    // 0.1.0
     fn color(&self) -> iced_core::Color {
         if self.silencio { tema::TEXTO2 } else { TEXT() }
     }
 
+    // 0.1.0
     fn actualizar_icono(&mut self) {
         let nombre = if self.silencio {
             "noche"
@@ -94,22 +98,26 @@ impl Notificaciones {
 
     /// La chapa en curso y cuánto lleva de su animación, o `None` si está
     /// quieta.
+    // 0.1.0
     fn chapa_en_curso(&self) -> Option<(Chapa, f32)> {
         let (chapa, desde) = self.chapa?;
         let pasado = desde.elapsed();
         (pasado < chapa.duracion()).then(|| (chapa, tema::fraccion(pasado, chapa.duracion())))
     }
 
+    // 0.1.0
     fn chapa_visible(&self) -> bool {
         self.pendientes > 0 || matches!(self.chapa_en_curso(), Some((Chapa::Sale(_), _)))
     }
 }
 
 impl Widget for Notificaciones {
+    // 0.1.0
     fn nombre(&self) -> &'static str {
         "notificaciones"
     }
 
+    // 0.1.0
     fn refrescar(&mut self) -> bool {
         false
     }
@@ -118,6 +126,7 @@ impl Widget for Notificaciones {
     /// notificaciones. Cambiarlo puede cambiar también el ancho del widget —la
     /// chapa se sale por la derecha—, y por eso repinta el panel entero y no
     /// solo su hueco.
+    // 0.1.0
     fn notificaciones(&mut self, cuantas: u32) -> bool {
         if self.pendientes == cuantas {
             return false;
@@ -132,6 +141,7 @@ impl Widget for Notificaciones {
         true
     }
 
+    // 0.1.0
     fn no_molestar(&mut self, activo: bool) -> bool {
         if self.silencio == activo {
             return false;
@@ -144,6 +154,7 @@ impl Widget for Notificaciones {
         true
     }
 
+    // 0.1.0
     fn animando(&self) -> bool {
         self.cruce.animando() || self.chapa_en_curso().is_some()
     }
@@ -153,6 +164,7 @@ impl Widget for Notificaciones {
     /// vecino y el reparto de clics del panel dejaría de cuadrar. Mientras
     /// encoge sigue contando, para que los vecinos no salten antes de que se
     /// haya ido.
+    // 0.1.0
     fn ancho(&self) -> f32 {
         match (&self.icono, self.chapa_visible()) {
             (None, _) => 0.0,
@@ -161,6 +173,7 @@ impl Widget for Notificaciones {
         }
     }
 
+    // 0.1.0
     fn ver(&self) -> PanelElement<'_> {
         let Some(ic) = &self.icono else {
             return crate::widget::vacio();

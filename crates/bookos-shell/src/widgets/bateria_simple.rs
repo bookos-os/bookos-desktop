@@ -37,6 +37,7 @@ pub struct BateriaSimple {
 }
 
 impl BateriaSimple {
+    // 0.1.0
     pub fn new() -> Self {
         let mut b = Self {
             dato: None,
@@ -54,6 +55,7 @@ impl BateriaSimple {
     /// Tres escalones y el de carga, que son los que trae el sistema de diseño.
     /// Un icono por cada diez por ciento —lo que hace el tema de Breeze— aquí
     /// no vale: no existen esos dibujos y habría que inventarlos.
+    // 0.1.0
     fn nombre_icono(bat: &Battery) -> &'static str {
         if bat.charging {
             "bateria-carga"
@@ -67,6 +69,7 @@ impl BateriaSimple {
     }
 
     /// El color: solo habla cuando hay algo que decir.
+    // 0.1.0
     fn color(bat: &Battery) -> iced_core::Color {
         if bat.charging {
             OK()
@@ -79,6 +82,7 @@ impl BateriaSimple {
 
     /// Igual que en [`super::bateria`]: el cálculo crudo del tiempo restante se
     /// mueve una barbaridad porque el kernel da la corriente instantánea.
+    // 0.1.0
     fn suavizar(&mut self, fresco: &mut Battery) {
         const PESO: f32 = 0.25;
         if self.dato.map(|b| b.charging) != Some(fresco.charging) {
@@ -102,22 +106,26 @@ impl BateriaSimple {
     /// caracteres que cambian solos cada pocos minutos y mueven todo lo que
     /// tienen a la izquierda; el tiempo está a un clic, en el emergente de
     /// energía.
+    // 0.1.0
     fn etiqueta(bat: &Battery) -> String {
         format!("{} %", bat.percent)
     }
 }
 
 impl Widget for BateriaSimple {
+    // 0.1.0
     fn nombre(&self) -> &'static str {
         // El mismo nombre de zona que la otra: es la misma cosa en el panel, y
         // así el emergente de energía se ancla igual con una o con otra.
         "bateria"
     }
 
+    // 0.1.0
     fn subsistemas(&self) -> &'static [&'static str] {
         &["power_supply"]
     }
 
+    // 0.1.0
     fn refrescar(&mut self) -> bool {
         // Sin tiempo restante: este widget solo enseña el porcentaje, y
         // estimarlo costaría 0,53 ms por refresco para tirarlo.
@@ -151,10 +159,12 @@ impl Widget for BateriaSimple {
         true
     }
 
+    // 0.1.0
     fn animando(&self) -> bool {
         self.cruce.animando()
     }
 
+    // 0.1.0
     fn ancho(&self) -> f32 {
         let Some(bat) = &self.dato else {
             return 0.0;
@@ -162,6 +172,7 @@ impl Widget for BateriaSimple {
         tema::ICONO_PANEL + 5.0 + crate::widget::ancho_de(&Self::etiqueta(bat), tema::T_CUERPO)
     }
 
+    // 0.1.0
     fn ver(&self) -> PanelElement<'_> {
         let Some(bat) = &self.dato else {
             return crate::widget::vacio();

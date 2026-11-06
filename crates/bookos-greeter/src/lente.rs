@@ -8,10 +8,12 @@ const AUMENTO: f32 = 0.32;
 /// siguiente ya no se mueve: más ancha, la lista entera respira con el ratón.
 const ALCANCE: f32 = 1.6;
 
+// 0.1.1
 pub fn alto_en_reposo(filas: usize, k: f32) -> f32 {
     (filas as f32 * (ALTO + HUECO) - HUECO).max(0.0) * k
 }
 
+// 0.1.1
 fn escala(distancia: f32, k: f32, fuerza: f32) -> f32 {
     let t = (distancia.abs() / (ALCANCE * (ALTO + HUECO) * k)).min(1.0);
     1.0 + AUMENTO * fuerza * (std::f32::consts::FRAC_PI_2 * t).cos().powi(2)
@@ -25,6 +27,7 @@ fn escala(distancia: f32, k: f32, fuerza: f32) -> f32 {
 /// ampliadas, mover una fila cambiaría su distancia al puntero y la lista
 /// temblaría. Luego se desplaza todo para que lo que hay bajo el puntero no se
 /// mueva de debajo de él.
+// 0.1.1
 pub fn disponer(filas: usize, foco: Option<f32>, k: f32, fuerza: f32) -> Vec<(f32, f32)> {
     let (alto, hueco) = (ALTO * k, HUECO * k);
     let paso = alto + hueco;
@@ -61,11 +64,13 @@ pub fn disponer(filas: usize, foco: Option<f32>, k: f32, fuerza: f32) -> Vec<(f3
 }
 
 /// De 0 a 1, cuánto de la lente le toca a una fila con esa escala.
+// 0.1.1
 pub fn cercania(escala: f32) -> f32 {
     ((escala - 1.0) / AUMENTO).clamp(0.0, 1.0)
 }
 
 /// Qué fila en reposo cae bajo `y`, sin contar los huecos.
+// 0.1.1
 pub fn fila_en(filas: usize, y: f32, k: f32) -> Option<usize> {
     let paso = (ALTO + HUECO) * k;
     let i = (y / paso).floor();

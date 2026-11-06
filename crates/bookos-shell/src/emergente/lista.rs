@@ -47,10 +47,119 @@ pub const PIE: f32 = PIE_AIRE + PIE_BOTON;
 pub const INTERRUPTOR_ANCHO: f32 = 46.0;
 pub const INTERRUPTOR_ALTO: f32 = 28.0;
 
+/// Cuántas filas se ven a la vez. Con más entradas la lista se desplaza: la
+/// tarjeta no crece, que a más de cuatro redes llegaría al dock.
+// añadido en la 0.2.0
+pub const VISIBLES: usize = 4;
+
+/// Alto de la ventana por la que se ve la lista: de una fila (el aviso de
+/// «vacío») a [`VISIBLES`].
+// añadido en la 0.2.0
+pub fn alto_ventana(n: usize) -> f32 {
+    let v = n.clamp(1, VISIBLES) as f32;
+    v * FILA + (v - 1.0) * HUECO_FILA
+}
+
+/// Lo máximo que se puede subir la lista: lo que sobra de `n` filas sobre la
+/// ventana.
+// añadido en la 0.2.0
+pub fn maximo_desplazamiento(n: usize) -> f32 {
+    let n = n.max(1) as f32;
+    (n * FILA + (n - 1.0) * HUECO_FILA - alto_ventana(n as usize)).max(0.0)
+}
+
+/// Aplica un desplazamiento de rueda o touchpad. `true` si la lista se movió.
+/// `dy` positivo es hacia abajo, como en el resto de emergentes.
+// añadido en la 0.2.0
+pub fn desplazar(actual: &mut f32, dy: f32, n: usize) -> bool {
+    let nuevo = (*actual + dy).clamp(0.0, maximo_desplazamiento(n));
+    let cambio = (nuevo - *actual).abs() > f32::EPSILON;
+    *actual = nuevo;
+    cambio
+}
+
+/// Mueve la fila señalada con el teclado (`paso` ±1) y desplaza la lista lo
+/// justo para que se vea entera. Sin cíclico: al llegar al final se queda, que
+/// en una lista de redes saltar de la última a la primera desorienta. `true`
+/// si cambió algo que haya que repintar.
+// añadido en la 0.2.0
+pub fn mover_seleccion(
+    señalada: &mut tema::Realce,
+    desplazamiento: &mut f32,
+    n: usize,
+    paso: i32,
+) -> bool {
+    if n == 0 {
+        return false;
+    }
+    let nueva = match señalada.actual() {
+        None if paso > 0 => 0,
+        None => n - 1,
+        Some(a) => (a as i32 + paso).clamp(0, n as i32 - 1) as usize,
+    };
+    let cambio = señalada.señalar(Some(nueva));
+    let arriba = nueva as f32 * (FILA + HUECO_FILA);
+    let alto = alto_ventana(n);
+    if arriba < *desplazamiento {
+        *desplazamiento = arriba;
+    } else if arriba + FILA > *desplazamiento + alto {
+        *desplazamiento = arriba + FILA - alto;
+    }
+    *desplazamiento = desplazamiento.clamp(0.0, maximo_desplazamiento(n));
+    cambio
+}
+
+/// Las filas dentro de su ventana recortada. Recorte de capa y no
+/// `.clip(true)`: ver `recorte.rs`.
+///
+/// Con más filas de las que caben lleva a la derecha un tirador fino, que
+/// dice que hay más debajo y cuánto: sin él una lista cortada a media fila
+/// solo se descubría al mover la rueda. No es agarrable; es un indicador.
+// añadido en la 0.2.0
+pub fn ventana<'a>(filas: PanelElement<'a>, n: usize, desplazamiento: f32) -> PanelElement<'a> {
+    let alto = alto_ventana(n);
+    let lista = crate::recorte::Recorte::new(filas, BALDOSA, alto, desplazamiento);
+    let maximo = maximo_desplazamiento(n);
+    if maximo <= 0.0 {
+        return lista.into();
+    }
+    let tirador = (alto * alto / (alto + maximo)).max(TIRADOR_MINIMO);
+    let arriba = (alto - tirador) * (desplazamiento / maximo).clamp(0.0, 1.0);
+    let pista = column![
+        Space::new().height(Length::Fixed(arriba)),
+        container(Space::new())
+            .width(Length::Fixed(TIRADOR_ANCHO))
+            .height(Length::Fixed(tirador))
+            .style(|_| container::Style {
+                background: Some(tema::alfa(tema::texto(), 0.35).into()),
+                border: Border {
+                    radius: (TIRADOR_ANCHO / 2.0).into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+    ];
+    iced_widget::stack![
+        lista,
+        container(pista)
+            .width(Length::Fixed(BALDOSA))
+            .height(Length::Fixed(alto))
+            .padding(iced_core::Padding {
+                right: 2.0,
+                ..Default::default()
+            })
+            .align_right(Length::Fill),
+    ]
+    .into()
+}
+
+const TIRADOR_ANCHO: f32 = 3.0;
+const TIRADOR_MINIMO: f32 = 24.0;
+
 /// Una entrada de la lista: una red o un dispositivo.
 pub struct Entrada {
     pub nombre: String,
-    /// Debajo del nombre, en pequeño: «Conectado», «Emparejado»…
+    /// Debajo del nombre, en pequeño: «Conectado», «No conectado»…
     pub estado: String,
     /// El número de la derecha: la señal de una red o la batería de unos
     /// auriculares. Sin unidad, que la pone quien la dibuja.
@@ -68,6 +177,7 @@ pub struct Entrada {
 /// decisión que se acaba de tomar y se ve mejor que ninguna otra cosa de la
 /// tarjeta. El que lo use guarda una [`crate::tema::Transicion`] y le pasa aquí
 /// su valor.
+// 0.1.0
 pub fn interruptor<'a>(encendido: f32) -> PanelElement<'a> {
     let lado = INTERRUPTOR_ALTO - 6.0;
     let bolita = container(Space::new())
@@ -133,6 +243,7 @@ pub fn interruptor<'a>(encendido: f32) -> PanelElement<'a> {
 ///
 /// Toda la altura de la cabecera y 8 más a cada lado: 46×28 es poco para
 /// acertar con el touchpad, y a su izquierda solo está el título.
+// 0.1.0
 pub fn interruptor_en(x: f32, y: f32) -> bool {
     let derecha = ANCHO - MARGEN - 4.0;
     let izquierda = derecha - INTERRUPTOR_ANCHO;
@@ -145,6 +256,7 @@ const TRAS_VOLVER: f32 = 6.0;
 
 /// ¿Cae el punto en la flecha de volver? Toda la altura de la cabecera y hasta
 /// el principio del título, más algo de aire: es un blanco de 18 px.
+// 0.1.0
 pub fn volver_en(x: f32, y: f32) -> bool {
     (MARGEN - 4.0..=MARGEN + 4.0 + VOLVER + TRAS_VOLVER + 8.0).contains(&x)
         && (MARGEN..=MARGEN + CABECERA).contains(&y)
@@ -153,6 +265,7 @@ pub fn volver_en(x: f32, y: f32) -> bool {
 /// El título de la tarjeta y su interruptor. Con `volver`, una flecha delante
 /// del título: la tarjeta está dentro de la Estación de Control y se vuelve a
 /// ella, como el applet de Plasma dentro de la bandeja del sistema.
+// 0.1.0
 pub fn cabecera<'a>(titulo: &'a str, encendido: Option<f32>, volver: bool) -> PanelElement<'a> {
     let mut fila = row![].align_y(Vertical::Center);
     if volver {
@@ -179,6 +292,7 @@ pub fn cabecera<'a>(titulo: &'a str, encendido: Option<f32>, volver: bool) -> Pa
 }
 
 /// El grupo gris que envuelve la lista y su pie.
+// 0.1.0
 pub fn grupo<'a>(contenido: PanelElement<'a>) -> PanelElement<'a> {
     control::grupo(contenido, ANCHO - MARGEN * 2.0, GRUPO)
 }
@@ -197,6 +311,7 @@ const ANCHO_NOMBRE: f32 = BALDOSA - 24.0 - ICONO - 12.0 - 44.0;
 /// ancho medio por carácter: el shell no tiene acceso al `Paragraph` de iced
 /// antes de construirlo, y un carácter de más o de menos aquí no rompe nada —el
 /// hueco reservado son 44 px.
+// 0.1.0
 pub fn recortar(texto: &str, ancho: f32, tamaño: f32) -> String {
     let por_letra = crate::widget::ancho_texto(1) * tamaño / crate::tema::T_CUERPO;
     let caben = (ancho / por_letra).floor() as usize;
@@ -212,6 +327,7 @@ pub fn recortar(texto: &str, ancho: f32, tamaño: f32) -> String {
 }
 
 /// Una fila de la lista. `señalada` va de 0 a 1: el hover entrando.
+// 0.1.0
 pub fn fila<'a>(entrada: &'a Entrada, señalada: f32) -> PanelElement<'a> {
     // La conectada va con el acento al 10 % y un filo de acento, con el texto
     // en acento: la referencia la marcaba con el filo, y el relleno tenue es lo
@@ -281,6 +397,7 @@ pub fn fila<'a>(entrada: &'a Entrada, señalada: f32) -> PanelElement<'a> {
 }
 
 /// Un renglón cuando no hay nada que listar.
+// 0.1.0
 pub fn vacia<'a>(texto_: &str) -> PanelElement<'a> {
     container(text(texto_.to_string()).size(13.0).color(tema::TEXTO2))
         .width(Length::Fixed(BALDOSA))
@@ -291,6 +408,7 @@ pub fn vacia<'a>(texto_: &str) -> PanelElement<'a> {
 }
 
 /// El pie con dos botones, dentro del grupo. `realce` señala el 0 o el 1.
+// 0.1.0
 pub fn pie<'a>(izquierda: &'a str, derecha: &'a str, realce: &tema::Realce) -> PanelElement<'a> {
     let ancho = (BALDOSA - HUECO_FILA) / 2.0;
     let boton = |etiqueta: &'a str, realzado: f32| -> PanelElement<'a> {
@@ -327,8 +445,19 @@ pub fn pie<'a>(izquierda: &'a str, derecha: &'a str, realce: &tema::Realce) -> P
     .into()
 }
 
+/// Como [`fila_en`] pero con la lista desplazada: fuera de la ventana no hay
+/// fila, aunque debajo de ella siga habiendo más.
+// añadido en la 0.2.0
+pub fn fila_en_ventana(x: f32, y: f32, y0: f32, n: usize, desplazamiento: f32) -> Option<usize> {
+    if y >= y0 + alto_ventana(n) {
+        return None;
+    }
+    fila_en(x, y + desplazamiento, y0, n)
+}
+
 /// Sobre qué botón del pie cae un punto, si el pie empieza en `y0`: `false` el
 /// izquierdo y `true` el derecho.
+// 0.1.0
 pub fn pie_en(x: f32, y: f32, y0: f32) -> Option<bool> {
     if y < y0 || y > y0 + PIE_BOTON {
         return None;
@@ -339,6 +468,7 @@ pub fn pie_en(x: f32, y: f32, y0: f32) -> Option<bool> {
 /// Dónde cae un punto dentro de una lista que empieza en `y0`.
 ///
 /// El hueco entre filas no es de nadie: pulsarlo no debe activar la de al lado.
+// 0.1.0
 pub fn fila_en(x: f32, y: f32, y0: f32, n: usize) -> Option<usize> {
     if x < MARGEN + GRUPO || x > ANCHO - MARGEN - GRUPO || y < y0 {
         return None;
@@ -353,6 +483,30 @@ pub fn fila_en(x: f32, y: f32, y0: f32, n: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// Bajar con el teclado desplaza la lista solo cuando la fila se saldría,
+    /// y subir al principio la deja a cero.
+    #[test]
+    fn el_teclado_recorre_y_desplaza_lo_justo() {
+        let mut señalada = tema::Realce::nuevo();
+        let mut desp = 0.0;
+        for _ in 0..4 {
+            mover_seleccion(&mut señalada, &mut desp, 7, 1);
+        }
+        assert_eq!(señalada.actual(), Some(3));
+        assert_eq!(desp, 0.0, "la cuarta fila aún cabe");
+        mover_seleccion(&mut señalada, &mut desp, 7, 1);
+        assert_eq!(desp, FILA + HUECO_FILA, "la quinta empuja una fila");
+        for _ in 0..20 {
+            mover_seleccion(&mut señalada, &mut desp, 7, 1);
+        }
+        assert_eq!(señalada.actual(), Some(6), "no da la vuelta");
+        assert_eq!(desp, maximo_desplazamiento(7));
+        for _ in 0..20 {
+            mover_seleccion(&mut señalada, &mut desp, 7, -1);
+        }
+        assert_eq!((señalada.actual(), desp), (Some(0), 0.0));
+    }
+
     use super::*;
 
     /// El centro del interruptor se pulsa y el título no: los dos comparten la
@@ -385,6 +539,33 @@ mod tests {
             "Wifi",
             "lo que cabe no se toca"
         );
+    }
+
+    /// Con más filas que ventana la lista se desplaza hasta el final y ni un
+    /// píxel más; con menos, no hay nada que mover.
+    #[test]
+    fn la_lista_se_desplaza_dentro_de_sus_limites() {
+        let mut y = 0.0;
+        assert!(!desplazar(&mut y, 50.0, VISIBLES), "cabe entera");
+        let n = VISIBLES + 3;
+        assert!(desplazar(&mut y, 1000.0, n));
+        assert_eq!(y, 3.0 * (FILA + HUECO_FILA), "tres filas de más");
+        assert!(!desplazar(&mut y, 10.0, n), "ya está abajo");
+        assert!(desplazar(&mut y, -1000.0, n));
+        assert_eq!(y, 0.0);
+    }
+
+    /// Una fila desplazada fuera de la ventana no se puede pulsar aunque
+    /// siga existiendo debajo.
+    #[test]
+    fn solo_se_pulsa_lo_que_se_ve() {
+        let n = VISIBLES + 2;
+        let y0 = 100.0;
+        let ventana = alto_ventana(n);
+        assert_eq!(fila_en_ventana(50.0, y0 + 1.0, y0, n, 0.0), Some(0));
+        assert_eq!(fila_en_ventana(50.0, y0 + ventana + 1.0, y0, n, 0.0), None);
+        let un_paso = FILA + HUECO_FILA;
+        assert_eq!(fila_en_ventana(50.0, y0 + 1.0, y0, n, un_paso), Some(1));
     }
 
     #[test]

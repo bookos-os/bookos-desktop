@@ -39,8 +39,9 @@ const ANCHO: f32 = 420.0;
 const MARGEN: f32 = 32.0;
 /// Alto del dibujo del portátil de arriba.
 const RETRATO: f32 = 170.0;
-/// Proporción de `portatil.svg` (174×99).
-const RETRATO_ANCHO: f32 = RETRATO * 174.0 / 99.0;
+/// Proporción de `portatil.svg` (380×217), el más ancho de los tres: los de
+/// la serie Book5 Pro, más altos, caben en la misma caja centrados.
+const RETRATO_ANCHO: f32 = RETRATO * 380.0 / 217.0;
 /// Alto del nombre del equipo y del renglón de BookOS bajo él. Fijos y no
 /// a lo que mida el texto: la ficha de debajo tiene que empezar siempre en el
 /// mismo sitio para que el ojo caiga donde lo busca [`Acerca::rect_ojo`].
@@ -95,6 +96,8 @@ pub struct Acerca {
 }
 
 impl Acerca {
+    // 0.1.0
+    // modificado en la 0.2.0 -- el portátil según el modelo
     pub fn new() -> Self {
         let modelo = dmi("product_family")
             .or_else(|| dmi("product_name"))
@@ -134,17 +137,19 @@ impl Acerca {
                 valor: os_release("PRETTY_NAME").unwrap_or_else(|| "Linux".into()),
             },
         ];
+        let portatil = svg::Handle::from_memory(dibujo_del_modelo(&modelo));
         Self {
             modelo,
             sistema,
             datos,
             serie: dmi("product_serial"),
             revelado: false,
-            portatil: svg::Handle::from_memory(include_bytes!("../../assets/portatil.svg")),
-            señalado: tema::Transicion::nueva(0.0, tema::D_HOVER, tema::C_SUAVE),
+            portatil,
+            señalado: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
         }
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         (
             ANCHO,
@@ -157,17 +162,20 @@ impl Acerca {
         )
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Centrada
     }
 
     /// Dónde empieza la ficha, relativo a la tarjeta.
+    // 0.1.0
     fn y_ficha(&self) -> f32 {
         MARGEN + RETRATO + 24.0 + TITULO + SUBTITULO + 24.0
     }
 
     /// El botón va pegado al fondo de la tarjeta, así que su sitio no depende
     /// de si «Base» ocupa una línea o dos.
+    // 0.1.0
     fn rect_boton(&self) -> Rectangle {
         Rectangle {
             x: (ANCHO - ANCHO_BOTON) / 2.0,
@@ -179,6 +187,7 @@ impl Acerca {
 
     /// Todo el valor del número de serie, no solo el ojo: el ojo mide 18 px y
     /// pulsar sobre los puntos para destaparlos es lo que se intenta primero.
+    // 0.1.0
     fn rect_ojo(&self) -> Rectangle {
         let x = MARGEN + ETIQUETAS;
         Rectangle {
@@ -189,6 +198,7 @@ impl Acerca {
         }
     }
 
+    // 0.1.0
     fn rect_cierre(&self) -> Rectangle {
         Rectangle {
             x: ANCHO - CIERRE_MARGEN - CIERRE,
@@ -200,16 +210,19 @@ impl Acerca {
         .expand(6.0)
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let dentro = punto.is_some_and(|(x, y)| self.rect_boton().contains(Point::new(x, y)));
         self.señalado.ir_a(dentro as u8 as f32)
     }
 
     /// ¿Se mueve algo dentro de la tarjeta?
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.señalado.animando()
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let punto = Point::new(x, y);
         if self.rect_cierre().contains(punto) {
@@ -228,6 +241,7 @@ impl Acerca {
         Some(Accion::Lanzar("bookos-settings --page acerca".into()))
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         match tecla {
             crate::TeclaPulsada::Escape => Tecla::Cerrar,
@@ -237,6 +251,7 @@ impl Acerca {
 
     /// El velo de detrás: la tarjeta ocupa el centro de la pantalla y sin él se
     /// leería como una ventana más del escritorio.
+    // 0.1.0
     pub fn velo(&self) -> Color {
         Color {
             a: 0.45,
@@ -245,6 +260,7 @@ impl Acerca {
     }
 
     /// El portátil de arriba, el del diseño.
+    // 0.1.0
     fn retrato(&self) -> PanelElement<'_> {
         container(
             svg(self.portatil.clone())
@@ -257,6 +273,7 @@ impl Acerca {
     }
 
     /// El valor del número de serie con su ojo detrás.
+    // 0.1.0
     fn serie(&self) -> PanelElement<'_> {
         let (valor, ojo) = match (self.revelado, &self.serie) {
             (false, _) => (TAPADO, "ojo"),
@@ -279,6 +296,7 @@ impl Acerca {
         .into()
     }
 
+    // 0.1.0
     fn ficha(&self) -> PanelElement<'_> {
         let mut col = column![];
         let ultimo = self.datos.len() - 1;
@@ -321,6 +339,7 @@ impl Acerca {
     }
 
     /// La ✕ roja de la esquina, como la del Launchpad.
+    // 0.1.0
     fn cierre(&self) -> PanelElement<'_> {
         let aspa: PanelElement<'_> = match icono::propio("cerrar") {
             Some(ic) => {
@@ -347,6 +366,7 @@ impl Acerca {
         .into()
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let boton = container(
             container(
@@ -423,12 +443,28 @@ impl Acerca {
 
 /// Un campo de DMI. Vacío o ilegible cuenta como que no está: `product_serial`
 /// es 0400 de root y siempre falla, y eso no es un error que reportar.
+/// El dibujo del portátil que corresponde a `modelo` (`product_family` de
+/// DMI). El 360 se mira antes porque su nombre contiene el del Book5 Pro.
+/// Cualquier otro equipo lleva el de frente, que no se parece a ninguno.
+// añadido en la 0.2.0
+fn dibujo_del_modelo(modelo: &str) -> &'static [u8] {
+    if modelo.contains("Book5 Pro 360") {
+        include_bytes!("../../assets/portatil-book5-pro-360.svg")
+    } else if modelo.contains("Book5 Pro") {
+        include_bytes!("../../assets/portatil-book5-pro.svg")
+    } else {
+        include_bytes!("../../assets/portatil.svg")
+    }
+}
+
+// 0.1.0
 fn dmi(campo: &str) -> Option<String> {
     let valor = std::fs::read_to_string(format!("/sys/class/dmi/id/{campo}")).ok()?;
     let valor = valor.trim();
     (!valor.is_empty()).then(|| valor.to_string())
 }
 
+// 0.1.0
 fn os_release(clave: &str) -> Option<String> {
     let texto = std::fs::read_to_string("/etc/os-release").ok()?;
     for linea in texto.lines() {
@@ -444,6 +480,7 @@ fn os_release(clave: &str) -> Option<String> {
 
 /// El modelo de la CPU, sin las marcas registradas: «Intel(R) Core(TM) Ultra 7»
 /// con sus símbolos ocupa media línea y no dice nada más.
+// 0.1.0
 fn cpu() -> Option<String> {
     let texto = std::fs::read_to_string("/proc/cpuinfo").ok()?;
     let linea = texto.lines().find(|l| l.starts_with("model name"))?;
@@ -461,6 +498,7 @@ fn cpu() -> Option<String> {
 /// `MemTotal` no es la memoria instalada sino la que ve el kernel —descontando
 /// lo que se reserva el firmware—, así que 32 GiB salen como 30,8. Se redondea
 /// al múltiplo de 4 más cercano, que es lo que de verdad hay puesto.
+// 0.1.0
 fn memoria() -> Option<String> {
     let texto = std::fs::read_to_string("/proc/meminfo").ok()?;
     let linea = texto.lines().find(|l| l.starts_with("MemTotal"))?;
@@ -471,6 +509,7 @@ fn memoria() -> Option<String> {
 }
 
 /// El nombre comercial de la tarjeta gráfica.
+// 0.1.0
 fn gpu() -> Option<String> {
     let dir = std::fs::read_dir("/sys/class/drm").ok()?;
     for entrada in dir.filter_map(|e| e.ok()) {
@@ -502,6 +541,7 @@ fn gpu() -> Option<String> {
 /// tres líneas y se comía el renglón de debajo. Se quitan las palabras de
 /// relleno y, si aparece una familia conocida —`Arc`, `Radeon`, `GeForce`—, se
 /// corta por ahí, que es donde empieza lo que identifica a la tarjeta.
+// 0.1.0
 fn acortar_gpu(nombre: &str) -> String {
     const RELLENO: &[&str] = &[
         " Series Processors",
@@ -527,6 +567,7 @@ fn acortar_gpu(nombre: &str) -> String {
 ///
 /// El fichero son 1,6 MB y se recorre entero en el peor caso; se hace **una
 /// vez**, al abrir esta ventana, y nunca desde el camino del panel.
+// 0.1.0
 fn buscar_pci(vendor: &str, device: &str) -> Option<String> {
     let texto = std::fs::read_to_string("/usr/share/hwdata/pci.ids").ok()?;
     let mut en_vendor = false;
@@ -563,6 +604,16 @@ fn buscar_pci(vendor: &str, device: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_360_no_se_toma_por_el_book5_pro() {
+        let book5 = dibujo_del_modelo("Galaxy Book5 Pro");
+        let convertible = dibujo_del_modelo("Galaxy Book5 Pro 360");
+        let otro = dibujo_del_modelo("ThinkPad X1");
+        assert_ne!(book5, convertible);
+        assert_ne!(book5, otro);
+        assert_ne!(convertible, otro);
+    }
 
     /// Los datos salen de esta máquina, así que lo que se comprueba es que
     /// **hay** ficha y que ningún renglón queda a medias: un valor vacío se ve

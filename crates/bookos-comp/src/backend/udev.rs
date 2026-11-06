@@ -28,7 +28,7 @@ use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
-use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use smithay::backend::libinput::LibinputInputBackend;
 use smithay::backend::renderer::element::default_primary_scanout_output_compare;
 use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -100,11 +100,14 @@ impl Udev {
     /// escribiendo en un navegador— se quedaba sin pintar y sin frame callback**
     /// hasta que otro evento cualquiera despertara el bucle. De ahí el segundo
     /// largo de retraso al teclear.
+    // 0.1.0
     fn hay_pendiente(&self) -> bool {
         self.salidas.iter().any(|s| s.pendiente && !s.en_vuelo)
     }
 }
 
+// 0.1.0
+// modified 0.1.1 -- modo kiosko sin shell, banda en GPU, apariencia publicada para el greeter, repintado completo si la GPU no renderiza y suelta los dispositivos desenchufados
 pub fn run(
     event_loop: &mut EventLoop<'static, BookosComp>,
     state: &mut BookosComp,
@@ -434,7 +437,10 @@ pub fn run(
         }));
     }
 
-    let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
+    let mut libinput = Libinput::new_with_udev(crate::cinco_dedos::Interfaz::new(
+        session.clone(),
+        event_loop.handle(),
+    ));
     libinput
         .udev_assign_seat(&session.seat())
         .map_err(|_| anyhow::anyhow!("no se pudo asignar el asiento a libinput"))?;
@@ -671,6 +677,7 @@ pub fn run(
 
 /// La GPU que manda. Con una sola integrada esto es trivial, pero conviene
 /// dejarlo explícito para cuando haya híbridas.
+// 0.1.0
 fn elegir_gpu(session: &LibSeatSession) -> anyhow::Result<DrmNode> {
     if let Some(path) = primary_gpu(session.seat())? {
         return Ok(DrmNode::from_path(path)?);
@@ -685,6 +692,8 @@ fn elegir_gpu(session: &LibSeatSession) -> anyhow::Result<DrmNode> {
 /// Enciende todas las salidas configuradas, asignando un CRTC distinto a cada
 /// conector. Un monitor desconocido se añade a la derecha; uno conocido
 /// recupera modo, escala, posición, rotación y VRR por su identificador EDID.
+// 0.1.0
+// modified 0.1.1 -- guarda el global wl_output de cada salida y publica la escala de la principal
 fn crear_salidas(
     manager: &mut Manager,
     renderer: &mut GlesRenderer,
@@ -863,6 +872,7 @@ fn crear_salidas(
 /// Se leen a mano y no con `libdisplay-info` porque hacen falta tres campos de
 /// los primeros 128 bytes y la biblioteca traería una dependencia de sistema
 /// nueva para eso. El formato de esos bytes lleva congelado desde EDID 1.0.
+// 0.1.0
 fn datos_edid(device: &DrmDevice, con: &connector::Info) -> (String, String, String) {
     let Some(bytes) = blob_edid(device, con) else {
         return (String::new(), String::new(), String::new());
@@ -918,6 +928,7 @@ fn datos_edid(device: &DrmDevice, con: &connector::Info) -> (String, String, Str
     (fabricante, modelo, serie)
 }
 
+// 0.1.0
 fn blob_edid(device: &DrmDevice, con: &connector::Info) -> Option<Vec<u8>> {
     let props = device.get_properties(con.handle()).ok()?;
     let (handles, valores) = props.as_props_and_values();
@@ -935,6 +946,7 @@ fn blob_edid(device: &DrmDevice, con: &connector::Info) -> Option<Vec<u8>> {
 
 /// ¿El conector admite frecuencia variable? Es una propiedad del conector, así
 /// que se puede saber sin encenderlo.
+// 0.1.0
 fn vrr_capaz(device: &DrmDevice, con: &connector::Info) -> bool {
     let Ok(props) = device.get_properties(con.handle()) else {
         return false;
@@ -958,6 +970,7 @@ fn vrr_capaz(device: &DrmDevice, con: &connector::Info) -> bool {
 
 /// Identificador estable de una pantalla. Ver la cabecera de
 /// [`crate::pantallas`] para el porqué.
+// 0.1.0
 fn identificador(device: &DrmDevice, con: &connector::Info) -> String {
     let (fabricante, modelo, serie) = datos_edid(device, con);
     let conector = format!("{:?}-{}", con.interface(), con.interface_id());
@@ -990,6 +1003,7 @@ fn identificador(device: &DrmDevice, con: &connector::Info) -> String {
 /// mHz. Es la misma cuenta que ya hacía el `OutputMode` de esta salida, y
 /// mantenerla igual es lo que permite emparejar por número lo que pide Settings
 /// con lo que tiene el conector.
+// 0.1.0
 fn modos_de(
     con: &connector::Info,
     actual: Option<&smithay::reexports::drm::control::Mode>,
@@ -1013,6 +1027,7 @@ fn modos_de(
 /// El censo de todo lo que hay enchufado.
 ///
 /// Censo de conectores y de sus escenas KMS activas.
+// 0.1.0
 fn censar(u: &Udev) -> Vec<Salida> {
     let device = u.manager.device();
     let Ok(recursos) = device.resource_handles() else {
@@ -1086,6 +1101,8 @@ fn censar(u: &Udev) -> Vec<Salida> {
 ///
 /// Devuelve el censo releído, no lo que se pidió: si el driver acabó en otro
 /// sitio, lo que gana es lo que hay.
+// 0.1.0
+// modified 0.1.1 -- retira en dos tiempos los wl_output viejos, sin salidas fantasma en los clientes
 fn aplicar_en_kms(
     u: &mut Udev,
     lazo: &LoopHandle<'static, BookosComp>,
@@ -1267,6 +1284,7 @@ fn aplicar_en_kms(
     })
 }
 
+// 0.1.0
 fn crtcs_compatibles(
     manager: &Manager,
     recursos: &smithay::reexports::drm::control::ResourceHandles,
@@ -1287,7 +1305,9 @@ fn crtcs_compatibles(
 /// Emparejamiento con retroceso: elegir siempre el primer CRTC compatible
 /// falla si A admite 0/1 y B solo 0. Hay muy pocos CRTCs (normalmente 2–4), así
 /// que probar las combinaciones es más seguro y despreciable en coste.
+// 0.1.0
 fn asignar_crtcs(opciones: &[Vec<crtc::Handle>]) -> Option<Vec<crtc::Handle>> {
+    // 0.1.0
     fn buscar(
         i: usize,
         opciones: &[Vec<crtc::Handle>],
@@ -1319,6 +1339,8 @@ fn asignar_crtcs(opciones: &[Vec<crtc::Handle>]) -> Option<Vec<crtc::Handle>> {
 /// Dibuja cada salida que esté libre. Los vblank son independientes: una
 /// pantalla a 144 Hz no espera a otra de 60 Hz y cada swapchain conserva su
 /// propio daño.
+// 0.1.0
+// modified 0.1.1 -- no encola con DPMS apagado (el panel se encendía al dormir) y repinta entero si la GPU lo pide
 fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
     // Con DPMS apagado no se encola nada: tras `clear()` el siguiente
     // `queue_frame` vuelve a encender el panel. Al dormir desde el diálogo, la
@@ -1359,6 +1381,7 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
     state.needs_redraw = false;
 }
 
+// 0.1.0
 fn dibujar_salida(
     state: &mut BookosComp,
     renderer: &mut GlesRenderer,
@@ -1496,6 +1519,13 @@ fn dibujar_salida(
         Ok(()) => {
             salida.en_vuelo = true;
             salida.pendiente = false;
+            // añadido en la 0.2.0 -- solo un encolado aceptado puede responder a la entrada.
+            let emergente = state
+                .space
+                .output_geometry(&salida.output)
+                .filter(|geometria| geometria.loc == (0, 0).into())
+                .and_then(|_| state.shell.as_ref().and_then(|s| s.emergente_nombre()));
+            state.metricas.encolado(&nombre, emergente);
         }
         Err(err) => tracing::error!("queue_frame: {err}"),
     }
@@ -1520,6 +1550,7 @@ fn dibujar_salida(
 /// Hace falta para los drivers que anuncian los page-flip en `CLOCK_REALTIME`.
 /// `wp_presentation` se anunció con el reloj monotónico (`PresentationState::
 /// new(&dh, 1)`), así que entregarle otra cosa sería mentirle al cliente.
+// 0.1.0
 fn trasladar_a_monotonico(
     t: std::time::SystemTime,
 ) -> smithay::utils::Time<smithay::utils::Monotonic> {
@@ -1549,6 +1580,7 @@ fn trasladar_a_monotonico(
 /// callback por vuelta de vblank y arrancan, mientras que las que están de
 /// verdad ocultas tras otra ventana siguen limitadas a uno por refresco en vez
 /// de correr en vacío, que es lo que pasaría con `Some(Duration::ZERO)`.
+// 0.1.0
 fn enviar_frames(state: &mut BookosComp, output: &Output, periodo: Duration) {
     let tiempo = state.start_time.elapsed();
     for window in state.space.elements() {
@@ -1595,6 +1627,8 @@ fn enviar_frames(state: &mut BookosComp, output: &Output, periodo: Duration) {
 ///
 /// El `Device` llega clonado, y da igual: el clon es un `libinput_device_ref`
 /// del mismo dispositivo, no una copia de sus ajustes.
+// 0.1.0
+// modified 0.1.1 -- activa o desactiva la pantalla táctil según Ajustes
 fn configurar_dispositivo(
     device: &mut InputDevice,
     cfg: &bookos_shell::Entrada,
@@ -1677,6 +1711,7 @@ fn configurar_dispositivo(
 
 /// Las luces de Smithay en el formato de libinput. `None` es «este teclado no
 /// sabe de esa luz»: se deja apagada.
+// 0.1.0
 fn luces(leds: smithay::input::keyboard::LedState) -> smithay::reexports::input::Led {
     use smithay::reexports::input::Led;
     let mut luces = Led::empty();

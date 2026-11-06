@@ -50,6 +50,7 @@ pub enum Link {
 }
 
 impl PanelData {
+    // 0.1.0
     pub fn read() -> Self {
         Self {
             clock: local_hhmm(),
@@ -65,6 +66,8 @@ impl Battery {
     /// parte cara: exige `current_now`, y eso es una consulta al controlador
     /// embebido —0,53 ms medidos— frente a los 0,02 de `capacity`. Quien llama
     /// decide con qué cadencia la quiere; ver `widgets::bateria::CADA_MINUTOS`.
+    // 0.1.0
+    // modified 0.1.1 -- pública para otros crates
     pub fn read(con_minutos: bool) -> Option<Self> {
         let path = battery_path()?;
         let percent = read_num(path.join("capacity"))?.min(100) as u8;
@@ -110,6 +113,7 @@ impl Battery {
 /// Cargando, la meta es el tope de carga y no `charge_full`: con el umbral al
 /// 80 % la cuenta hasta el lleno daba 0:52 donde faltaban 0:30 (medido aquí al
 /// 53 %, 2,2 A).
+// 0.1.0
 fn remaining_minutes(path: &Path, charging: bool, media: &mut Flujo) -> Option<u32> {
     // El `exists()` se repite en cada lectura a propósito: recordarlo en un
     // global ataría la respuesta a la primera batería que se mirase, y lo que
@@ -165,6 +169,7 @@ static FLUJO: std::sync::Mutex<Flujo> = std::sync::Mutex::new(Flujo(None));
 impl Flujo {
     const TAU: f32 = 120.0;
 
+    // 0.1.0
     fn poner(
         &mut self,
         instantaneo: f32,
@@ -186,16 +191,19 @@ impl Flujo {
 
 /// El tope de carga, si el portátil tiene uno puesto. Es la explicación de por
 /// qué una batería enchufada se queda parada en el 80 % y no llega al 100.
+// 0.1.0
 pub(crate) fn charge_limit() -> Option<u8> {
     charge_limit_en(&battery_path()?)
 }
 
+// 0.1.0
 fn charge_limit_en(path: &Path) -> Option<u8> {
     read_num(path.join("charge_control_end_threshold"))
         .filter(|u| *u > 0 && *u < 100)
         .map(|u| u as u8)
 }
 
+// 0.1.0
 fn ac_online() -> Option<bool> {
     let dir = fs::read_dir("/sys/class/power_supply").ok()?;
     for entrada in dir.filter_map(|e| e.ok()) {
@@ -214,6 +222,8 @@ impl Network {
     /// `lo` se descarta siempre: el bucle local está arriba hasta en una
     /// máquina desconectada, así que contarlo haría que el panel jurase que
     /// hay red cuando no la hay.
+    // 0.1.0
+    // modified 0.1.1 -- pública para otros crates
     pub fn read() -> Option<Self> {
         let mut interfaces: Vec<PathBuf> = fs::read_dir("/sys/class/net")
             .ok()?
@@ -246,6 +256,7 @@ impl Network {
 
 /// Dispositivo válido de retroiluminación. Se prefiere el controlador nativo
 /// a las interfaces de compatibilidad del firmware.
+// 0.1.0
 pub(crate) fn backlight_device() -> Option<String> {
     backlight_path()?
         .file_name()
@@ -255,6 +266,7 @@ pub(crate) fn backlight_device() -> Option<String> {
 
 /// El valor crudo máximo del dispositivo. En este panel es 400: mandarle un
 /// tanto por ciento directamente lo dejaría al 25 % de lo pedido.
+// 0.1.0
 pub(crate) fn backlight_max(dispositivo: &str) -> Option<u32> {
     read_num(
         PathBuf::from("/sys/class/backlight")
@@ -273,6 +285,7 @@ pub(crate) fn backlight_max(dispositivo: &str) -> Option<u32> {
 /// hay batería» dejaría el panel sin ella hasta reiniciar. Buscar y no
 /// encontrar es justo el caso barato —un `readdir` de un directorio vacío—, así
 /// que reintentarlo no cuesta.
+// 0.1.0
 fn recordar(
     cache: &std::sync::OnceLock<PathBuf>,
     buscar: impl FnOnce() -> Option<PathBuf>,
@@ -287,12 +300,14 @@ fn recordar(
     Some(encontrada)
 }
 
+// 0.1.0
 fn backlight_path() -> Option<PathBuf> {
     elegir_luz(Path::new("/sys/class/backlight"), false)
 }
 
 // No se conserva una ruta entre refrescos: el controlador puede reaparecer
 // tras suspender o cargarse después del arranque.
+// 0.1.0
 fn elegir_luz(root: &Path, teclado: bool) -> Option<PathBuf> {
     let mut paths: Vec<_> = fs::read_dir(root)
         .ok()?
@@ -322,6 +337,7 @@ fn elegir_luz(root: &Path, teclado: bool) -> Option<PathBuf> {
     paths.into_iter().next()
 }
 
+// 0.1.0
 pub(crate) fn teclado_actual() -> Option<(String, u32, u32)> {
     let path = elegir_luz(Path::new("/sys/class/leds"), true)?;
     let max = read_num(path.join("max_brightness"))?;
@@ -332,6 +348,7 @@ pub(crate) fn teclado_actual() -> Option<(String, u32, u32)> {
     ))
 }
 
+// 0.1.0
 pub(crate) fn read_brightness() -> Option<u8> {
     let path = backlight_path()?;
     let max = read_num(path.join("max_brightness"))?;
@@ -349,6 +366,7 @@ pub(crate) fn read_brightness() -> Option<u8> {
     Some((u64::from(ahora.min(max)) * 100 / u64::from(max)) as u8)
 }
 
+// 0.1.0
 fn battery_path() -> Option<PathBuf> {
     static CACHE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     recordar(&CACHE, || {
@@ -367,6 +385,7 @@ fn battery_path() -> Option<PathBuf> {
     })
 }
 
+// 0.1.0
 fn read_num(path: impl AsRef<Path>) -> Option<u32> {
     fs::read_to_string(path).ok()?.trim().parse().ok()
 }
@@ -376,6 +395,7 @@ fn read_num(path: impl AsRef<Path>) -> Option<u32> {
 /// El desfase respecto a UTC se saca de `localtime(3)` a través de la única vía
 /// que no arrastra una librería de zonas horarias entera: preguntarle a la libc
 /// del sistema. `localtime_r` es reentrante, así que no pisa el estado global.
+// 0.1.0
 pub(crate) fn local_hhmm() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -400,6 +420,7 @@ pub struct Fecha {
 
 impl Fecha {
     /// Hoy, según la zona horaria del sistema.
+    // 0.1.0
     pub fn hoy() -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
         let secs = SystemTime::now()
@@ -417,6 +438,7 @@ impl Fecha {
     }
 
     /// Cuántos días tiene un mes, con el año bisiesto del calendario gregoriano.
+    // 0.1.0
     pub fn dias_del_mes(anio: i32, mes: u32) -> u32 {
         match mes {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -434,6 +456,7 @@ impl Fecha {
     /// Sakamoto en vez de preguntarle a la libc: así una fecha cualquiera del
     /// mes que se está mirando no necesita convertirse a tiempo Unix, que con
     /// los cambios de hora es donde aparecen los días que bailan.
+    // 0.1.0
     pub fn dia_semana(&self) -> u32 {
         const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
         let mut y = self.anio;
@@ -447,11 +470,13 @@ impl Fecha {
     }
 }
 
+// 0.1.0
 fn bisiesto(anio: i32) -> bool {
     (anio % 4 == 0 && anio % 100 != 0) || anio % 400 == 0
 }
 
 #[cfg(unix)]
+// 0.1.0
 pub(crate) fn local_hm(unix_secs: i64) -> (u8, u8) {
     let tm = local_tm(unix_secs);
     (tm.0, tm.1)
@@ -462,6 +487,7 @@ pub(crate) fn local_hm(unix_secs: i64) -> (u8, u8) {
 /// La usa el tema automático para saber si toca claro u oscuro. Va aquí, con
 /// el resto del calendario, porque es donde vive la única llamada a
 /// `localtime_r` del proyecto y no tiene sentido tener dos.
+// 0.1.0
 pub fn hora_local_ahora() -> (u8, u8) {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -473,6 +499,7 @@ pub fn hora_local_ahora() -> (u8, u8) {
 
 /// `(hora, minuto, años desde 1900, mes desde 0, día del mes)` en local.
 #[cfg(unix)]
+// 0.1.0
 fn local_tm(unix_secs: i64) -> (u8, u8, i32, i32, i32) {
     // Declaración mínima de libc en vez de la dependencia entera: solo se
     // necesita `localtime_r` y los campos de `tm` que usa el reloj.
@@ -491,6 +518,7 @@ fn local_tm(unix_secs: i64) -> (u8, u8, i32, i32, i32) {
         tm_zone: *const i8,
     }
     unsafe extern "C" {
+        // 0.1.0
         fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
     }
 

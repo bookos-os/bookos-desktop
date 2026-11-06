@@ -45,9 +45,23 @@ sudo dnf install greetd cage
 ```
 
 BookOS debe estar instalado previamente con `session/instalar.sh`, incluidos
-el compositor y el programa de sesión. El instalador del greeter comprueba
-también `/etc/pam.d/greetd` o `/usr/lib/pam.d/greetd`: se utiliza la política de login de la distribución,
-sin sustituirla por la política de desbloqueo de BookOS.
+el compositor y el programa de sesión.
+
+La sesión se abre con el servicio PAM `bookos-greetd` (`service` en
+`bookos.toml`), que es el `greetd` de Fedora con otra sección `auth`: el
+módulo `pam_bookos_huella.so` pide la contraseña y lee el lector de huellas a
+la vez, y vale lo primero que llegue. Con el de Fedora, `pam_fprintd` va antes
+que la contraseña y no se podía escribir hasta que la huella acertaba o se
+agotaba su tiempo. La contraseña la sigue comprobando `pam_unix`.
+
+Para probar el módulo sin root ni tocar `/etc/pam.d`, con tu propia cuenta:
+
+```sh
+cargo build -p bookos-pam-huella --examples
+./target/debug/examples/probar /tmp/prueba-pam
+```
+
+Pon el dedo o escribe la contraseña: dice qué decidió y cuánto tardó.
 
 El cage de serie no configura libinput y mueve el puntero en píxeles de una
 salida a escala 1: el touchpad va unas 2,5 veces más lento que en la sesión y

@@ -39,6 +39,12 @@ const CELDA: f32 = ICONO + AIRE * 2.0;
 const MARGEN: f32 = 14.0;
 /// Alto del renglón del nombre, debajo de la fila.
 const NOMBRE: f32 = 26.0;
+/// El renglón de Meta+Tab: icono grande, aplicación y título. Con 18 px de icono
+/// y una línea no se sabía de un vistazo a qué aplicación se iba a saltar.
+// añadido en la 0.2.0
+const ROTULO: f32 = 64.0;
+const ROTULO_ICONO: f32 = 44.0;
+const ROTULO_SEP: f32 = 12.0;
 
 /// Cuántas aplicaciones caben antes de dejar de crecer.
 ///
@@ -58,11 +64,20 @@ const PREVIA_ANCHO_MAX: f32 = 300.0;
 const PREVIA_ALTO_MAX: f32 = 250.0;
 const PREVIA_HUECO: f32 = 14.0;
 const PREVIA_MARGEN_PANTALLA: f32 = 48.0;
-/// Ancho de celda por debajo del cual la fila única se parte en varias.
-///
-/// Meta+Tab enseña ventanas, y una miniatura de menos de 150 px no se distingue
-/// de otra: a partir de ahí compensa perder la fila y ganar tamaño.
-const PREVIA_UNA_FILA_MIN: f32 = 150.0;
+/// Hasta qué parte de la pantalla puede crecer una miniatura.
+// añadido en la 0.2.0
+const PREVIA_TOPE_ANCHO: f32 = 0.45;
+const PREVIA_TOPE_ALTO: f32 = 0.5;
+/// Qué fracción de la mejor celda posible basta para quedarse con la
+/// disposición de menos filas.
+// añadido en la 0.2.0
+const PREVIA_GANANCIA_MIN: f32 = 0.8;
+/// Lo que se deja libre arriba y abajo para el panel y el dock. La tarjeta va
+/// centrada, así que manda el lado mayor —el dock, con su margen—: con la
+/// rejilla más grande, sin esto el rótulo se montaba sobre los iconos del dock
+/// (visto en el anidado).
+// añadido en la 0.2.0
+const PREVIA_RESERVA_ALTO: f32 = 110.0;
 /// Aire entre el borde de la celda y la ventana viva que se compone dentro.
 ///
 /// 8 y no 4: la ventana se dibuja **por delante** de la tarjeta y con esquinas
@@ -74,6 +89,9 @@ const PREVIA_BORDE: f32 = 8.0;
 pub struct Entrada {
     /// Lo que se enseña debajo cuando está elegida: el título de la ventana.
     pub nombre: String,
+    /// La aplicación, para el rótulo de Meta+Tab: el título solo no siempre la
+    /// dice («Sin título», el nombre de un documento).
+    pub app: String,
     /// El de su aplicación. Dos ventanas del mismo programa repiten icono, y por
     /// eso el que las distingue es el nombre.
     pub icono: Option<Icono>,
@@ -101,6 +119,7 @@ struct Rejilla {
 }
 
 impl Conmutador {
+    // 0.1.0
     pub fn new(modo: Modo, entradas: Vec<Entrada>, pantalla: (f32, f32)) -> Self {
         // La primera es la que está enfocada. El compositor aplica después el
         // primer paso (+1 o -1), igual que los pasos repetidos; así Mayús no
@@ -121,11 +140,13 @@ impl Conmutador {
         }
     }
 
+    // 0.1.0
     pub fn vacio(&self) -> bool {
         self.entradas.is_empty()
     }
 
     /// El índice de la elegida, que es lo que el compositor traduce a ventana.
+    // 0.1.0
     pub fn elegida(&self) -> Option<usize> {
         (self.elegida < self.entradas.len()).then_some(self.elegida)
     }
@@ -136,6 +157,7 @@ impl Conmutador {
     /// se ve entera, así que pasar del último al primero no desorienta —lo
     /// tienes delante— y recorrer ocho aplicaciones sin poder volver por el otro
     /// lado sería absurdo.
+    // 0.1.0
     pub fn mover(&mut self, pasos: i32) {
         if self.entradas.is_empty() {
             return;
@@ -153,12 +175,14 @@ impl Conmutador {
     /// medido en release a 2880 px y escala 1,75, **8,3 ms con tres ventanas,
     /// 11,4 con seis y 25,4 con diez**, por fotograma, con 8,3 de presupuesto a
     /// 120 Hz (`examples/conmutador_bench.rs`).
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.rejilla.is_none() && self.marca.animando()
     }
 
     /// La celda de la elegida, en lógicos de la tarjeta. Solo en el de
     /// ventanas, que es el que lleva el recuadro aparte.
+    // 0.1.0
     pub fn realce(&self) -> Option<Rectangle> {
         let r = self.rejilla?;
         (self.elegida < self.entradas.len()).then(|| r.celda(self.elegida))
@@ -167,6 +191,7 @@ impl Conmutador {
     /// La franja del rótulo —icono y título de la elegida— en lógicos de la
     /// tarjeta. Va aparte por lo mismo que el recuadro: es lo único de la
     /// tarjeta que cambia al elegir, y mide un renglón.
+    // 0.1.0
     pub fn rotulo(&self) -> Option<Rectangle> {
         let r = self.rejilla?;
         let (w, h) = r.size();
@@ -174,7 +199,7 @@ impl Conmutador {
             x: MARGEN,
             y: MARGEN + h,
             width: w,
-            height: NOMBRE,
+            height: ROTULO,
         })
     }
 
@@ -183,6 +208,7 @@ impl Conmutador {
     /// Se compone **encima** de la celda de la tarjeta, que lleva ya su fondo y
     /// su borde de reposo: por eso el relleno es el acento translúcido y el
     /// borde el acento entero, los mismos que llevaba la celda elegida.
+    // 0.1.0
     pub fn view_realce() -> PanelElement<'static> {
         container(Space::new())
             .width(Length::Fill)
@@ -202,17 +228,46 @@ impl Conmutador {
     /// El rótulo de la elegida: su icono y su título. El icono aquí y no en la
     /// celda porque dos ventanas de la misma terminal son idénticas a este
     /// tamaño, y hace falta ver de qué programa es la que vas a sacar.
+    // 0.1.0
     pub fn view_rotulo(&self) -> PanelElement<'_> {
         let elegida = self.entradas.get(self.elegida);
-        let mut rotulo = Row::new().spacing(8).align_y(iced_core::Alignment::Center);
+        let mut rotulo = Row::new()
+            .spacing(ROTULO_SEP)
+            .align_y(iced_core::Alignment::Center);
         if let Some(ic) = elegida.and_then(|e| e.icono.as_ref()) {
-            rotulo = rotulo.push(icono::ver(ic, 18.0, 18.0));
+            rotulo = rotulo.push(icono::ver(ic, ROTULO_ICONO, ROTULO_ICONO));
         }
-        rotulo = rotulo.push(
-            text(elegida.map(|e| e.nombre.clone()).unwrap_or_default())
-                .size(tema::T_CUERPO)
-                .color(tema::texto()),
+        // Sin recortar, un título largo empujaba el icono fuera del renglón.
+        let ancho = self.rotulo().map_or(0.0, |r| r.width) - ROTULO_ICONO - ROTULO_SEP;
+        let linea =
+            |texto: &str, tamaño: f32| crate::emergente::lista::recortar(texto, ancho, tamaño);
+        let (app, titulo) = elegida.map_or((String::new(), String::new()), |e| {
+            (
+                linea(&e.app, tema::T_TITULO),
+                linea(&e.nombre, tema::T_CUERPO),
+            )
+        });
+        let mut textos = Column::new().spacing(2).push(
+            text(app.clone())
+                .size(tema::T_TITULO)
+                .font(iced_core::Font {
+                    weight: iced_core::font::Weight::Semibold,
+                    ..iced_core::Font::DEFAULT
+                })
+                .color(tema::texto())
+                .wrapping(iced_core::text::Wrapping::None),
         );
+        // El título repetido no dice nada: una ventana sin título propio lo
+        // hereda de la aplicación.
+        if titulo != app {
+            textos = textos.push(
+                text(titulo)
+                    .size(tema::T_CUERPO)
+                    .color(tema::mezclar(tema::texto(), tema::TEXTO2, 0.75))
+                    .wrapping(iced_core::text::Wrapping::None),
+            );
+        }
+        rotulo = rotulo.push(textos);
         container(rotulo)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -222,6 +277,7 @@ impl Conmutador {
     }
 
     /// Qué celda cae en un punto, para poder elegir con el ratón.
+    // 0.1.0
     pub fn en(&self, x: f32, y: f32) -> Option<usize> {
         match self.rejilla {
             None => {
@@ -235,6 +291,7 @@ impl Conmutador {
         }
     }
 
+    // 0.1.0
     pub fn elegir(&mut self, i: usize) -> bool {
         if i < self.entradas.len() && i != self.elegida {
             self.elegida = i;
@@ -245,13 +302,14 @@ impl Conmutador {
         }
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         match self.rejilla {
             // La tarjeta de ventanas se mide como la de aplicaciones: celdas,
             // renglón del nombre y margen alrededor.
             Some(r) => {
                 let (w, h) = r.size();
-                (w + MARGEN * 2.0, h + NOMBRE + MARGEN * 2.0)
+                (w + MARGEN * 2.0, h + ROTULO + MARGEN * 2.0)
             }
             None => {
                 let n = self.entradas.len().max(1) as f32;
@@ -261,6 +319,7 @@ impl Conmutador {
     }
 
     /// Huecos transparentes en los que el compositor coloca cada ventana.
+    // 0.1.0
     pub fn miniaturas(&self) -> Vec<Rectangle> {
         let Some(r) = self.rejilla else {
             return Vec::new();
@@ -268,6 +327,7 @@ impl Conmutador {
         (0..self.entradas.len()).map(|i| r.miniatura(i)).collect()
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         if self.modo == Modo::Ventanas {
             return self.view_ventanas();
@@ -351,6 +411,7 @@ impl Conmutador {
     /// macOS y como en el modo de aplicaciones de aquí al lado. Antes cada celda
     /// llevaba el suyo: con cuatro terminales abiertas eran cuatro títulos
     /// largos compitiendo, y el que importa es el de la que vas a elegir.
+    // 0.1.0
     fn view_ventanas(&self) -> PanelElement<'_> {
         let r = self
             .rejilla
@@ -407,7 +468,7 @@ impl Conmutador {
 
         // El renglón del rótulo se queda vacío: lo pone `view_rotulo` en su
         // propia superficie, encima.
-        let contenido = column![rejilla, Space::new().height(Length::Fixed(NOMBRE))]
+        let contenido = column![rejilla, Space::new().height(Length::Fixed(ROTULO))]
             .align_x(Horizontal::Center);
 
         container(contenido)
@@ -438,36 +499,56 @@ impl Rejilla {
     /// un vistazo: el recorrido con Tab es horizontal, y una rejilla obliga a
     /// buscar dónde saltó la selección al cambiar de renglón. Con doce ventanas
     /// en una pantalla pequeña deja de caber, y entonces sí se parte.
+    // 0.1.0
     fn new(n: usize, pantalla: (f32, f32)) -> Self {
         let n = n.max(1);
         let ancho = (pantalla.0 - (PREVIA_MARGEN_PANTALLA + MARGEN) * 2.0).max(160.0);
-        let alto = (pantalla.1 - (PREVIA_MARGEN_PANTALLA + MARGEN) * 2.0 - NOMBRE).max(120.0);
+        let alto = (pantalla.1 - (PREVIA_RESERVA_ALTO + MARGEN) * 2.0 - ROTULO).max(120.0);
         // Las miniaturas llevan la proporción de la pantalla: lo que se compone
         // dentro es una ventana de ese escritorio, y otra proporción la dejaría
         // con franjas a los lados.
         let proporcion = (pantalla.1 / pantalla.0.max(1.0)).clamp(0.4, 1.4);
 
-        let de_una_fila =
-            ((ancho - PREVIA_HUECO * (n - 1) as f32) / n as f32).min(PREVIA_ANCHO_MAX);
-        let (columnas, filas) = if de_una_fila >= PREVIA_UNA_FILA_MIN {
-            (n, 1)
-        } else {
-            let aspecto = (ancho / alto).clamp(0.5, 3.0);
-            let columnas = ((n as f32 * aspecto).sqrt().ceil() as usize).clamp(1, n);
-            (columnas, n.div_ceil(columnas))
+        // Los topes siguen a la pantalla: 300×250 fijos eran el 21 % del ancho
+        // de un portátil de 1440 y se quedaban pequeños en cualquier pantalla
+        // mayor, con la mayor parte del escritorio vacía a su alrededor.
+        let ancho_max = (pantalla.0 * PREVIA_TOPE_ANCHO).max(PREVIA_ANCHO_MAX);
+        let alto_max = (pantalla.1 * PREVIA_TOPE_ALTO).max(PREVIA_ALTO_MAX);
+
+        // Qué mide una celda con `columnas` columnas: primero lo que da de sí
+        // el ancho, luego se recorta por el alto que queda, y el ancho se
+        // recorta con él para que la celda no sea un apaisado con la ventana
+        // flotando dentro.
+        let medidas = |columnas: usize| -> (f32, f32) {
+            let filas = n.div_ceil(columnas);
+            let celda_ancho = ((ancho - PREVIA_HUECO * (columnas - 1) as f32) / columnas as f32)
+                .clamp(36.0, ancho_max);
+            let cabe_de_alto = (alto - PREVIA_HUECO * (filas - 1) as f32) / filas as f32;
+            let celda_alto = (celda_ancho * proporcion)
+                .min(cabe_de_alto)
+                .clamp(28.0, alto_max);
+            (
+                celda_ancho.min(celda_alto / proporcion.max(0.01)),
+                celda_alto,
+            )
         };
 
-        let celda_ancho = ((ancho - PREVIA_HUECO * (columnas.saturating_sub(1)) as f32)
-            / columnas as f32)
-            .clamp(36.0, PREVIA_ANCHO_MAX);
-        let alto_por_proporcion = celda_ancho * proporcion;
-        let cabe_de_alto = (alto - PREVIA_HUECO * (filas.saturating_sub(1)) as f32) / filas as f32;
-        let celda_alto = alto_por_proporcion
-            .min(cabe_de_alto)
-            .clamp(28.0, PREVIA_ALTO_MAX);
-        // Y si el alto es el que manda, el ancho se recorta con él para que la
-        // celda no acabe siendo un rectángulo apaisado con la ventana flotando.
-        let celda_ancho = celda_ancho.min(celda_alto / proporcion.max(0.01));
+        // La disposición que da la celda mayor, pero sin renunciar a la fila
+        // única por una ganancia pequeña: es la forma del conmutador de macOS
+        // y se lee de un vistazo, y una rejilla obliga a buscar dónde saltó la
+        // selección. Se prefiere la de menos filas que llegue al 80 % de lo
+        // mejor posible. Antes la fila única mandaba hasta que la celda bajaba
+        // de 150 px, y con ocho ventanas eran miniaturas de 152×95 en una
+        // pantalla vacía.
+        let mejor = (1..=n)
+            .map(|columnas| medidas(columnas).0)
+            .fold(0.0_f32, f32::max);
+        let columnas = (1..=n)
+            .rev()
+            .find(|columnas| medidas(*columnas).0 >= mejor * PREVIA_GANANCIA_MIN)
+            .unwrap_or(1);
+        let filas = n.div_ceil(columnas);
+        let (celda_ancho, celda_alto) = medidas(columnas);
         Self {
             columnas,
             filas,
@@ -477,6 +558,7 @@ impl Rejilla {
     }
 
     /// Lo que ocupan las celdas, sin el margen de la tarjeta ni el rótulo.
+    // 0.1.0
     fn size(self) -> (f32, f32) {
         (
             self.columnas as f32 * self.celda_ancho
@@ -487,6 +569,7 @@ impl Rejilla {
     }
 
     /// La celda entera, marco incluido.
+    // 0.1.0
     fn celda(self, i: usize) -> Rectangle {
         let columna = i % self.columnas;
         let fila = i / self.columnas;
@@ -498,6 +581,7 @@ impl Rejilla {
         }
     }
 
+    // 0.1.0
     fn miniatura(self, i: usize) -> Rectangle {
         let columna = i % self.columnas;
         let fila = i / self.columnas;
@@ -509,6 +593,7 @@ impl Rejilla {
         }
     }
 
+    // 0.1.0
     fn en(self, x: f32, y: f32, n: usize) -> Option<usize> {
         let (x, y) = (x - MARGEN, y - MARGEN);
         if x < 0.0 || y < 0.0 {
@@ -536,6 +621,7 @@ mod tests {
         (0..n)
             .map(|i| Entrada {
                 nombre: format!("Ventana {i}"),
+                app: "Aplicación".into(),
                 icono: None,
             })
             .collect()

@@ -5,7 +5,7 @@
 //! `cargo run -p bookos-shell --example bloqueo_bench --release`
 use std::time::Instant;
 
-use bookos_shell::bloqueo::Estado;
+use bookos_shell::bloqueo::{Capa, Estado};
 use bookos_shell::{Config, Shell};
 // Con la configuración real —`panel.conf`, avatar incluido—: la de serie no
 // lleva avatar y mide de menos.
@@ -16,14 +16,21 @@ fn main() {
         let pantalla = (2880.0 / escala, 1800.0 / escala);
         let mut shell = Shell::con_config(pantalla.0 as u32, escala, Config::cargar());
         shell.bloquear("10:42".into(), "lunes, 29 de septiembre".into(), pantalla);
-        let (w, h) = shell.bloqueo_buffer_size().expect("bloqueo puesto");
+        // modificado en la 0.2.0 -- escribir ya solo repinta acceso; se mide el mismo camino que usa el compositor.
+        let (_, (_, _, w, h)) = shell
+            .bloqueo_capas()
+            .into_iter()
+            .find(|(c, _)| *c == Capa::Acceso)
+            .expect("el bloqueo tiene acceso");
+        let w = (bookos_shell::a_pixel_entero(w, escala) * escala) as u32;
+        let h = (bookos_shell::a_pixel_entero(h, escala) * escala) as u32;
         let mut buf = vec![0u8; (w * h * 4) as usize];
-        shell.draw_bloqueo(&mut buf);
+        shell.draw_bloqueo_capa(Capa::Acceso, &mut buf);
         let veces = 20;
         let t = Instant::now();
         for i in 0..veces {
             shell.bloqueo_estado(i % 12 + 1, Estado::Escribiendo);
-            shell.draw_bloqueo(&mut buf);
+            shell.draw_bloqueo_capa(Capa::Acceso, &mut buf);
         }
         let ms = t.elapsed().as_secs_f64() * 1000.0 / veces as f64;
         println!("escala {escala}: {w}×{h}, {ms:.2} ms por tecla");
@@ -39,11 +46,11 @@ fn main() {
             posicion: Some(78),
             duracion: Some(214),
         }));
-        shell.draw_bloqueo(&mut buf);
+        shell.draw_bloqueo_capa(Capa::Acceso, &mut buf);
         let t = Instant::now();
         for i in 0..veces {
             shell.bloqueo_estado(i % 12 + 1, Estado::Escribiendo);
-            shell.draw_bloqueo(&mut buf);
+            shell.draw_bloqueo_capa(Capa::Acceso, &mut buf);
         }
         let ms = t.elapsed().as_secs_f64() * 1000.0 / veces as f64;
         println!("           con música: {ms:.2} ms por tecla");

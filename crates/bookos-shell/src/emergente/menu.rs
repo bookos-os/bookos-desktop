@@ -1,8 +1,8 @@
 //! El menú de BookOS: el que cuelga del logo, arriba a la izquierda.
 //!
-//! Es la versión propia del plasmoide `bookos-menu`, con sus mismas medidas
-//! —210 px de ancho, filas de 26 px, radio 6, hover en acento sólido con el
-//! texto en blanco— y sus mismas acciones. Lo que allí ejecuta un
+//! Nació como la versión propia del plasmoide `bookos-menu` y conserva sus
+//! acciones y su hover en acento sólido con el texto en blanco; las medidas ya
+//! no son las suyas sino las del menú de macOS, que es como se quiere ver. Lo que allí ejecuta un
 //! `Plasma5Support.DataSource` de tipo "executable", aquí sale como una
 //! [`Accion`] que ejecuta el compositor.
 //!
@@ -19,159 +19,198 @@ use crate::view::PanelElement;
 
 use super::{Ancla, Tecla};
 
-/// Ancho fijo, como el plasmoide.
-const ANCHO: f32 = 236.0;
-pub(super) const FILA: f32 = 26.0;
+/// Lo que el menú puede crecer para que quepa un nombre largo en «Cerrar
+/// sesión de …». Más allá se recorta: un menú de medio panel tapa el escritorio
+/// que se quería mirar.
+const ANCHO_MIN: f32 = 200.0;
+const ANCHO_MAX: f32 = 300.0;
+/// 24 y no 26: con 26 el menú del logo se leía como una lista de botones.
+/// 24 sigue siendo alcanzable con el dedo y queda a la densidad del menú de
+/// macOS (22 pt a 13 pt de letra), que es la referencia.
+pub(super) const FILA: f32 = 24.0;
 /// Alto del bloque separador, con su línea de 1 px en medio.
-pub(super) const DIVISOR: f32 = 7.0;
+pub(super) const DIVISOR: f32 = 9.0;
 /// Margen lateral de las filas dentro del menú.
-pub(super) const MARGEN: f32 = 6.0;
-/// Márgenes de arriba y de abajo del menú entero.
-const BORDE_SUP: f32 = 2.0;
-const BORDE_INF: f32 = 4.0;
+pub(super) const MARGEN: f32 = 5.0;
+/// Márgenes de arriba y de abajo del menú entero: iguales al lateral, para que
+/// el realce de la primera y la última fila quede concéntrico con la esquina.
+const BORDE_SUP: f32 = MARGEN;
+const BORDE_INF: f32 = MARGEN;
+/// Relleno del texto dentro de la fila, a cada lado.
+const RELLENO: f32 = 10.0;
+/// Aire mínimo entre la etiqueta y su atajo.
+const HUECO_ATAJO: f32 = 24.0;
+/// Letra de los atajos, y lado de los símbolos de modificador que la
+/// acompañan. El símbolo va un punto por encima de la letra: dibujado a la
+/// misma medida, el trazo de 1,75 sobre 24 lo dejaba más fino y bajo que la
+/// «L» de al lado.
+const T_ATAJO: f32 = tema::T_PEQUENO - 1.0;
+const SIMBOLO: f32 = T_ATAJO + 1.0;
+/// Entre una tecla y la siguiente del mismo atajo: pegadas, como en macOS,
+/// pero sin que el ⌥ toque al ⌃.
+const HUECO_TECLA: f32 = 1.0;
 
 /// Alto del icono de una fila, y hueco hasta el texto.
 ///
-/// 16 y no los 18 del panel: la fila mide 26 px y un icono de 18 la llena de
+/// 16 y no los 18 del panel: la fila mide 24 px y un icono de 18 la llena de
 /// borde a borde, que es lo que hacía que el menú se leyese como una lista de
 /// botones en vez de como un menú.
 pub(super) const ICONO: f32 = 16.0;
 pub(super) const HUECO_ICONO: f32 = 10.0;
 
 /// Una entrada del menú, o un separador.
+///
+/// Sin icono, a diferencia del menú del dock: en el del logo cada entrada es
+/// una frase que se lee de un vistazo, y una columna de pictogramas delante la
+/// convertía en un panel de botones. Es lo primero que se nota al ponerlo al
+/// lado del de macOS.
 enum Entrada {
     Item {
-        etiqueta: &'static str,
+        etiqueta: String,
         atajo: Option<&'static str>,
-        /// Nombre del icono propio que la acompaña.
-        icono: &'static str,
         accion: fn() -> Accion,
     },
     Divisor,
 }
 
-/// El menú, en el mismo orden que el plasmoide.
+// 0.1.0
+// modificado en la 0.2.0 -- sin iconos y «Cerrar sesión de <nombre>…»
 fn entradas() -> Vec<Entrada> {
     use Entrada::{Divisor, Item};
+    let item = |etiqueta: &str, atajo, accion| Item {
+        etiqueta: etiqueta.to_string(),
+        atajo,
+        accion,
+    };
     let mut entradas = vec![
-        Item {
-            etiqueta: "Acerca de este PC",
-            icono: "acerca",
-            atajo: None,
-            // La ventana es del propio shell, no un programa que lanzar: no
-            // hay `bookos-about` en el sistema, y `kinfocenter` —lo que se
-            // abría antes— es el panel de otro escritorio y enseña las
-            // versiones de Plasma y de Qt en vez de las de BookOS.
-            accion: || Accion::Acerca,
-        },
+        // La ventana es del propio shell, no un programa que lanzar: no hay
+        // `bookos-about` en el sistema, y `kinfocenter` —lo que se abría
+        // antes— es el panel de otro escritorio y enseña las versiones de
+        // Plasma y de Qt en vez de las de BookOS.
+        item("Acerca de este PC", None, || Accion::Acerca),
         Divisor,
-        Item {
-            // Antes de «Preferencias del sistema…», que abre otro programa:
-            // esta es del propio escritorio y se aplica al pulsarla.
-            etiqueta: "Apariencia…",
-            icono: "apariencia",
-            atajo: None,
-            accion: || Accion::Emergente("apariencia"),
-        },
-        Item {
-            etiqueta: "Preferencias del sistema…",
-            icono: "preferencias",
-            atajo: None,
-            accion: || Accion::Lanzar("bookos-settings".into()),
-        },
-        Item {
-            etiqueta: "BookOS Store…",
-            icono: "tienda",
-            atajo: None,
-            // `bookos-store` todavía no existe —no hay ni un crate con ese
-            // nombre en el repositorio—, así que pulsar aquí no hacía nada:
-            // `sh -c bookos-store` fallaba con "orden no encontrada" y el
-            // menú se cerraba como si hubiera funcionado. Mientras no haya
-            // tienda propia, cae a Discover, que es la que ya trae esta base
-            // y hace lo mismo de verdad: instalar software.
-            accion: || Accion::Lanzar("bookos-store || plasma-discover".into()),
-        },
+        // Antes de «Preferencias del sistema…», que abre otro programa: esta
+        // es del propio escritorio y se aplica al pulsarla.
+        item("Apariencia…", None, || Accion::Emergente("apariencia")),
+        item("Preferencias del sistema…", None, || {
+            Accion::Lanzar("bookos-settings".into())
+        }),
+        // `bookos-store` todavía no existe —no hay ni un crate con ese nombre
+        // en el repositorio—, así que pulsar aquí no hacía nada: `sh -c
+        // bookos-store` fallaba con "orden no encontrada" y el menú se cerraba
+        // como si hubiera funcionado. Mientras no haya tienda propia, cae a
+        // Discover, que es la que ya trae esta base y hace lo mismo de verdad:
+        // instalar software.
+        item("BookOS Store…", None, || {
+            Accion::Lanzar("bookos-store || plasma-discover".into())
+        }),
         Divisor,
-        Item {
-            etiqueta: "Dormir",
-            icono: "dormir",
-            atajo: None,
-            accion: || Accion::Lanzar("systemctl suspend".into()),
-        },
-        Item {
-            etiqueta: "Reiniciar…",
-            icono: "reiniciar",
-            atajo: None,
-            accion: || Accion::Lanzar("systemctl reboot".into()),
-        },
-        Item {
-            etiqueta: "Apagar…",
-            icono: "apagar",
-            atajo: None,
-            accion: || Accion::Lanzar("systemctl poweroff".into()),
-        },
-        Divisor,
-        Item {
-            etiqueta: "Pantalla de bloqueo",
-            icono: "bloquear",
-            atajo: Some("Meta+L"),
-            accion: || Accion::Bloquear,
-        },
-        Item {
-            etiqueta: "Cerrar sesión…",
-            icono: "salir",
-            atajo: Some("Ctrl+Alt+Supr"),
-            accion: || Accion::CerrarSesion,
-        },
+        item("Dormir", None, || {
+            Accion::Lanzar("systemctl suspend".into())
+        }),
     ];
     // Debajo de Dormir, y solo si logind dice que se puede: sin swap en disco
     // el botón fallaría sin más.
     if crate::confirmacion::hibernar_disponible() {
-        let tras_dormir = entradas
-            .iter()
-            .position(|e| {
-                matches!(
-                    e,
-                    Item {
-                        icono: "dormir",
-                        ..
-                    }
-                )
-            })
-            .map_or(0, |i| i + 1);
-        entradas.insert(
-            tras_dormir,
-            Item {
-                etiqueta: "Hibernar",
-                icono: "hibernar",
-                atajo: None,
-                accion: || Accion::Lanzar("systemctl hibernate".into()),
-            },
-        );
+        entradas.push(item("Hibernar", None, || {
+            Accion::Lanzar("systemctl hibernate".into())
+        }));
     }
+    let login = std::env::var("USER").unwrap_or_default();
+    let nombre = crate::bloqueo::nombre_completo(&login).unwrap_or(login);
+    entradas.extend([
+        item("Reiniciar…", None, || {
+            Accion::Lanzar("systemctl reboot".into())
+        }),
+        item("Apagar…", None, || {
+            Accion::Lanzar("systemctl poweroff".into())
+        }),
+        Divisor,
+        item("Pantalla de bloqueo", Some("Meta+L"), || Accion::Bloquear),
+        Item {
+            // Con el nombre, como en macOS: en un equipo con varias cuentas
+            // dice cuál se va a cerrar. Sin `USER` queda la frase sola.
+            etiqueta: if nombre.is_empty() {
+                "Cerrar sesión…".into()
+            } else {
+                format!("Cerrar sesión de {nombre}…")
+            },
+            atajo: Some("Ctrl+Alt+Supr"),
+            accion: || Accion::CerrarSesion,
+        },
+    ]);
     entradas
+}
+
+/// Lo que ocupa una fila sin el texto: margen y relleno a cada lado.
+const RODEO: f32 = (MARGEN + RELLENO) * 2.0;
+
+/// El ancho que pide la entrada más larga, entero para que el buffer caiga en
+/// píxel exacto a cualquier escala.
+// añadido en la 0.2.0
+fn ancho_para(entradas: &[Entrada]) -> f32 {
+    let texto = entradas
+        .iter()
+        .filter_map(|e| match e {
+            Entrada::Item {
+                etiqueta, atajo, ..
+            } => Some(
+                crate::widget::ancho_de(etiqueta, tema::T_CUERPO)
+                    + atajo.map_or(0.0, |a| HUECO_ATAJO + ancho_atajo(a)),
+            ),
+            Entrada::Divisor => None,
+        })
+        .fold(0.0, f32::max);
+    (texto + RODEO).clamp(ANCHO_MIN, ANCHO_MAX).ceil()
 }
 
 pub struct Menu {
     entradas: Vec<Entrada>,
+    ancho: f32,
     /// La entrada bajo el puntero —o la elegida con el teclado— y cuánto le
     /// queda a la anterior para apagarse.
     señalada: tema::Realce,
 }
 
 impl Menu {
+    // 0.1.0
+    // modificado en la 0.2.0 -- ancho según el contenido
     pub fn new() -> Self {
+        let mut entradas = entradas();
+        let ancho = ancho_para(&entradas);
+        // Solo el nombre de la cuenta puede pasarse del tope; se recorta él y
+        // no el atajo, que es corto y fijo.
+        for entrada in &mut entradas {
+            if let Entrada::Item {
+                etiqueta,
+                atajo: Some(atajo),
+                ..
+            } = entrada
+            {
+                let sitio = ancho - RODEO - HUECO_ATAJO - ancho_atajo(atajo);
+                // `recortar_texto` mide con un ancho medio por letra y se queda
+                // corto: «Cerrar sesión de eve…» cabía de sobra y salía como
+                // «Cerrar sesión de …». Solo se recorta lo que de verdad no
+                // cabe según la medida real.
+                if crate::widget::ancho_de(etiqueta, tema::T_CUERPO) > sitio {
+                    *etiqueta = super::recortar_texto(etiqueta, sitio, tema::T_CUERPO);
+                }
+            }
+        }
         Self {
-            entradas: entradas(),
+            entradas,
+            ancho,
             señalada: tema::Realce::nuevo(),
         }
     }
 
     /// El realce entrando o saliendo. Mientras dure, el compositor repinta.
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.señalada.animando()
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let alto: f32 = self
             .entradas
@@ -181,9 +220,10 @@ impl Menu {
                 Entrada::Divisor => DIVISOR,
             })
             .sum();
-        (ANCHO, alto + BORDE_SUP + BORDE_INF)
+        (self.ancho, alto + BORDE_SUP + BORDE_INF)
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         // Pegado al borde izquierdo, bajo el logo del panel.
         Ancla::BajoElPanel { x: 8.0 }
@@ -191,8 +231,9 @@ impl Menu {
 
     /// Qué entrada cae en una `y` lógica. Las filas no son todas del mismo alto
     /// —los divisores miden menos— así que se recorre en vez de dividir.
+    // 0.1.0
     fn entrada_en(&self, x: f32, y: f32) -> Option<usize> {
-        if x < 0.0 || x > ANCHO {
+        if x < 0.0 || x > self.ancho {
             return None;
         }
         let mut cursor = BORDE_SUP;
@@ -210,11 +251,13 @@ impl Menu {
         None
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         self.señalada
             .señalar(punto.and_then(|(x, y)| self.entrada_en(x, y)))
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let i = self.entrada_en(x, y)?;
         match &self.entradas[i] {
@@ -223,6 +266,7 @@ impl Menu {
         }
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
         match tecla {
@@ -238,6 +282,7 @@ impl Menu {
     }
 
     /// Mueve la selección saltándose los divisores.
+    // 0.1.0
     fn mover(&mut self, paso: isize) -> Tecla {
         let n = self.entradas.len();
         let mut i = match self.señalada.actual() {
@@ -259,34 +304,45 @@ impl Menu {
         Tecla::Consumida
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let mut col = column![Space::new().height(Length::Fixed(BORDE_SUP))];
         for (i, entrada) in self.entradas.iter().enumerate() {
             col = col.push(match entrada {
                 Entrada::Item {
-                    etiqueta,
-                    atajo,
-                    icono,
-                    ..
-                } => fila(etiqueta, *atajo, icono, self.señalada.intensidad(i)),
+                    etiqueta, atajo, ..
+                } => fila(etiqueta, *atajo, None, self.señalada.intensidad(i)),
                 Entrada::Divisor => divisor(),
             });
         }
         col = col.push(Space::new().height(Length::Fixed(BORDE_INF)));
 
-        container(col)
-            .width(Length::Fixed(ANCHO))
-            .style(|_theme| container::Style {
-                background: Some(tema::card().into()),
-                border: Border {
-                    radius: tema::R_POPOVER.into(),
-                    width: 1.0,
-                    color: tema::borde(),
-                },
-                ..Default::default()
-            })
-            .into()
+        caja(col.into(), self.ancho)
     }
+}
+
+/// La caja translúcida de un menú: fondo de tarjeta y borde.
+/// La comparten el menú del logo, el del dock y el del escritorio con su
+/// submenú, que antes la escribían cada uno por su lado.
+///
+/// El radio es el de botón pequeño (10) y no el de popover (18): un menú es
+/// una lista estrecha, y con 18 sobre 200 px de ancho las esquinas se comían
+/// la primera y la última fila y se leía como una burbuja. 10 es lo que usa el
+/// menú de macOS, y con el margen de 5 deja el realce de radio 6 concéntrico.
+// 0.2.0
+pub(super) fn caja(contenido: PanelElement<'_>, ancho: f32) -> PanelElement<'_> {
+    container(contenido)
+        .width(Length::Fixed(ancho))
+        .style(|_theme| container::Style {
+            background: Some(tema::card().into()),
+            border: Border {
+                radius: tema::R_BOTON_PEQUENO.into(),
+                width: 1.0,
+                color: tema::borde(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 /// Una fila del menú. `señalada` va de 0 a 1: es el realce entrando.
@@ -295,10 +351,12 @@ impl Menu {
 /// del plasmoide, encender y apagar de golpe se lee como un parpadeo al pasar
 /// el ratón por el menú de arriba abajo; los 120 ms del token de hover lo
 /// convierten en un rastro.
+// 0.1.0
+// modificado en la 0.2.0 -- icono opcional
 pub(super) fn fila(
     etiqueta: &str,
     atajo: Option<&str>,
-    icono: &str,
+    icono: Option<&str>,
     señalada: f32,
 ) -> PanelElement<'static> {
     // El hover del plasmoide es acento **sólido** con el texto en blanco, no un
@@ -311,31 +369,26 @@ pub(super) fn fila(
     // El icono se tiñe del color de la fila para que siga al texto al pasar a
     // fondo de acento; si no, quedaría blanco sobre azul con el mismo tono y
     // desaparecería justo en la fila que se está mirando.
-    let dibujo: PanelElement<'static> = match crate::icono::propio(icono) {
-        Some(ic) => crate::icono::ver_teñido_propio(&ic, ICONO, color),
-        // Un icono que falta no puede descolocar el texto de su fila respecto
-        // a las demás: se deja el hueco.
-        None => Space::new().width(Length::Fixed(ICONO)).into(),
-    };
-    let mut contenido = row![
-        dibujo,
-        Space::new().width(Length::Fixed(HUECO_ICONO)),
-        text(etiqueta.to_string()).size(tema::T_CUERPO).color(color)
-    ]
-    .align_y(iced_core::alignment::Vertical::Center);
+    let mut contenido = row![].align_y(iced_core::alignment::Vertical::Center);
+    if let Some(icono) = icono {
+        contenido = contenido.push(match crate::icono::propio(icono) {
+            Some(ic) => crate::icono::ver_teñido_propio(&ic, ICONO, color),
+            // Un icono que falta no puede descolocar el texto de su fila
+            // respecto a las demás: se deja el hueco.
+            None => Space::new().width(Length::Fixed(ICONO)).into(),
+        });
+        contenido = contenido.push(Space::new().width(Length::Fixed(HUECO_ICONO)));
+    }
+    contenido = contenido.push(text(etiqueta.to_string()).size(tema::T_CUERPO).color(color));
     contenido = contenido.push(Space::new().width(Length::Fill));
     if let Some(atajo) = atajo {
         let color_atajo = tema::mezclar(tema::TEXTO2, tema::sobre_acento(), señalada);
-        contenido = contenido.push(
-            text(atajo.to_string())
-                .size(tema::T_PEQUENO - 1.0)
-                .color(color_atajo),
-        );
+        contenido = contenido.push(teclas(atajo, color_atajo));
     }
 
     container(
         container(contenido)
-            .padding([0, 11])
+            .padding([0, RELLENO as u16])
             .height(Length::Fill)
             .center_y(Length::Fill)
             .style(move |_theme| container::Style {
@@ -352,6 +405,53 @@ pub(super) fn fila(
     .into()
 }
 
+/// El icono que sustituye a un modificador escrito, como los de macOS:
+/// «Meta+L» se lee ⌘L. Meta va a ⌘ porque es la tecla del sistema, la que en
+/// BookOS hace lo que en macOS hace Comando. Lo que no está aquí —letras, «›»
+/// del dock— se queda en texto.
+// añadido en la 0.2.0
+fn simbolo(tecla: &str) -> Option<&'static str> {
+    match tecla {
+        "Meta" => Some("tecla-cmd"),
+        "Ctrl" => Some("tecla-ctrl"),
+        "Alt" => Some("tecla-alt"),
+        "Mayús" => Some("mayus"),
+        "Supr" => Some("tecla-supr"),
+        _ => None,
+    }
+}
+
+/// Lo que ocupa un atajo dibujado con [`teclas`].
+// añadido en la 0.2.0
+fn ancho_atajo(atajo: &str) -> f32 {
+    let partes = atajo.split('+');
+    let huecos = (partes.clone().count() - 1) as f32 * HUECO_TECLA;
+    partes
+        .map(|t| match simbolo(t) {
+            Some(_) => SIMBOLO,
+            None => crate::widget::ancho_de(t, T_ATAJO),
+        })
+        .sum::<f32>()
+        + huecos
+}
+
+/// Un atajo como fila de teclas: símbolo para cada modificador y la tecla
+/// final en texto, sin los «+».
+// añadido en la 0.2.0
+fn teclas(atajo: &str, color: iced_core::Color) -> PanelElement<'static> {
+    let mut fila = row![]
+        .spacing(HUECO_TECLA)
+        .align_y(iced_core::alignment::Vertical::Center);
+    for tecla in atajo.split('+') {
+        fila = fila.push(match simbolo(tecla).and_then(crate::icono::propio) {
+            Some(ic) => crate::icono::ver_teñido_propio(&ic, SIMBOLO, color),
+            None => text(tecla.to_string()).size(T_ATAJO).color(color).into(),
+        });
+    }
+    fila.into()
+}
+
+// 0.1.0
 pub(super) fn divisor() -> PanelElement<'static> {
     container(
         container(Space::new().height(Length::Fixed(1.0)))
@@ -361,7 +461,7 @@ pub(super) fn divisor() -> PanelElement<'static> {
                 ..Default::default()
             }),
     )
-    .padding([3, 11])
+    .padding([4, RELLENO as u16 + MARGEN as u16])
     .height(Length::Fixed(DIVISOR))
     .into()
 }

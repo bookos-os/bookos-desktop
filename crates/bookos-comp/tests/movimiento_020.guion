@@ -1,0 +1,86 @@
+# añadido en la 0.2.0 -- captura los gestos sujetos y comprueba visualmente su cancelación.
+# Recorrido verificado en anidado a 2560×1600, escala 2, con clientes_multitarea.py.
+# Ejecutar con BOOKOS_INPUT_SELFTEST=1 y configuración temporal: desbloquear omite PAM en este guion.
+espera 1000
+captura
+# añadido en la 0.2.0 -- apoyar no abre; salir o cancelar tampoco; levantar en el sitio sí.
+dedo widget volumen 16
+comprobar emergente ninguna 16
+captura
+dedo mover 900 300 16
+dedo soltar 100
+comprobar emergente ninguna 16
+dedo widget volumen 16
+dedo cancelar 16
+dedo soltar 16
+comprobar emergente ninguna 16
+dedo widget volumen 16
+comprobar emergente ninguna 16
+dedo soltar 700
+comprobar emergente sonido 16
+captura
+tecla esc 700
+comprobar emergente ninguna 16
+# Exceso contra el límite cerrado: el primer avance contrario empieza a exponer.
+deslizar inicio 3 16
+deslizar avance 0 240 16
+deslizar avance 0 -60 50
+captura
+deslizar cancelar 700
+# Se pasa del extremo abierto y se invierte sin deshacer el exceso invisible.
+pellizcar inicio 5 16
+pellizcar avance 0.3 16
+pellizcar avance 0.35 50
+captura
+pellizcar cancelar 700
+deslizar inicio 4 16
+deslizar avance -300 0 16
+deslizar avance -300 0 50
+captura
+deslizar cancelar 900
+captura
+deslizar inicio 4 16
+deslizar avance -600 0 16
+deslizar avance -600 0 50
+captura
+deslizar fin 900
+captura
+tecla meta+ctrl+izquierda 900
+deslizar inicio 3 16
+deslizar avance 0 -120 50
+captura
+deslizar cancelar 900
+captura
+deslizar inicio 3 16
+deslizar avance 0 -180 16
+deslizar fin 900
+captura
+deslizar inicio 3 16
+deslizar avance 0 180 16
+deslizar fin 900
+captura
+pellizcar inicio 5 16
+pellizcar avance 0.8 50
+captura
+pellizcar cancelar 900
+pellizcar inicio 5 16
+pellizcar avance 0.65 16
+pellizcar fin 900
+captura
+pellizcar inicio 5 16
+pellizcar avance 1.8 16
+pellizcar fin 900
+captura
+tecla meta+alt+f 1200
+captura
+tecla meta+alt+f 200
+deslizar inicio 4 16
+deslizar avance 180 0 16
+tecla meta+l 400
+captura
+espera 900
+captura
+desbloquear
+espera 900
+captura
+fin

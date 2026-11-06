@@ -74,6 +74,7 @@ install -Dm644 "$aqui/bookos-session.target" /usr/local/lib/systemd/user/bookos-
 
 install -Dm755 "$aqui/bookos-session" /usr/local/bin/bookos-session
 install -Dm644 "$aqui/bookos-recovery.py" /usr/local/libexec/bookos-recovery.py
+install -Dm755 "$aqui/bookos-restaurar" /usr/local/libexec/bookos-restaurar
 install -Dm644 "$aqui/bookos.desktop" /usr/share/wayland-sessions/bookos.desktop
 # Lanzadores del launchpad: solo la entrada, no el binario —cada app de
 # BookOS se instala por su cuenta y esto es lo que la hace aparecer en el

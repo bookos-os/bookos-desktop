@@ -10,6 +10,7 @@ use iced_widget::{Space, column, container, row, text};
 ///
 /// Se pregunta una vez por proceso (3-4 ms medidos con `busctl`). Lo que cambia
 /// la respuesta —swap nueva, `resume=`— necesita reiniciar de todos modos.
+// 0.1.0
 pub fn hibernar_disponible() -> bool {
     static DISPONIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DISPONIBLE.get_or_init(|| {
@@ -38,6 +39,7 @@ pub enum Energia {
 }
 
 impl Energia {
+    // 0.1.0
     pub fn etiqueta(self) -> &'static str {
         match self {
             Self::Suspender => "Suspender",
@@ -48,6 +50,7 @@ impl Energia {
             Self::Apagar => "Apagar",
         }
     }
+    // 0.1.0
     pub fn de_accion(accion: &crate::Accion) -> Option<Self> {
         match accion {
             // Bloquear no se confirma: no se pierde nada y se deshace con la
@@ -74,6 +77,7 @@ pub struct Confirmacion {
 impl Confirmacion {
     pub const ANCHO: f32 = 310.0;
     pub const ALTO: f32 = 208.0;
+    // 0.1.0
     pub fn new(accion: Energia) -> Self {
         Self {
             accion,
@@ -81,6 +85,7 @@ impl Confirmacion {
         }
     }
     /// None: seguir abierto; false: cancelar; true: ejecutar.
+    // 0.1.0
     pub fn tecla(&mut self, tecla: TeclaPulsada) -> Option<bool> {
         match tecla {
             TeclaPulsada::Escape => Some(false),
@@ -100,6 +105,7 @@ impl Confirmacion {
             _ => None,
         }
     }
+    // 0.1.0
     pub fn pulsar(&self, x: f32, y: f32) -> Option<bool> {
         if !(140.0..188.0).contains(&y) {
             return None;
@@ -112,6 +118,7 @@ impl Confirmacion {
             None
         }
     }
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let mensaje = match self.accion {
             Energia::Bloquear => "Necesitarás autenticarte para volver a entrar.",

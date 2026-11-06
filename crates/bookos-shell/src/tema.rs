@@ -91,6 +91,7 @@ impl ModoTema {
     /// trabaja de noche y quiere el tema claro de madrugada—, y entonces el
     /// tramo cruza la medianoche; de ahí que la comparación no sea un simple
     /// `a <= x && x < b`.
+    // 0.1.0
     pub fn resolver(
         self,
         claro_desde: HoraDelDia,
@@ -120,6 +121,7 @@ impl ModoTema {
     ///
     /// Nunca devuelve cero: si ahora mismo es la hora del cambio, el siguiente
     /// es el otro, no este otra vez.
+    // 0.1.0
     pub fn minutos_al_cambio(
         self,
         claro_desde: HoraDelDia,
@@ -140,6 +142,7 @@ impl ModoTema {
 /// iguales no hay tramo: sería un día entero de cada cosa a la vez.
 ///
 /// Lo comparten el tema automático y el horario de la luz nocturna.
+// 0.1.0
 pub fn en_tramo(desde: HoraDelDia, hasta: HoraDelDia, ahora: HoraDelDia) -> bool {
     let m = |(h, min): HoraDelDia| h as u32 * 60 + min as u32;
     let (a, b, x) = (m(desde), m(hasta), m(ahora));
@@ -155,6 +158,7 @@ pub fn en_tramo(desde: HoraDelDia, hasta: HoraDelDia, ahora: HoraDelDia) -> bool
 /// Minutos hasta el próximo de los dos extremos del tramo. `None` si son
 /// iguales, que es no tener tramo. Nunca cero: si ahora es uno de los bordes,
 /// el siguiente es el otro.
+// 0.1.0
 pub fn minutos_al_borde(desde: HoraDelDia, hasta: HoraDelDia, ahora: HoraDelDia) -> Option<u32> {
     let m = |(h, min): HoraDelDia| h as u32 * 60 + min as u32;
     let (a, b, x) = (m(desde), m(hasta), m(ahora));
@@ -178,6 +182,7 @@ static MODO: AtomicU8 = AtomicU8::new(1);
 
 /// Guarda lo que el usuario eligió. **No** aplica ningún tema: el que toca sale
 /// de [`ModoTema::resolver`] y lo pone [`aplicar`].
+// 0.1.0
 pub fn aplicar_modo(modo: ModoTema) {
     MODO.store(
         match modo {
@@ -189,6 +194,7 @@ pub fn aplicar_modo(modo: ModoTema) {
     );
 }
 
+// 0.1.0
 pub fn modo_actual() -> ModoTema {
     match MODO.load(Ordering::Relaxed) {
         0 => ModoTema::Claro,
@@ -199,10 +205,12 @@ pub fn modo_actual() -> ModoTema {
 
 /// Pone el tema del proceso. Quien lo llame tiene que repintar: los colores ya
 /// dibujados no se enteran.
+// 0.1.0
 pub fn aplicar(tema: Tema) {
     ACTUAL.store(matches!(tema, Tema::Claro) as u8, Ordering::Relaxed);
 }
 
+// 0.1.0
 pub fn actual() -> Tema {
     if ACTUAL.load(Ordering::Relaxed) == 1 {
         Tema::Claro
@@ -211,6 +219,7 @@ pub fn actual() -> Tema {
     }
 }
 
+// 0.1.0
 pub fn es_claro() -> bool {
     actual() == Tema::Claro
 }
@@ -226,24 +235,29 @@ static REDUCIDOS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 static ALTO_CONTRASTE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Devuelve si el valor **cambió**, que es lo que decide si hay que repintar.
+// 0.1.0
 pub fn aplicar_efectos_reducidos(reducidos: bool) -> bool {
     REDUCIDOS.swap(reducidos, Ordering::Relaxed) != reducidos
 }
 
+// 0.1.0
 pub fn efectos_reducidos() -> bool {
     REDUCIDOS.load(Ordering::Relaxed)
 }
 
 /// Activa la paleta de accesibilidad. Devuelve si el valor cambió para que el
 /// compositor pueda invalidar todas las superficies en caliente.
+// 0.1.0
 pub fn aplicar_alto_contraste(activo: bool) -> bool {
     ALTO_CONTRASTE.swap(activo, Ordering::Relaxed) != activo
 }
 
+// 0.1.0
 pub fn alto_contraste() -> bool {
     ALTO_CONTRASTE.load(Ordering::Relaxed)
 }
 
+// 0.1.0
 fn token(nombre: &str, claro: Color, oscuro: Color) -> Color {
     let normal = if es_claro() { claro } else { oscuro };
     if !alto_contraste() {
@@ -302,6 +316,52 @@ macro_rules! tokens {
     };
 }
 
+/// Un color de `palette.css`/`palette.json`: `#rrggbb` o `rgba(r, g, b, a)`.
+// 0.1.0
+// modificado en la 0.2.0 -- sale del buscador: la isla también lee la paleta
+pub fn color_css(valor: &str) -> Option<Color> {
+    if let Some(hex) = valor.strip_prefix('#') {
+        return (hex.len() == 6)
+            .then(|| u32::from_str_radix(hex, 16).ok())
+            .flatten()
+            .map(self::hex);
+    }
+    let rgba = valor.strip_prefix("rgba(")?.strip_suffix(')')?;
+    let mut canales = rgba.split(',').map(str::trim);
+    let mut canal = || canales.next()?.parse::<u8>().ok().map(|n| n as f32 / 255.0);
+    let (r, g, b) = (canal()?, canal()?, canal()?);
+    let a = canales.next()?.parse::<f32>().ok()?;
+    if canales.next().is_some() || !(0.0..=1.0).contains(&a) {
+        return None;
+    }
+    Some(Color::from_rgba(r, g, b, a))
+}
+
+/// Roles de la paleta que Ajustes deriva del fondo de pantalla, del tema que se
+/// está pintando ahora (`palette.json`, claves `light`/`dark`).
+///
+/// Se lee del disco en cada llamada: Ajustes la reescribe al cambiar de fondo y
+/// nadie avisa. Quien la llame lo hace al recibir estado, no al dibujar cada
+/// fotograma. `None` si no hay paleta, falta un rol o va en alto contraste:
+/// quien llama decide su respaldo.
+// añadido en la 0.2.0
+pub fn roles_paleta<const N: usize>(nombres: [&str; N]) -> Option<[Color; N]> {
+    if alto_contraste() {
+        return None;
+    }
+    let json = std::fs::read_to_string(
+        std::path::PathBuf::from(std::env::var_os("HOME")?).join(".config/bookos/palette.json"),
+    )
+    .ok()?;
+    let paleta: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let roles = paleta.get(if es_claro() { "light" } else { "dark" })?;
+    let mut colores = [Color::BLACK; N];
+    for (color, nombre) in colores.iter_mut().zip(nombres) {
+        *color = color_css(roles.get(nombre)?.as_str()?)?;
+    }
+    Some(colores)
+}
+
 /// De `#rrggbb` a color. En tiempo de compilación, para poder escribir los
 /// tokens con el mismo hex que el sistema de diseño y no con decimales que ya
 /// nadie sabe de dónde salen.
@@ -310,6 +370,7 @@ macro_rules! tokens {
 /// aquí con su motivo escrito —el surco del OSD, el campo del bloqueo—: en
 /// decimales nadie los reconoce y el comentario acaba diciendo otro valor que
 /// el código. Pasó: el surco decía `#c7c7cc` y era `#c6c6cc`.
+// 0.1.0
 pub const fn hex(v: u32) -> Color {
     Color::from_rgb(
         ((v >> 16) & 0xff) as f32 / 255.0,
@@ -318,6 +379,7 @@ pub const fn hex(v: u32) -> Color {
     )
 }
 
+// 0.1.0
 pub const fn hexa(v: u32, a: f32) -> Color {
     let c = hex(v);
     Color { a, ..c }
@@ -400,6 +462,8 @@ impl Acento {
 
     /// Su nombre en la configuración y en la interfaz. Sin tildes ni mayúsculas
     /// para que sea también lo que se escribe en `panel.conf`.
+    // 0.1.0
+    // modified 0.1.1 -- acento automático
     pub fn nombre(self) -> &'static str {
         match self {
             Acento::Azul => "azul",
@@ -417,6 +481,7 @@ impl Acento {
         }
     }
 
+    // 0.1.0
     pub fn desde_nombre(nombre: &str) -> Option<Acento> {
         Acento::TODOS
             .into_iter()
@@ -424,6 +489,8 @@ impl Acento {
     }
 
     /// Su color en el tema que esté puesto.
+    // 0.1.0
+    // modified 0.1.1 -- el acento automático sale del fondo
     pub fn color(self) -> Color {
         let (claro, oscuro) = match self {
             // El par calibrado del que salen todos los demás: ver el histórico
@@ -464,6 +531,7 @@ static PALETA_FONDO: [AtomicU32; 3] = [const { AtomicU32::new(0x5c95ff) }; 3];
 /// el automático no tenga que volver a decodificarla. En animaciones se
 /// conserva el primer fotograma: cambiar la paleta en cada frame haría
 /// parpadear los controles.
+// 0.1.1
 pub fn actualizar_acento_del_fondo(rgba: &[u8]) -> bool {
     PALETA_FONDO
         .iter()
@@ -477,6 +545,7 @@ pub fn actualizar_acento_del_fondo(rgba: &[u8]) -> bool {
 
 /// La paleta ya corregida para el tema puesto, como se vería cada color si
 /// fuera el acento. El primero **es** el acento automático.
+// 0.1.1
 pub fn paleta_automatica() -> [Color; 3] {
     let claro = es_claro();
     PALETA_FONDO
@@ -484,6 +553,7 @@ pub fn paleta_automatica() -> [Color; 3] {
         .map(|c| color_automatico(hex(c.load(Ordering::Relaxed)), claro))
 }
 
+// 0.1.1
 fn paleta_del_fondo(rgba: &[u8]) -> [u32; 3] {
     let mut grupos = [(0.0_f32, [0_u32; 3], 0_u32); 512];
     let paso = (rgba.len() / 4 / 4096).max(1);
@@ -540,6 +610,7 @@ fn paleta_del_fondo(rgba: &[u8]) -> [u32; 3] {
 /// hacia blanco para que contraste lo dejaba en gris. Así llega a ese paso con
 /// croma de sobra. La saturación se multiplica y se topa en 0,6 en vez de
 /// fijarse: un fondo gris se queda gris y no se inventa un color del ruido.
+// 0.1.1
 fn avivar(c: Color) -> Color {
     let max = c.r.max(c.g).max(c.b);
     let croma = max - c.r.min(c.g).min(c.b);
@@ -557,6 +628,7 @@ fn avivar(c: Color) -> Color {
     }
 }
 
+// 0.1.1
 fn color_automatico(color: Color, claro: bool) -> Color {
     let color = avivar(color);
     let superficie = if claro { Color::WHITE } else { hex(0x1c1c1e) };
@@ -575,6 +647,7 @@ fn color_automatico(color: Color, claro: bool) -> Color {
 
 /// Pone el acento del proceso. Como con el tema, quien lo llame tiene que
 /// repintar: lo ya dibujado no se entera.
+// 0.1.0
 pub fn aplicar_acento(acento: Acento) {
     ACENTO.store(
         Acento::TODOS.iter().position(|a| *a == acento).unwrap_or(0) as u8,
@@ -582,12 +655,14 @@ pub fn aplicar_acento(acento: Acento) {
     );
 }
 
+// 0.1.0
 pub fn acento_actual() -> Acento {
     let i = ACENTO.load(Ordering::Relaxed) as usize;
     Acento::TODOS.get(i).copied().unwrap_or_default()
 }
 
 /// El acento del sistema, el único color que significa «esto se toca».
+// 0.1.0
 pub fn acento() -> Color {
     acento_actual().color()
 }
@@ -601,6 +676,7 @@ pub fn acento() -> Color {
 /// se eligieron a ojo y no son una mezcla lineal: en claro el verde queda 4
 /// niveles de 255 por encima— pero por debajo de esa distancia no hay color
 /// que se vea distinto.
+// 0.1.0
 pub fn acento_suave() -> Color {
     mezclar(acento(), Color::WHITE, if es_claro() { 0.70 } else { 0.66 })
 }
@@ -611,6 +687,7 @@ pub fn acento_suave() -> Color {
 /// queda corto de contraste—; en oscuro se aclara un 17 %. Igual que arriba,
 /// son las fracciones que devuelven los `#0a6ede` y `#77a2ff` que estaban
 /// escritos a mano cuando el único acento era el azul.
+// 0.1.0
 pub fn enlace() -> Color {
     if es_claro() {
         mezclar(acento(), Color::BLACK, 0.13)
@@ -625,6 +702,8 @@ pub fn enlace() -> Color {
 /// escrito así. Con la paleta abierta deja de serlo: el amarillo `#ffcc00`
 /// tiene luminancia 0,66 y el texto blanco encima desaparece. Donde el fondo es
 /// el acento se pregunta aquí, no se asume.
+// 0.1.0
+// modified 0.1.1 -- tinta propia sobre el acento automático
 pub fn sobre_acento() -> Color {
     if acento_actual() == Acento::Automatico {
         tinta_automatica(acento())
@@ -633,6 +712,7 @@ pub fn sobre_acento() -> Color {
     }
 }
 
+// 0.1.1
 pub fn tinta_automatica(fondo: Color) -> Color {
     if luminancia(fondo) > 0.179 {
         Color::BLACK
@@ -647,6 +727,7 @@ pub fn tinta_automatica(fondo: Color) -> Color {
 /// defecto y lo que esperan los valores calibrados a ojo de los que sale la
 /// tabla de arriba. Linealizar aquí daría mezclas más claras que las que el
 /// sistema de diseño tiene escritas.
+// 0.1.0
 pub fn mezclar(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let m = |x: f32, y: f32| x + (y - x) * t;
@@ -660,6 +741,7 @@ pub fn mezclar(a: Color, b: Color, t: f32) -> Color {
 
 /// El mismo color con otro alfa. Se escribía a mano —`Color { a: 0.12, ..c }`—
 /// en cincuenta sitios.
+// 0.1.0
 pub fn alfa(c: Color, a: f32) -> Color {
     Color { a, ..c }
 }
@@ -678,6 +760,7 @@ pub const TEXTO2: Color = hex(0x8e8e93);
 /// con alfa —lo que hacía el centro de control con `alfa(card(), 0.80)`— no
 /// pinta nada: `#1c1c1e` al 80 % sobre `#1c1c1e` es `#1c1c1e`, y por eso las
 /// cuatro tarjetas interiores no se distinguían del fondo del panel.
+// 0.1.0
 pub fn superficie() -> Color {
     alfa(texto(), if es_claro() { 0.06 } else { 0.08 })
 }
@@ -691,6 +774,7 @@ pub fn superficie() -> Color {
 /// control a escala 2: **0,21 ms opaco contra 3,57 translúcido**
 /// (`examples/rasterizado.rs`). Los grupos grises eran casi toda la tarjeta y
 /// se pagaban en cada repintado de un hover.
+// 0.1.0
 pub fn superficie_en_tarjeta() -> Color {
     let s = superficie();
     mezclar(card(), Color { a: 1.0, ..s }, s.a)
@@ -703,6 +787,7 @@ pub fn superficie_en_tarjeta() -> Color {
 /// la tarjeta es más oscura que el grupo y esas piezas se veían como agujeros:
 /// todo hundido y apagado. Por eso aquí sube un escalón por encima del grupo
 /// (8 % de tinta): al 16 % queda en `#3d3d3f`, casi el `#3a3a3c` de iOS.
+// 0.1.1
 pub fn elevado() -> Color {
     if es_claro() {
         card()
@@ -719,6 +804,7 @@ pub fn elevado() -> Color {
 /// sobre un blanco fijo. Cuando lo que hay debajo es el acento —un botón azul,
 /// una fila señalada— la tinta sí es blanca siempre, y ahí se escribe
 /// `Color::WHITE` a propósito.
+// 0.1.0
 pub fn tinta() -> Color {
     texto()
 }
@@ -746,12 +832,15 @@ tokens! {
 /// a naranja en claro— o con el acento elegido, y el perfil cambiaba de color
 /// al cambiar de tema. Aquí nunca son texto: rellenan un círculo o la pila del
 /// panel, y lo que va encima lo elige [`tinta_sobre`]. Son los del HIG.
+// 0.1.0
 pub fn perfil_ahorro() -> Color {
     hex(0xffcc00)
 }
+// 0.1.0
 pub fn perfil_equilibrado() -> Color {
     hex(0x34c759)
 }
+// 0.1.0
 pub fn perfil_rendimiento() -> Color {
     hex(0x0a84ff)
 }
@@ -763,11 +852,14 @@ pub fn perfil_rendimiento() -> Color {
 /// el azul `#5C95FF` es ilegible sobre el amarillo `#F8DB36`. Medido con la
 /// luminancia relativa de la WCAG: azul 0,31 —blanco—, verde 0,76 y amarillo
 /// 0,71 —negro—.
+// 0.1.0
+// modified 0.1.1 -- la luminancia pasa a luminancia()
 pub fn tinta_sobre(fondo: Color) -> Color {
     let l = luminancia(fondo);
     if l > 0.45 { Color::BLACK } else { Color::WHITE }
 }
 
+// 0.1.1
 fn luminancia(fondo: Color) -> f32 {
     // Los canales de iced ya están en 0..1 pero con la curva de sRGB; hay que
     // linealizarlos antes de pesarlos o el verde sale muy por debajo de lo que
@@ -814,6 +906,7 @@ tokens! {
 // Los cuatro niveles del sistema de diseño y ninguno más. `reposo` no está: en
 // oscuro no lleva sombra y en claro ninguna superficie del shell la usa todavía.
 
+// 0.1.0
 fn sombra(y: f32, desenfoque: f32, a: f32) -> iced_core::Shadow {
     iced_core::Shadow {
         color: Color { a, ..Color::BLACK },
@@ -823,17 +916,20 @@ fn sombra(y: f32, desenfoque: f32, a: f32) -> iced_core::Shadow {
 }
 
 /// Avisos que flotan solos: el OSD.
+// 0.1.0
 pub fn sombra_toast() -> iced_core::Shadow {
     sombra(4.0, 20.0, 0.15)
 }
 
 /// Tarjetas flotantes: la isla de actividades y la de medios del bloqueo.
+// 0.1.0
 pub fn sombra_popover() -> iced_core::Shadow {
     sombra(6.0, 22.0, 0.18)
 }
 
 /// Diálogos. Pide 56 px de margen alrededor; quien pinte en un búfer justo
 /// tiene que usar [`sombra_popover`].
+// 0.1.0
 pub fn sombra_modal() -> iced_core::Shadow {
     sombra(20.0, 56.0, 0.30)
 }
@@ -912,6 +1008,7 @@ pub struct Curva {
 }
 
 impl Curva {
+    // 0.1.0
     pub const fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
         Self { x1, y1, x2, y2 }
     }
@@ -923,6 +1020,7 @@ impl Curva {
     /// la `x` que nos dan, y solo entonces leer `Y(t)`. Es lo mismo que hacen
     /// los navegadores, y por eso se hace igual: Newton desde `t = x`, que
     /// converge en un par de vueltas porque X es casi la identidad.
+    // 0.1.0
     pub fn eval(&self, x: f32) -> f32 {
         let x = x.clamp(0.0, 1.0);
         // Los extremos son exactos por definición. Devolverlos sin iterar
@@ -956,11 +1054,13 @@ impl Curva {
 }
 
 /// Una coordenada de la bézier cúbica con extremos en 0 y 1.
+// 0.1.0
 fn curva(p1: f32, p2: f32, t: f32) -> f32 {
     let u = 1.0 - t;
     3.0 * u * u * t * p1 + 3.0 * u * t * t * p2 + t * t * t
 }
 
+// 0.1.0
 fn derivada(p1: f32, p2: f32, t: f32) -> f32 {
     let u = 1.0 - t;
     3.0 * u * u * p1 + 6.0 * u * t * (p2 - p1) + 3.0 * t * t * (1.0 - p2)
@@ -1016,6 +1116,7 @@ pub const D_TEMA: Duration = Duration::from_millis(450);
 pub const D_DESBLOQUEO: Duration = Duration::from_millis(400);
 
 /// Cuánto se lleva recorrido de una duración, entre 0 y 1.
+// 0.1.0
 pub fn fraccion(pasado: Duration, total: Duration) -> f32 {
     (pasado.as_secs_f32() / total.as_secs_f32()).clamp(0.0, 1.0)
 }
@@ -1028,6 +1129,7 @@ pub fn fraccion(pasado: Duration, total: Duration) -> f32 {
 /// salida del OSD— y saltárselos escondería información en vez de ahorrar
 /// trabajo. Aquí se marca en cada sitio que de verdad es una animación
 /// prescindible.
+// 0.1.0
 pub fn avance(pasado: Duration, total: Duration) -> f32 {
     if efectos_reducidos() {
         return 1.0;
@@ -1035,7 +1137,147 @@ pub fn avance(pasado: Duration, total: Duration) -> f32 {
     fraccion(pasado, total)
 }
 
-/// Un número que va hacia otro con su curva y su duración.
+// añadido en la 0.2.0 -- masa unitaria: los tokens comparten unidades de valor por segundo.
+#[derive(Debug, Clone, Copy)]
+pub struct ParametrosMuelle {
+    rigidez: f32,
+    amortiguacion: f32,
+}
+
+impl ParametrosMuelle {
+    // añadido en la 0.2.0 -- respuesta es el periodo natural, no una duración que bloquee la interacción.
+    pub const fn nuevo(amortiguacion: f32, respuesta: f32) -> Self {
+        let frecuencia = std::f32::consts::TAU / respuesta;
+        Self {
+            rigidez: frecuencia * frecuencia,
+            amortiguacion: 2.0 * amortiguacion * frecuencia,
+        }
+    }
+}
+
+// modificado en la 0.2.0 -- el movimiento ordinario es crítico; el rebote queda reservado al impulso.
+pub const M_RAPIDO: ParametrosMuelle = ParametrosMuelle::nuevo(1.0, 0.21);
+pub const M_SUAVE: ParametrosMuelle = ParametrosMuelle::nuevo(1.0, 0.315);
+pub const M_REBOTE: ParametrosMuelle = ParametrosMuelle::nuevo(0.8, 0.28);
+
+// añadido en la 0.2.0 -- integral de una velocidad con decaimiento exponencial de 200 ms; no espera al usuario.
+pub fn proyectar_impulso(posicion: f32, velocidad: f32) -> f32 {
+    posicion + velocidad * 0.2
+}
+
+// añadido en la 0.2.0 -- redirigir conserva el impulso; no rearranca una curva desde velocidad cero.
+#[derive(Debug, Clone, Copy)]
+pub struct Muelle {
+    valor: f32,
+    velocidad: f32,
+    destino: f32,
+    ultimo: std::time::Instant,
+    parametros: ParametrosMuelle,
+}
+
+impl Muelle {
+    // añadido en la 0.2.0
+    pub fn nuevo(valor: f32, parametros: ParametrosMuelle) -> Self {
+        Self {
+            valor,
+            velocidad: 0.0,
+            destino: valor,
+            ultimo: std::time::Instant::now(),
+            parametros,
+        }
+    }
+
+    // añadido en la 0.2.0
+    pub fn valor(&self) -> f32 {
+        self.valor
+    }
+
+    // añadido en la 0.2.0
+    pub fn velocidad(&self) -> f32 {
+        self.velocidad
+    }
+
+    // añadido en la 0.2.0
+    pub fn destino(&self) -> f32 {
+        self.destino
+    }
+
+    // añadido en la 0.2.0
+    pub fn quieto(&self) -> bool {
+        (self.valor - self.destino).abs() < 0.0005 && self.velocidad.abs() < 0.005
+    }
+
+    // añadido en la 0.2.0
+    pub fn ir_a(&mut self, destino: f32) {
+        // añadido en la 0.2.0 -- el tiempo en reposo no pertenece a la próxima animación.
+        if self.quieto() {
+            self.ultimo = std::time::Instant::now();
+        }
+        // modificado en la 0.2.0 -- una orden posterior no hereda el rebote reservado al lanzamiento anterior.
+        self.parametros.amortiguacion = 2.0 * self.parametros.rigidez.sqrt();
+        self.destino = destino;
+    }
+
+    // añadido en la 0.2.0
+    pub fn soltar(&mut self, destino: f32, velocidad: f32) {
+        self.destino = destino;
+        self.velocidad = velocidad;
+        self.ultimo = std::time::Instant::now();
+    }
+
+    // añadido en la 0.2.0 -- solo cede al llegar si el impulso ya alcanzaría el destino por sí mismo.
+    pub fn soltar_gesto(&mut self, destino: f32, velocidad: f32) {
+        let distancia = destino - self.valor;
+        let impulso = proyectar_impulso(0.0, velocidad);
+        let rebota = impulso * distancia > 0.0 && impulso.abs() >= distancia.abs();
+        self.parametros.amortiguacion =
+            2.0 * if rebota { 0.8 } else { 1.0 } * self.parametros.rigidez.sqrt();
+        self.soltar(destino, velocidad);
+    }
+
+    // añadido en la 0.2.0 -- mientras manda el dedo no se integra tiempo acumulado.
+    pub fn fijar(&mut self, valor: f32) {
+        self.valor = valor;
+        self.destino = valor;
+        self.velocidad = 0.0;
+        self.ultimo = std::time::Instant::now();
+    }
+
+    // añadido en la 0.2.0
+    pub fn avanzar(&mut self, ahora: std::time::Instant) -> bool {
+        if efectos_reducidos() {
+            let cambio = self.valor != self.destino;
+            self.fijar(self.destino);
+            self.ultimo = ahora;
+            return cambio;
+        }
+        self.integrar(ahora)
+    }
+
+    // modificado en la 0.2.0 -- pasos de 2 ms: con amortiguación 80 %, 4 ms recortaban el rebote al 0,92 %; ahora 1,21 %.
+    fn integrar(&mut self, ahora: std::time::Instant) -> bool {
+        let pasado = ahora.saturating_duration_since(self.ultimo);
+        self.ultimo = ahora;
+        let anterior = self.valor;
+        let mut restante = pasado.as_secs_f32();
+        while restante > 0.0 {
+            if self.quieto() {
+                self.valor = self.destino;
+                self.velocidad = 0.0;
+                break;
+            }
+            let dt = restante.min(0.002);
+            let aceleracion = self.parametros.rigidez * (self.destino - self.valor)
+                - self.parametros.amortiguacion * self.velocidad;
+            self.velocidad += aceleracion * dt;
+            self.valor += self.velocidad * dt;
+            restante -= dt;
+        }
+        self.valor != anterior
+    }
+}
+
+/// Un número que va hacia otro con un muelle crítico.
 ///
 /// Es lo mínimo que hace falta para animar dentro de un buffer del shell: el
 /// que dibuja pregunta [`Transicion::valor`] en cada frame y quien manda el
@@ -1043,66 +1285,103 @@ pub fn avance(pasado: Duration, total: Duration) -> f32 {
 /// No hay reloj propio ni hilo: el tiempo lo pone el `Instant` de la última
 /// vez que cambió el destino, así que una transición parada no cuesta nada.
 ///
-/// **Al redirigirla a medio camino, el origen pasa a ser el valor de ahora** y
-/// no el de partida. Sin eso, sacar el ratón de un botón antes de que acabe de
-/// encenderse lo hacía saltar al principio de la curva: es el mismo fallo que
-/// ya estaba corregido en la animación de las barras del compositor.
+/// **Al redirigirla a medio camino arranca del valor y la velocidad de
+/// ahora.** Sin el valor, sacar el ratón de un botón antes de que acabe de
+/// encenderse lo hacía saltar al principio; sin la velocidad, pulsar dos veces
+/// un interruptor frenaba en seco antes de volver.
+///
+/// A diferencia de [`Muelle`], se evalúa en forma cerrada y no necesita
+/// `&mut` para avanzar: las vistas de las tarjetas solo tienen `&self`. Por
+/// eso es siempre crítico (la amortiguación de los parámetros se ignora): aquí
+/// la mueven clics, que no traen impulso que justifique un rebote.
+// modificado en la 0.2.0 -- muelle en vez de curva con duración fija
 #[derive(Debug, Clone, Copy)]
 pub struct Transicion {
     origen: f32,
+    velocidad: f32,
     destino: f32,
     inicio: std::time::Instant,
-    duracion: Duration,
-    curva: Curva,
+    frecuencia: f32,
+    /// Lo que se considera «llegado», proporcional al salto: con un umbral
+    /// fijo de 0,0005 un desplazamiento de 500 px seguía pidiendo fotogramas
+    /// de movimiento subpíxel casi el doble de tiempo que uno de 0 a 1.
+    tolerancia: f32,
 }
 
 impl Transicion {
     /// Quieta en `valor`, sin animación pendiente.
-    pub fn nueva(valor: f32, duracion: Duration, curva: Curva) -> Self {
+    // modificado en la 0.2.0 -- parámetros de muelle en vez de duración y curva
+    pub fn nueva(valor: f32, parametros: ParametrosMuelle) -> Self {
         Self {
             origen: valor,
+            velocidad: 0.0,
             destino: valor,
-            // Restarle la duración la deja terminada: recién creada no está
-            // animando, que es lo que quiere quien la construye al arrancar.
-            inicio: std::time::Instant::now() - duracion,
-            duracion,
-            curva,
+            inicio: std::time::Instant::now(),
+            frecuencia: parametros.rigidez.sqrt(),
+            tolerancia: 0.0005,
         }
     }
 
+    /// Posición y velocidad a `t` segundos del último cambio de destino.
+    // añadido en la 0.2.0
+    fn estado(&self, t: f32) -> (f32, f32) {
+        let w = self.frecuencia;
+        let c1 = self.origen - self.destino;
+        let c2 = self.velocidad + w * c1;
+        let e = (-w * t).exp();
+        (
+            self.destino + (c1 + c2 * t) * e,
+            (c2 - w * (c1 + c2 * t)) * e,
+        )
+    }
+
+    // añadido en la 0.2.0
+    fn ahora(&self) -> (f32, f32) {
+        if efectos_reducidos() {
+            return (self.destino, 0.0);
+        }
+        self.estado(self.inicio.elapsed().as_secs_f32())
+    }
+
     /// El valor de ahora mismo.
+    // 0.1.0
     pub fn valor(&self) -> f32 {
-        let t = self
-            .curva
-            .eval(fraccion(self.inicio.elapsed(), self.duracion));
-        self.origen + (self.destino - self.origen) * t
+        self.ahora().0
     }
 
     /// Le pone otro destino. `true` si eso cambia algo y hay que repintar.
+    // modificado en la 0.2.0 -- conserva la velocidad
     pub fn ir_a(&mut self, destino: f32) -> bool {
         if self.destino == destino {
             return false;
         }
-        self.origen = self.valor();
+        let (valor, velocidad) = self.ahora();
+        self.origen = valor;
+        self.velocidad = velocidad;
         self.destino = destino;
         self.inicio = std::time::Instant::now();
+        self.tolerancia = 0.0005 * (destino - valor).abs().max(1.0);
         true
     }
 
     /// La planta en `valor` sin animar. Para cuando el cambio no es del
     /// usuario: al abrirse una tarjeta, sus conmutadores no tienen que hacer el
     /// recorrido desde cero delante de él.
+    // 0.1.0
     pub fn fijar(&mut self, valor: f32) {
         self.origen = valor;
+        self.velocidad = 0.0;
         self.destino = valor;
-        self.inicio = std::time::Instant::now() - self.duracion;
     }
 
     /// ¿Se sigue moviendo? Mientras sí, hay que pedir otro fotograma.
+    // modificado en la 0.2.0 -- termina por distancia y velocidad, no por reloj
     pub fn animando(&self) -> bool {
-        self.origen != self.destino && self.inicio.elapsed() < self.duracion
+        let (valor, velocidad) = self.ahora();
+        (valor - self.destino).abs() >= self.tolerancia || velocidad.abs() >= self.tolerancia * 10.0
     }
 
+    // 0.1.0
     pub fn destino(&self) -> f32 {
         self.destino
     }
@@ -1125,12 +1404,14 @@ pub struct Realce {
 }
 
 impl Default for Realce {
+    // 0.1.0
     fn default() -> Self {
         Self::nuevo()
     }
 }
 
 impl Realce {
+    // 0.1.0
     pub fn nuevo() -> Self {
         Self {
             actual: None,
@@ -1140,6 +1421,7 @@ impl Realce {
     }
 
     /// Señala otra fila. `true` si hay que repintar.
+    // 0.1.0
     pub fn señalar(&mut self, i: Option<usize>) -> bool {
         if self.actual == i {
             return false;
@@ -1154,6 +1436,7 @@ impl Realce {
     }
 
     /// Cuánto realce le toca a la fila `i`, entre 0 y 1.
+    // 0.1.0
     pub fn intensidad(&self, i: usize) -> f32 {
         let t = C_SUAVE.eval(avance(self.desde.elapsed(), D_HOVER));
         if self.actual == Some(i) {
@@ -1169,16 +1452,19 @@ impl Realce {
     ///
     /// Es para el estado inicial: una tarjeta que se abre con un color ya
     /// elegido tiene que enseñarlo marcado, no marcándose.
+    // 0.1.0
     pub fn terminar(&mut self) {
         self.previa = self.actual;
         self.desde = std::time::Instant::now() - D_HOVER;
     }
 
     /// Qué fila está señalada ahora. Para el hit-test, que no anima.
+    // 0.1.0
     pub fn actual(&self) -> Option<usize> {
         self.actual
     }
 
+    // 0.1.0
     pub fn animando(&self) -> bool {
         !efectos_reducidos() && self.actual != self.previa && self.desde.elapsed() < D_HOVER
     }
@@ -1439,7 +1725,7 @@ mod tests {
     /// sacar el ratón de un botón antes de que acabe de encenderse.
     #[test]
     fn una_transicion_redirigida_arranca_donde_estaba() {
-        let mut t = Transicion::nueva(0.0, Duration::from_millis(100), C_SUAVE);
+        let mut t = Transicion::nueva(0.0, M_RAPIDO);
         assert_eq!(t.valor(), 0.0);
         assert!(!t.animando(), "recién creada no anima");
 
@@ -1462,6 +1748,20 @@ mod tests {
         t.fijar(1.0);
         assert_eq!(t.valor(), 1.0);
         assert!(!t.animando());
+    }
+
+    /// Pulsar dos veces un interruptor no frena en seco: tras redirigir, sigue
+    /// un instante hacia el destino viejo antes de volver.
+    #[test]
+    fn una_transicion_redirigida_conserva_la_velocidad() {
+        let mut t = Transicion::nueva(0.0, M_RAPIDO);
+        t.ir_a(1.0);
+        std::thread::sleep(Duration::from_millis(30));
+        t.ir_a(0.0);
+        let al_redirigir = t.valor();
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(t.valor() > al_redirigir, "{} vs {al_redirigir}", t.valor());
+        assert!(t.animando());
     }
 
     /// Pasar el ratón deprisa por tres filas apaga la de en medio; si no, se
@@ -1572,6 +1872,106 @@ mod tests {
         assert!(C_SUAVE.eval(0.5) > 0.45);
     }
 
+    // añadido en la 0.2.0
+    #[test]
+    fn el_reposo_no_se_integra_en_el_siguiente_movimiento() {
+        let mut muelle = Muelle::nuevo(0.0, M_SUAVE);
+        muelle.ultimo -= Duration::from_secs(5);
+        let reposo = muelle.ultimo;
+        muelle.ir_a(1.0);
+        assert!(muelle.ultimo.duration_since(reposo) >= Duration::from_secs(5));
+        muelle.integrar(muelle.ultimo + Duration::from_millis(16));
+        assert!(muelle.valor() > 0.0 && muelle.valor() < 0.5);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn el_muelle_llega_y_deja_de_pedir_fotogramas() {
+        let mut m = Muelle::nuevo(0.0, M_SUAVE);
+        let inicio = m.ultimo;
+        m.ir_a(1.0);
+        m.integrar(inicio + Duration::from_secs(2));
+        assert_eq!(m.valor(), 1.0);
+        assert_eq!(m.velocidad(), 0.0);
+        assert!(m.quieto());
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn redirigir_el_muelle_conserva_valor_y_velocidad() {
+        let mut m = Muelle::nuevo(0.0, M_RAPIDO);
+        m.ir_a(1.0);
+        m.integrar(m.ultimo + Duration::from_millis(40));
+        let estado = (m.valor(), m.velocidad());
+        m.ir_a(0.0);
+        assert_eq!((m.valor(), m.velocidad()), estado);
+        m.integrar(m.ultimo + Duration::from_secs(2));
+        assert_eq!(m.valor(), 0.0);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn el_rebote_hereda_el_impulso_y_el_critico_frena() {
+        let maximo = |parametros| {
+            let mut m = Muelle::nuevo(0.0, parametros);
+            m.soltar(1.0, 1.0);
+            let inicio = m.ultimo;
+            let mut maximo = 0.0_f32;
+            for paso in 1..=500 {
+                m.integrar(inicio + Duration::from_millis(paso * 4));
+                maximo = maximo.max(m.valor());
+            }
+            assert!(m.quieto());
+            maximo
+        };
+        assert!(maximo(M_REBOTE) > 1.01);
+        assert!(maximo(M_SUAVE) <= 1.0);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn solo_el_impulso_que_alcanza_el_destino_reduce_la_amortiguacion() {
+        let mut m = Muelle::nuevo(0.3, M_SUAVE);
+        m.soltar_gesto(1.0, 1.0);
+        assert_eq!(
+            m.parametros.amortiguacion,
+            2.0 * m.parametros.rigidez.sqrt()
+        );
+        m.soltar_gesto(1.0, 4.0);
+        assert_eq!(
+            m.parametros.amortiguacion,
+            1.6 * m.parametros.rigidez.sqrt()
+        );
+        let estado = (m.valor(), m.velocidad());
+        m.ir_a(0.0);
+        assert_eq!((m.valor(), m.velocidad()), estado);
+        assert_eq!(
+            m.parametros.amortiguacion,
+            2.0 * m.parametros.rigidez.sqrt()
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn el_muelle_recorre_lo_mismo_a_distintos_refrescos() {
+        let recorrido = |fps: u32| {
+            let mut m = Muelle::nuevo(0.0, M_SUAVE);
+            m.soltar(1.0, 2.0);
+            let inicio = m.ultimo;
+            for fotograma in 1..=fps / 5 {
+                m.integrar(inicio + Duration::from_secs_f64(fotograma as f64 / fps as f64));
+            }
+            m.valor()
+        };
+        let referencia = recorrido(240);
+        for fps in [30, 60, 120] {
+            assert!(
+                (recorrido(fps) - referencia).abs() < 0.015,
+                "refresco {fps}"
+            );
+        }
+    }
+
     /// Los efectos reducidos saltan al final de la animación, pero **no**
     /// tocan `fraccion`: los desvanecidos que llevan información —el aviso de
     /// contraseña incorrecta— siguen su curso.
@@ -1584,6 +1984,13 @@ mod tests {
         assert!(aplicar_efectos_reducidos(true), "cambia la primera vez");
         assert!(!aplicar_efectos_reducidos(true), "y no la segunda");
         assert_eq!(avance(mitad, D_VENTANA), 1.0);
+        // añadido en la 0.2.0 -- accesibilidad también cancela la física y su impulso.
+        let mut m = Muelle::nuevo(0.0, M_REBOTE);
+        m.soltar(1.0, 12.0);
+        m.avanzar(std::time::Instant::now());
+        assert_eq!(m.valor(), 1.0);
+        assert_eq!(m.velocidad(), 0.0);
+        assert!(m.quieto());
         assert!((fraccion(mitad, D_VENTANA) - 0.5).abs() < 0.01);
 
         aplicar_efectos_reducidos(false);

@@ -1,264 +1,296 @@
-//! Gestos de touchpad.
-//!
-//! La lógica vive aquí, separada de [`crate::input`] y **sin depender de
-//! Smithay**: un gesto es una máquina de estados pequeña —cuántos dedos, cuánto
-//! se ha movido, si ya disparó— y tenerla en tipos propios es lo que permite
-//! probarla sin un touchpad delante. `input.rs` solo traduce los eventos del
-//! backend a estas llamadas.
-//!
-//! **Solo llegan en una sesión real.** libinput entrega gestos únicamente desde
-//! un touchpad, y el backend anidado de winit no los reenvía —su
-//! `GesturePinchUpdateEvent` es el tipo vacío `UnusedEvent`—, así que esto no se
-//! puede ejercitar con `cargo run -p bookos-comp -f`. De ahí que la lógica esté
-//! cubierta por pruebas: es lo único que se puede comprobar sin arrancar en un
-//! TTY.
-//!
-//! **Qué es del escritorio y qué de la ventana.** El compositor anuncia
-//! `zwp_pointer_gestures_v1`, así que las ventanas pueden recibir gestos. Se
-//! quedan aquí los deslizamientos —tres y cuatro dedos, que libinput no da con
-//! menos— y los pellizcos de [`DEDOS`], que abren el launchpad. El pellizco de
-//! dos dedos, que es el zoom de Figma, de un navegador o de un visor de
-//! imágenes, pasa a la ventana: ver [`Gestos::pellizco_de_la_ventana`].
+//! Reconocimiento de gestos sin Smithay para probarlos con tiempos deterministas.
 
-/// Lo que un gesto completado le pide al compositor.
+use std::collections::VecDeque;
+
+// añadido en la 0.2.0 -- el eje queda elegido hasta levantar la mano para evitar dos acciones diagonales.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Gesto {
-    /// Pellizco hacia dentro con 4 o 5 dedos.
-    AbrirLaunchpad,
-    /// Pellizco hacia fuera con 4 o 5 dedos, con el launchpad abierto.
-    CerrarLaunchpad,
-    /// Cuatro dedos a un lado. El número es hacia **qué escritorio** ir, no
-    /// hacia dónde va el dedo: deslizar a la izquierda trae el de la derecha.
-    Escritorio(i32),
-    /// Cuatro dedos hacia abajo: apartar las ventanas para ver el escritorio.
-    DespejarEscritorio,
-    /// Cuatro dedos hacia arriba.
-    ///
-    /// Devuelve las ventanas apartadas si las hay y, si no, abre la vista de
-    /// escritorios —lo mismo que Meta+W—. Las dos cosas en un gesto porque son
-    /// la misma intención: *enséñame lo que tengo*. Quién de las dos toca lo
-    /// decide el compositor, que es el que sabe si hay algo escondido.
-    SubirCuatroDedos,
-    /// Tres dedos hacia arriba: todas las ventanas de este escritorio a la vez.
-    Exponer,
-    /// Tres dedos hacia abajo: cerrar esa vista.
-    CerrarExposicion,
+pub enum Movimiento {
+    Escritorio,
+    Exposicion,
+    Launchpad,
+    // añadido en la 0.2.0 -- cuatro dedos en vertical apartan o devuelven las ventanas siguiendo la mano.
+    Despeje,
+    // añadido en la 0.2.0 -- cuatro dedos hacia arriba abren la vista de escritorios (Meta+W) siguiendo la mano; hacia abajo la cierran.
+    Vista,
 }
 
-/// Dedos que cuentan para el pellizco del launchpad.
-///
-/// Cuatro **y** cinco, como pidió el diseño: la mano no siempre apoya el
-/// meñique, y exigir un número exacto convierte el gesto en algo que unas veces
-/// sale y otras no.
-const DEDOS: std::ops::RangeInclusive<u32> = 4..=5;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Gesto {
+    Continuo(Movimiento, f32),
+    DespejarEscritorio,
+    SubirCuatroDedos,
+}
 
-/// Cuánto hay que cerrar la mano para que cuente como «hacia dentro».
-///
-/// `scale` es la separación de los dedos **relativa al principio del gesto**, así
-/// que 1,0 es no haber movido nada y 0,6 es haberlos juntado hasta el 60 % de la
-/// distancia inicial.
-///
-/// Medido con `libinput debug-events` en el touchpad de este equipo
-/// (ZNT0001:00 14E5:650E): un pellizco cómodo de cuatro dedos recorre de 1,00 a
-/// **0,52** en 90 ms, en 14 eventos —uno cada 7 ms—. Con el 0,7 del primer
-/// intento el gesto saltaba en el evento 8, a mitad de recorrido y a los 50 ms:
-/// demasiado pronto para algo que conviene que cueste un poco. Con 0,6 salta en
-/// el 11, veinte milisegundos más tarde —imperceptible— y deja un 40 % de
-/// recorrido de margen antes de que la mano se cierre del todo.
+// añadido en la 0.2.0 -- posiciones normalizadas; la velocidad se expresa en recorridos por segundo.
+#[derive(Debug, Clone, Copy)]
+pub struct Suelta {
+    pub movimiento: Movimiento,
+    pub progreso: f32,
+    pub velocidad: f32,
+    pub cancelada: bool,
+}
+
+impl Suelta {
+    // modificado en la 0.2.0 -- el impulso pesa por su recorrido, no por cruzar una velocidad arbitraria.
+    pub fn destino(&self) -> f32 {
+        if self.cancelada {
+            0.0
+        } else {
+            bookos_shell::tema::proyectar_impulso(self.progreso, self.velocidad)
+                .clamp(-1.0, 1.0)
+                .round()
+        }
+    }
+}
+
+// añadido en la 0.2.0 -- conserva el agarre real y descarta el recorrido sobrante en los límites.
+#[derive(Debug, Clone, Copy)]
+pub struct Agarre {
+    pub posicion: f32,
+    destino_anterior: f32,
+    ultimo: f32,
+}
+
+impl Agarre {
+    // añadido en la 0.2.0
+    pub fn nuevo(posicion: f32, destino_anterior: f32) -> Self {
+        Self {
+            posicion,
+            destino_anterior,
+            ultimo: 0.0,
+        }
+    }
+
+    // añadido en la 0.2.0 -- invertir en un extremo mueve desde el primer incremento contrario.
+    pub fn seguir(&mut self, progreso: f32, minimo: f32, maximo: f32) -> f32 {
+        self.posicion = (self.posicion + progreso - self.ultimo).clamp(minimo, maximo);
+        self.ultimo = progreso;
+        self.posicion
+    }
+
+    // añadido en la 0.2.0 -- cancelar una animación agarrada recupera su destino, no una mitad arbitraria.
+    pub fn destino(&self, suelta: Suelta) -> f32 {
+        if suelta.cancelada {
+            self.destino_anterior
+        } else {
+            Suelta {
+                progreso: self.posicion,
+                ..suelta
+            }
+            .destino()
+        }
+    }
+}
+
+/// Dedos del pellizco del launchpad. Solo cinco: con cuatro, separar un poco
+/// la mano al deslizar entre escritorios lo convertía en pellizco.
+// modificado en la 0.2.0 -- antes 4..=5
+const DEDOS: std::ops::RangeInclusive<u32> = 5..=5;
 const CERRAR: f64 = 0.6;
-
-/// Y cuánto hay que abrirla para el gesto inverso.
-///
-/// Medido igual, en el mismo touchpad: abrir la mano recorre de 1,00 a **2,35**
-/// en 70 ms y 11 eventos. Tiene más margen que cerrar y lo gasta antes —los
-/// dedos parten juntos—, así que el número no puede salir del recíproco de
-/// `CERRAR`: `1/0,6 = 1,67` habría disparado en el evento 8 de 11, y el 1,5 del
-/// primer intento en el 6, a mitad de camino.
-///
-/// 1,9 dispara en el evento 9, el 82 % del recorrido, que es la misma fracción
-/// que gasta `CERRAR` (79 %). Los dos gestos son asimétricos en el número y
-/// simétricos en la mano, que es lo que se nota.
 const ABRIR: f64 = 1.9;
-
-/// El estado de los gestos en curso.
-/// Cuánto hay que deslizar para cambiar de escritorio, en píxeles lógicos.
-///
-/// libinput entrega el desplazamiento del **centro** de los dedos evento a
-/// evento, así que esto se compara contra la suma acumulada desde el principio
-/// del gesto. 120 px es aproximadamente un tercio del recorrido útil de este
-/// touchpad y sale sin levantar la mano; con menos, un deslizamiento de cuatro
-/// dedos que solo pretendía ser un roce ya cambiaba de escritorio.
 const DESLIZAR: f64 = 120.0;
-
-/// Lo mismo, pero para cambiar de escritorio, que pide el doble: con 120 un
-/// movimiento corto ya te sacaba del escritorio, y equivocarse aquí cuesta más
-/// que en los verticales —desaparece todo lo que tenías delante—. 240 son unos
-/// dos tercios del recorrido del touchpad, todavía sin levantar la mano.
-const CAMBIAR_ESCRITORIO: f64 = 240.0;
-
-/// Cuánto tiene que dominar un eje sobre el otro para que el gesto cuente.
-///
-/// Sin esto, un deslizamiento en diagonal dispara el horizontal y el vertical a
-/// la vez —cambias de escritorio *y* despejas las ventanas— y el resultado
-/// parece un fallo. El eje que gana tiene que llevar el doble que el otro.
+// añadido en la 0.2.0 -- con 240 la exposición llegaba al tope con un tercio
+// de la mano y un gesto amplio se sentía demasiado rápido. Sin medir en el
+// touchpad: es el doble de largo que antes y quizá haya que afinarlo.
+const RECORRIDO_VERTICAL: f64 = 480.0;
 const DOMINIO: f64 = 2.0;
+// añadido en la 0.2.0 -- filtra el temblor del apoyo sin esperar un plazo fijo.
+const UMBRAL_DESLIZAMIENTO: f64 = 10.0;
+
+// añadido en la 0.2.0 -- la ventana temporal incluye el fin: parar antes de soltar elimina el impulso.
+#[derive(Debug, Default)]
+struct Velocidad {
+    muestras: VecDeque<(u64, f32)>,
+}
+
+impl Velocidad {
+    // añadido en la 0.2.0
+    fn anotar(&mut self, tiempo: u64, valor: f32) {
+        let tiempo = self.muestras.back().map_or(tiempo, |(t, _)| tiempo.max(*t));
+        self.muestras.push_back((tiempo, valor));
+        while self.muestras.len() > 2
+            && self
+                .muestras
+                .get(1)
+                .is_some_and(|(t, _)| tiempo - t >= 50_000)
+        {
+            self.muestras.pop_front();
+        }
+    }
+
+    // añadido en la 0.2.0
+    fn valor(&self) -> f32 {
+        match (self.muestras.front(), self.muestras.back()) {
+            (Some((inicio, desde)), Some((fin, hasta))) if fin > inicio => {
+                (hasta - desde) * 1_000_000.0 / (fin - inicio) as f32
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Deslizamiento {
+    dedos: u32,
+    x: f64,
+    y: f64,
+    ancho: f64,
+    movimiento: Option<Movimiento>,
+    disparado: bool,
+    /// Hacia dónde sigue a la mano el despeje con cuatro dedos (+1 abajo, −1
+    /// arriba). Lo decide el compositor al apoyar, que sabe si hay ventanas
+    /// apartadas; el otro sentido conserva su acción discreta.
+    despeje: Option<f64>,
+    /// Si la vista de escritorios está abierta al apoyar la mano. `None` deja
+    /// a cuatro dedos en vertical con su acción discreta de siempre.
+    vista: Option<bool>,
+}
 
 #[derive(Debug, Default)]
 pub struct Gestos {
-    /// Dedos del deslizamiento en marcha, y lo que lleva acumulado.
-    deslizamiento: Option<(u32, f64, f64)>,
-    /// Dedos del pellizco en marcha, o `None` si no hay ninguno.
+    deslizamiento: Option<Deslizamiento>,
     pellizco: Option<u32>,
-    /// La última escala que llegó. `GesturePinchEndEvent` no la trae —solo dice
-    /// si el gesto se canceló—, y sin ella la traza del final no podría decir
-    /// por cuánto se quedó corto el pellizco.
-    ultima_escala: f64,
-    /// Ya se disparó en este pellizco.
-    ///
-    /// Sin esto, cruzar el umbral emite un gesto por cada evento de libinput
-    /// —decenas por segundo— y el launchpad se abriría y cerraría a parpadeos
-    /// mientras la mano sigue moviéndose.
-    disparado: bool,
+    progreso: f32,
+    velocidad: Velocidad,
 }
 
 impl Gestos {
-    /// Empieza un deslizamiento.
-    pub fn deslizamiento_inicio(&mut self, dedos: u32) {
-        tracing::debug!(dedos, "deslizamiento: empieza");
-        self.deslizamiento = Some((dedos, 0.0, 0.0));
-        self.disparado = false;
+    // modificado en la 0.2.0 -- el ancho se fija al inicio, aunque el puntero cruce de monitor.
+    pub fn deslizamiento_inicio(&mut self, dedos: u32, ancho: f64, tiempo: u64) {
+        self.deslizamiento = Some(Deslizamiento {
+            dedos,
+            x: 0.0,
+            y: 0.0,
+            ancho,
+            movimiento: None,
+            disparado: false,
+            despeje: None,
+            vista: None,
+        });
+        self.progreso = 0.0;
+        self.velocidad = Velocidad::default();
+        self.velocidad.anotar(tiempo, 0.0);
     }
 
-    /// Avanza el deslizamiento con el desplazamiento de este evento.
-    ///
-    /// Devuelve el gesto en cuanto el acumulado pasa el umbral, y solo una vez:
-    /// mantener el dedo apoyado después no encadena escritorios. Encadenar sería
-    /// otro gesto —uno continuo, que sigue al dedo— y no un umbral repetido.
-    pub fn deslizamiento_avance(&mut self, dx: f64, dy: f64) -> Option<Gesto> {
-        let (dedos, x, y) = self.deslizamiento.as_mut()?;
-        *x += dx;
-        *y += dy;
-        let (dedos, x, y) = (*dedos, *x, *y);
-        if self.disparado || !(3..=4).contains(&dedos) {
+    // añadido en la 0.2.0
+    pub fn despeje_continuo(&mut self, sentido: f64) {
+        if let Some(d) = self.deslizamiento.as_mut() {
+            d.despeje = Some(sentido);
+        }
+    }
+
+    // añadido en la 0.2.0
+    pub fn vista_continua(&mut self, abierta: bool) {
+        if let Some(d) = self.deslizamiento.as_mut() {
+            d.vista = Some(abierta);
+        }
+    }
+
+    // modificado en la 0.2.0 -- reconocer el eje inicia el seguimiento; cruzar un umbral ya no cambia de escritorio.
+    pub fn deslizamiento_avance(&mut self, dx: f64, dy: f64, tiempo: u64) -> Option<Gesto> {
+        let d = self.deslizamiento.as_mut()?;
+        d.x += dx;
+        d.y += dy;
+        if d.disparado || !(3..=4).contains(&d.dedos) {
             return None;
         }
-        // Tres dedos solo tienen vertical: la exposición. En horizontal no hay
-        // nada que hacer con ellos y reasignarlos a los escritorios —que son de
-        // cuatro— haría que la mano medio apoyada cambiara de sitio sin querer.
-        if dedos == 3 {
-            if !(y.abs() > DESLIZAR && y.abs() > x.abs() * DOMINIO) {
-                return None;
+        if d.movimiento.is_none() {
+            if d.dedos == 4 && d.x.abs() > UMBRAL_DESLIZAMIENTO && d.x.abs() > d.y.abs() * DOMINIO {
+                d.movimiento = Some(Movimiento::Escritorio);
+            } else if d.y.abs() > UMBRAL_DESLIZAMIENTO && d.y.abs() > d.x.abs() * DOMINIO {
+                if d.dedos == 3 {
+                    d.movimiento = Some(Movimiento::Exposicion);
+                } else if d.despeje.is_some_and(|s| d.y * s > 0.0) {
+                    d.movimiento = Some(Movimiento::Despeje);
+                // Subir abre la vista y, con ella abierta, bajar la cierra: el
+                // otro sentido no sigue a la mano.
+                } else if d.vista.is_some_and(|abierta| (d.y < 0.0) != abierta) {
+                    d.movimiento = Some(Movimiento::Vista);
+                } else if d.y.abs() > DESLIZAR {
+                    d.disparado = true;
+                    return Some(if d.y > 0.0 {
+                        Gesto::DespejarEscritorio
+                    } else {
+                        Gesto::SubirCuatroDedos
+                    });
+                }
             }
-            self.disparado = true;
-            return Some(if y < 0.0 {
-                Gesto::Exponer
-            } else {
-                Gesto::CerrarExposicion
-            });
         }
-        let gesto = if x.abs() > CAMBIAR_ESCRITORIO && x.abs() > y.abs() * DOMINIO {
-            // **Los dedos empujan el contenido, no el foco.** Deslizar a la
-            // izquierda manda las ventanas de aquí hacia la izquierda y trae las
-            // del escritorio de la **derecha**, que es lo que hacen macOS y
-            // GNOME y lo que ya espera quien tiene `scroll_natural = si`, que es
-            // como viene BookOS.
-            //
-            // Al revés no era solo "distinto": como la sesión arranca en el
-            // primer escritorio, deslizar a la izquierda pedía el anterior, no
-            // había ninguno y el gesto se descartaba en silencio. El primer
-            // gesto que hace cualquiera con esto no hacía nada.
-            Gesto::Escritorio(if x < 0.0 { 1 } else { -1 })
-        } else if y.abs() > DESLIZAR && y.abs() > x.abs() * DOMINIO {
-            // **Direccional, no alterno**: bajar aparta las ventanas y subir las
-            // devuelve, cada uno lo suyo. Alternando, bajar dos veces las traía
-            // de vuelta —el gesto haría lo contrario de lo que pide la mano— y
-            // subir con el escritorio ya a la vista lo despejaría otra vez.
-            //
-            // `y` crece hacia abajo, como en el resto de Wayland y como el
-            // puntero: `dy` positivo son los dedos bajando.
-            if y > 0.0 {
-                Gesto::DespejarEscritorio
-            } else {
-                Gesto::SubirCuatroDedos
-            }
-        } else {
-            return None;
+        let movimiento = d.movimiento?;
+        self.progreso = match movimiento {
+            Movimiento::Escritorio => (-d.x / d.ancho) as f32,
+            Movimiento::Exposicion => (-d.y / RECORRIDO_VERTICAL) as f32,
+            Movimiento::Despeje => (d.y * d.despeje.unwrap_or(1.0) / RECORRIDO_VERTICAL) as f32,
+            Movimiento::Vista => (-d.y / RECORRIDO_VERTICAL) as f32,
+            Movimiento::Launchpad => unreachable!("un deslizamiento no es un pellizco"),
         };
-        self.disparado = true;
-        Some(gesto)
+        self.velocidad.anotar(tiempo, self.progreso);
+        Some(Gesto::Continuo(movimiento, self.progreso))
     }
 
-    /// Termina el deslizamiento.
-    pub fn deslizamiento_fin(&mut self) {
-        // Con el acumulado del final: es lo que dice si el gesto se quedó corto
-        // —y por cuánto— cuando el usuario cuenta que «no funciona bien». Sin
-        // esta traza solo se ve el gesto que acierta, que es justo el que no
-        // hace falta diagnosticar.
-        if let Some((dedos, x, y)) = self.deslizamiento {
-            tracing::debug!(
-                dedos,
-                x = format_args!("{x:.0}"),
-                y = format_args!("{y:.0}"),
-                umbral = DESLIZAR,
-                umbral_escritorio = CAMBIAR_ESCRITORIO,
-                disparo = self.disparado,
-                "deslizamiento: termina"
-            );
-        }
-        self.deslizamiento = None;
-        self.disparado = false;
+    // modificado en la 0.2.0
+    pub fn deslizamiento_fin(&mut self, cancelada: bool, tiempo: u64) -> Option<Suelta> {
+        let d = self.deslizamiento.take()?;
+        self.velocidad.anotar(tiempo, self.progreso);
+        Some(Suelta {
+            movimiento: d.movimiento.or(match d.dedos {
+                3 => Some(Movimiento::Exposicion),
+                4 => Some(Movimiento::Escritorio),
+                _ => None,
+            })?,
+            progreso: self.progreso,
+            velocidad: self.velocidad.valor(),
+            // El eje no cambia a mitad de gesto, pero una mano que subía con
+            // algo de deriva al apoyar quedaba en «escritorio», y soltarla con
+            // impulso cambiaba de escritorio sin haberlo pedido. Si al final el
+            // recorrido es vertical, la intención era otra: vuelve a su sitio.
+            cancelada: cancelada
+                || d.movimiento.is_none()
+                || (d.movimiento == Some(Movimiento::Escritorio)
+                    && d.y.abs() > d.x.abs() * DOMINIO),
+        })
     }
 
-    /// ¿El pellizco en curso es de la ventana y no del escritorio?
+    // 0.1.0
     pub fn pellizco_de_la_ventana(&self) -> bool {
         self.pellizco.is_some_and(|dedos| !DEDOS.contains(&dedos))
     }
 
-    /// Empieza un pellizco.
-    pub fn pellizco_inicio(&mut self, dedos: u32) {
-        tracing::debug!(dedos, "pellizco: empieza");
+    // modificado en la 0.2.0
+    pub fn pellizco_inicio(&mut self, dedos: u32, tiempo: u64) {
         self.pellizco = Some(dedos);
-        self.ultima_escala = 1.0;
-        self.disparado = false;
+        self.progreso = 0.0;
+        self.velocidad = Velocidad::default();
+        self.velocidad.anotar(tiempo, 0.0);
     }
 
-    /// Avanza el pellizco. Devuelve el gesto si acaba de completarse.
-    ///
-    /// `escala` es la de libinput: relativa al inicio del gesto, 1,0 = quieto.
-    /// `abierto` dice si el launchpad ya está abierto, porque el mismo pellizco
-    /// hacia fuera no significa nada si no hay nada que cerrar.
-    pub fn pellizco_avance(&mut self, escala: f64, abierto: bool) -> Option<Gesto> {
-        self.ultima_escala = escala;
-        let dedos = self.pellizco?;
-        if self.disparado || !DEDOS.contains(&dedos) {
+    // modificado en la 0.2.0 -- el signo representa cerrar o abrir; la asimetría conserva el recorrido de libinput medido.
+    pub fn pellizco_avance(&mut self, escala: f64, tiempo: u64) -> Option<f32> {
+        if !DEDOS.contains(&self.pellizco?) {
             return None;
         }
-        let gesto = if escala <= CERRAR && !abierto {
-            Gesto::AbrirLaunchpad
-        } else if escala >= ABRIR && abierto {
-            Gesto::CerrarLaunchpad
+        self.progreso = if escala <= 1.0 {
+            ((1.0 - escala) / (1.0 - CERRAR)) as f32
         } else {
-            return None;
+            ((1.0 - escala) / (ABRIR - 1.0)) as f32
         };
-        self.disparado = true;
-        Some(gesto)
+        self.velocidad.anotar(tiempo, self.progreso);
+        Some(self.progreso)
     }
 
-    /// Termina el pellizco, se haya completado o no.
-    pub fn pellizco_fin(&mut self) {
-        if let Some(dedos) = self.pellizco {
-            let escala = self.ultima_escala;
-            tracing::debug!(
-                dedos,
-                escala = format_args!("{escala:.2}"),
-                cerrar = CERRAR,
-                abrir = ABRIR,
-                disparo = self.disparado,
-                "pellizco: termina"
-            );
+    // modificado en la 0.2.0
+    pub fn pellizco_fin(&mut self, cancelada: bool, tiempo: u64) -> Option<Suelta> {
+        let dedos = self.pellizco.take()?;
+        if !DEDOS.contains(&dedos) {
+            return None;
         }
-        self.pellizco = None;
-        self.disparado = false;
+        self.velocidad.anotar(tiempo, self.progreso);
+        Some(Suelta {
+            movimiento: Movimiento::Launchpad,
+            progreso: self.progreso,
+            velocidad: self.velocidad.valor(),
+            cancelada,
+        })
     }
 }
 
@@ -266,205 +298,300 @@ impl Gestos {
 mod tests {
     use super::*;
 
-    /// Cerrar la mano con cuatro dedos abre el launchpad, y solo una vez por
-    /// gesto por mucho que siga llegando el evento.
-    /// El pellizco de dos dedos es de la ventana —el zoom de Figma— y no abre
-    /// nada del escritorio; el de cuatro y cinco sigue siendo del launchpad.
+    // añadido en la 0.2.0
     #[test]
-    fn el_pellizco_de_dos_dedos_es_de_la_ventana() {
+    fn una_correccion_cerca_del_destino_no_devuelve_todo_el_recorrido() {
+        let fin = Suelta {
+            movimiento: Movimiento::Escritorio,
+            progreso: 0.9,
+            velocidad: -1.2,
+            cancelada: false,
+        };
+        assert_eq!(fin.destino(), 1.0);
+        assert_eq!(
+            Suelta {
+                velocidad: -3.0,
+                ..fin
+            }
+            .destino(),
+            0.0
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn los_extremos_no_acumulan_recorrido_invisible() {
+        let mut agarre = Agarre::nuevo(0.5, 1.0);
+        assert_eq!(agarre.seguir(2.0, 0.0, 1.0), 1.0);
+        assert!((agarre.seguir(1.9, 0.0, 1.0) - 0.9).abs() < 0.0001);
+        assert_eq!(agarre.seguir(-2.0, 0.0, 1.0), 0.0);
+        assert!((agarre.seguir(-1.9, 0.0, 1.0) - 0.1).abs() < 0.0001);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn cancelar_una_apertura_agarrada_por_debajo_de_la_mitad_la_completa() {
+        let mut agarre = Agarre::nuevo(0.2, 1.0);
+        agarre.seguir(-0.1, 0.0, 1.0);
+        assert_eq!(
+            agarre.destino(Suelta {
+                movimiento: Movimiento::Exposicion,
+                progreso: -0.1,
+                velocidad: -2.0,
+                cancelada: true
+            }),
+            1.0
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn reconocer_el_deslizamiento_exige_diez_puntos_sin_esperar_un_plazo() {
         let mut g = Gestos::default();
-        g.pellizco_inicio(2);
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        assert_eq!(g.deslizamiento_avance(-9.0, 0.0, 1), None);
+        assert_eq!(
+            g.deslizamiento_avance(-2.0, 0.0, 2),
+            Some(Gesto::Continuo(Movimiento::Escritorio, 0.011))
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn apoyar_y_soltar_sin_elegir_eje_libera_la_animacion_agarrada() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        let fin = g
+            .deslizamiento_fin(false, 1)
+            .expect("cuatro dedos pueden haber agarrado una tira");
+        assert!(fin.cancelada);
+        assert_eq!(fin.movimiento, Movimiento::Escritorio);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn soltar_pasada_la_mitad_cambia() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.deslizamiento_avance(-600.0, 0.0, 1_000_000);
+        let fin = g
+            .deslizamiento_fin(false, 1_200_000)
+            .expect("gesto horizontal reconocido");
+        assert_eq!(fin.destino(), 1.0);
+        assert_eq!(fin.progreso, 0.6);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn un_golpe_rapido_y_corto_cambia() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.deslizamiento_avance(-100.0, 0.0, 30_000);
+        assert_eq!(
+            g.deslizamiento_fin(false, 35_000)
+                .expect("gesto reconocido")
+                .destino(),
+            1.0
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn soltar_lento_sin_pasar_vuelve() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.deslizamiento_avance(-400.0, 0.0, 1_000_000);
+        assert_eq!(
+            g.deslizamiento_fin(false, 1_200_000)
+                .expect("gesto reconocido")
+                .destino(),
+            0.0
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn parar_antes_de_soltar_descarta_el_impulso() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        for i in 1..=5 {
+            g.deslizamiento_avance(-20.0, 0.0, i * 7_000);
+        }
+        assert_eq!(
+            g.deslizamiento_fin(false, 200_000)
+                .expect("gesto reconocido")
+                .destino(),
+            0.0
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn cancelar_siempre_vuelve() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.deslizamiento_avance(-900.0, 0.0, 30_000);
+        assert_eq!(
+            g.deslizamiento_fin(true, 35_000)
+                .expect("gesto reconocido")
+                .destino(),
+            0.0
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn los_ejes_no_cambian_a_mitad_de_gesto() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.deslizamiento_avance(20.0, 0.0, 10_000);
+        assert!(matches!(
+            g.deslizamiento_avance(0.0, 300.0, 20_000),
+            Some(Gesto::Continuo(Movimiento::Escritorio, _))
+        ));
+        assert!(
+            g.deslizamiento_fin(false, 30_000)
+                .expect("gesto reconocido")
+                .progreso
+                < 0.0
+        );
+    }
+
+    #[test]
+    fn subir_con_deriva_al_apoyar_no_cambia_de_escritorio() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        // Deriva lateral antes de que la mano arranque: fija el eje horizontal.
+        assert!(matches!(
+            g.deslizamiento_avance(-300.0, 0.0, 10),
+            Some(Gesto::Continuo(Movimiento::Escritorio, _))
+        ));
+        g.deslizamiento_avance(0.0, -700.0, 20);
+        let suelta = g.deslizamiento_fin(false, 21).expect("gesto reconocido");
+        assert_eq!(suelta.destino(), 0.0, "subía: no debe cambiar");
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn tres_dedos_exponen_y_cuatro_despejan_una_vez() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(3, 1000.0, 0);
+        assert_eq!(
+            g.deslizamiento_avance(0.0, -120.0, 100_000),
+            Some(Gesto::Continuo(Movimiento::Exposicion, 0.25))
+        );
+        g.deslizamiento_fin(false, 120_000);
+        g.deslizamiento_inicio(4, 1000.0, 200_000);
+        assert_eq!(
+            g.deslizamiento_avance(0.0, 130.0, 300_000),
+            Some(Gesto::DespejarEscritorio)
+        );
+        assert_eq!(g.deslizamiento_avance(0.0, 130.0, 310_000), None);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn cuatro_dedos_siguen_al_despeje_solo_en_su_sentido() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.despeje_continuo(1.0);
+        assert_eq!(
+            g.deslizamiento_avance(0.0, 240.0, 100_000),
+            Some(Gesto::Continuo(Movimiento::Despeje, 0.5))
+        );
+        let suelta = g
+            .deslizamiento_fin(false, 120_000)
+            .expect("gesto reconocido");
+        assert_eq!(suelta.movimiento, Movimiento::Despeje);
+
+        // Despejando hacia abajo, subir sigue siendo la acción de siempre.
+        g.deslizamiento_inicio(4, 1000.0, 200_000);
+        g.despeje_continuo(1.0);
+        assert_eq!(
+            g.deslizamiento_avance(0.0, -130.0, 300_000),
+            Some(Gesto::SubirCuatroDedos)
+        );
+
+        // Devolviendo, subir es avanzar.
+        g.deslizamiento_inicio(4, 1000.0, 400_000);
+        g.despeje_continuo(-1.0);
+        assert_eq!(
+            g.deslizamiento_avance(0.0, -240.0, 500_000),
+            Some(Gesto::Continuo(Movimiento::Despeje, 0.5))
+        );
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn el_pellizco_de_dos_dedos_sigue_siendo_del_cliente() {
+        let mut g = Gestos::default();
+        g.pellizco_inicio(2, 0);
         assert!(g.pellizco_de_la_ventana());
-        assert_eq!(g.pellizco_avance(0.3, false), None, "no abre el launchpad");
-        g.pellizco_fin();
-        assert!(!g.pellizco_de_la_ventana(), "acabado, no es de nadie");
-
-        g.pellizco_inicio(4);
+        assert_eq!(g.pellizco_avance(0.3, 10_000), None);
+        assert!(g.pellizco_fin(false, 20_000).is_none());
         assert!(!g.pellizco_de_la_ventana());
-    }
-
-    #[test]
-    fn el_pellizco_hacia_dentro_abre_una_sola_vez() {
-        let mut g = Gestos::default();
-        g.pellizco_inicio(4);
-        assert_eq!(g.pellizco_avance(0.95, false), None, "aún no ha cerrado");
-        assert_eq!(g.pellizco_avance(0.6, false), Some(Gesto::AbrirLaunchpad));
-        assert_eq!(g.pellizco_avance(0.4, false), None, "ya disparó");
-    }
-
-    /// Un pellizco de verdad, tal como lo entregó libinput.
-    ///
-    /// Son las catorce escalas de una traza real de `libinput debug-events` con
-    /// cuatro dedos en el touchpad de este equipo. Vale por dos cosas: que un
-    /// gesto normal **llega** a cruzar el umbral —si alguien lo baja a 0,4, esto
-    /// falla—, y que de los catorce eventos solo uno dispara.
-    #[test]
-    fn una_traza_real_dispara_una_vez() {
-        const TRAZA: [f64; 14] = [
-            0.95, 0.93, 0.90, 0.86, 0.82, 0.78, 0.74, 0.70, 0.67, 0.63, 0.60, 0.57, 0.55, 0.52,
-        ];
-        let mut g = Gestos::default();
-        g.pellizco_inicio(4);
-        let disparos: Vec<usize> = TRAZA
-            .iter()
-            .enumerate()
-            .filter(|(_, escala)| g.pellizco_avance(**escala, false).is_some())
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(disparos, [10], "el gesto abre en el evento 11 y solo ahí");
-    }
-
-    /// Con el launchpad abierto, el gesto que cuenta es el contrario.
-    #[test]
-    fn el_pellizco_hacia_fuera_lo_cierra() {
-        let mut g = Gestos::default();
-        g.pellizco_inicio(5);
-        assert_eq!(g.pellizco_avance(0.5, true), None, "cerrar no reabre");
-        assert_eq!(g.pellizco_avance(2.0, true), Some(Gesto::CerrarLaunchpad));
-    }
-
-    /// Lo mismo que [`una_traza_real_dispara_una_vez`], con la traza del gesto
-    /// de abrir la mano. Las dos juntas son lo que sujeta los dos umbrales: si
-    /// alguien toca uno, aquí se ve enseguida en qué evento pasa a saltar.
-    #[test]
-    fn una_traza_real_hacia_fuera_cierra_una_vez() {
-        const TRAZA: [f64; 11] = [
-            1.12, 1.19, 1.27, 1.35, 1.43, 1.53, 1.64, 1.78, 1.95, 2.15, 2.35,
-        ];
-        let mut g = Gestos::default();
-        g.pellizco_inicio(4);
-        let disparos: Vec<usize> = TRAZA
-            .iter()
-            .enumerate()
-            .filter(|(_, escala)| g.pellizco_avance(**escala, true).is_some())
-            .map(|(i, _)| i)
-            .collect();
-        assert_eq!(disparos, [8], "cierra en el evento 9 y solo ahí");
-    }
-
-    /// Dos y tres dedos son de otra cosa —el desplazamiento y la vista de
-    /// ventanas—, así que el pellizco del launchpad no puede robárselos.
-    #[test]
-    fn con_pocos_dedos_no_pasa_nada() {
-        for dedos in [2, 3] {
-            let mut g = Gestos::default();
-            g.pellizco_inicio(dedos);
-            assert_eq!(g.pellizco_avance(0.3, false), None, "{dedos} dedos");
-        }
-    }
-
-    /// Cuatro dedos a la izquierda traen el escritorio siguiente, y solo una
-    /// vez: con el dedo apoyado no se encadenan escritorios.
-    #[test]
-    fn el_deslizamiento_cambia_de_escritorio_una_vez() {
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(4);
-        // Eventos de 40 px: hasta pasar de 240 no cuenta.
-        for _ in 0..5 {
-            assert_eq!(g.deslizamiento_avance(-40.0, 0.0), None);
-        }
-        assert_eq!(
-            g.deslizamiento_avance(-40.0, 0.0),
-            None,
-            "240 justos no bastan"
+        g.pellizco_inicio(4, 0);
+        assert!(
+            g.pellizco_de_la_ventana(),
+            "con cuatro dedos ya no abre el launchpad"
         );
+        g.pellizco_inicio(5, 0);
+        assert_eq!(g.pellizco_avance(CERRAR, 100_000), Some(1.0));
+        assert_eq!(g.pellizco_avance(ABRIR, 200_000), Some(-1.0));
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn cuatro_dedos_hacia_arriba_siguen_a_la_mano_con_la_vista_cerrada() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.vista_continua(false);
+        let Some(Gesto::Continuo(Movimiento::Vista, p)) = g.deslizamiento_avance(0.0, -48.0, 1)
+        else {
+            panic!("subir con la vista cerrada debe seguir a la mano");
+        };
+        assert!((p - 0.1).abs() < 1e-6);
+        // Y sigue creciendo con la mano, sin esperar a ningún umbral.
+        let Some(Gesto::Continuo(Movimiento::Vista, p)) = g.deslizamiento_avance(0.0, -96.0, 2)
+        else {
+            panic!("el seguimiento continúa");
+        };
+        assert!((p - 0.3).abs() < 1e-6);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn con_la_vista_abierta_bajar_la_cierra_siguiendo_la_mano() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.vista_continua(true);
+        let Some(Gesto::Continuo(Movimiento::Vista, p)) = g.deslizamiento_avance(0.0, 48.0, 1)
+        else {
+            panic!("bajar con la vista abierta debe seguir a la mano");
+        };
+        // Negativo: el progreso va hacia cerrar.
+        assert!((p + 0.1).abs() < 1e-6);
+    }
+
+    /// Sin saber si la vista está abierta —o con el escritorio apartado, que
+    /// manda el despeje— los cuatro dedos hacia arriba conservan lo de antes.
+    #[test]
+    fn el_despeje_sigue_mandando_cuando_las_ventanas_estan_apartadas() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        g.despeje_continuo(-1.0);
+        g.vista_continua(false);
+        assert!(matches!(
+            g.deslizamiento_avance(0.0, -48.0, 1),
+            Some(Gesto::Continuo(Movimiento::Despeje, _))
+        ));
+
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        assert_eq!(g.deslizamiento_avance(0.0, -48.0, 1), None);
         assert_eq!(
-            g.deslizamiento_avance(-40.0, 0.0),
-            Some(Gesto::Escritorio(1)),
-            "los dedos a la izquierda traen el escritorio de la derecha"
+            g.deslizamiento_avance(0.0, -100.0, 2),
+            Some(Gesto::SubirCuatroDedos)
         );
-        assert_eq!(g.deslizamiento_avance(-400.0, 0.0), None, "ya disparó");
-    }
-
-    /// Deslizar a la derecha trae el escritorio de la izquierda, que es el
-    /// espejo del anterior. Los dos juntos son lo que fija la convención.
-    #[test]
-    fn el_deslizamiento_a_la_derecha_trae_el_anterior() {
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(4);
-        assert_eq!(
-            g.deslizamiento_avance(260.0, 0.0),
-            Some(Gesto::Escritorio(-1))
-        );
-    }
-
-    /// Cada dirección hace lo suyo: bajar aparta las ventanas y subir las
-    /// devuelve. No es un alternar — bajar dos veces no puede traerlas.
-    #[test]
-    fn el_deslizamiento_vertical_es_direccional() {
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(4);
-        assert_eq!(
-            g.deslizamiento_avance(0.0, 200.0),
-            Some(Gesto::DespejarEscritorio),
-            "hacia abajo despeja"
-        );
-
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(4);
-        assert_eq!(
-            g.deslizamiento_avance(0.0, -200.0),
-            Some(Gesto::SubirCuatroDedos),
-            "hacia arriba recupera o abre la vista"
-        );
-    }
-
-    /// Tres dedos son la exposición de ventanas, y solo en vertical.
-    #[test]
-    fn tres_dedos_exponen_las_ventanas() {
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(3);
-        assert_eq!(g.deslizamiento_avance(0.0, -200.0), Some(Gesto::Exponer));
-
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(3);
-        assert_eq!(
-            g.deslizamiento_avance(0.0, 200.0),
-            Some(Gesto::CerrarExposicion)
-        );
-
-        // En horizontal no hacen nada: cambiar de escritorio es de cuatro, y
-        // con tres dedos sería un cambio sin querer con la mano medio apoyada.
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(3);
-        assert_eq!(g.deslizamiento_avance(-300.0, 0.0), None);
-    }
-
-    /// Una diagonal no dispara los dos ejes a la vez —cambiar de escritorio *y*
-    /// despejar las ventanas parece un fallo—, así que no dispara ninguno.
-    #[test]
-    fn una_diagonal_no_es_ningun_gesto() {
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(4);
-        assert_eq!(g.deslizamiento_avance(150.0, 140.0), None);
-    }
-
-    /// Tres dedos son de la vista de ventanas, que todavía no existe. Hasta
-    /// entonces no hacen nada: reasignarlos a otra cosa sería un gesto que luego
-    /// habría que quitar.
-    #[test]
-    fn tres_dedos_no_cambian_de_escritorio() {
-        let mut g = Gestos::default();
-        g.deslizamiento_inicio(3);
-        assert_eq!(g.deslizamiento_avance(-300.0, 0.0), None);
-    }
-
-    /// Terminar el gesto rearma: el siguiente pellizco vuelve a poder disparar.
-    #[test]
-    fn terminar_el_gesto_rearma() {
-        let mut g = Gestos::default();
-        g.pellizco_inicio(4);
-        assert_eq!(g.pellizco_avance(0.5, false), Some(Gesto::AbrirLaunchpad));
-        g.pellizco_fin();
-        g.pellizco_inicio(4);
-        assert_eq!(g.pellizco_avance(0.5, false), Some(Gesto::AbrirLaunchpad));
-    }
-
-    /// Un avance sin `pellizco_inicio` no puede disparar nada: pasa de verdad
-    /// cuando el gesto empezó antes de que el compositor estuviera escuchando.
-    #[test]
-    fn sin_inicio_no_hay_gesto() {
-        let mut g = Gestos::default();
-        assert_eq!(g.pellizco_avance(0.2, false), None);
     }
 }

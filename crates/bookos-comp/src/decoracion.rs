@@ -46,6 +46,8 @@ struct Datos {
 }
 
 /// Da a `window` una barra de título, o se la quita.
+// 0.1.0
+// modified 0.1.1 -- nace con la marca de grupo apagada
 pub fn decorar(window: &Window, si: bool) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SIGUIENTE: AtomicU64 = AtomicU64::new(1);
@@ -61,6 +63,7 @@ pub fn decorar(window: &Window, si: bool) {
     }
 }
 
+// 0.1.1
 pub fn agrupar(window: &Window, si: bool) {
     if window.user_data().get::<Datos>().is_none() {
         decorar(window, false);
@@ -74,6 +77,8 @@ pub fn agrupar(window: &Window, si: bool) {
 ///
 /// A pantalla completa no: ahí la ventana ocupa todo y el escritorio desaparece
 /// entero, barra incluida.
+// 0.1.0
+// modified 0.1.1 -- las ventanas de un grupo con pestañas llevan barra
 pub fn decorada(window: &Window) -> bool {
     window
         .user_data()
@@ -83,12 +88,14 @@ pub fn decorada(window: &Window) -> bool {
 }
 
 /// La clave de su buffer en el shell.
+// 0.1.0
 pub fn id(window: &Window) -> Option<u64> {
     window.user_data().get::<Datos>().map(|d| d.id)
 }
 
 /// El rectángulo de la barra, en lógicos: los [`ALTO`] píxeles justo encima de
 /// la ventana. `None` si esa ventana no lleva.
+// 0.1.0
 pub fn barra_rect(state: &BookosComp, window: &Window) -> Option<Rectangle<i32, Logical>> {
     if !decorada(window) {
         return None;
@@ -112,6 +119,8 @@ pub fn barra_rect(state: &BookosComp, window: &Window) -> Option<Rectangle<i32, 
 /// la barra de una de atrás, el clic caía en una barra que no se ve, y pulsar
 /// dentro de la ventana con la que estás trabajando cerraba otra. Con el cuerpo
 /// cortando el recorrido, lo que está tapado deja de ser alcanzable.
+// 0.1.0
+// modified 0.1.1 -- ignora las pestañas ocultas de un grupo
 pub fn barra_en(state: &BookosComp, punto: Point<f64, Logical>) -> Option<(Window, Option<Boton>)> {
     let dentro = |r: Rectangle<i32, Logical>| {
         punto.x >= r.loc.x as f64
@@ -150,6 +159,7 @@ pub fn barra_en(state: &BookosComp, punto: Point<f64, Logical>) -> Option<(Windo
 /// Sin esto, una ventana decorada colocada pegada al panel se dibujaba con la
 /// barra por detrás de él, y con ella se iba el único sitio desde el que se
 /// puede arrastrar.
+// 0.1.0
 pub fn area_util(state: &BookosComp, window: &Window) -> Rectangle<i32, Logical> {
     let area = state.work_area();
     if !decorada(window) {
@@ -164,6 +174,7 @@ pub fn area_util(state: &BookosComp, window: &Window) -> Rectangle<i32, Logical>
 /// Lo que hace pulsar un botón. El clic se atiende al **soltar** y sobre el
 /// mismo botón donde empezó, como cualquier botón del sistema: bajar el ratón
 /// encima de la ✕ y salirse antes de soltar no cierra nada.
+// 0.1.0
 pub fn accionar(state: &mut BookosComp, window: &Window, boton: Boton) {
     match boton {
         Boton::Minimizar => crate::ventanas::minimizar(state, window.clone()),
@@ -180,6 +191,8 @@ pub fn accionar(state: &mut BookosComp, window: &Window, boton: Boton) {
 }
 
 /// Lo que el shell necesita saber para dibujar la barra de esta ventana.
+// 0.1.0
+// modified 0.1.1 -- pasa las pestañas del grupo a la barra
 pub fn estado_de(state: &BookosComp, window: &Window) -> bookos_shell::decoracion::Estado {
     let activa = state.ventana_con_foco().is_some_and(|f| f == *window);
     let mio = |guardado: &Option<(u64, Boton)>| {
@@ -208,6 +221,7 @@ pub struct Interaccion {
 }
 
 /// Apunta qué botón hay bajo el cursor. `true` si cambió y hay que repintar.
+// 0.1.0
 pub fn señalar(state: &mut BookosComp, punto: Point<f64, Logical>) -> bool {
     let nuevo = barra_en(state, punto).and_then(|(w, boton)| Some((id(&w)?, boton?)));
     if state.decoracion.señalado == nuevo {
@@ -218,6 +232,7 @@ pub fn señalar(state: &mut BookosComp, punto: Point<f64, Logical>) -> bool {
 }
 
 /// Marca el botón que se acaba de pulsar.
+// 0.1.0
 pub fn pulsar(state: &mut BookosComp, window: &Window, boton: Boton) {
     if let Some(id) = id(window) {
         state.decoracion.pulsado = Some((id, boton));
@@ -226,6 +241,7 @@ pub fn pulsar(state: &mut BookosComp, window: &Window, boton: Boton) {
 }
 
 /// Suelta el botón pulsado y dice cuál era, si el cursor sigue sobre él.
+// 0.1.0
 pub fn soltar(state: &mut BookosComp, punto: Point<f64, Logical>) -> Option<(Window, Boton)> {
     let (quien, boton) = state.decoracion.pulsado.take()?;
     state.needs_redraw = true;
@@ -235,6 +251,8 @@ pub fn soltar(state: &mut BookosComp, punto: Point<f64, Logical>) -> Option<(Win
 
 /// Las claves de las barras que siguen vivas, para que el shell tire los
 /// buffers de las ventanas que ya no están.
+// 0.1.0
+// modified 0.1.1 -- cuenta también las apartadas por «mostrar escritorio»
 pub fn vivas(state: &BookosComp) -> Vec<u64> {
     state
         .space

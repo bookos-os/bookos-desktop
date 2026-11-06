@@ -1,0 +1,26 @@
+name: Seguridad
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # Un aviso nuevo en RustSec puede afectar a un `Cargo.lock` que no ha
+  # cambiado: sin esto solo se enteraría quien suba código.
+  schedule:
+    - cron: "0 6 * * 1"
+
+# Solo lectura: este flujo no necesita escribir nada en el repositorio.
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar cargo-audit
+        run: cargo install --locked cargo-audit
+      # Mira `Cargo.lock` contra la base de RustSec. No compila nada, así que
+      # no necesita las bibliotecas del sistema que pide el compositor.
+      - name: Auditar dependencias
+        run: cargo audit

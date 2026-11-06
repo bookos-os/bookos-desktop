@@ -66,6 +66,46 @@ const MONITOR_COMPACTO_W: f32 = 276.0;
 /// Auriculares: icono, nombre y la batería más baja, como la transferencia.
 const AURICULARES_COMPACTO_W: f32 = TRANSFER_COMPACTO_W;
 const BURBUJA_SEP: f32 = 6.0;
+/// El asistente cuelga de la barra como un notch. Eran 440×52 con dos líneas:
+/// la segunda repetía «Zenith · Te escucho…» junto a un orbe y una onda que ya
+/// lo dicen, y tapaba un tercio de la barra. Con una línea, 300 de ancho dejan
+/// unos 165 de texto, y al transcribir se ve el final de la frase.
+// añadido en la 0.2.0
+// modificado en la 0.2.0 -- más estrecha y de una línea.
+const ASIS_COMPACTO_W: f32 = 300.0;
+const ASIS_COMPACTO_H: f32 = 40.0;
+const ASIS_ORBE: f32 = 24.0;
+const ASIS_CERRAR_PILDORA: f32 = 26.0;
+/// El canto de color que gira alrededor de la píldora.
+const ASIS_CANTO: f32 = 1.5;
+/// Radianes por segundo del color. Escuchando es casi quieto para que mande la
+/// voz; pensando no hay voz, así que el movimiento es lo que dice «trabajando».
+const ASIS_GIRO_ESCUCHA: f32 = 0.7;
+const ASIS_GIRO_PIENSA: f32 = 2.6;
+const ASIS_CERRAR: f32 = 32.0;
+const ASIS_LADO: f32 = 10.0;
+const ASIS_SEP: f32 = 12.0;
+const ASIS_ONDA_W: f32 = 27.0;
+/// La sacudida del error: dos vaivenes y medio que se apagan. 360 ms y 10 px
+/// son la horquilla de una sacudida de error (300–400 ms, 10–15 px) por lo
+/// bajo: la tarjeta es grande y más amplitud la despegaba de la barra.
+const D_SACUDIDA: std::time::Duration = std::time::Duration::from_millis(360);
+const SACUDIDA_PX: f32 = 10.0;
+/// Constante de tiempo con que la onda y el brillo siguen la voz. Zenith manda
+/// el nivel unas siete veces por segundo; sin suavizar, cada aviso era un
+/// escalón. 90 ms lo alcanza antes del siguiente sin parecer que llega tarde.
+const NIVEL_TAU: f32 = 0.09;
+/// Cuánto crece la píldora con la voz a tope. Más de un 4 % despegaba el
+/// canto de la barra y la píldora parecía saltar, no respirar.
+const HINCHADO_VOZ: f32 = 0.04;
+/// Minimizado: una burbuja flotante con la onda dentro, como la de Gemini. El
+/// compositor la coloca donde se suelte, no en la barra.
+pub const ASIS_MINI: f32 = 52.0;
+/// La cabecera reserva la misma altura que la zona de cierre.
+const ASIS_MARCA_H: f32 = ASIS_CERRAR;
+const ASIS_TITULO_H: f32 = 24.0;
+const ASIS_LINEA_H: f32 = 19.5;
+const ASIS_CUERPO_MAX: usize = 6;
 /// La música cerrada es una píldora baja: una canción de fondo no merece la
 /// tarjeta de 380×72 del temporizador, que tapaba las pestañas de la ventana
 /// de debajo. Una línea de título y el ecualizador bastan para reconocerla; el
@@ -183,6 +223,9 @@ const RADIO: f32 = 26.0;
 /// hacía competir a iced con el cursor. A 12,5 Hz conservan movimiento en la
 /// píldora compacta sin monopolizar el hilo de entrada en builds de desarrollo.
 const FRAME_ONDAS: std::time::Duration = std::time::Duration::from_millis(80);
+/// A 80 ms el color que gira se ve a saltos. La píldora de Zenith es corta y
+/// solo está mientras se le habla: puede permitirse 30 repintados por segundo.
+const FRAME_ASISTENTE: std::time::Duration = std::time::Duration::from_millis(33);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Clase {
@@ -200,6 +243,55 @@ pub enum Clase {
     /// La batería de unos auriculares al sacarlos: una métrica por auricular
     /// y otra para el estuche si informa. `titulo` es el nombre del aparato.
     Auriculares,
+    /// Zenith. `titulo` es lo que se oye o el titular de la respuesta,
+    /// `subtitulo` el estado o el cuerpo y `nivel` la voz (0..1).
+    // añadido en la 0.2.0
+    Asistente(Fase),
+}
+
+/// En qué está el asistente. Lo decide Zenith; la isla solo lo dibuja y el
+/// compositor pone el brillo de borde mientras escucha o piensa.
+// añadido en la 0.2.0
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fase {
+    Escuchando,
+    Pensando,
+    /// Respuesta que hay que leer: la isla se abre en tarjeta.
+    Respuesta,
+    /// Orden directa ya hecha («brillo al 50 %»): una línea y se va sola.
+    Hecho,
+    /// Algo impide seguir; el cuerpo dice por qué y el botón reintenta.
+    Error,
+    /// Sigue escuchando sin ocupar la barra.
+    Minimizado,
+}
+
+impl Fase {
+    // añadido en la 0.2.0
+    pub fn desde(nombre: &str) -> Option<Self> {
+        Some(match nombre {
+            "escuchando" | "" => Self::Escuchando,
+            "pensando" => Self::Pensando,
+            "respuesta" => Self::Respuesta,
+            "hecho" => Self::Hecho,
+            "error" => Self::Error,
+            "minimizado" => Self::Minimizado,
+            _ => return None,
+        })
+    }
+
+    /// Si el escritorio lleva el brillo de borde: solo mientras se le habla o
+    /// trabaja, que es cuando hay que saber que está ahí. Leyendo la respuesta
+    /// ya no aporta nada y minimizado se sigue trabajando encima.
+    // añadido en la 0.2.0
+    pub fn con_brillo(self) -> bool {
+        matches!(self, Self::Escuchando | Self::Pensando)
+    }
+
+    // añadido en la 0.2.0
+    fn abierta(self) -> bool {
+        matches!(self, Self::Respuesta | Self::Error)
+    }
 }
 
 /// Una fila del monitor. `critica` la decide quien publica: una batería al 10 %
@@ -273,6 +365,19 @@ pub struct Burbuja {
     pub activa: bool,
 }
 
+/// Cómo empieza la animación que arranca en `desde`.
+// añadido en la 0.2.0
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entrada {
+    /// Nace de la barra: del 60 % y transparente.
+    Nueva,
+    /// La misma isla cambia de vista en su sitio (la píldora de Zenith se
+    /// despliega en tarjeta): parte casi entera y medio opaca. Nacer de cero
+    /// la hacía parpadear, desaparecer y volver a crecer, justo al llegar la
+    /// respuesta.
+    OtraVista,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Vista {
     Compacta,
@@ -295,9 +400,38 @@ pub struct Actividad {
     /// Miniaturas de la cola por id de pista, ya recortadas y reducidas.
     miniaturas: HashMap<String, image::Handle>,
     burbujas: Vec<Burbuja>,
+    /// `--blue`, `--accent-2` y `--accent-3` de la paleta del fondo, para el
+    /// asistente. Se leen al recibir estado, no al pintar cada paso de la onda.
+    // añadido en la 0.2.0
+    tonos: [Color; 3],
+    /// `--on-accent`: la tinta sobre el primer tono, para el botón.
+    sobre_tono: Color,
+    /// Se parte al publicar: la altura y la zona del botón deben usar las
+    /// mismas líneas que se pintan, también con saltos de línea explícitos.
+    cuerpo_asistente: String,
+    /// Desde cuándo se va. La aplicación ya la retiró, pero se queda a la
+    /// vista lo que dura el fundido: desaparecer de golpe parecía un fallo.
+    // añadido en la 0.2.0
+    saliendo: Option<Instant>,
+    /// Último cambio de clase sin cambiar de vista (Zenith pasa de escuchar a
+    /// pensar): un pulso corto para que se note que ha entendido.
+    // añadido en la 0.2.0
+    cambio: Option<Instant>,
+    /// Desde cuándo está en error. La tarjeta se sacude al aterrizar: un
+    /// error con el mismo pulso que un «Listo» no se distinguía de reojo.
+    // añadido en la 0.2.0
+    sacudida: Option<Instant>,
+    /// Desde qué nivel de voz y cuándo se va hacia el último publicado. Ver
+    /// [`Actividad::nivel_suave`].
+    // añadido en la 0.2.0
+    nivel_desde: (f32, Instant),
+    // añadido en la 0.2.0
+    entrada: Entrada,
 }
 
 impl Actividad {
+    // 0.1.0
+    // modified 0.1.1 -- se queda la portada sin copiarla
     pub fn nueva(mut estado: Estado, animaciones: bool) -> Self {
         let arte = preparar_portada(estado.portada.take().as_ref(), ARTE_PX);
         let mut a = Self {
@@ -309,14 +443,24 @@ impl Actividad {
             arte,
             miniaturas: HashMap::new(),
             burbujas: Vec::new(),
+            tonos: [Color::BLACK; 3],
+            sobre_tono: Color::WHITE,
+            cuerpo_asistente: String::new(),
+            saliendo: None,
+            cambio: None,
+            sacudida: None,
+            nivel_desde: (0.0, Instant::now()),
+            entrada: Entrada::Nueva,
         };
         a.guardar_miniaturas();
+        a.seguir_fase(true);
         a
     }
 
     /// Prepara las carátulas nuevas de la cola y olvida las de pistas que ya no
     /// están en ella. Las que llegan vacías conservan la que había: el
     /// reproductor no las reenvía en cada latido.
+    // 0.1.0
     fn guardar_miniaturas(&mut self) {
         let cola = &mut self.estado.cola;
         self.miniaturas
@@ -339,18 +483,23 @@ impl Actividad {
         }
     }
 
+    // 0.1.1
     pub fn tiene_arte(&self) -> bool {
         self.arte.is_some()
     }
 
+    // 0.1.1
     pub fn invalidar_arte(&mut self) {
         self.arte = None;
     }
 
+    // 0.1.1
     pub fn tiene_miniatura(&self, id: &str) -> bool {
         self.miniaturas.contains_key(id)
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- solo prepara la portada si llega una nueva, sin comparar píxeles
     pub fn actualizar(&mut self, mut estado: Estado) {
         // La portada solo se vuelve a preparar si de verdad cambió: un
         // reproductor manda estado cada segundo para mover la barra de
@@ -361,11 +510,106 @@ impl Actividad {
             // Si el reproductor limpió explícitamente la carátula al cambiar de pista.
             self.arte = None;
         }
+        let vista = self.vista;
+        let cambia = self.estado.clase != estado.clase;
+        // La burbuja minimizada vive en otro sitio de la pantalla: ir o volver
+        // de ella con el pulso de un cambio de fase era teletransportarse.
+        let minimizada = |c: Clase| c == Clase::Asistente(Fase::Minimizado);
+        let muda = minimizada(self.estado.clase) != minimizada(estado.clase);
+        self.nivel_desde = (self.nivel_suave(), Instant::now());
         self.estado = estado;
+        self.saliendo = None;
         self.guardar_miniaturas();
+        self.seguir_fase(cambia);
+        if muda {
+            self.desde = Instant::now();
+            self.entrada = Entrada::Nueva;
+            self.cambio = None;
+        } else if self.vista != vista {
+            self.entrada = Entrada::OtraVista;
+        } else if cambia && self.animaciones {
+            self.cambio = Some(Instant::now());
+        }
+        if cambia && self.animaciones && self.estado.clase == Clase::Asistente(Fase::Error) {
+            self.sacudida = Some(Instant::now());
+        }
+    }
+
+    /// Empieza a irse. `false` sin animaciones: entonces se quita ya.
+    // añadido en la 0.2.0
+    pub fn salir(&mut self) -> bool {
+        if self.animaciones && self.saliendo.is_none() {
+            self.saliendo = Some(Instant::now());
+        }
+        self.saliendo.is_some()
+    }
+
+    // añadido en la 0.2.0
+    pub fn salida_terminada(&self) -> bool {
+        self.saliendo
+            .is_some_and(|t| t.elapsed() >= tema::D_POPOVER)
+    }
+
+    /// Lo que hace con Zenith un clic fuera de la isla o Esc: quitarlo de en
+    /// medio. Un clic fuera mientras escucha o piensa solo lo aparta a la
+    /// burbuja, para seguir hablándole o no tirar una búsqueda por un clic
+    /// distraído; Esc sí cancela.
+    // añadido en la 0.2.0
+    // modificado en la 0.2.0 -- escuchando, el clic fuera minimiza
+    pub fn despedir_asistente(&mut self, cancelar: bool) -> Option<Accion> {
+        let Clase::Asistente(fase) = self.estado.clase else {
+            return None;
+        };
+        if self.saliendo.is_some() {
+            return None;
+        }
+        let nombre = match fase {
+            Fase::Escuchando | Fase::Pensando if cancelar => "cancel",
+            Fase::Escuchando | Fase::Pensando => "minimize",
+            Fase::Respuesta | Fase::Error | Fase::Hecho => "dismiss",
+            Fase::Minimizado => return None,
+        };
+        Some(self.accion(nombre, String::new()))
+    }
+
+    /// El asistente no se abre con un clic: lo abre su fase. Una respuesta que
+    /// hay que leer despliega la tarjeta y lo demás la recoge.
+    // añadido en la 0.2.0
+    // modificado en la 0.2.0 -- la paleta solo se relee al cambiar de fase
+    fn seguir_fase(&mut self, fase_nueva: bool) {
+        let Clase::Asistente(fase) = self.estado.clase else {
+            return;
+        };
+        // Mientras escucha, Zenith publica el nivel de voz diez veces por
+        // segundo; releer y parsear palette.json en cada una no cambia nada.
+        if fase_nueva {
+            self.tonos =
+                tema::roles_paleta(["blue", "accent-2", "accent-3"]).unwrap_or([tema::acento(); 3]);
+            self.sobre_tono =
+                tema::roles_paleta(["on-accent"]).map_or_else(tema::sobre_acento, |[c]| c);
+        }
+        if fase.abierta() {
+            self.cuerpo_asistente = crate::escritorio::lineas(
+                &self.estado.subtitulo,
+                ABIERTO_W - PAD * 2.0,
+                tema::T_CUERPO,
+                ASIS_CUERPO_MAX,
+            )
+            .join("\n");
+        }
+        let vista = if fase.abierta() {
+            Vista::Abierta
+        } else {
+            Vista::Compacta
+        };
+        if vista != self.vista {
+            self.vista = vista;
+            self.desde = Instant::now();
+        }
     }
 
     /// Recoge la tarjeta abierta. Es lo que hace un clic fuera de ella.
+    // 0.1.0
     pub fn recoger(&mut self) -> bool {
         if self.vista == Vista::Compacta {
             return false;
@@ -374,22 +618,27 @@ impl Actividad {
         true
     }
 
+    // 0.1.0
     pub fn desplegada(&self) -> bool {
         self.vista != Vista::Compacta
     }
 
+    // 0.1.0
     pub fn app_id(&self) -> &str {
         &self.estado.app_id
     }
+    // 0.1.0
     pub fn clase(&self) -> Clase {
         self.estado.clase
     }
+    // 0.1.0
     pub fn set_animaciones(&mut self, animaciones: bool) {
         self.animaciones = animaciones;
     }
 
     /// Abre la tarjeta sin fingir una pulsación. Solo lo usa el contrato de
     /// previsualización del compositor en builds de desarrollo.
+    // 0.1.0
     pub fn abrir_previsualizacion(&mut self) -> bool {
         if self.vista != Vista::Compacta {
             return false;
@@ -401,6 +650,7 @@ impl Actividad {
 
     /// Abre la tarjeta compacta o recoge la abierta, con la misma transición
     /// que al pulsarla.
+    // 0.1.0
     pub fn alternar_vista(&mut self) -> bool {
         match self.vista {
             Vista::Compacta => self.abrir_previsualizacion(),
@@ -411,12 +661,14 @@ impl Actividad {
         }
     }
 
+    // 0.1.0
     fn filas_cola(&self) -> usize {
         self.estado.cola.len().min(COLA_MAX)
     }
 
     /// Alto del panel de la cola colgando del reproductor, incluida su
     /// separación. Cero si no hay cola que enseñar.
+    // 0.1.0
     fn alto_cola(&self) -> f32 {
         let n = self.filas_cola();
         if n == 0 {
@@ -427,10 +679,12 @@ impl Actividad {
         COLA_SEP + COLA_PAD * 2.0 + COLA_CAB_H + COLA_FILA_H * n as f32 + PAD
     }
 
+    // 0.1.0
     pub fn poner_burbujas(&mut self, burbujas: Vec<Burbuja>) {
         self.burbujas = burbujas;
     }
 
+    // 0.1.0
     fn ancho_pildora(&self) -> f32 {
         match self.estado.clase {
             Clase::Player => PLAYER_COMPACTO_W,
@@ -440,12 +694,24 @@ impl Actividad {
             Clase::Calendar => CALENDARIO_COMPACTO_W,
             Clase::Monitor => MONITOR_COMPACTO_W,
             Clase::Auriculares => AURICULARES_COMPACTO_W,
+            Clase::Asistente(Fase::Minimizado) => ASIS_MINI,
+            Clase::Asistente(_) => ASIS_COMPACTO_W,
+        }
+    }
+
+    // añadido en la 0.2.0
+    fn alto_pildora(&self) -> f32 {
+        match self.estado.clase {
+            Clase::Asistente(Fase::Minimizado) => ASIS_MINI,
+            Clase::Asistente(_) => ASIS_COMPACTO_H,
+            _ => PLAYER_COMPACTO_H,
         }
     }
 
     /// Lo que ocupan las burbujas, con su separación. Se reserva **a los dos
     /// lados** de la píldora: el compositor centra el buffer, y así la
     /// píldora sigue en el centro de la barra aunque haya burbujas.
+    // 0.1.0
     fn ancho_burbujas(&self) -> f32 {
         if self.vista != Vista::Compacta {
             return 0.0;
@@ -456,6 +722,7 @@ impl Actividad {
     /// La parte del buffer que se ve y recibe clics, como `(x, ancho)` en
     /// coordenadas de la tarjeta. El hueco simétrico de la izquierda no es de
     /// nadie: si el compositor lo contara, se tragaría clics del panel.
+    // 0.1.0
     pub fn zona(&self) -> (f32, f32) {
         let (w, _) = self.size();
         let b = self.ancho_burbujas();
@@ -463,6 +730,7 @@ impl Actividad {
     }
 
     /// El `app_id` de la burbuja bajo el punto, en coordenadas del buffer.
+    // 0.1.0
     pub fn burbuja_en(&self, x: f32, y: f32) -> Option<&str> {
         if self.vista != Vista::Compacta || y < MARGEN_SOMBRA {
             return None;
@@ -475,11 +743,12 @@ impl Actividad {
             .map(|b| b.app_id.as_str())
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let (w, h) = match self.vista {
             Vista::Compacta => (
                 self.ancho_pildora() + self.ancho_burbujas() * 2.0,
-                PLAYER_COMPACTO_H,
+                self.alto_pildora(),
             ),
             Vista::Abierta | Vista::Cola => (
                 ABIERTO_W,
@@ -491,6 +760,7 @@ impl Actividad {
                     Clase::Transfer => TRANSFER_H,
                     Clase::Calendar => CAL_H,
                     Clase::Auriculares => AUR_H,
+                    Clase::Asistente(_) => self.boton_asistente_y() + BOTON_H + PAD,
                     Clase::Monitor => {
                         PAD * 2.0
                             + ROTULO_H
@@ -503,48 +773,124 @@ impl Actividad {
         (w + MARGEN_SOMBRA * 2.0, h + MARGEN_SOMBRA * 2.0)
     }
 
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.animaciones
             && (self.desde.elapsed() < tema::D_TARJETA
-                || (self.vista == Vista::Compacta
-                    && self.sonando()
-                    && matches!(self.estado.clase, Clase::Player | Clase::Recorder)))
+                || self.saliendo.is_some()
+                || self.cambio.is_some_and(|t| t.elapsed() < tema::D_TARJETA)
+                || self
+                    .sacudida
+                    .is_some_and(|t| t.elapsed() < tema::D_TARJETA + D_SACUDIDA)
+                || (self.vista == Vista::Compacta && self.sonando() && self.con_ondas()))
+    }
+
+    /// La voz que oye Zenith, siguiendo al último nivel publicado sin saltos.
+    /// En forma cerrada, para leerla desde `&self` en cada fotograma.
+    // añadido en la 0.2.0
+    pub fn nivel_suave(&self) -> f32 {
+        let objetivo = if self.sonando() {
+            self.estado.nivel.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if !self.animaciones {
+            return objetivo;
+        }
+        let (desde, t) = self.nivel_desde;
+        objetivo + (desde - objetivo) * (-t.elapsed().as_secs_f32() / NIVEL_TAU).exp()
+    }
+
+    /// Las clases cuya píldora lleva una onda viva.
+    // añadido en la 0.2.0
+    fn con_ondas(&self) -> bool {
+        matches!(
+            self.estado.clase,
+            Clase::Player
+                | Clase::Recorder
+                | Clase::Asistente(Fase::Escuchando | Fase::Pensando | Fase::Minimizado)
+        )
     }
 
     /// Si toca reconstruir el bitmap por el siguiente paso del vúmetro.
     /// La animación de entrada no entra aquí: alfa, escala y desplazamiento se
     /// aplican a la textura ya pintada desde el compositor/GPU.
+    // 0.1.0
     pub fn ondas_pendientes(&self) -> bool {
         self.animaciones
             && self.vista == Vista::Compacta
             && self.sonando()
-            && matches!(self.estado.clase, Clase::Player | Clase::Recorder)
-            && self.ultimo_frame_ondas.elapsed() >= FRAME_ONDAS
+            && self.con_ondas()
+            && self.ultimo_frame_ondas.elapsed()
+                >= if matches!(self.estado.clase, Clase::Asistente(_)) {
+                    FRAME_ASISTENTE
+                } else {
+                    FRAME_ONDAS
+                }
     }
 
+    // 0.1.0
     pub fn marcar_ondas_pintadas(&mut self) {
         self.ultimo_frame_ondas = Instant::now();
     }
 
-    pub fn entrada(&self) -> (f32, f32, f32) {
+    /// Alfa, zoom y desplazamiento `(x, y)` con que se compone la isla.
+    // 0.1.0
+    // modificado en la 0.2.0 -- desplazamiento horizontal para la sacudida del error
+    pub fn entrada(&self) -> (f32, f32, f32, f32) {
         if !self.animaciones {
-            return (1.0, 1.0, 0.0);
+            return (1.0, 1.0, 0.0, 0.0);
         }
         let p = tema::C_MUELLE_POPOVER.eval(tema::fraccion(self.desde.elapsed(), tema::D_TARJETA));
-        let alfa = tema::C_ENTRADA.eval(tema::fraccion(self.desde.elapsed(), tema::D_TARJETA));
+        let a = tema::C_ENTRADA.eval(tema::fraccion(self.desde.elapsed(), tema::D_TARJETA));
         // Crece desde la barra: el compositor escala desde el centro de la
         // superficie, así que se sube lo que el zoom baja el canto superior de
         // la tarjeta y el ancla queda arriba, donde está la barra.
-        let zoom = 0.6 + 0.4 * p;
+        let (zoom0, alfa0) = match self.entrada {
+            Entrada::Nueva => (0.6, 0.0),
+            // Píldora y tarjeta de Zenith miden lo mismo de ancho: un 8 % de
+            // encogido basta para que se lea como «se despliega».
+            Entrada::OtraVista => (0.92, 0.5),
+        };
+        let mut zoom = zoom0 + (1.0 - zoom0) * p;
+        let mut alfa = alfa0 + (1.0 - alfa0) * a;
+        if let Some(t) = self.cambio {
+            let c = tema::C_MUELLE_POPOVER.eval(tema::fraccion(t.elapsed(), tema::D_TARJETA));
+            zoom *= 0.94 + 0.06 * c;
+        }
+        // Se va hacia la barra de la que salió, más deprisa de lo que entra.
+        if let Some(t) = self.saliendo {
+            let s = tema::C_SUAVE.eval(tema::fraccion(t.elapsed(), tema::D_POPOVER));
+            alfa *= 1.0 - s;
+            zoom *= 1.0 - 0.15 * s;
+        }
+        // Respira con la voz mientras escucha: es lo que dice «te oigo» sin
+        // tener que mirar las barras. Lo hace la GPU, no repinta nada.
+        if matches!(
+            self.estado.clase,
+            Clase::Asistente(Fase::Escuchando | Fase::Minimizado)
+        ) {
+            zoom *= 1.0 + HINCHADO_VOZ * self.nivel_suave();
+        }
+        // Tras aterrizar la tarjeta, no a la vez: crecer y sacudirse en el
+        // mismo gesto se leía como un tirón, no como un «no».
+        let dx = self.sacudida.map_or(0.0, |t| {
+            let f = tema::fraccion(t.elapsed().saturating_sub(tema::D_TARJETA), D_SACUDIDA);
+            SACUDIDA_PX * (1.0 - f) * (f * 2.5 * std::f32::consts::TAU).sin()
+        });
         let (_, h) = self.size();
-        (alfa, zoom, -(h / 2.0 - MARGEN_SOMBRA) * (1.0 - zoom))
+        (alfa, zoom, dx, -(h / 2.0 - MARGEN_SOMBRA) * (1.0 - zoom))
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let x = x - MARGEN_SOMBRA;
         let y = y - MARGEN_SOMBRA;
-        if x < 0.0 || y < 0.0 {
+        if x < 0.0 || y < 0.0 || self.saliendo.is_some() {
             return None;
+        }
+        if let Clase::Asistente(fase) = self.estado.clase {
+            return self.pulsar_asistente(fase, x - self.ancho_burbujas(), y);
         }
         if self.vista == Vista::Compacta {
             self.vista = Vista::Abierta;
@@ -599,6 +945,7 @@ impl Actividad {
                 self.colapsar();
                 None
             }
+            Clase::Asistente(_) => None,
             Clase::Recorder => {
                 if y < REC_BOTON_Y {
                     self.colapsar();
@@ -619,11 +966,82 @@ impl Actividad {
         }
     }
 
+    fn alto_cuerpo_asistente(&self) -> f32 {
+        self.cuerpo_asistente.lines().count() as f32 * ASIS_LINEA_H
+    }
+
+    fn boton_asistente_y(&self) -> f32 {
+        PAD + ASIS_MARCA_H
+            + 16.0
+            + ASIS_TITULO_H
+            + if self.cuerpo_asistente.is_empty() {
+                0.0
+            } else {
+                8.0 + self.alto_cuerpo_asistente()
+            }
+            + 20.0
+    }
+
+    fn pulsar_asistente(&mut self, fase: Fase, x: f32, y: f32) -> Option<Accion> {
+        let (w, h) = self.size();
+        if !(0.0..w - MARGEN_SOMBRA * 2.0 - self.ancho_burbujas() * 2.0).contains(&x)
+            || !(0.0..h - MARGEN_SOMBRA * 2.0).contains(&y)
+        {
+            return None;
+        }
+        if self.vista != Vista::Compacta {
+            let cerrar_x = ABIERTO_W - PAD - ASIS_CERRAR;
+            if (cerrar_x..cerrar_x + ASIS_CERRAR).contains(&x)
+                && (PAD..PAD + ASIS_CERRAR).contains(&y)
+            {
+                return Some(self.accion("dismiss", String::new()));
+            }
+            if (PAD..ABIERTO_W - PAD).contains(&x)
+                && (self.boton_asistente_y()..self.boton_asistente_y() + BOTON_H).contains(&y)
+            {
+                return Some(self.accion(
+                    if fase == Fase::Error {
+                        "retry"
+                    } else {
+                        "dismiss"
+                    },
+                    String::new(),
+                ));
+            }
+            return None;
+        }
+        let cerrar = (ASIS_COMPACTO_W - ASIS_LADO - ASIS_CERRAR_PILDORA
+            ..ASIS_COMPACTO_W - ASIS_LADO)
+            .contains(&x)
+            && ((ASIS_COMPACTO_H - ASIS_CERRAR_PILDORA) / 2.0
+                ..(ASIS_COMPACTO_H + ASIS_CERRAR_PILDORA) / 2.0)
+                .contains(&y);
+        match fase {
+            Fase::Minimizado => Some(self.accion("expand", String::new())),
+            Fase::Escuchando | Fase::Pensando if cerrar => {
+                Some(self.accion("cancel", String::new()))
+            }
+            Fase::Respuesta | Fase::Error if cerrar => Some(self.accion("dismiss", String::new())),
+            Fase::Respuesta | Fase::Error => {
+                self.vista = Vista::Abierta;
+                self.desde = Instant::now();
+                None
+            }
+            // La píldora entera responde: mientras escucha, pulsarla es «ya
+            // he terminado de hablar»; mientras piensa, «sigue, pero aparte».
+            Fase::Escuchando => Some(self.accion("finish", String::new())),
+            Fase::Pensando => Some(self.accion("minimize", String::new())),
+            Fase::Hecho => Some(self.accion("dismiss", String::new())),
+        }
+    }
+
+    // 0.1.0
     fn colapsar(&mut self) {
         self.vista = Vista::Compacta;
         self.desde = Instant::now();
     }
 
+    // 0.1.0
     fn pulsar_player(&mut self, x: f32, y: f32) -> Option<Accion> {
         if y < CTRL_Y {
             self.colapsar();
@@ -705,6 +1123,7 @@ impl Actividad {
         Some(self.accion(nombre, id))
     }
 
+    // 0.1.0
     fn accion(&self, raw: &str, fallback: String) -> Accion {
         let (nombre, valor) = raw
             .split_once('\u{1f}')
@@ -719,6 +1138,7 @@ impl Actividad {
 
     // ── Vista ────────────────────────────────────────────────────────────
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let (w, h) = self.size();
         let tarjeta = match self.vista {
@@ -734,19 +1154,23 @@ impl Actividad {
 
     /// El color de lo que se pulsa: el acento del sistema, también en la
     /// música. La grabadora pinta su rojo aparte, que es estado y no acción.
+    // 0.1.0
     fn color(&self) -> Color {
         match self.estado.clase {
             // Informativo: el acento (HIG: «azul = interactivo o activo») no
             // se gasta en decorar una lectura de reojo.
             Clase::Monitor | Clase::Auriculares => tema::TEXTO2,
+            Clase::Asistente(_) => self.tonos[0],
             _ => tema::acento(),
         }
     }
 
+    // 0.1.0
     fn sonando(&self) -> bool {
         self.estado.activo && !self.estado.pausado
     }
 
+    // 0.1.0
     fn compacta(&self) -> PanelElement<'_> {
         let b = self.ancho_burbujas();
         let mut fila = row![
@@ -766,7 +1190,11 @@ impl Actividad {
     /// Las píldoras van todas igual: icono o portada, una identificación breve
     /// y el dato principal a la derecha, en un ancho fijo por clase para que
     /// cambiar una cifra no mueva nada.
+    // 0.1.0
     fn pildora(&self) -> PanelElement<'_> {
+        if let Clase::Asistente(fase) = self.estado.clase {
+            return self.pildora_asistente(fase);
+        }
         let color = self.color();
         let (contenido, ancho, lados): (PanelElement<'_>, f32, u16) = match self.estado.clase {
             Clase::Player => (
@@ -875,6 +1303,8 @@ impl Actividad {
                     12,
                 )
             }
+            // Lo dibuja `pildora_asistente`, arriba.
+            Clase::Asistente(_) => (Space::new().into(), ASIS_COMPACTO_W, 12),
             Clase::Recorder => (
                 row![
                     punto(self.sonando(), tema::rojo(), 8.0),
@@ -906,7 +1336,11 @@ impl Actividad {
         )
     }
 
+    // 0.1.0
     fn abierta(&self) -> PanelElement<'_> {
+        if let Clase::Asistente(fase) = self.estado.clase {
+            return self.abierta_asistente(fase);
+        }
         let color = self.color();
         let (w, h) = self.size();
         let (w, h) = (w - MARGEN_SOMBRA * 2.0, h - MARGEN_SOMBRA * 2.0);
@@ -1143,6 +1577,7 @@ impl Actividad {
                 ]
                 .into()
             }
+            Clase::Asistente(_) => Space::new().into(),
             Clase::Monitor => column![
                 rotulo("Rendimiento"),
                 Space::new().height(Length::Fixed(8.0)),
@@ -1209,6 +1644,320 @@ impl Actividad {
         tarjeta(cuerpo, w, h, RADIO, [PAD as u16, PAD as u16])
     }
 
+    fn onda_asistente(&self, alto: f32) -> PanelElement<'static> {
+        let nivel = self.nivel_suave();
+        let t = if self.animaciones {
+            self.desde.elapsed().as_secs_f32()
+        } else {
+            0.0
+        };
+        let pensando = self.estado.clase == Clase::Asistente(Fase::Pensando);
+        let mut barras = row![].spacing(3).align_y(Vertical::Center);
+        for (i, perfil) in [0.45, 0.75, 1.0, 0.75, 0.45].into_iter().enumerate() {
+            let h = if pensando {
+                // Pensando no oye nada: un bulto que recorre las barras de ida
+                // y vuelta dice «trabajando» sin fingir voz. Sin animaciones se
+                // queda centrado, que sigue distinguiéndose del silencio.
+                let centro = 2.0 + 2.0 * (t * 2.4).sin();
+                let d = i as f32 - centro;
+                3.0 + (alto - 3.0) * 0.7 * (-d * d / 1.2).exp()
+            } else {
+                let movimiento = if self.animaciones {
+                    0.65 + 0.35 * (t * 5.0 + i as f32 * 0.8).sin()
+                } else {
+                    1.0
+                };
+                // El vúmetro musical fuerza un nivel mínimo de 0,8: aquí el
+                // silencio tiene que verse para no simular que se está oyendo voz.
+                // En silencio late apenas: da señal de vida sin fingir voz.
+                let reposo = if self.animaciones {
+                    1.5 * (0.5 + 0.5 * (t * 2.2 - i as f32 * 0.6).sin())
+                } else {
+                    0.0
+                };
+                3.0 + reposo + (alto - 3.0) * perfil * nivel * movimiento
+            };
+            // Como en la Siri de iOS 27, la onda es de lo poco con color: el
+            // resto de la píldora es oscuro y el color se va de barra en barra.
+            let fase = 0.5 + 0.5 * (t * 1.1 - i as f32 * 0.7).sin();
+            let color = tema::mezclar(
+                tema::mezclar(self.tonos[0], self.tonos[1], i as f32 / 4.0),
+                self.tonos[2],
+                fase * 0.6,
+            );
+            barras = barras.push(
+                container(Space::new())
+                    .width(3)
+                    .height(h)
+                    .style(move |_| pill(color)),
+            );
+        }
+        container(barras)
+            .width(ASIS_ONDA_W)
+            .height(alto)
+            .align_y(Vertical::Center)
+            .into()
+    }
+
+    fn pildora_asistente(&self, fase: Fase) -> PanelElement<'_> {
+        if fase == Fase::Minimizado {
+            let disco = container(self.onda_asistente(22.0))
+                .width(ASIS_MINI - 4.0)
+                .height(ASIS_MINI - 4.0)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .style(|_| container::Style {
+                    background: Some(tema::card().into()),
+                    border: Border {
+                        radius: tema::R_PILL.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            return container(stack![
+                relleno_vivo(self.tonos, self.giro(), ASIS_MINI, ASIS_MINI, tema::R_PILL),
+                container(disco)
+                    .width(ASIS_MINI)
+                    .height(ASIS_MINI)
+                    .align_x(Horizontal::Center)
+                    .align_y(Vertical::Center),
+            ])
+            .style(|_| container::Style {
+                border: Border {
+                    radius: tema::R_PILL.into(),
+                    ..Default::default()
+                },
+                shadow: tema::sombra_popover(),
+                ..Default::default()
+            })
+            .into();
+        }
+        let estado = match fase {
+            Fase::Escuchando => "Te escucho…",
+            Fase::Pensando => "Pensando…",
+            Fase::Hecho => "Listo",
+            Fase::Respuesta => "Respuesta de Zenith",
+            Fase::Error => "No he podido continuar",
+            Fase::Minimizado => unreachable!("la burbuja se dibuja antes de la píldora"),
+        };
+        fn vacio_o<'a>(a: &'a str, b: &'a str) -> &'a str {
+            if a.is_empty() { b } else { a }
+        }
+        // Una sola línea: lo que más importa ahora. Pensando importa lo que está
+        // haciendo («Transcribiendo…»); lo dicho ya no hace falta repetirlo.
+        let linea = match fase {
+            Fase::Pensando => vacio_o(&self.estado.subtitulo, estado),
+            _ => vacio_o(&self.estado.titulo, vacio_o(&self.estado.subtitulo, estado)),
+        };
+        let con_onda = matches!(fase, Fase::Escuchando | Fase::Pensando);
+        let con_cierre = fase != Fase::Hecho;
+        let ancho = ASIS_COMPACTO_W
+            - ASIS_LADO * 2.0
+            - ASIS_ORBE
+            - ASIS_SEP
+            - if con_onda {
+                ASIS_ONDA_W + ASIS_SEP
+            } else {
+                0.0
+            }
+            - if con_cierre {
+                ASIS_CERRAR_PILDORA + ASIS_SEP
+            } else {
+                0.0
+            };
+        let marca = match fase {
+            Fase::Hecho => redondo(icono_inline(VISTO), ASIS_ORBE, Fondo::Solido(tema::verde())),
+            Fase::Error => redondo(icono_inline(AVISO), ASIS_ORBE, Fondo::Solido(tema::rojo())),
+            _ => {
+                // El orbe late con la voz; pensando, por su cuenta y despacio.
+                let t = self.desde.elapsed().as_secs_f32();
+                let pulso = match fase {
+                    Fase::Pensando if self.animaciones => 0.5 + 0.5 * (t * 2.0).sin(),
+                    _ => self.nivel_suave(),
+                };
+                let lado = ASIS_ORBE * (0.72 + 0.28 * pulso);
+                container(relleno_vivo(
+                    self.tonos,
+                    self.giro(),
+                    lado,
+                    lado,
+                    lado / 2.0,
+                ))
+                .width(ASIS_ORBE)
+                .height(ASIS_ORBE)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .into()
+            }
+        };
+        let texto_linea = if fase == Fase::Escuchando {
+            recortar_final(linea, ancho, 13.0, medio())
+        } else {
+            recortar_asistente(linea, ancho, 13.0, medio())
+        };
+        let mut contenido = row![
+            marca,
+            container(
+                text(texto_linea)
+                    .size(13)
+                    .font(medio())
+                    .wrapping(iced_core::text::Wrapping::None),
+            )
+            .width(Length::Fill),
+        ]
+        .spacing(ASIS_SEP)
+        .align_y(Vertical::Center);
+        if con_onda {
+            contenido = contenido.push(self.onda_asistente(16.0));
+        }
+        if con_cierre {
+            contenido = contenido.push(redondo(
+                icono_inline(CRUZ),
+                ASIS_CERRAR_PILDORA,
+                Fondo::Tenue,
+            ));
+        }
+        let fondo = if tema::es_claro() {
+            tema::card()
+        } else {
+            Color::BLACK
+        };
+        let cuerpo = container(contenido)
+            .width(ASIS_COMPACTO_W - ASIS_CANTO * 2.0)
+            .height(ASIS_COMPACTO_H - ASIS_CANTO * 2.0)
+            .padding([0.0, ASIS_LADO - ASIS_CANTO])
+            .align_y(Vertical::Center)
+            .style(move |_| container::Style {
+                background: Some(fondo.into()),
+                border: Border {
+                    radius: tema::R_PILL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        // Stack de opacos y no un borde: iced no admite degradado en el borde, y
+        // el relleno translúcido en tiny-skia cuesta 17 veces más que el opaco.
+        container(stack![
+            relleno_vivo(
+                self.tonos,
+                self.giro(),
+                ASIS_COMPACTO_W,
+                ASIS_COMPACTO_H,
+                tema::R_PILL,
+            ),
+            container(cuerpo)
+                .width(ASIS_COMPACTO_W)
+                .height(ASIS_COMPACTO_H)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center),
+        ])
+        .style(|_| container::Style {
+            border: Border {
+                radius: tema::R_PILL.into(),
+                ..Default::default()
+            },
+            shadow: tema::sombra_popover(),
+            ..Default::default()
+        })
+        .into()
+    }
+
+    /// El ángulo del color vivo. Se calcula con la fase actual y no se acumula:
+    /// al cambiar de fase da un salto, que queda dentro del pulso de ese cambio.
+    // añadido en la 0.2.0
+    fn giro(&self) -> f32 {
+        if !self.animaciones {
+            return std::f32::consts::FRAC_PI_4;
+        }
+        let vel = if self.estado.clase == Clase::Asistente(Fase::Pensando) {
+            ASIS_GIRO_PIENSA
+        } else {
+            ASIS_GIRO_ESCUCHA
+        };
+        self.desde.elapsed().as_secs_f32() * vel
+    }
+
+    fn abierta_asistente(&self, fase: Fase) -> PanelElement<'_> {
+        let ancho_util = ABIERTO_W - PAD * 2.0;
+        let error = fase == Fase::Error;
+        let marca = if error {
+            redondo(icono_inline(AVISO), ASIS_ORBE, Fondo::Solido(tema::rojo()))
+        } else {
+            orbe(self.tonos, ASIS_ORBE)
+        };
+        let cuerpo = column![
+            row![
+                marca,
+                column![
+                    text("Zenith").size(13).font(negrita()),
+                    text(if error {
+                        "Necesita atención"
+                    } else {
+                        "Respuesta"
+                    })
+                    .size(11)
+                    .color(tema::mezclar(tema::texto(), tema::TEXTO2, 0.75)),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                redondo(icono_inline(CRUZ), ASIS_CERRAR, Fondo::Tenue),
+            ]
+            .spacing(ASIS_SEP)
+            .align_y(Vertical::Center)
+            .height(ASIS_MARCA_H),
+            Space::new().height(16),
+            container(
+                text(recortar_asistente(
+                    if self.estado.titulo.is_empty() {
+                        if error {
+                            "No he podido continuar"
+                        } else {
+                            "Respuesta de Zenith"
+                        }
+                    } else {
+                        &self.estado.titulo
+                    },
+                    ancho_util,
+                    17.0,
+                    gorda(),
+                ))
+                .size(17)
+                .font(gorda())
+                .wrapping(iced_core::text::Wrapping::None)
+            )
+            .height(ASIS_TITULO_H),
+            Space::new().height(if self.cuerpo_asistente.is_empty() {
+                0.0
+            } else {
+                8.0
+            }),
+            container(
+                text(&self.cuerpo_asistente)
+                    .size(tema::T_CUERPO)
+                    .line_height(iced_core::text::LineHeight::Absolute(ASIS_LINEA_H.into()))
+                    .wrapping(iced_core::text::Wrapping::None)
+                    .color(tema::mezclar(tema::texto(), tema::TEXTO2, 0.75))
+            )
+            .height(self.alto_cuerpo_asistente()),
+            Space::new().height(20),
+            boton_con(
+                if error { "Reintentar" } else { "Entendido" },
+                self.tonos[0],
+                self.sobre_tono,
+            ),
+        ];
+        superficie_asistente(
+            cuerpo.into(),
+            ABIERTO_W,
+            self.boton_asistente_y() + BOTON_H + PAD,
+            tema::R_DIALOGO,
+            [PAD; 4],
+            self.tonos[0],
+            tema::card(),
+        )
+    }
+
+    // 0.1.0
     fn cabecera_player(&self) -> PanelElement<'_> {
         let ancho = ABIERTO_W - PAD * 2.0 - ARTE - 16.0;
         row![
@@ -1239,6 +1988,7 @@ impl Actividad {
         .into()
     }
 
+    // 0.1.0
     fn controles(&self, color: Color) -> PanelElement<'_> {
         let central = if self.estado.pausado { PLAY } else { PAUSA };
         let plano = |activo: bool| if activo { color } else { tema::TEXTO2 };
@@ -1259,6 +2009,7 @@ impl Actividad {
         .into()
     }
 
+    // 0.1.0
     fn fila_progreso(&self, color: Color) -> PanelElement<'_> {
         let (pos, total) = (self.estado.posicion_ms, self.estado.duracion_ms);
         let f = if total > 0 {
@@ -1286,6 +2037,7 @@ impl Actividad {
     /// Cola y volumen, cada uno en su mitad. Pesan menos que el progreso:
     /// texto secundario, iconos grises, y el acento solo en lo que está
     /// encendido o se arrastra.
+    // 0.1.0
     fn fila_secundaria(&self, color: Color) -> PanelElement<'_> {
         let tinta_cola = if self.filas_cola() == 0 {
             apagado(0.3)
@@ -1320,6 +2072,7 @@ impl Actividad {
         .into()
     }
 
+    // 0.1.0
     fn panel_cola(&self, color: Color) -> PanelElement<'_> {
         let mut filas = column![
             container(
@@ -1404,6 +2157,40 @@ impl Actividad {
 
 // ── Piezas ───────────────────────────────────────────────────────────────
 
+fn recortar_asistente(texto: &str, ancho: f32, tamaño: f32, fuente: Font) -> String {
+    let texto = texto.split_whitespace().collect::<Vec<_>>().join(" ");
+    let medir = |s: &str| crate::widget::ancho_con_fuente(s, tamaño, fuente);
+    if medir(&texto) <= ancho {
+        return texto;
+    }
+    // El ancho medio por carácter deja que una transcripción con letras
+    // anchas invada el vúmetro y el cierre. Se mide con el peso que se pinta.
+    let limite = ancho - medir("…");
+    let cortes: Vec<usize> = texto.char_indices().map(|(i, _)| i).collect();
+    let i = cortes
+        .partition_point(|&i| medir(&texto[..i]) <= limite)
+        .saturating_sub(1);
+    format!("{}…", texto[..cortes[i]].trim_end())
+}
+
+/// Como [`recortar_asistente`], pero guarda el final: mientras se dicta lo que
+/// interesa es la última palabra, y cortando por detrás el texto se quedaba
+/// clavado con la frase aún en marcha.
+// añadido en la 0.2.0
+fn recortar_final(texto: &str, ancho: f32, tamaño: f32, fuente: Font) -> String {
+    let texto = texto.split_whitespace().collect::<Vec<_>>().join(" ");
+    let medir = |s: &str| crate::widget::ancho_con_fuente(s, tamaño, fuente);
+    if medir(&texto) <= ancho {
+        return texto;
+    }
+    let limite = ancho - medir("…");
+    let cortes: Vec<usize> = texto.char_indices().map(|(i, _)| i).collect();
+    let i = cortes.partition_point(|&i| medir(&texto[i..]) > limite);
+    let i = cortes.get(i).copied().unwrap_or(texto.len());
+    format!("…{}", texto[i..].trim_start())
+}
+
+// 0.1.0
 fn tarjeta<'a>(
     contenido: PanelElement<'a>,
     w: f32,
@@ -1421,6 +2208,7 @@ fn tarjeta<'a>(
 /// avisos): un degradado hacía de la isla la única superficie que brillaba. La
 /// sombra va **también en oscuro**: la isla cuelga sobre el escritorio, y sin
 /// ella se confunde con una ventana pegada al borde.
+// 0.1.0
 fn tarjeta_v<'a>(
     contenido: PanelElement<'a>,
     w: f32,
@@ -1451,8 +2239,97 @@ fn tarjeta_v<'a>(
         .into()
 }
 
+/// El filo conserva el tono del fondo; la sombra deja separar la isla de
+/// las ventanas sin convertir toda la tarjeta en un indicador luminoso.
+// añadido en la 0.2.0
+fn superficie_asistente<'a>(
+    contenido: PanelElement<'a>,
+    w: f32,
+    h: f32,
+    radio: f32,
+    padding: [f32; 4],
+    tono: Color,
+    fondo: Color,
+) -> PanelElement<'a> {
+    container(contenido)
+        .width(Length::Fixed(w))
+        .height(Length::Fixed(h))
+        .padding(iced_core::Padding {
+            top: padding[0],
+            right: padding[1],
+            bottom: padding[2],
+            left: padding[3],
+        })
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(move |_| container::Style {
+            background: Some(fondo.into()),
+            border: Border {
+                radius: radio.into(),
+                width: 1.0,
+                color: tema::alfa(tono, if tema::alto_contraste() { 1.0 } else { 0.22 }),
+            },
+            shadow: Shadow {
+                color: tema::alfa(tono, 0.12),
+                offset: Vector::new(0.0, 4.0),
+                blur_radius: 22.0,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Un degradado que gira, opaco: el canto de la píldora, el aro de la burbuja
+/// y el orbe.
+// añadido en la 0.2.0
+fn relleno_vivo(tonos: [Color; 3], giro: f32, w: f32, h: f32, radio: f32) -> PanelElement<'static> {
+    let degradado = iced_core::gradient::Linear::new(iced_core::Radians(giro))
+        .add_stop(0.0, tonos[0])
+        .add_stop(0.5, tonos[1])
+        .add_stop(1.0, tonos[2]);
+    container(Space::new())
+        .width(Length::Fixed(w))
+        .height(Length::Fixed(h))
+        .style(move |_| container::Style {
+            background: Some(degradado.into()),
+            border: Border {
+                radius: radio.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// La marca usa los mismos tonos en la isla y en el aro de la burbuja.
+// añadido en la 0.2.0
+fn orbe(tonos: [Color; 3], lado: f32) -> PanelElement<'static> {
+    let degradado =
+        iced_core::gradient::Linear::new(iced_core::Radians(std::f32::consts::FRAC_PI_4))
+            .add_stop(0.0, tonos[0])
+            .add_stop(0.55, tonos[1])
+            .add_stop(1.0, tonos[2]);
+    let tinta = tema::tinta_sobre(tema::mezclar(tonos[0], tonos[1], 0.5));
+    container(icono_teñido(icono_propio("micro"), lado * 0.5, tinta))
+        .width(Length::Fixed(lado))
+        .height(Length::Fixed(lado))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(move |_| container::Style {
+            background: Some(degradado.into()),
+            border: Border {
+                radius: (lado / 2.0).into(),
+                width: 1.0,
+                color: tema::alfa(tema::texto(), 0.12),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 /// La carátula, o un cuadrado de superficie con una nota cuando no hay
 /// ninguna. Sin sombra de color: era un halo que cambiaba con cada disco.
+// 0.1.0
 fn caratula(arte: Option<&image::Handle>, lado: f32) -> PanelElement<'static> {
     match arte {
         Some(h) => image(h.clone()).width(lado).height(lado).into(),
@@ -1460,6 +2337,7 @@ fn caratula(arte: Option<&image::Handle>, lado: f32) -> PanelElement<'static> {
     }
 }
 
+// 0.1.0
 fn caratula_vacia(lado: f32, fondo: Color) -> PanelElement<'static> {
     container(icono_teñido(
         icono_propio("musica"),
@@ -1482,6 +2360,7 @@ fn caratula_vacia(lado: f32, fondo: Color) -> PanelElement<'static> {
 }
 
 /// El icono de un archivo en su ficha, como los iconos de fila de Ajustes.
+// 0.1.0
 fn ficha(svg: &str) -> PanelElement<'static> {
     container(icono_teñido(icono_inline(svg), 22.0, tema::texto()))
         .width(Length::Fixed(44.0))
@@ -1501,6 +2380,7 @@ fn ficha(svg: &str) -> PanelElement<'static> {
 
 /// Icono, nombre recortado y el dato a la derecha: la píldora de las
 /// actividades que identifican algo con un nombre.
+// 0.1.0
 fn fila_compacta(
     icono: PanelElement<'static>,
     titulo: &str,
@@ -1534,6 +2414,7 @@ enum Fondo {
     Tenue,
 }
 
+// 0.1.0
 fn redondo(ic: Option<icono::Icono>, lado: f32, fondo: Fondo) -> PanelElement<'static> {
     let (relleno, tinta) = match fondo {
         Fondo::Solido(c) => (c, tema::tinta_sobre(c)),
@@ -1565,11 +2446,19 @@ enum Boton {
 
 /// Botón de diálogo del sistema de diseño: 48 de alto, radio de control,
 /// 15/Semibold, repartido a partes iguales con su pareja.
+// 0.1.0
 fn boton(rotulo: &'static str, tipo: Boton) -> PanelElement<'static> {
     let (relleno, tinta) = match tipo {
         Boton::Principal => (tema::acento(), tema::sobre_acento()),
         Boton::Secundario => (tema::superficie_en_tarjeta(), tema::texto()),
     };
+    boton_con(rotulo, relleno, tinta)
+}
+
+/// El mismo botón con sus colores: el asistente usa el acento de la paleta del
+/// fondo y no el del sistema.
+// añadido en la 0.2.0
+fn boton_con(rotulo: &'static str, relleno: Color, tinta: Color) -> PanelElement<'static> {
     container(text(rotulo).size(15).font(negrita()).color(tinta))
         .width(Length::Fill)
         .height(Length::Fixed(BOTON_H))
@@ -1586,6 +2475,7 @@ fn boton(rotulo: &'static str, tipo: Boton) -> PanelElement<'static> {
         .into()
 }
 
+// 0.1.0
 fn rotulo(t: &'static str) -> PanelElement<'static> {
     container(text(t).size(12).font(medio()).color(tema::TEXTO2))
         .height(Length::Fixed(ROTULO_H))
@@ -1593,6 +2483,7 @@ fn rotulo(t: &'static str) -> PanelElement<'static> {
         .into()
 }
 
+// 0.1.0
 fn divisor() -> PanelElement<'static> {
     container(Space::new())
         .width(Length::Fill)
@@ -1607,6 +2498,7 @@ fn divisor() -> PanelElement<'static> {
 /// Un auricular sin lectura. bookos-budsd manda 0 cuando el aparato no
 /// informa (lo dice al omitir el estuche a 0) y nunca marca crítico un 0:
 /// enseñarlo como «0 %» se leería como descargado.
+// 0.1.0
 fn desconocida(m: &Metrica) -> bool {
     m.valor <= 0.0 && !m.critica
 }
@@ -1616,6 +2508,7 @@ fn desconocida(m: &Metrica) -> bool {
 /// quien publica la marca crítica.
 /// `fotos` pone una delante de cada etiqueta, por posición; sin foto, la fila
 /// empieza por el texto.
+// 0.1.0
 fn filas_metricas(
     metricas: &[Metrica],
     fotos: &[image::Handle],
@@ -1662,6 +2555,7 @@ fn filas_metricas(
 /// El volumen como el deslizador del sistema de diseño: pista fina, relleno
 /// de acento y pulgar blanco. El pulgar recorre el ancho menos su lado, y
 /// `pulsar_player` hace la misma cuenta.
+// 0.1.0
 fn deslizador(volumen: u8, color: Color) -> PanelElement<'static> {
     let ancho = VOL_X1 - VOL_X0;
     let x = (ancho - VOL_PULGAR) * f32::from(volumen.min(100)) / 100.0;
@@ -1703,6 +2597,7 @@ fn deslizador(volumen: u8, color: Color) -> PanelElement<'static> {
     .into()
 }
 
+// 0.1.0
 fn ver_burbuja(b: &Burbuja) -> PanelElement<'static> {
     let color = b.color;
     let dentro = match b.clase {
@@ -1713,6 +2608,7 @@ fn ver_burbuja(b: &Burbuja) -> PanelElement<'static> {
         Clase::Calendar => icono_teñido(icono_inline(CALENDARIO), 14.0, color),
         Clase::Monitor => icono_teñido(icono_inline(CHIP), 14.0, color),
         Clase::Auriculares => image(FOTOS_BUDS[4].clone()).width(18.0).height(18.0).into(),
+        Clase::Asistente(_) => punto(true, color, 10.0),
     };
     container(dentro)
         .width(Length::Fixed(BURBUJA))
@@ -1732,6 +2628,7 @@ fn ver_burbuja(b: &Burbuja) -> PanelElement<'static> {
 }
 
 /// El punto de la grabadora, liso: el rojo ya basta para llamar la atención.
+// 0.1.0
 fn punto(activa: bool, color: Color, lado: f32) -> PanelElement<'static> {
     let c = if activa { color } else { tema::TEXTO2 };
     container(Space::new())
@@ -1743,6 +2640,7 @@ fn punto(activa: bool, color: Color, lado: f32) -> PanelElement<'static> {
 
 /// El ecualizador. Barras con perfil propio y desfase entre ellas: en fase se
 /// ven como un acordeón, no como sonido.
+// 0.1.0
 fn ondas(
     nivel: f32,
     activa: bool,
@@ -1806,10 +2704,12 @@ fn ondas(
 /// El color del texto rebajado hasta `f`, mezclando con el fondo en vez de con
 /// el canal alfa: el teñido de un SVG **descarta el alfa**, así que un icono
 /// «al 35 %» se dibujaba blanco puro.
+// 0.1.0
 fn apagado(f: f32) -> Color {
     tema::mezclar(tema::card(), tema::texto(), f)
 }
 
+// 0.1.0
 fn pill(color: Color) -> container::Style {
     container::Style {
         background: Some(color.into()),
@@ -1821,18 +2721,21 @@ fn pill(color: Color) -> container::Style {
     }
 }
 
+// 0.1.0
 fn negrita() -> Font {
     Font {
         weight: Weight::Semibold,
         ..Font::DEFAULT
     }
 }
+// 0.1.0
 fn medio() -> Font {
     Font {
         weight: Weight::Medium,
         ..Font::DEFAULT
     }
 }
+// 0.1.0
 fn gorda() -> Font {
     Font {
         weight: Weight::Bold,
@@ -1840,6 +2743,7 @@ fn gorda() -> Font {
     }
 }
 
+// 0.1.0
 fn icono_propio(nombre: &str) -> Option<icono::Icono> {
     match nombre {
         // No hay fichero para estos: son cuatro trazos, y un SVG en memoria
@@ -1849,10 +2753,12 @@ fn icono_propio(nombre: &str) -> Option<icono::Icono> {
     }
 }
 
+// 0.1.0
 fn icono_inline(svg: &str) -> Option<icono::Icono> {
     Some(icono::desde_svg(svg))
 }
 
+// 0.1.0
 fn icono_teñido(ic: Option<icono::Icono>, px: f32, color: Color) -> PanelElement<'static> {
     match ic {
         Some(ic) => icono::ver_teñido_propio(&ic, px, color),
@@ -1913,6 +2819,10 @@ pub(crate) const PAUSA: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewB
 pub(crate) const ANTERIOR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><path d="M8.5 4.75a.75.75 0 0 0-1.107-.66l-6 3.25a.75.75 0 0 0 0 1.32l6 3.25a.75.75 0 0 0 1.107-.66V8.988l5.393 2.921A.75.75 0 0 0 15 11.25v-6.5a.75.75 0 0 0-1.107-.66L8.5 7.013V4.75Z"/></svg>"##;
 pub(crate) const SIGUIENTE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><path d="M2.53 3.956A1 1 0 0 0 1 4.804v6.392a1 1 0 0 0 1.53.848l5.113-3.196c.16-.1.279-.233.357-.383v2.73a1 1 0 0 0 1.53.849l5.113-3.196a1 1 0 0 0 0-1.696L9.53 3.956A1 1 0 0 0 8 4.804v2.731a.992.992 0 0 0-.357-.383L2.53 3.956Z"/></svg>"##;
 const CHIP: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><path d="M6 6v4h4V6H6Z"/><path fill-rule="evenodd" d="M5.75 1a.75.75 0 0 0-.75.75V3a2 2 0 0 0-2 2H1.75a.75.75 0 0 0 0 1.5H3v.75H1.75a.75.75 0 0 0 0 1.5H3v.75H1.75a.75.75 0 0 0 0 1.5H3a2 2 0 0 0 2 2v1.25a.75.75 0 0 0 1.5 0V13h.75v1.25a.75.75 0 0 0 1.5 0V13h.75v1.25a.75.75 0 0 0 1.5 0V13a2 2 0 0 0 2-2h1.25a.75.75 0 0 0 0-1.5H13v-.75h1.25a.75.75 0 0 0 0-1.5H13V6.5h1.25a.75.75 0 0 0 0-1.5H13a2 2 0 0 0-2-2V1.75a.75.75 0 0 0-1.5 0V3h-.75V1.75a.75.75 0 0 0-1.5 0V3H6.5V1.75A.75.75 0 0 0 5.75 1ZM11 4.5a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-.5.5H5a.5.5 0 0 1-.5-.5V5a.5.5 0 0 1 .5-.5h6Z" clip-rule="evenodd"/></svg>"##;
+// Heroicons x-mark y check, al trazo de 1,5 del resto en 16 px.
+const CRUZ: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>"##;
+const VISTO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 4.5"/></svg>"##;
+const AVISO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v5.2M8 12h0"/></svg>"##;
 const STOP: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><rect width="10" height="10" x="3" y="3" rx="1.5"/></svg>"##;
 const ALEATORIO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><path d="M10.6 2.5a.8.8 0 0 1 1.1 0l1.8 1.8a.8.8 0 0 1 0 1.1l-1.8 1.8a.8.8 0 1 1-1.1-1.1l.4-.4h-.7c-.6 0-1 .2-1.4.7L8 7.2 7.1 6l.3-.4c.7-.9 1.6-1.4 2.7-1.4h.7l-.4-.5a.8.8 0 0 1 0-1.1zM2.3 4.2h1.9c1.1 0 2 .5 2.7 1.4l3 3.9c.4.5.8.7 1.4.7h.7l-.4-.4a.8.8 0 1 1 1.1-1.1l1.8 1.8a.8.8 0 0 1 0 1.1l-1.8 1.8a.8.8 0 1 1-1.1-1.1l.4-.4h-.7c-1.1 0-2-.5-2.7-1.4l-3-3.9c-.4-.5-.8-.7-1.4-.7H2.3a.8.8 0 0 1 0-1.6zm0 6.1h1.9c.5 0 1-.2 1.3-.6l.9 1.2c-.6.7-1.4 1-2.2 1H2.3a.8.8 0 1 1 0-1.6z"/></svg>"##;
 const REPETIR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><path d="M4.8 2.6a.8.8 0 0 1 0 1.2l-.3.3h6a3 3 0 0 1 3 3v1a.8.8 0 1 1-1.6 0v-1c0-.8-.6-1.4-1.4-1.4h-6l.3.3a.8.8 0 1 1-1.2 1.1L1.9 5.4a.8.8 0 0 1 0-1.1l1.7-1.7a.8.8 0 0 1 1.2 0zm6.4 10.8a.8.8 0 0 1 0-1.2l.3-.3h-6a3 3 0 0 1-3-3v-1a.8.8 0 1 1 1.6 0v1c0 .8.6 1.4 1.4 1.4h6l-.3-.3a.8.8 0 1 1 1.2-1.1l1.7 1.7a.8.8 0 0 1 0 1.1l-1.7 1.7a.8.8 0 0 1-1.2 0z"/></svg>"##;
@@ -1921,11 +2831,13 @@ const REPETIR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1
 
 /// El color de la burbuja de una actividad que no es la principal: el mismo
 /// que lleva su píldora.
+// 0.1.0
 pub fn color_burbuja(e: &Estado) -> Color {
     match e.clase {
         Clase::Recorder => tema::rojo(),
         Clase::Monitor | Clase::Auriculares => tema::TEXTO2,
         Clase::Player | Clase::Timer | Clase::Transfer | Clase::Calendar => tema::acento(),
+        Clase::Asistente(_) => tema::roles_paleta(["blue"]).map_or(tema::acento(), |[c]| c),
     }
 }
 
@@ -1935,6 +2847,7 @@ pub fn color_burbuja(e: &Estado) -> Color {
 /// contenedor: iced dibuja la imagen **encima** del fondo del contenedor, así
 /// que el radio del borde no la recorta y la carátula salía con las cuatro
 /// esquinas cuadradas dentro de una tarjeta redondeada.
+// 0.1.0
 fn preparar_portada(portada: Option<&Portada>, lado: u32) -> Option<image::Handle> {
     let p = portada?;
     if p.width == 0 || p.height == 0 {
@@ -1972,6 +2885,7 @@ fn preparar_portada(portada: Option<&Portada>, lado: u32) -> Option<image::Handl
     Some(image::Handle::from_rgba(r.width, r.height, r.rgba))
 }
 
+// 0.1.0
 fn redondear(p: &Portada) -> Portada {
     // El mismo 22 % de radio que usa la carátula sin portada, para que las dos
     // tengan la misma curva a cualquier tamaño.
@@ -1991,6 +2905,7 @@ fn redondear(p: &Portada) -> Portada {
 /// dicen lo mismo que 90 000 y cuestan nada. Después se sube la saturación y se
 /// lleva a una luminosidad de trabajo, porque la media de una foto tiende al
 /// gris y un gris no sirve para teñir nada.
+// 0.1.0
 pub(crate) fn color_dominante(p: &Portada) -> Color {
     let (w, h) = (p.width, p.height);
     let paso_x = (w / 20).max(1);
@@ -2032,6 +2947,7 @@ pub(crate) fn color_dominante(p: &Portada) -> Color {
 /// La barra de progreso de las tarjetas abiertas, sobre el surco neutro del
 /// sistema de diseño (`--toff`). El resto iba en el mismo color rebajado, y con
 /// el acento claro del tema oscuro las dos mitades apenas se distinguían.
+// 0.1.0
 fn barra(f: f32, color: Color) -> PanelElement<'static> {
     let lleno = (f.clamp(0.0, 1.0) * 1000.0) as u16;
     let vacio = 1000 - lleno.min(1000);
@@ -2055,6 +2971,7 @@ fn barra(f: f32, color: Color) -> PanelElement<'static> {
 
 /// «en 10 min», «en 1 h 05», «ahora». Un aviso no necesita segundos: llegan
 /// cada minuto y una cuenta atrás por segundos pediría repintar sin parar.
+// 0.1.0
 fn cuenta_atras(ms: i64) -> String {
     if ms < 60_000 {
         return "ahora".into();
@@ -2069,6 +2986,7 @@ fn cuenta_atras(ms: i64) -> String {
 
 /// «CPU 23 %  ·  RAM 41 %  ·  62°», las tres primeras: es lo que cabe en la
 /// píldora, y el resto está a un clic.
+// 0.1.0
 fn resumen_metricas(m: &[Metrica]) -> String {
     m.iter()
         .take(3)
@@ -2078,6 +2996,7 @@ fn resumen_metricas(m: &[Metrica]) -> String {
 }
 
 /// `01:18`, y con horas cuando las hay.
+// 0.1.0
 fn formato_tiempo(ms: i64) -> String {
     let signo = if ms < 0 { "−" } else { "" };
     let s = ms.unsigned_abs() / 1000;
@@ -2090,6 +3009,7 @@ fn formato_tiempo(ms: i64) -> String {
 
 /// `1:18`, sin el cero de delante: es como se escriben las duraciones de las
 /// canciones y así los dos rótulos de la barra ocupan lo mismo que el hueco.
+// 0.1.0
 fn formato_corto(ms: i64) -> String {
     let signo = if ms < 0 { "−" } else { "" };
     let s = ms.unsigned_abs() / 1000;
@@ -2122,6 +3042,135 @@ mod tests {
             portada: None,
             cola: Vec::new(),
             metricas: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn zenith_solo_cancela_dentro_del_cierre() {
+        for fase in [Fase::Escuchando, Fase::Pensando] {
+            let mut a = Actividad::nueva(estado(Clase::Asistente(fase)), false);
+            let x = MARGEN_SOMBRA + ASIS_COMPACTO_W - ASIS_LADO - ASIS_CERRAR / 2.0;
+            let y = MARGEN_SOMBRA + ASIS_COMPACTO_H / 2.0;
+            for (xx, yy) in [
+                (x, MARGEN_SOMBRA + 1.0),
+                (x, MARGEN_SOMBRA + ASIS_COMPACTO_H - 1.0),
+                (MARGEN_SOMBRA + ASIS_COMPACTO_W - 1.0, y),
+                (MARGEN_SOMBRA + 100.0, y),
+            ] {
+                // Fuera de la ✕ la píldora termina la frase o aparta a
+                // Zenith, pero nunca tira lo que se ha dicho.
+                assert_ne!(
+                    a.pulsar(xx, yy).map(|a| a.nombre).as_deref(),
+                    Some("cancel")
+                );
+                assert!(!a.desplegada());
+            }
+            assert_eq!(a.pulsar(x, y).map(|a| a.nombre).as_deref(), Some("cancel"));
+        }
+    }
+
+    #[test]
+    fn zenith_se_despide_con_clic_fuera_y_esc() {
+        let despedida = |fase, cancelar| {
+            Actividad::nueva(estado(Clase::Asistente(fase)), false)
+                .despedir_asistente(cancelar)
+                .map(|a| a.nombre)
+        };
+        assert_eq!(
+            despedida(Fase::Escuchando, false).as_deref(),
+            Some("minimize")
+        );
+        assert_eq!(despedida(Fase::Escuchando, true).as_deref(), Some("cancel"));
+        assert_eq!(
+            despedida(Fase::Pensando, false).as_deref(),
+            Some("minimize")
+        );
+        assert_eq!(despedida(Fase::Pensando, true).as_deref(), Some("cancel"));
+        assert_eq!(
+            despedida(Fase::Respuesta, false).as_deref(),
+            Some("dismiss")
+        );
+        assert_eq!(despedida(Fase::Minimizado, true), None);
+        let mut player = Actividad::nueva(estado(Clase::Player), false);
+        assert!(player.despedir_asistente(true).is_none());
+    }
+
+    #[test]
+    fn la_isla_se_desvanece_al_irse_y_no_atiende_clics() {
+        let mut a = Actividad::nueva(estado(Clase::Asistente(Fase::Escuchando)), true);
+        assert!(a.salir());
+        assert!(a.animando());
+        assert!(!a.salida_terminada());
+        assert!(
+            a.pulsar(MARGEN_SOMBRA + 100.0, MARGEN_SOMBRA + 10.0)
+                .is_none()
+        );
+        std::thread::sleep(tema::D_POPOVER);
+        assert!(a.salida_terminada());
+        assert!(a.entrada().0 < 0.01);
+        // Sin animaciones no hay fundido que esperar.
+        assert!(!Actividad::nueva(estado(Clase::Player), false).salir());
+    }
+
+    #[test]
+    fn zenith_recoloca_el_boton_al_crecer_la_respuesta() {
+        for (fase, nombre) in [(Fase::Respuesta, "dismiss"), (Fase::Error, "retry")] {
+            let mut e = estado(Clase::Asistente(fase));
+            e.subtitulo = "Una línea".into();
+            let mut a = Actividad::nueva(e, false);
+            let y_corto = a.boton_asistente_y() + BOTON_H / 2.0;
+            let alto_corto = a.size().1;
+            let mut largo = estado(Clase::Asistente(fase));
+            largo.subtitulo = "Un párrafo con acentos: mañana.\n".repeat(8);
+            a.actualizar(largo);
+            assert!(a.size().1 > alto_corto);
+            assert!(a.cuerpo_asistente.ends_with('…'));
+            assert!(
+                a.pulsar(MARGEN_SOMBRA + ABIERTO_W / 2.0, MARGEN_SOMBRA + y_corto)
+                    .is_none()
+            );
+            let y = MARGEN_SOMBRA + a.boton_asistente_y() + BOTON_H / 2.0;
+            for x in [PAD - 1.0, ABIERTO_W - PAD + 1.0] {
+                assert!(a.pulsar(MARGEN_SOMBRA + x, y).is_none());
+            }
+            let x = MARGEN_SOMBRA + ABIERTO_W / 2.0;
+            assert!(
+                a.pulsar(x, MARGEN_SOMBRA + a.size().1 - MARGEN_SOMBRA * 2.0 - 1.0)
+                    .is_none()
+            );
+            assert_eq!(a.pulsar(x, y).map(|a| a.nombre).as_deref(), Some(nombre));
+        }
+    }
+
+    #[test]
+    fn zenith_permite_cerrar_y_reabrir_una_respuesta_recogida() {
+        for fase in [Fase::Respuesta, Fase::Error] {
+            let mut a = Actividad::nueva(estado(Clase::Asistente(fase)), false);
+            assert!(a.desplegada());
+            let x = MARGEN_SOMBRA + ABIERTO_W - PAD - ASIS_CERRAR / 2.0;
+            let y = MARGEN_SOMBRA + PAD + ASIS_CERRAR / 2.0;
+            assert_eq!(a.pulsar(x, y).map(|a| a.nombre).as_deref(), Some("dismiss"));
+            assert!(a.recoger());
+            assert!(
+                a.pulsar(MARGEN_SOMBRA + 100.0, MARGEN_SOMBRA + ASIS_COMPACTO_H / 2.0)
+                    .is_none()
+            );
+            assert!(a.desplegada());
+        }
+    }
+
+    #[test]
+    fn el_titular_de_zenith_respeta_el_ancho_real_y_el_unicode() {
+        for fuente in [medio(), gorda(), Font::DEFAULT] {
+            for texto in [
+                "WWW mañana: información útil para Íñigo 🦀".repeat(4),
+                "Íñigo\nmañana".into(),
+                String::new(),
+            ] {
+                let recorte = recortar_asistente(&texto, 120.0, 14.0, fuente);
+                assert!(crate::widget::ancho_con_fuente(&recorte, 14.0, fuente) <= 120.0);
+                assert!(!recorte.contains('\n'));
+            }
         }
     }
 
@@ -2164,10 +3213,81 @@ mod tests {
     }
 
     #[test]
+    fn zenith_se_sacude_al_fallar_tras_aterrizar_la_tarjeta() {
+        let mut a = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), true);
+        a.actualizar(estado(Clase::Asistente(Fase::Error)));
+        // Mientras crece, quieta en horizontal.
+        assert_eq!(a.entrada().2, 0.0);
+        // f ≈ 0,1: el primer pico. A 0,2 cruza por cero.
+        std::thread::sleep(tema::D_TARJETA + D_SACUDIDA / 10);
+        assert!(a.entrada().2.abs() > 1.0);
+        assert!(a.animando());
+        std::thread::sleep(D_SACUDIDA);
+        assert!(a.entrada().2.abs() < 0.01);
+        // Sin animaciones no hay sacudida.
+        let mut b = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), false);
+        b.actualizar(estado(Clase::Asistente(Fase::Error)));
+        assert_eq!(b.entrada(), (1.0, 1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn zenith_se_despliega_sin_parpadear_y_minimizado_nace_en_su_sitio() {
+        let mut a = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), true);
+        std::thread::sleep(tema::D_TARJETA);
+        a.actualizar(estado(Clase::Asistente(Fase::Respuesta)));
+        let (alfa, zoom, _, _) = a.entrada();
+        // Llega la respuesta: la tarjeta parte casi entera, no de la nada.
+        assert!(alfa >= 0.5 && zoom >= 0.9, "alfa {alfa}, zoom {zoom}");
+        std::thread::sleep(tema::D_TARJETA);
+        a.actualizar(estado(Clase::Asistente(Fase::Minimizado)));
+        // La burbuja está en otro sitio: entra desde cero, sin el pulso.
+        let (alfa, zoom, _, _) = a.entrada();
+        assert!(alfa < 0.2 && zoom < 0.7, "alfa {alfa}, zoom {zoom}");
+        assert!(a.cambio.is_none());
+    }
+
+    #[test]
+    fn la_voz_de_zenith_llega_sin_saltos() {
+        let mut a = Actividad::nueva(
+            Estado {
+                nivel: 0.0,
+                ..estado(Clase::Asistente(Fase::Escuchando))
+            },
+            true,
+        );
+        a.actualizar(Estado {
+            nivel: 1.0,
+            ..estado(Clase::Asistente(Fase::Escuchando))
+        });
+        // Recién llegado aún no ha subido: no es un escalón.
+        assert!(a.nivel_suave() < 0.2);
+        let antes = a.entrada().1;
+        std::thread::sleep(std::time::Duration::from_secs_f32(NIVEL_TAU * 6.0));
+        assert!(a.nivel_suave() > 0.99);
+        // La píldora crece con la voz.
+        assert!(a.entrada().1 > antes);
+        // Sin animaciones, el nivel tal cual.
+        let mut b = Actividad::nueva(estado(Clase::Asistente(Fase::Escuchando)), false);
+        b.actualizar(Estado {
+            nivel: 1.0,
+            ..estado(Clase::Asistente(Fase::Escuchando))
+        });
+        assert_eq!(b.nivel_suave(), 1.0);
+    }
+
+    #[test]
+    fn zenith_pensando_mueve_la_onda() {
+        let a = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), true);
+        std::thread::sleep(tema::D_TARJETA);
+        assert!(a.animando());
+        assert!(a.ondas_pendientes());
+    }
+
+    #[test]
     fn movimiento_reducido_no_mantiene_frames_vivos() {
         let a = Actividad::nueva(estado(Clase::Recorder), false);
         assert!(!a.animando());
-        assert_eq!(a.entrada(), (1.0, 1.0, 0.0));
+        assert_eq!(a.entrada(), (1.0, 1.0, 0.0, 0.0));
     }
 
     #[test]

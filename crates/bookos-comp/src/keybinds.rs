@@ -40,6 +40,8 @@ pub enum Accion {
     /// El buscador de Meta+Espacio: aplicaciones, comandos y estados.
     Buscador,
     Emojis,
+    /// Meta+Alt+C — coger un color de la pantalla.
+    Cuentagotas,
     /// Meta+W — vista general y gestión de escritorios.
     VistaEscritorios,
     /// Meta+F — maximizar la ventana con foco, o devolverla a su sitio.
@@ -125,6 +127,7 @@ pub enum Accion {
 /// Sin esto, "el atajo no responde" y "la tecla no llega al compositor" son
 /// indistinguibles desde fuera — y anidado dentro de Plasma pasa lo segundo, que
 /// es lo que hay que poder descartar.
+// 0.1.0
 fn conmutador_de(sym: u32, modifiers: &ModifiersState) -> Option<Accion> {
     if !matches!(sym, keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) {
         return None;
@@ -151,6 +154,7 @@ fn conmutador_de(sym: u32, modifiers: &ModifiersState) -> Option<Accion> {
 /// convierte en `XF86Display`. Otros emiten el más reciente
 /// `KEY_DISPLAYTOGGLE` (431). Miramos también el código físico XKB (evdev + 8)
 /// porque un mapa de teclado sin las reglas `inet` deja ambos como `NoSymbol`.
+// 0.1.0
 fn es_tecla_de_pantalla(sym: u32, codigo_xkb: u32) -> bool {
     const XF86_DISPLAY_TOGGLE: u32 = 0x1008_11AF;
     const SWITCH_VIDEO_MODE_XKB: u32 = 227 + 8;
@@ -169,6 +173,8 @@ fn es_tecla_de_pantalla(sym: u32, codigo_xkb: u32) -> bool {
 /// Solo entran las ventanas **de este escritorio**: las de los demás están
 /// desmapeadas, y saltar a una cambiaría de escritorio sin avisar, que no es lo
 /// que espera quien abre cualquiera de los dos selectores.
+// 0.1.0
+// modified 0.1.1 -- una celda por grupo, sin menús X11 ni ventanas minimizándose
 fn conmutar(state: &mut BookosComp, modo: bookos_shell::conmutador::Modo, sentido: i32) {
     // La vista de escritorios ya es un selector de ventanas, y modal: abrir
     // otro encima dejaba dos a la vez, cada uno con su idea de cuál es la
@@ -180,8 +186,23 @@ fn conmutar(state: &mut BookosComp, modo: bookos_shell::conmutador::Modo, sentid
     {
         return;
     }
+    // añadido en la 0.2.0 -- la exposición de tres dedos que está volviendo
+    // lleva una acción pendiente que se resuelve al reposar el muelle. Si
+    // entonces se abre otro selector, esa acción leía la celda elegida del
+    // nuevo y llevaba a una app distinta de la que se eligió en la exposición.
+    // Se resuelve ya, con su propio selector, antes de sustituirlo.
+    if let Some(pendiente) = state.conmutador_salida.take() {
+        state.conmutador_pegado = false;
+        state.conmutador_entrada = None;
+        ejecutar(state, pendiente);
+    }
     if state.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
         if state.conmutador_modo != Some(modo) {
+            // Sin esto la exposición seguía "pegada" y soltar Alt no cerraba
+            // el selector nuevo.
+            state.conmutador_pegado = false;
+            state.conmutador_entrada = None;
+            state.exposicion_gesto = None;
             state.conmutador_destinos.clear();
             state.conmutador_modo = None;
             if let Some(shell) = state.shell.as_mut() {
@@ -269,6 +290,7 @@ fn conmutar(state: &mut BookosComp, modo: bookos_shell::conmutador::Modo, sentid
 ///
 /// Solo la exposición: Alt+Tab se resuelve al soltar la tecla y esperar 260 ms
 /// para cambiar de ventana se notaría como retraso, no como animación.
+// 0.1.1
 fn salir_de_la_exposicion(state: &mut BookosComp, accion: &Accion) -> bool {
     // Ya saliendo, una segunda orden —Esc con el gesto, un clic— no hace nada:
     // el temporizador ya va a resolver la primera.
@@ -282,25 +304,65 @@ fn salir_de_la_exposicion(state: &mut BookosComp, accion: &Accion) -> bool {
     {
         return false;
     }
-    state.conmutador_salida = Some(std::time::Instant::now());
-    state.needs_redraw = true;
-    let accion = accion.clone();
+    // modificado en la 0.2.0 -- conserva el impulso si se cierra a mitad de la entrada.
+    state.exposicion_gesto = None;
+    state.conmutador_salida = Some(accion.clone());
     state
-        .loop_handle
-        .insert_source(
-            smithay::reexports::calloop::timer::Timer::from_duration(bookos_shell::tema::D_VENTANA),
-            move |_, _, state| {
-                state.conmutador_salida = None;
-                state.conmutador_pegado = false;
-                ejecutar(state, accion.clone());
-                smithay::reexports::calloop::timer::TimeoutAction::Drop
-            },
-        )
-        .expect("temporizador de salida de la exposición insertado");
+        .conmutador_entrada
+        .get_or_insert_with(|| bookos_shell::tema::Muelle::nuevo(1.0, bookos_shell::tema::M_SUAVE))
+        .ir_a(0.0);
+    // añadido en la 0.2.0 -- la elegida sube al frente ya, no al reposar: si no,
+    // la vuelta la pintaba en el orden de la rejilla y al llegar saltaba encima
+    // de golpe. `conmutar_fin` la vuelve a enfocar al final, sin efecto visible.
+    if matches!(accion, Accion::ConmutarFin)
+        && let Some(window) = state
+            .shell
+            .as_ref()
+            .and_then(|s| s.conmutador_elegida())
+            .and_then(|i| state.conmutador_destinos.get(i).cloned())
+        && window.alive()
+    {
+        state.enfocar(&window);
+    }
+    state.needs_redraw = true;
     true
 }
 
+/// La celda bajo el puntero. Abriéndose, mira lo que se ve y no la rejilla
+/// final: con la mano a medias, pulsar la Konsole en (900, 300) subía la
+/// calculadora, porque ahí es donde la calculadora iba a acabar.
+// añadido en la 0.2.0
+pub(crate) fn celda_bajo(state: &BookosComp, x: f64, y: f64) -> Option<usize> {
+    let shell = state.shell.as_ref()?;
+    let entrada = state
+        .conmutador_entrada
+        .as_ref()
+        .map_or(1.0, |m| m.valor().clamp(0.0, 1.0) as f64);
+    // El final del muelle ya coincide con la rejilla a la vista, y solo esta
+    // sabe de la celda completa, con su nombre debajo de la miniatura.
+    if entrada >= 0.98 || state.conmutador_modo != Some(bookos_shell::conmutador::Modo::Ventanas) {
+        return shell.conmutador_en(x, y);
+    }
+    let origen = state
+        .salida_del_puntero()
+        .and_then(|o| state.space.output_geometry(o))
+        .map(|g| g.loc)
+        .unwrap_or_default();
+    let punto = smithay::utils::Point::<f64, smithay::utils::Logical>::from((x - f64::from(origen.x), y - f64::from(origen.y)));
+    // En este orden se pinta: la primera que contiene el punto es la de delante.
+    state
+        .conmutador_destinos
+        .iter()
+        .zip(shell.conmutador_miniaturas())
+        .position(|(w, hueco)| {
+            crate::conmutador::hueco_pintado(state.space.element_geometry(w), hueco, origen, entrada)
+                .to_f64()
+                .contains(punto)
+        })
+}
+
 /// Se ha soltado el modificador: a la ventana elegida.
+// 0.1.0
 fn conmutar_fin(state: &mut BookosComp) {
     state.conmutador_pegado = false;
     let elegida = state.shell.as_mut().and_then(|s| s.cerrar_conmutador());
@@ -327,6 +389,8 @@ fn conmutar_fin(state: &mut BookosComp) {
 ///
 /// Se llama **solo con la pulsación**, no con la suelta: interceptar también la
 /// suelta dejaría al cliente con la tecla marcada como pulsada para siempre.
+// 0.1.0
+// modified 0.1.1 -- atajos de salvapantallas, apagar pantalla, emojis (Meta+.) y cuentagotas (Meta+Alt+C)
 pub fn resolver(
     modifiers: &ModifiersState,
     handle: &KeysymHandle<'_>,
@@ -472,6 +536,9 @@ pub fn resolver(
             keysyms::KEY_o | keysyms::KEY_O => return Some(Accion::ApagarPantalla),
             keysyms::KEY_s | keysyms::KEY_S => return Some(Accion::Salvapantallas),
             keysyms::KEY_a | keysyms::KEY_A => return Some(Accion::Asistente),
+            // Meta+Alt y no Meta a secas: con la tecla Meta haciendo de Cmd,
+            // Meta+C es «copiar» para quien viene de macOS.
+            keysyms::KEY_c | keysyms::KEY_C => return Some(Accion::Cuentagotas),
             keysyms::KEY_t | keysyms::KEY_T => return Some(Accion::SiempreEncima),
             keysyms::KEY_b | keysyms::KEY_B => {
                 return Some(Accion::AlternarBarra(crate::shell::Barra::Panel));
@@ -544,11 +611,14 @@ impl Accion {
     /// ¿Es una salida de emergencia? Son las únicas que siguen funcionando con
     /// el bloqueo echado: sin ellas, un fallo del bloqueo deja la máquina
     /// inservible hasta apagarla a lo bruto.
+    // 0.1.0
     pub fn es_emergencia(&self) -> bool {
         matches!(self, Accion::CambiarVt(_) | Accion::Salir)
     }
 }
 
+// 0.1.0
+// modified 0.1.1 -- opciones para unir, separar y cambiar la disposición de grupos
 pub fn menu_ventana(state: &mut BookosComp, window: Window) {
     crate::escritorios::terminar_todos(state);
     let salida = crate::escritorios::salida_de(state, &window);
@@ -617,6 +687,8 @@ pub fn menu_ventana(state: &mut BookosComp, window: Window) {
     state.needs_redraw = true;
 }
 
+// 0.1.0
+// modified 0.1.1 -- emojis, cuentagotas, salvapantallas y apagar pantalla; salir de la exposición con Esc
 pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
     match accion {
         Accion::MenuVentana => {
@@ -695,6 +767,7 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
             state.needs_redraw = true;
         }
         Accion::Emojis => crate::emojis::alternar(state),
+        Accion::Cuentagotas => crate::cuentagotas::alternar(state),
         Accion::VistaEscritorios => alternar_vista_escritorios(state),
         Accion::AlternarBarra(cual) => {
             let modo = state.shell.as_mut().map(|s| s.alternar_visibilidad(cual));
@@ -763,7 +836,11 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
                 tracing::info!("no hay actividad publicada que abrir");
             }
         }
-        Accion::Asistente => lanzar(state, "bookos-assistant --toggle"),
+        // modificado en la 0.2.0 -- arma pulsar para hablar
+        Accion::Asistente => {
+            lanzar(state, "bookos-assistant --toggle");
+            state.asistente_armado = true;
+        }
         Accion::Lanzar(cmd) => lanzar(state, &cmd),
         Accion::Proyeccion => {
             let conectadas = state.pantallas.compartido.salidas().len();
@@ -888,6 +965,8 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
 
 /// Quita temporalmente el foco de puntero a las aplicaciones al abrir una
 /// capa modal del compositor.
+// 0.1.0
+// modified 0.1.1 -- visible para otros módulos del compositor
 pub(crate) fn liberar_puntero_para_capa(state: &mut BookosComp) {
     use smithay::input::pointer::MotionEvent;
 
@@ -908,6 +987,8 @@ pub(crate) fn liberar_puntero_para_capa(state: &mut BookosComp) {
 
 /// Ejecuta lo que ha pedido el shell: lanzar un programa, o traer al frente el
 /// que ya está abierto.
+// 0.1.0
+// modified 0.1.1 -- suspender sin sonido doble, emojis, iconos y color del escritorio, grupos, orden del dock y cerrar también minimizadas
 pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
     if let Some(energia) = bookos_shell::confirmacion::Energia::de_accion(&accion) {
         if let Some(shell) = state.shell.as_mut() {
@@ -934,15 +1015,18 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                 // rato se veía el candado. Con la pantalla apagada ya, el
                 // bloqueo no llega a pintarse hasta que se enciende al volver
                 // (`escuchar_reanudacion`).
+                // Sin el sonido del candado: se oía dos veces, al dormir y al
+                // despertar. El equipo duerme ~0,4 s después de lanzarlo y lo
+                // que queda en el búfer de la salida de audio sale al reanudar.
                 Energia::Suspender => {
-                    bloquear(state);
+                    echar_bloqueo(state);
                     crate::backend::apagar_dpms(state);
                     lanzar(state, "systemctl suspend");
                 }
                 // Igual que dormir: al volver lo primero tiene que ser el
                 // bloqueo, y hasta que el equipo se apaga no hay nada que ver.
                 Energia::Hibernar => {
-                    bloquear(state);
+                    echar_bloqueo(state);
                     crate::backend::apagar_dpms(state);
                     lanzar(state, "systemctl hibernate");
                 }
@@ -1002,6 +1086,24 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
             state.needs_redraw = true;
         }
+        bookos_shell::Accion::Brillo(nivel) => {
+            let osd = crate::multimedia::poner_brillo(state, nivel);
+            crate::multimedia::avisar(state, osd);
+        }
+        // El aviso lo pone `multimedia::recibir_sistema` cuando bookos-system
+        // confirma el cambio, como con las teclas.
+        bookos_shell::Accion::Volumen(nivel) => {
+            bookos_system::request(bookos_system::Operation::Volume {
+                target: "output".into(),
+                value: nivel.into(),
+            });
+        }
+        bookos_shell::Accion::Atajos => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.abrir_atajos();
+            }
+            state.needs_redraw = true;
+        }
         bookos_shell::Accion::Apariencia { modo, acento } => {
             // La tarjeta manda lo **elegido**; qué tema toca con «automático»
             // depende de la hora y lo resuelve el compositor, que es quien
@@ -1046,6 +1148,8 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             ancho,
             alto,
             guardar,
+            cursor,
+            retardo,
         } => {
             // La capa se cierra **antes** de capturar: si no, el velo y la
             // barra de modos saldrían en la foto.
@@ -1053,14 +1157,41 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                 shell.cerrar_captura();
             }
             crate::input::cursor_de_captura(state);
-            state.captura_pedida = Some(crate::state::CapturaPedida {
+            let pedida = crate::state::CapturaPedida {
                 x,
                 y,
                 ancho,
                 alto,
-                guardar,
-            });
-            crate::multimedia::sonar_interfaz(state, "screen-capture");
+                destino: if guardar {
+                    crate::state::DestinoCaptura::Archivo
+                } else {
+                    crate::state::DestinoCaptura::Portapapeles
+                },
+            };
+            if retardo == 0 {
+                hacer_captura(state, pedida, cursor);
+            } else {
+                use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+                // Con espera la capa ya se ha ido: hay tiempo de abrir un menú
+                // o de quitar la mano. Un temporizador del bucle y no un
+                // contador por fotograma: el escritorio sigue durmiendo.
+                let resultado = state.loop_handle.insert_source(
+                    Timer::from_duration(std::time::Duration::from_secs(u64::from(retardo))),
+                    move |_, _, state| {
+                        hacer_captura(state, pedida, cursor);
+                        TimeoutAction::Drop
+                    },
+                );
+                if let Err(err) = resultado {
+                    tracing::warn!("no se pudo programar la captura: {err}");
+                    hacer_captura(state, pedida, cursor);
+                }
+            }
+        }
+        bookos_shell::Accion::CapturaOpciones { cursor, retardo } => {
+            if let Err(err) = bookos_shell::guardar_captura(cursor, retardo) {
+                tracing::warn!("no se pudieron guardar las opciones de captura: {err}");
+            }
             state.needs_redraw = true;
         }
         bookos_shell::Accion::Fondo { claro, oscuro } => {
@@ -1071,6 +1202,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                 ambos: None,
                 claro: Some(claro.to_string_lossy().into_owned()),
                 oscuro: Some(oscuro.to_string_lossy().into_owned()),
+                encaje: state.fondo_config.encaje,
             };
             bookos_shell::fondos::poner_elegida(bookos_shell::fondos::familia_de(&claro));
             state.recargar_fondo = true;
@@ -1106,10 +1238,10 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
         bookos_shell::Accion::LuzNocturna(encender) => {
             crate::luz_nocturna::alternar(state, encender);
         }
-        bookos_shell::Accion::EscritorioNuevaCarpeta => {
+        bookos_shell::Accion::EscritorioNuevo(tipo) => {
             let pantalla = state.pantalla_logica();
             if let Some(shell) = state.shell.as_mut() {
-                shell.escritorio_nueva_carpeta(pantalla);
+                shell.escritorio_nuevo(tipo, pantalla);
             }
             state.needs_redraw = true;
         }
@@ -1133,6 +1265,12 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
         bookos_shell::Accion::EscritorioColor(color) => {
             if let Some(shell) = state.shell.as_mut() {
                 shell.escritorio_colorear(color.as_deref());
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioElegirColor => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.escritorio_elegir_color();
             }
             state.needs_redraw = true;
         }
@@ -1368,6 +1506,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
     }
 }
 
+// 0.1.0
 fn alternar_vista_escritorios(state: &mut BookosComp) {
     let activo = crate::escritorios::activo_aqui(state);
     let nombres = state.escritorios.nombres().to_vec();
@@ -1379,6 +1518,17 @@ fn alternar_vista_escritorios(state: &mut BookosComp) {
     state.needs_redraw = true;
 }
 
+/// Pide la captura y suena. Aparte porque la espera la dispara desde un
+/// temporizador y el camino inmediato desde la acción.
+// añadido en la 0.2.0
+fn hacer_captura(state: &mut BookosComp, pedida: crate::state::CapturaPedida, cursor: bool) {
+    state.captura_pedida = Some(pedida);
+    state.captura_con_cursor = Some(cursor);
+    crate::multimedia::sonar_interfaz(state, "screen-capture");
+    state.needs_redraw = true;
+}
+
+// 0.1.0
 fn guardar_y_actualizar_escritorios(state: &mut BookosComp) {
     let activo = crate::escritorios::activo_aqui(state);
     let nombres = state.escritorios.nombres().to_vec();
@@ -1391,6 +1541,7 @@ fn guardar_y_actualizar_escritorios(state: &mut BookosComp) {
     state.needs_redraw = true;
 }
 
+// 0.1.0
 fn cambiar_vt(state: &mut BookosComp, vt: i32) {
     let Some(cambiar) = state.cambiar_vt.as_ref() else {
         // Backend anidado: el TTY lo manda el compositor de debajo.
@@ -1402,6 +1553,7 @@ fn cambiar_vt(state: &mut BookosComp, vt: i32) {
 }
 
 /// Le cuenta al shell cuántos puntos dibujar y en qué estado está.
+// 0.1.0
 fn refrescar_bloqueo(state: &mut BookosComp) {
     use bookos_shell::bloqueo::Estado;
     let espera = state.bloqueo.reintentar_desde.and_then(|hasta| {
@@ -1427,6 +1579,7 @@ fn refrescar_bloqueo(state: &mut BookosComp) {
 /// No se espera al hijo: `pam_unix` tarda del orden de segundos cuando la
 /// contraseña falla —es su defensa contra la fuerza bruta— y el compositor no
 /// puede quedarse parado ahí. Mientras tanto el campo enseña "comprobando".
+// 0.1.0
 fn comprobar_bloqueo(state: &mut BookosComp) {
     if state.bloqueo.comprobando.is_some() || state.bloqueo.escrito.is_empty() {
         return;
@@ -1458,6 +1611,7 @@ fn comprobar_bloqueo(state: &mut BookosComp) {
     recoger_comprobacion(state);
 }
 
+// 0.1.0
 fn mensaje_huella(state: &mut BookosComp, huella: bookos_shell::bloqueo::Huella) {
     if let Some(shell) = state.shell.as_mut() {
         shell.bloqueo_huella(huella);
@@ -1470,6 +1624,8 @@ fn mensaje_huella(state: &mut BookosComp, huella: bookos_shell::bloqueo::Huella)
 /// los dos casos medidos (0,26 s y 15,4 s).
 const HUELLA_AGOTADA: std::time::Duration = std::time::Duration::from_secs(7);
 
+// 0.1.0
+// modified 0.1.1 -- tras suspender no confunde el lector soltado con «sin lector»
 fn comprobar_huella(state: &mut BookosComp) {
     use bookos_shell::bloqueo::Huella;
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -1588,6 +1744,7 @@ fn comprobar_huella(state: &mut BookosComp) {
 /// El veredicto de antes de dormir puede haberse recogido ya —y haber dejado
 /// `huella_sin_lector`— o seguir pendiente: lo primero se deshace aquí, lo
 /// segundo lo reconoce el sondeo por el contador.
+// 0.1.1
 pub fn reanudar_huella(state: &mut BookosComp) {
     state.bloqueo.huella_reanudaciones = state.bloqueo.huella_reanudaciones.wrapping_add(1);
     state.bloqueo.huella_sin_lector = false;
@@ -1596,6 +1753,7 @@ pub fn reanudar_huella(state: &mut BookosComp) {
 
 /// Demora local frente a intentos repetidos. PAM conserva su propia política;
 /// esta capa evita crear trabajadores sin límite desde la interfaz.
+// 0.1.0
 fn demora_reintento(fallos: u32) -> u64 {
     if fallos < 3 {
         0
@@ -1609,6 +1767,7 @@ fn demora_reintento(fallos: u32) -> u64 {
 /// Cada 10 ms. Eran 100, pero PAM contesta en unos 50 ms (medido, ver
 /// `autenticar.rs`): con 100 la espera media del sondeo era tan larga como la
 /// propia comprobación. Son unos cinco despertares por intento, no en reposo.
+// 0.1.0
 fn recoger_comprobacion(state: &mut BookosComp) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     const CADA: std::time::Duration = std::time::Duration::from_millis(10);
@@ -1673,6 +1832,7 @@ fn recoger_comprobacion(state: &mut BookosComp) {
 /// existe **solo mientras el panel está a la vista**: sin él los números se
 /// congelarían en cuanto el escritorio se quedara quieto, que es justo cuando
 /// hace falta ver que están a cero. Al quitarlo se suelta.
+// 0.1.0
 fn diagnostico(state: &mut BookosComp) {
     let puesto = state
         .shell
@@ -1712,6 +1872,7 @@ fn diagnostico(state: &mut BookosComp) {
     }
 }
 
+// 0.1.0
 fn cerrar_ventana(state: &mut BookosComp) {
     let foco = state
         .seat
@@ -1729,6 +1890,7 @@ fn cerrar_ventana(state: &mut BookosComp) {
 /// Es una petición, no una orden: el cliente puede enseñar un "¿guardar los
 /// cambios?" y quedarse. Matar el proceso sería lo contrario de lo que espera
 /// quien pulsa "Cerrar".
+// 0.1.0
 pub(crate) fn cerrar(window: &smithay::desktop::Window) {
     if let Some(toplevel) = window.toplevel() {
         toplevel.send_close();
@@ -1754,6 +1916,8 @@ pub(crate) fn cerrar(window: &smithay::desktop::Window) {
 /// Treinta segundos es lo que tarda en arrancar la peor de esta máquina.
 pub const VALE_VALIDO: std::time::Duration = std::time::Duration::from_secs(30);
 
+// 0.1.0
+// modified 0.1.1 -- el entorno del hijo sale de orden(); avisa al dock y apunta el uso para el launchpad
 pub fn lanzar(state: &mut BookosComp, cmd: &str) {
     // Los hijos ya terminados se recogen aquí, no con un manejador de SIGCHLD:
     // el bucle es de un solo hilo y esto no necesita señales ni dependencias.
@@ -1782,6 +1946,7 @@ pub fn lanzar(state: &mut BookosComp, cmd: &str) {
 /// hijos: el bucle duerme en epoll y no hay SIGCHLD que lo despierte. Si el
 /// programa terminara después del último fotograma, nadie volvería a mirar y
 /// el arranque se quedaría parado delante de una pantalla vacía.
+// 0.1.1
 pub fn lanzar_kiosko(state: &mut BookosComp, cmd: &str) -> anyhow::Result<()> {
     use smithay::reexports::calloop::channel;
 
@@ -1819,6 +1984,7 @@ pub fn lanzar_kiosko(state: &mut BookosComp, cmd: &str) -> anyhow::Result<()> {
 
 /// La orden para lanzar `cmd` dentro de la sesión, con el entorno que necesita
 /// para encontrar este compositor.
+// 0.1.1
 pub fn orden(state: &mut BookosComp, cmd: &str) -> std::process::Command {
     // `sh -c` para que valga cualquier cosa que se escriba en BOOKOS_TERMINAL,
     // con sus argumentos; `exec` evita dejar un shell de más colgando.
@@ -1906,6 +2072,7 @@ const XF86_ENCENDIDO: u32 = 0x1008FF2A;
 ///
 /// El descriptor lo guarda un hilo que no acaba nunca: el inhibidor vive lo que
 /// viva el descriptor, y el hilo evita tener que colgarlo del estado.
+// 0.1.0
 pub fn inhibir_boton_de_encendido() {
     let fd = zbus::blocking::Connection::system().and_then(|conexion| {
         conexion
@@ -1941,6 +2108,7 @@ pub fn inhibir_boton_de_encendido() {
 /// Abre el diálogo de energía, o lo cierra si ya estaba: pulsar dos veces el
 /// botón de encendido tiene que dejar el escritorio como estaba, no apilar
 /// diálogos.
+// 0.1.0
 fn alternar_dialogo_energia(state: &mut BookosComp) {
     let Some(shell) = state.shell.as_mut() else {
         return;
@@ -1961,6 +2129,7 @@ fn alternar_dialogo_energia(state: &mut BookosComp) {
 /// eso lo vuelve a sacar; un atajo no, y la tarjeta salía colgando de una barra
 /// que no se veía. Por eso se revisan las barras al abrir: una tarjeta abierta
 /// retiene la suya (`retenida_por_emergente`).
+// 0.1.0
 fn alternar_tarjeta_del_panel(state: &mut BookosComp, nombre: &str, widget: &'static str) {
     let Some(shell) = state.shell.as_mut() else {
         return;
@@ -1976,6 +2145,7 @@ fn alternar_tarjeta_del_panel(state: &mut BookosComp, nombre: &str, widget: &'st
     state.needs_redraw = true;
 }
 
+// 0.1.0
 fn marcar_bloqueo_sesion(bloqueada: bool) {
     if let Some(path) = std::env::var_os("BOOKOS_SESSION_LOCK_FILE") {
         if bloqueada {
@@ -1995,11 +2165,25 @@ fn marcar_bloqueo_sesion(bloqueada: bool) {
     }
 }
 
+// modified 0.1.1 -- el bloqueo sin sonido pasa a echar_bloqueo
 fn bloquear(state: &mut BookosComp) {
+    if echar_bloqueo(state) {
+        crate::multimedia::sonar_interfaz(state, "screen-lock");
+    }
+}
+
+/// `true` si lo ha echado ahora; `false` si ya estaba puesto.
+// 0.1.1
+fn echar_bloqueo(state: &mut BookosComp) -> bool {
     crate::salvapantallas::retirar(state);
     if state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()) {
-        return;
+        return false;
     }
+    // modificado en la 0.2.0 -- levantar los dedos bajo el bloqueo se filtra; no puede quedar un gesto sujeto.
+    state.gestos = crate::gestos::Gestos::default();
+    crate::escritorios::terminar_todos(state);
+    // añadido en la 0.2.0 -- una liberación posterior al bloqueo no puede confirmar el botón anterior.
+    crate::input::toque_cancelar(state, state.start_time.elapsed().as_millis() as u32);
     marcar_bloqueo_sesion(true);
     // Lo que estuviera abierto se cierra antes de echar el bloqueo. El
     // conmutador y la vista de escritorios componen ventanas vivas, y la
@@ -2010,6 +2194,8 @@ fn bloquear(state: &mut BookosComp) {
     // Sin el viaje de vuelta: con el candado ya puesto no se vería.
     state.conmutador_pegado = false;
     state.conmutador_salida = None;
+    state.conmutador_entrada = None;
+    state.exposicion_gesto = None;
     ejecutar(state, Accion::ConmutarCancelar);
     if let Some(shell) = state.shell.as_mut() {
         shell.cerrar_emergente();
@@ -2050,16 +2236,18 @@ fn bloquear(state: &mut BookosComp) {
         .inspect_err(|err| tracing::warn!("no se pudo consultar MPRIS para el bloqueo: {err}"))
         .ok();
     tracing::info!("bloqueo echado");
-    crate::multimedia::sonar_interfaz(state, "screen-lock");
     crate::backend::programar_dpms_bloqueo(state);
     crate::backend::programar_suspension_inactividad(state);
     state.needs_redraw = true;
+    true
 }
 
 /// Da el foco de teclado a la ventana que quede más arriba.
 ///
 /// Se llama al destruirse un toplevel: sin esto el foco se queda apuntando a la
 /// superficie muerta y las ventanas que siguen abiertas no reciben teclas.
+// 0.1.0
+// modified 0.1.1 -- no da el foco a una pestaña oculta de un grupo
 pub fn refocalizar(state: &mut BookosComp) {
     // `alive()` porque la ventana destruida sigue mapeada en el espacio hasta
     // el siguiente `refresh()`: sin filtrarla se le devolvería el foco al

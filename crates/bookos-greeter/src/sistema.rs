@@ -13,6 +13,7 @@ pub enum Idioma {
 impl Idioma {
     pub const TODOS: [Self; 2] = [Self::Es, Self::En];
 
+    // 0.1.1
     pub fn detectar() -> Self {
         let lang = std::env::var("LANG")
             .ok()
@@ -26,6 +27,7 @@ impl Idioma {
         }
     }
 
+    // 0.1.1
     pub fn locale(self) -> &'static str {
         match self {
             Self::Es => "es_ES.UTF-8",
@@ -33,6 +35,7 @@ impl Idioma {
         }
     }
 
+    // 0.1.1
     pub fn etiqueta(self) -> &'static str {
         match self {
             Self::Es => "Español (ES)",
@@ -40,6 +43,7 @@ impl Idioma {
         }
     }
 
+    // 0.1.1
     pub fn t<'a>(self, es: &'a str, en: &'a str) -> &'a str {
         match self {
             Self::Es => es,
@@ -47,6 +51,7 @@ impl Idioma {
         }
     }
 
+    // 0.1.1
     pub fn fecha_hoy(self) -> String {
         let hoy = bookos_shell::Fecha::hoy();
         match self {
@@ -127,6 +132,7 @@ pub const DISTRIBUCIONES: &[(&str, &str, &str)] = &[
     ("it", "Italiano", "Italian"),
 ];
 
+// 0.1.1
 pub fn teclado_inicial() -> String {
     std::env::var("XKB_DEFAULT_LAYOUT")
         .ok()
@@ -137,6 +143,7 @@ pub fn teclado_inicial() -> String {
         .unwrap_or_else(|| "es".into())
 }
 
+// 0.1.1
 fn leer_clave_conf(ruta: &str, clave: &str) -> Option<String> {
     let texto = std::fs::read_to_string(ruta).ok()?;
     texto.lines().find_map(|linea| {
@@ -145,6 +152,7 @@ fn leer_clave_conf(ruta: &str, clave: &str) -> Option<String> {
     })
 }
 
+// 0.1.1
 pub fn guardar_preferencias_greeter(layout: &str, lang: &str) -> Option<()> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let ruta = home.join("greeter.env");
@@ -155,6 +163,7 @@ pub fn guardar_preferencias_greeter(layout: &str, lang: &str) -> Option<()> {
     std::fs::rename(&temporal, &ruta).ok()
 }
 
+// 0.1.1
 pub fn aplicar_teclado_sistema(layout: &str) {
     let _ = Command::new("busctl")
         .args([
@@ -173,6 +182,7 @@ pub fn aplicar_teclado_sistema(layout: &str) {
         .output();
 }
 
+// 0.1.1
 pub fn aplicar_idioma_sistema(locale: &str) {
     let arg = format!("LANG={locale}");
     let _ = Command::new("busctl")
@@ -197,6 +207,7 @@ pub fn aplicar_idioma_sistema(locale: &str) {
 /// Como Cage fija el mapa XKB al iniciar, cambiar de distribución en vivo sin
 /// cerrar la sesión de bienvenida traduce los caracteres imprimibles más
 /// habituales entre `es`/`latam` y `us`/`gb` (y `fr`/`de` para letras).
+// 0.1.1
 pub fn traducir_caracter(texto: &str, base: &str, destino: &str, shift: bool) -> Option<String> {
     if base == destino || texto.chars().count() != 1 {
         return None;
@@ -222,6 +233,7 @@ pub fn traducir_caracter(texto: &str, base: &str, destino: &str, shift: bool) ->
     (c != ch).then(|| c.to_string())
 }
 
+// 0.1.1
 fn de_es_a_us(c: char, _shift: bool) -> char {
     match c {
         'ñ' => ';',
@@ -259,6 +271,7 @@ fn de_es_a_us(c: char, _shift: bool) -> char {
     }
 }
 
+// 0.1.1
 fn de_us_a_es(c: char, _shift: bool) -> char {
     match c {
         ';' => 'ñ',
@@ -292,6 +305,7 @@ fn de_us_a_es(c: char, _shift: bool) -> char {
     }
 }
 
+// 0.1.1
 fn de_fr_a_us(c: char) -> char {
     match c {
         'a' => 'q',
@@ -308,6 +322,7 @@ fn de_fr_a_us(c: char) -> char {
     }
 }
 
+// 0.1.1
 fn de_us_a_fr(c: char) -> char {
     match c {
         'q' => 'a',
@@ -324,6 +339,7 @@ fn de_us_a_fr(c: char) -> char {
     }
 }
 
+// 0.1.1
 fn de_de_a_us(c: char) -> char {
     match c {
         'z' => 'y',
@@ -334,6 +350,7 @@ fn de_de_a_us(c: char) -> char {
     }
 }
 
+// 0.1.1
 fn de_us_a_de(c: char) -> char {
     match c {
         'y' => 'z',
@@ -365,6 +382,7 @@ pub struct EstadoWifi {
 }
 
 impl Default for EstadoWifi {
+    // 0.1.1
     fn default() -> Self {
         Self {
             encendida: true,
@@ -376,6 +394,7 @@ impl Default for EstadoWifi {
     }
 }
 
+// 0.1.1
 pub fn leer_wifi(rescan: bool) -> EstadoWifi {
     let radio = Command::new("nmcli")
         .args(["-t", "-f", "WIFI", "general"])
@@ -479,6 +498,7 @@ pub fn leer_wifi(rescan: bool) -> EstadoWifi {
     }
 }
 
+// 0.1.1
 pub fn parsear_lista_wifi(
     texto: &str,
     guardadas: &std::collections::HashSet<String>,
@@ -517,6 +537,7 @@ pub fn parsear_lista_wifi(
     (redes, ssid_actual)
 }
 
+// 0.1.1
 fn partir_nmcli(linea: &str) -> Vec<String> {
     let mut partes = Vec::new();
     let mut actual = String::new();
@@ -537,10 +558,12 @@ fn partir_nmcli(linea: &str) -> Vec<String> {
     partes
 }
 
+// 0.1.1
 fn desescapar_nmcli(texto: &str) -> String {
     partir_nmcli(texto).join(":")
 }
 
+// 0.1.1
 pub fn alternar_wifi(encender: bool) -> Result<EstadoWifi, String> {
     let arg = if encender { "on" } else { "off" };
     let salida = Command::new("nmcli")
@@ -554,6 +577,7 @@ pub fn alternar_wifi(encender: bool) -> Result<EstadoWifi, String> {
     Ok(leer_wifi(false))
 }
 
+// 0.1.1
 pub fn conectar_wifi(ssid: &str, password: Option<&str>) -> Result<EstadoWifi, String> {
     let mut cmd = Command::new("nmcli");
     cmd.env("LC_ALL", "C")
@@ -576,6 +600,7 @@ pub fn conectar_wifi(ssid: &str, password: Option<&str>) -> Result<EstadoWifi, S
     Ok(leer_wifi(false))
 }
 
+// 0.1.1
 pub fn desconectar_wifi() -> Result<EstadoWifi, String> {
     let dev = Command::new("nmcli")
         .args(["-t", "-f", "DEVICE,TYPE,STATE", "device"])
@@ -608,6 +633,7 @@ pub struct EstadoBateria {
     pub perfiles_disponibles: Vec<String>,
 }
 
+// 0.1.1
 pub fn leer_bateria(con_minutos: bool) -> EstadoBateria {
     let dato = Battery::read(con_minutos);
     let tope = leer_tope_carga();
@@ -658,6 +684,7 @@ pub fn leer_bateria(con_minutos: bool) -> EstadoBateria {
     }
 }
 
+// 0.1.1
 fn leer_tope_carga() -> Option<u8> {
     let dir = std::fs::read_dir("/sys/class/power_supply").ok()?;
     for e in dir.flatten() {
@@ -675,6 +702,7 @@ fn leer_tope_carga() -> Option<u8> {
     None
 }
 
+// 0.1.1
 pub fn cambiar_perfil_energia(perfil: &str) {
     let _ = Command::new("busctl")
         .args([

@@ -38,23 +38,28 @@ use crate::view::PanelElement;
 pub trait Widget {
     /// Nombre estable: es la clave en la configuración y lo que sale en las
     /// trazas cuando el widget falla.
+    // 0.1.0
     fn nombre(&self) -> &'static str;
 
     /// Relee su fuente. `true` si lo que enseña ha cambiado.
+    // 0.1.0
     fn refrescar(&mut self) -> bool;
 
     /// Dentro de cuánto tiene algo nuevo que enseñar aunque no pase nada.
     /// `None` = solo reacciona a eventos.
+    // 0.1.0
     fn proxima_alarma(&self) -> Option<Duration> {
         None
     }
 
     /// Subsistemas de udev cuyos eventos le conciernen (`power_supply`, `net`,
     /// `backlight`…).
+    // 0.1.0
     fn subsistemas(&self) -> &'static [&'static str] {
         &[]
     }
 
+    // 0.1.0
     fn ver(&self) -> PanelElement<'_>;
 
     /// Cuánto ocupa de ancho, en píxeles lógicos.
@@ -67,6 +72,7 @@ pub trait Widget {
     /// Es una estimación, no una medida: se comprueba contra el panel pintado
     /// en `tests/panel.rs`. Un widget que se quede corto pierde clics en su
     /// borde; uno que se pase se los roba al vecino, así que más vale ajustado.
+    // 0.1.0
     fn ancho(&self) -> f32 {
         crate::tema::ICONO_PANEL
     }
@@ -77,6 +83,7 @@ pub trait Widget {
     /// panel abre la tarjeta que le corresponda. Lo implementa el indicador de
     /// escritorios, que no tiene tarjeta: cada punto lleva a un sitio distinto,
     /// así que la zona no basta y hace falta el punto exacto.
+    // 0.1.0
     fn pulsar(&self, _x: f32) -> Option<crate::Accion> {
         None
     }
@@ -87,6 +94,7 @@ pub trait Widget {
     /// porque es un dato que el shell **no puede leer**: lo gobierna el
     /// compositor, igual que las ventanas abiertas del dock. Casi ningún widget
     /// lo quiere, así que por defecto lo ignora y dice que no hay que repintar.
+    // 0.1.0
     fn escritorios(&mut self, _activo: usize, _cuantos: usize) -> bool {
         false
     }
@@ -103,6 +111,7 @@ pub trait Widget {
     /// Se sigue esperando —y no se deja para el primer evento— a propósito: el
     /// panel tiene que salir con el icono correcto en el primer frame en vez de
     /// aparecer vacío y llenarse solo.
+    // 0.1.0
     fn esperar_arranque(&mut self) {}
 
     /// Cuántas notificaciones hay sin leer.
@@ -110,11 +119,13 @@ pub trait Widget {
     /// Va en el trait por lo mismo que [`Widget::escritorios`]: es un dato que
     /// el shell no puede leer por su cuenta —llega por D-Bus, y de eso se
     /// encarga el compositor— y solo le interesa a un widget.
+    // 0.1.0
     fn notificaciones(&mut self, _cuantas: u32) -> bool {
         false
     }
 
     /// Si «No molestar» está puesto. Solo le importa a la campana.
+    // 0.1.0
     fn no_molestar(&mut self, _activo: bool) -> bool {
         false
     }
@@ -125,60 +136,65 @@ pub trait Widget {
     /// icono que cruza dura 250 ms, el aviso de batería crítica casi dos
     /// segundos. El panel pide frames mientras alguno diga que sí y uno más
     /// después, para que el último que se pinte sea el del estado final.
+    // 0.1.0
     fn animando(&self) -> bool {
         false
     }
 }
 
-/// Lo que dura el cruce de iconos cuando un widget cambia de estado. Es el
-/// `toggle` del sistema de diseño, con su muelle.
-const D_CRUCE: Duration = crate::tema::D_MODAL;
-/// Lo que tarda en irse el icono viejo: menos que lo que tarda en llegar el
-/// nuevo, para que no se vean los dos enteros a la vez.
-const D_CRUCE_SALIDA: Duration = crate::tema::D_HOVER;
-
 /// El cambio de un icono del panel por otro.
 ///
-/// El viejo encoge a 0,7 y se funde en 120 ms; el nuevo crece desde 0,7 con
-/// muelle en 250 ms. Sustituye al destello de fondo que había antes, que
-/// pintaba la ranura entera y se leía como un clic que no había hecho nadie.
-#[derive(Default)]
+/// El viejo encoge a 0,7 y se funde en la primera mitad del recorrido; el
+/// nuevo crece desde 0,7 en el recorrido entero. Sustituye al destello de
+/// fondo que había antes, que pintaba la ranura entera y se leía como un clic
+/// que no había hecho nadie.
+// modified 0.2.0 -- muelle crítico en vez de 250 ms con rebote: el cambio no lo trae un gesto
 pub struct Cruce {
     previo: Option<(crate::icono::Icono, iced_core::Color)>,
-    desde: Option<Instant>,
+    avance: crate::tema::Transicion,
+}
+
+impl Default for Cruce {
+    // añadido en la 0.2.0
+    fn default() -> Self {
+        Self {
+            previo: None,
+            avance: crate::tema::Transicion::nueva(1.0, crate::tema::M_RAPIDO),
+        }
+    }
 }
 
 impl Cruce {
     /// Empieza el cruce desde `previo`, pintado en `color`. Sin icono previo
     /// —el primer frame— no hay nada de lo que cruzar.
+    // 0.1.0
     pub fn empezar(&mut self, previo: Option<crate::icono::Icono>, color: iced_core::Color) {
         if crate::tema::efectos_reducidos() || previo.is_none() {
             *self = Self::default();
             return;
         }
         self.previo = previo.map(|icono| (icono, color));
-        self.desde = Some(Instant::now());
+        self.avance.fijar(0.0);
+        self.avance.ir_a(1.0);
     }
 
+    // 0.1.0
     pub fn animando(&self) -> bool {
-        self.desde.is_some_and(|t| t.elapsed() < D_CRUCE)
+        self.previo.is_some() && self.avance.animando()
     }
 
+    // 0.1.0
     pub fn ver<'a>(
         &'a self,
         actual: &'a crate::icono::Icono,
         color: iced_core::Color,
     ) -> PanelElement<'a> {
-        use crate::tema::{C_MUELLE, C_SUAVE, ICONO_PANEL, fraccion};
-        let (Some(desde), Some((previo, color_previo))) = (self.desde, &self.previo) else {
+        use crate::tema::ICONO_PANEL;
+        let entra = self.avance.valor();
+        let Some((previo, color_previo)) = self.previo.as_ref().filter(|_| self.animando()) else {
             return crate::icono::ver_teñido(actual, ICONO_PANEL, Some(color));
         };
-        let pasado = desde.elapsed();
-        if pasado >= D_CRUCE {
-            return crate::icono::ver_teñido(actual, ICONO_PANEL, Some(color));
-        }
-        let sale = C_SUAVE.eval(fraccion(pasado, D_CRUCE_SALIDA));
-        let entra = fraccion(pasado, D_CRUCE);
+        let sale = (entra * 2.0).min(1.0);
         let capa = |icono: &'a crate::icono::Icono, escala: f32, opacidad: f32, color| {
             iced_widget::container(crate::icono::ver_escalado(
                 icono,
@@ -191,13 +207,109 @@ impl Cruce {
         };
         iced_widget::stack![
             capa(previo, 1.0 - 0.3 * sale, 1.0 - sale, *color_previo),
-            capa(
-                actual,
-                0.7 + 0.3 * C_MUELLE.eval(entra),
-                C_SUAVE.eval(entra),
-                color
-            ),
+            capa(actual, 0.7 + 0.3 * entra, entra, color),
         ]
+        .into()
+    }
+}
+
+/// Lo que dura «Desconectado» junto al icono. Lo bastante para leerlo de
+/// reojo; quedarse fijo sería ocupar el panel con algo que el icono ya dice.
+const D_DESCONECTADO: Duration = Duration::from_secs(3);
+const TEXTO_DESCONECTADO: &str = "Desconectado";
+
+/// «Desconectado» al lado del icono durante unos segundos, al perder la
+/// conexión. El icono tachado solo se distingue del normal mirándolo: la
+/// palabra avisa de que **acaba** de caerse. Lo usan la red y el Bluetooth.
+// modified 0.2.0 -- entra y sale abriendo su hueco: antes aparecía de golpe y empujaba a los vecinos
+pub struct AvisoDesconexion {
+    desde: Option<Instant>,
+    visible: crate::tema::Transicion,
+}
+
+impl Default for AvisoDesconexion {
+    // añadido en la 0.2.0
+    fn default() -> Self {
+        Self {
+            desde: None,
+            visible: crate::tema::Transicion::nueva(0.0, crate::tema::M_RAPIDO),
+        }
+    }
+}
+
+impl AvisoDesconexion {
+    // 0.1.1
+    pub fn empezar(&mut self) {
+        self.desde = Some(Instant::now());
+        self.visible.ir_a(1.0);
+    }
+
+    // añadido en la 0.2.0
+    pub fn animando(&self) -> bool {
+        self.visible.animando()
+    }
+
+    /// Lo quita si ya pasó su tiempo. `true` si lo ha quitado: el panel tiene
+    /// que repintarse sin él.
+    // 0.1.1
+    pub fn caducar(&mut self) -> bool {
+        let caducado = self
+            .desde
+            .take_if(|t| t.elapsed() >= D_DESCONECTADO)
+            .is_some();
+        if caducado {
+            self.visible.ir_a(0.0);
+        }
+        caducado
+    }
+
+    /// Cuándo hay que despertar para quitarlo. Sin esto esperaba al tick del
+    /// reloj, hasta un minuto.
+    // 0.1.1
+    pub fn alarma(&self) -> Option<Duration> {
+        self.desde
+            .map(|t| D_DESCONECTADO.saturating_sub(t.elapsed()))
+    }
+
+    /// Lo que añade al ancho del icono, para que la zona de clic lo cubra.
+    /// Es el de ahora, no el final: las zonas se calculan con esto y tienen
+    /// que cuadrar con lo dibujado también a mitad de la animación.
+    // modified 0.2.0 -- crece y encoge con el aviso
+    pub fn ancho(&self) -> f32 {
+        let v = self.visible.valor().clamp(0.0, 1.0);
+        if v < 0.01 {
+            return 0.0;
+        }
+        (5.0 + ancho_de(TEXTO_DESCONECTADO, crate::tema::T_CUERPO)) * v
+    }
+
+    /// El icono, y a su derecha el texto mientras dura. Mismo hueco y cuerpo
+    /// que la cifra de la batería.
+    // 0.1.1
+    // modified 0.2.0 -- recortado al ancho animado y fundido
+    pub fn ver<'a>(&self, icono: PanelElement<'a>) -> PanelElement<'a> {
+        let ancho = self.ancho();
+        if ancho == 0.0 {
+            return icono;
+        }
+        let mut color = crate::tema::TEXTO2;
+        color.a *= self.visible.valor().clamp(0.0, 1.0);
+        iced_widget::row![
+            icono,
+            iced_widget::container(
+                iced_widget::row![
+                    iced_widget::Space::new().width(Length::Fixed(5.0)),
+                    iced_widget::text(TEXTO_DESCONECTADO)
+                        .size(crate::tema::T_CUERPO)
+                        .color(color)
+                        .wrapping(iced_core::text::Wrapping::None),
+                ]
+                .align_y(iced_core::alignment::Vertical::Center),
+            )
+            .width(Length::Fixed(ancho))
+            .clip(true)
+        ]
+        .align_y(iced_core::alignment::Vertical::Center)
         .into()
     }
 }
@@ -207,6 +319,7 @@ impl Cruce {
 /// Se conserva para las medidas que no tienen el texto a mano —el recorte de
 /// nombres largos en las listas— pero **no** para las zonas del panel: ahí la
 /// aproximación desalineaba los clics. Ver [`ancho_de`].
+// 0.1.0
 pub fn ancho_texto(caracteres: usize) -> f32 {
     caracteres as f32 * 7.3
 }
@@ -223,12 +336,14 @@ pub fn ancho_texto(caracteres: usize) -> f32 {
 /// Mide con el mismo `Paragraph` de `iced_graphics` que usa el renderer al
 /// pintar, con la fuente y el cuerpo por defecto del shell, así que no es una
 /// estimación paralela: es el mismo motor.
+// 0.1.0
 pub fn ancho_de(texto: &str, tamaño: f32) -> f32 {
     ancho_con_fuente(texto, tamaño, iced_core::Font::DEFAULT)
 }
 
 /// Lo mismo con otra fuente: un texto en seminegrita ocupa más, y medirlo con
 /// la regular lo dejaría recortado por la derecha.
+// 0.1.0
 pub fn ancho_con_fuente(texto: &str, tamaño: f32, fuente: iced_core::Font) -> f32 {
     use iced_core::text::{Paragraph as _, Shaping, Wrapping};
     use iced_core::{Pixels, Size, alignment};
@@ -253,6 +368,7 @@ pub fn ancho_con_fuente(texto: &str, tamaño: f32, fuente: iced_core::Font) -> f
 ///
 /// Se lee del entorno una sola vez: esto se consulta en cada refresco de cada
 /// widget, y `getenv` en ese camino sería trabajo por nada.
+// 0.1.0
 fn panic_de_prueba() -> Option<&'static str> {
     static QUIEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     QUIEN
@@ -273,6 +389,7 @@ struct Ranura {
 }
 
 impl Ranura {
+    // 0.1.0
     fn new(widget: Box<dyn Widget>) -> Self {
         Self {
             widget,
@@ -286,6 +403,7 @@ impl Ranura {
     /// `AssertUnwindSafe` es correcto porque el único estado que puede quedar a
     /// medias es el del propio widget, y al marcarlo muerto no se vuelve a
     /// tocar.
+    // 0.1.0
     fn guard<T>(&mut self, que: &str, f: impl FnOnce(&mut Box<dyn Widget>) -> T) -> Option<T> {
         if self.muerto {
             return None;
@@ -323,19 +441,24 @@ impl Ranura {
 pub struct Panel {
     centro: Option<Ranura>,
     derecha: Vec<Ranura>,
-    /// El widget bajo el puntero, y desde cuándo, para fundir su resalte.
-    señalado: Option<(&'static str, Instant)>,
-    /// El widget cuya tarjeta está abierta.
-    abierto: Option<&'static str>,
+    /// El widget bajo el puntero, por su sitio en `derecha`. Con `Realce`
+    /// el que se deja se apaga fundiéndose en vez de desaparecer.
+    // modified 0.2.0 -- realce por índice que se funde al entrar y al salir
+    señalado: crate::tema::Realce,
+    /// El widget cuya tarjeta está abierta. También se funde: al cerrar la
+    /// tarjeta el acento se apagaba en seco.
+    // modified 0.2.0
+    abierto: crate::tema::Realce,
 }
 
 impl Panel {
+    // 0.1.0
     pub fn new(centro: Option<Box<dyn Widget>>, derecha: Vec<Box<dyn Widget>>) -> Self {
         let mut panel = Self {
             centro: centro.map(Ranura::new),
             derecha: derecha.into_iter().map(Ranura::new).collect(),
-            señalado: None,
-            abierto: None,
+            señalado: crate::tema::Realce::nuevo(),
+            abierto: crate::tema::Realce::nuevo(),
         };
         // Ya están todos construidos, o sea que las consultas que hayan lanzado
         // están corriendo a la vez: aquí se recogen. Ver
@@ -351,6 +474,7 @@ impl Panel {
     /// Se refrescan **todos** aunque uno ya haya dicho que sí: saltarse el
     /// resto los dejaría con el dato viejo y el siguiente repintado enseñaría
     /// una mezcla de dos instantes.
+    // 0.1.0
     pub fn refrescar(&mut self) -> bool {
         let mut cambio = false;
         for ranura in self.ranuras_mut() {
@@ -363,45 +487,51 @@ impl Panel {
 
     /// Conserva el último frame pendiente hasta pintarlo, incluso si el bucle
     /// estuvo parado más que la animación. Nunca consulta hardware por frame.
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.ranuras()
             .any(|r| !r.muerto && (r.animaba || r.widget.animando()))
             || self.resalte_animando()
     }
 
+    // 0.1.0
     pub fn avanzar(&mut self) {
         for r in self.ranuras_mut() {
             r.animaba = !r.muerto && r.widget.animando();
         }
     }
 
+    // 0.1.0
+    // modified 0.2.0
     fn resalte_animando(&self) -> bool {
-        // El margen de un frame hace lo mismo que `animaba` en las ranuras.
-        self.señalado.is_some_and(|(_, desde)| {
-            desde.elapsed() < crate::tema::D_HOVER + Duration::from_millis(20)
-        })
+        self.señalado.animando() || self.abierto.animando()
+    }
+
+    // añadido en la 0.2.0
+    fn indice(&self, nombre: Option<&'static str>) -> Option<usize> {
+        let nombre = nombre?;
+        self.derecha
+            .iter()
+            .position(|r| r.widget.nombre() == nombre)
     }
 
     /// El widget que hay bajo el puntero, o `None` si no hay ninguno. `true`
     /// si hay que repintar.
+    // 0.1.0
     pub fn señalar(&mut self, nombre: Option<&'static str>) -> bool {
-        if self.señalado.map(|(n, _)| n) == nombre {
-            return false;
-        }
-        self.señalado = nombre.map(|n| (n, Instant::now()));
-        true
+        let i = self.indice(nombre);
+        self.señalado.señalar(i)
     }
 
     /// El widget cuya tarjeta está abierta. `true` si hay que repintar.
+    // 0.1.0
     pub fn abrir(&mut self, nombre: Option<&'static str>) -> bool {
-        if self.abierto == nombre {
-            return false;
-        }
-        self.abierto = nombre;
-        true
+        let i = self.indice(nombre);
+        self.abierto.señalar(i)
     }
 
     /// Lo antes que alguno quiere despertar.
+    // 0.1.0
     pub fn proxima_alarma(&self) -> Option<Duration> {
         self.ranuras()
             .filter(|r| !r.muerto)
@@ -414,6 +544,7 @@ impl Panel {
     /// Con esto el filtro del netlink se pone una vez al arrancar y el kernel
     /// ya no nos despierta por lo que no se enseña; por eso no hace falta
     /// preguntar después qué widget quería cada evento.
+    // 0.1.0
     pub fn subsistemas(&self) -> Vec<&'static str> {
         let mut todos: Vec<&'static str> = self
             .ranuras()
@@ -431,6 +562,7 @@ impl Panel {
     /// Se calcula de derecha a izquierda porque esa fila está anclada al borde
     /// derecho: el primero de la lista es el que queda más a la izquierda, pero
     /// el que tiene la posición fija es el último.
+    // 0.1.0
     pub fn zonas_derecha(
         &self,
         ancho_panel: f32,
@@ -468,6 +600,7 @@ impl Panel {
 
     /// Lo que devuelve pulsar el widget `nombre` en la `x` relativa que se le
     /// da. `None` si ese widget no responde por su cuenta.
+    // 0.1.0
     pub fn pulsar(&mut self, nombre: &str, x: f32) -> Option<crate::Accion> {
         let ranura = self
             .ranuras_mut()
@@ -477,6 +610,7 @@ impl Panel {
 
     /// Reparte el número de notificaciones sin leer. `true` si hay que
     /// repintar.
+    // 0.1.0
     pub fn notificaciones(&mut self, cuantas: u32) -> bool {
         let mut cambio = false;
         for ranura in self.ranuras_mut() {
@@ -488,6 +622,7 @@ impl Panel {
     }
 
     /// Reparte si «No molestar» está puesto. `true` si hay que repintar.
+    // 0.1.0
     pub fn no_molestar(&mut self, activo: bool) -> bool {
         let mut cambio = false;
         for ranura in self.ranuras_mut() {
@@ -500,6 +635,7 @@ impl Panel {
 
     /// Reparte el escritorio activo entre los widgets que lo quieran. `true` si
     /// alguno pide repintar.
+    // 0.1.0
     pub fn escritorios(&mut self, activo: usize, cuantos: usize) -> bool {
         let mut cambio = false;
         for ranura in self.ranuras_mut() {
@@ -510,6 +646,7 @@ impl Panel {
         cambio
     }
 
+    // 0.1.0
     pub fn centro(&self) -> Option<PanelElement<'_>> {
         self.centro.as_ref().and_then(|r| ver(r, 0.0))
     }
@@ -525,24 +662,31 @@ impl Panel {
     /// y como se calculan de derecha a izquierda el error caía sobre los de la
     /// izquierda: con red y bluetooth apagados, pulsar en el hueco vacío a la
     /// derecha del porcentaje abría la tarjeta de la batería.
+    // 0.1.0
     pub fn derecha(&self) -> Vec<PanelElement<'_>> {
         self.derecha
             .iter()
-            .filter(|r| r.widget.ancho() > 0.0)
-            .filter_map(|r| {
-                let nombre = r.widget.nombre();
-                let resalte = if self.abierto == Some(nombre) {
-                    tema::alfa(tema::acento(), 0.14)
-                } else if let Some((_, desde)) = self.señalado.filter(|(n, _)| *n == nombre) {
-                    let t = if tema::efectos_reducidos() {
-                        1.0
-                    } else {
-                        tema::C_SUAVE.eval(tema::fraccion(desde.elapsed(), tema::D_HOVER))
-                    };
-                    let hover = tema::hover();
-                    tema::alfa(hover, hover.a * t)
-                } else {
+            .enumerate()
+            .filter(|(_, r)| r.widget.ancho() > 0.0)
+            .filter_map(|(i, r)| {
+                // El acento de la abierta tapa el velo del ratón según entra:
+                // los dos a la vez se sumaban en un tono que no es ninguno.
+                let abierto = self.abierto.intensidad(i);
+                let hover = tema::hover();
+                let acento = tema::acento();
+                let a_hover = hover.a * self.señalado.intensidad(i) * (1.0 - abierto);
+                let a_acento = 0.14 * abierto;
+                let a = a_hover + a_acento;
+                let resalte = if a <= 0.0 {
                     iced_core::Color::TRANSPARENT
+                } else {
+                    let mezcla = |h: f32, c: f32| (h * a_hover + c * a_acento) / a;
+                    iced_core::Color {
+                        r: mezcla(hover.r, acento.r),
+                        g: mezcla(hover.g, acento.g),
+                        b: mezcla(hover.b, acento.b),
+                        a,
+                    }
                 };
                 ver(r, crate::view::HUECO / 2.0).map(|elemento| {
                     iced_widget::container(elemento)
@@ -561,10 +705,12 @@ impl Panel {
             .collect()
     }
 
+    // 0.1.0
     fn ranuras(&self) -> impl Iterator<Item = &Ranura> {
         self.centro.iter().chain(self.derecha.iter())
     }
 
+    // 0.1.0
     fn ranuras_mut(&mut self) -> impl Iterator<Item = &mut Ranura> {
         self.centro.iter_mut().chain(self.derecha.iter_mut())
     }
@@ -577,6 +723,7 @@ impl Panel {
 /// fallo con mutabilidad interior. Un widget que dibuja mal es raro y ya
 /// reventaría en `refrescar`; lo que sí se respeta es no dibujar al que ya
 /// está apagado.
+// 0.1.0
 fn ver(ranura: &Ranura, margen: f32) -> Option<PanelElement<'_>> {
     if ranura.muerto {
         return None;
@@ -595,6 +742,7 @@ const ALTO_RESALTE: f32 = 28.0;
 const RADIO_RESALTE: f32 = 8.0;
 
 /// Un hueco de ancho cero, para cuando no hay nada que enseñar.
+// 0.1.0
 pub(crate) fn vacio<'a>() -> PanelElement<'a> {
     Space::new().width(Length::Fixed(0.0)).into()
 }

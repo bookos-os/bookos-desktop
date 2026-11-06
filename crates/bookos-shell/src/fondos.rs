@@ -39,6 +39,7 @@ pub struct Familia {
 /// Lo del usuario antes que lo del sistema, y el repositorio de wallpapers tal
 /// cual se clona para desarrollar en medio: sin él, trabajar en esto obligaría
 /// a instalarlos en cada cambio.
+// 0.1.0
 fn bases() -> Vec<PathBuf> {
     let mut bases = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
@@ -51,6 +52,7 @@ fn bases() -> Vec<PathBuf> {
 }
 
 /// El nombre del fichero oscuro de una familia.
+// 0.1.0
 fn oscuro_de(nombre: &str, ext: &str) -> String {
     format!("{nombre}_dark.{ext}")
 }
@@ -60,6 +62,7 @@ fn oscuro_de(nombre: &str, ext: &str) -> String {
 ///
 /// La raíz se sigue mirando por las instalaciones hechas con la versión
 /// anterior del instalador, que volcaba las dos carpetas juntas.
+// 0.1.0
 fn en(base: &Path, carpeta: &str, archivo: &str) -> Option<PathBuf> {
     let candidatos = [base.join(carpeta).join(archivo), base.join(archivo)];
     candidatos.into_iter().find(|p| p.is_file())
@@ -72,6 +75,7 @@ fn en(base: &Path, carpeta: &str, archivo: &str) -> Option<PathBuf> {
 /// SVG que hoy acompañan a los fondos como previsualización no los sustituyan
 /// según el orden arbitrario del directorio. Se devuelven ordenadas por nombre
 /// para que los iconos no bailen entre sesiones.
+// 0.1.0
 pub fn instaladas(claro: bool) -> Vec<Familia> {
     let mut familias: Vec<Familia> = Vec::new();
     for base in bases() {
@@ -134,6 +138,7 @@ pub fn instaladas(claro: bool) -> Vec<Familia> {
 /// se ve.
 ///
 /// `None` si la familia no trae vectorial o no declara ningún color.
+// 0.1.0
 pub fn tono(familia: &Familia) -> Option<f32> {
     // 4 KiB llegan: en los fondos de BookOS las paradas empiezan antes del byte
     // 3100, detrás de las curvas. En `beige_alice` claro las últimas quedan
@@ -179,6 +184,7 @@ pub fn tono(familia: &Familia) -> Option<f32> {
 }
 
 /// Cuánto se parecen dos tonos, en grados: de 0 (el mismo) a 180 (opuestos).
+// 0.1.0
 pub fn distancia_de_tono(a: f32, b: f32) -> f32 {
     let d = (a - b).abs() % 360.0;
     d.min(360.0 - d)
@@ -198,18 +204,21 @@ static ELEGIDA: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 /// usuario haya puesto a mano y no pertenezca a ninguna familia instalada da un
 /// nombre que no está en el catálogo, y entonces no se marca ninguna miniatura,
 /// que es exactamente lo que hay que enseñar.
+// 0.1.0
 pub fn familia_de(ruta: &Path) -> Option<String> {
     let tallo = ruta.file_stem()?.to_str()?;
     Some(tallo.strip_suffix("_dark").unwrap_or(tallo).to_string())
 }
 
 /// Guarda qué familia está puesta. `None` cuando no hay ninguna elegida.
+// 0.1.0
 pub fn poner_elegida(nombre: Option<String>) {
     if let Ok(mut guard) = ELEGIDA.lock() {
         *guard = nombre;
     }
 }
 
+// 0.1.0
 pub fn elegida() -> Option<String> {
     ELEGIDA.lock().ok().and_then(|g| g.clone())
 }
@@ -219,6 +228,7 @@ pub const POR_DEFECTO: &str = "blue";
 
 /// La pareja que toca sin configuración: la familia por defecto si está, y si
 /// no, la primera que haya.
+// 0.1.0
 pub fn por_defecto(claro: bool) -> Option<Familia> {
     let familias = instaladas(claro);
     familias

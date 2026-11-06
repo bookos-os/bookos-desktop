@@ -28,6 +28,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
+use bookos_shell::EncajeFondo;
 use image::AnimationDecoder as _;
 
 use smithay::backend::allocator::Fourcc;
@@ -73,6 +74,130 @@ pub struct Eleccion {
     pub claro: Option<String>,
     /// `fondo_oscuro`. Manda sobre `ambos` cuando el tema es oscuro.
     pub oscuro: Option<String>,
+    /// `fondo_encaje`.
+    pub encaje: EncajeFondo,
+}
+
+/// Un rectángulo en fracciones de su contenedor, de 0 a 1.
+///
+/// En fracciones porque el mismo encuadre vale para el fondo entero, para su
+/// miniatura y para la textura reducida del cristal, que miden distinto.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Trozo {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Trozo {
+    const ENTERO: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        w: 1.0,
+        h: 1.0,
+    };
+}
+
+/// Qué trozo de la imagen se ve y en qué trozo de la pantalla cae.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Encuadre {
+    imagen: Trozo,
+    pantalla: Trozo,
+}
+
+impl Encuadre {
+    // añadido en la 0.2.0
+    fn calcular(encaje: EncajeFondo, imagen: (i32, i32), pantalla: (i32, i32)) -> Self {
+        let (iw, ih) = (imagen.0.max(1) as f64, imagen.1.max(1) as f64);
+        let (pw, ph) = (pantalla.0.max(1) as f64, pantalla.1.max(1) as f64);
+        let escala = match encaje {
+            EncajeFondo::Estirar => {
+                return Self {
+                    imagen: Trozo::ENTERO,
+                    pantalla: Trozo::ENTERO,
+                };
+            }
+            EncajeFondo::Rellenar => (pw / iw).max(ph / ih),
+            EncajeFondo::Ajustar => (pw / iw).min(ph / ih),
+            EncajeFondo::Ancho => pw / iw,
+            EncajeFondo::Centrar => 1.0,
+        };
+        // Por eje: lo que no cabe se recorta de la imagen, y lo que no llega
+        // deja banda en la pantalla. Las dos cosas, centradas.
+        let eje = |imagen: f64, pantalla: f64| {
+            let escalada = imagen * escala;
+            let visible = escalada.min(pantalla);
+            let (de_imagen, de_pantalla) = (visible / escalada, visible / pantalla);
+            (
+                (1.0 - de_imagen) / 2.0,
+                de_imagen,
+                (1.0 - de_pantalla) / 2.0,
+                de_pantalla,
+            )
+        };
+        let (ix, iw, px, pw) = eje(iw, pw);
+        let (iy, ih, py, ph) = eje(ih, ph);
+        Self {
+            imagen: Trozo {
+                x: ix,
+                y: iy,
+                w: iw,
+                h: ih,
+            },
+            pantalla: Trozo {
+                x: px,
+                y: py,
+                w: pw,
+                h: ph,
+            },
+        }
+    }
+
+    /// ¿Hay imagen detrás de esta zona? Sobre una banda no la hay, y desenfocar
+    /// el borde más cercano teñía el dock de un color que no se ve alrededor.
+    // añadido en la 0.2.0
+    pub fn tiene_imagen_detras(&self, zona: Trozo) -> bool {
+        let p = self.pantalla;
+        zona.x < p.x + p.w && p.x < zona.x + zona.w && zona.y < p.y + p.h && p.y < zona.y + zona.h
+    }
+
+    /// El trozo de imagen que queda detrás de una zona de la pantalla. Lo que
+    /// asome sobre una banda se queda con el borde más cercano.
+    // añadido en la 0.2.0
+    pub fn detras_de(&self, zona: Trozo) -> Trozo {
+        // Un trozo vacío dejaría a cero `uv_tam`, por el que divide el shader.
+        const MINIMO: f64 = 0.001;
+        let eje = |inicio: f64, largo: f64, imagen: (f64, f64), pantalla: (f64, f64)| {
+            let aqui =
+                |p: f64| (imagen.0 + (p - pantalla.0) / pantalla.1 * imagen.1).clamp(0.0, 1.0);
+            let a = aqui(inicio).min(1.0 - MINIMO);
+            (a, (aqui(inicio + largo) - a).max(MINIMO))
+        };
+        let (x, w) = eje(
+            zona.x,
+            zona.w,
+            (self.imagen.x, self.imagen.w),
+            (self.pantalla.x, self.pantalla.w),
+        );
+        let (y, h) = eje(
+            zona.y,
+            zona.h,
+            (self.imagen.y, self.imagen.h),
+            (self.pantalla.y, self.pantalla.h),
+        );
+        Trozo { x, y, w, h }
+    }
+}
+
+/// El rectángulo en píxeles de un trozo de una imagen: origen y tamaño.
+// añadido en la 0.2.0
+fn en_pixeles(trozo: Trozo, (w, h): (i32, i32)) -> ((i32, i32), (i32, i32)) {
+    let x = ((trozo.x * w as f64).round() as i32).clamp(0, w - 1);
+    let y = ((trozo.y * h as f64).round() as i32).clamp(0, h - 1);
+    let cw = ((trozo.w * w as f64).round() as i32).clamp(1, w - x);
+    let ch = ((trozo.h * h as f64).round() as i32).clamp(1, h - y);
+    ((x, y), (cw, ch))
 }
 
 impl Eleccion {
@@ -81,6 +206,7 @@ impl Eleccion {
     /// El específico gana al común: quien se molesta en poner `fondo_oscuro`
     /// está diciendo justo eso, y si además tiene un `fondo` suelto es el de
     /// respaldo para el otro tema.
+    // 0.1.0
     pub fn para_el_tema(&self) -> Option<&str> {
         self.para(bookos_shell::tema::es_claro())
     }
@@ -90,6 +216,7 @@ impl Eleccion {
     /// Va aparte para poder probarla: el tema es un `static` del proceso y
     /// `Shell::con_config` lo escribe, así que un test que lo moviera para
     /// leerlo después competiría con cualquier otro del mismo binario.
+    // 0.1.0
     fn para(&self, claro: bool) -> Option<&str> {
         let propio = if claro {
             self.claro.as_deref()
@@ -100,6 +227,7 @@ impl Eleccion {
     }
 
     /// ¿Cambia la imagen al cambiar de tema? Si no, recargar no sirve de nada.
+    // 0.1.0
     pub fn depende_del_tema(&self) -> bool {
         self.claro.is_some() || self.oscuro.is_some() || self.ambos.is_none()
     }
@@ -110,6 +238,9 @@ pub struct Fondo {
     /// De dónde salió. Solo para la traza y el autotest: es la única forma de
     /// comprobar desde fuera que el cambio de tema se llevó el fondo con él.
     ruta: PathBuf,
+    /// Va con la imagen y no se lee de la elección al dibujar: el fondo saliente
+    /// de un fundido tiene que seguir cayendo como caía.
+    encaje: EncajeFondo,
     buffer: MemoryRenderBuffer,
     /// Tamaño de la imagen en píxeles, para el recorte.
     pixeles: (i32, i32),
@@ -159,6 +290,7 @@ struct Fotograma {
 }
 
 impl Fotograma {
+    // 0.1.0
     fn de_rgba(rgba: &[u8], pixeles: (i32, i32)) -> Self {
         // Abgr8888: en little-endian son los bytes R,G,B,A, que es justo lo que
         // devuelve el decodificador. Con Argb8888 —el del shell— saldría con el
@@ -192,6 +324,7 @@ enum Paso {
 }
 
 impl Animacion {
+    // 0.1.0
     fn abrir(ruta: &Path) -> Option<(Self, Fotograma)> {
         if es_video(ruta) {
             let (video, primero) = Video::abrir(ruta)?;
@@ -212,6 +345,7 @@ impl Animacion {
         ))
     }
 
+    // 0.1.0
     fn siguiente(&self) -> Instant {
         match self {
             Self::Webp { siguiente, .. } => *siguiente,
@@ -219,6 +353,7 @@ impl Animacion {
         }
     }
 
+    // 0.1.0
     fn avanzar(&mut self) -> Paso {
         let (ruta, frames, siguiente) = match self {
             Self::Video(video) => return video.avanzar(),
@@ -251,6 +386,8 @@ impl Animacion {
     }
 }
 
+// 0.1.0
+// modified 0.1.1 -- pública para otros módulos
 pub fn es_video(ruta: &Path) -> bool {
     ruta.extension()
         .and_then(|e| e.to_str())
@@ -290,6 +427,7 @@ enum Conversion {
 }
 
 impl Video {
+    // 0.1.0
     fn abrir(ruta: &Path) -> Option<(Self, Fotograma)> {
         let sondeo = sondear(ruta)?;
         let directo = DIRECTOS.contains(&sondeo.codec.as_str());
@@ -326,6 +464,7 @@ impl Video {
     /// falla al abrir y eso se ve aquí como un vídeo sin primer fotograma. Sin
     /// `vaapi` ni se intenta: con el H.264 de ffmpeg-free fallaría siempre, y
     /// el intento cuesta lo que tarda ffmpeg en arrancar.
+    // 0.1.0
     fn reproducir(ruta: &Path, sondeo: &Sondeo, vaapi: bool) -> Option<(Self, Fotograma)> {
         let (w, h, fps) = sondeo.salida();
         let (proceso, fotogramas, primero) = vaapi
@@ -343,6 +482,7 @@ impl Video {
         Some((video, primero))
     }
 
+    // 0.1.0
     fn avanzar(&mut self) -> Paso {
         // El convertido entra en cuanto tiene su primer fotograma, sin fundido:
         // es un corte del punto por el que iba el original al principio del
@@ -363,6 +503,7 @@ impl Video {
 
     /// Sigue la conversión un paso. Devuelve el vídeo convertido cuando ya se
     /// puede poner en lugar de este.
+    // 0.1.0
     fn relevo(&mut self) -> Option<(Video, Fotograma)> {
         match self.conversion.as_mut()? {
             Conversion::Convirtiendo { proceso, .. } => {
@@ -426,6 +567,7 @@ impl Video {
 }
 
 impl Drop for Video {
+    // 0.1.0
     fn drop(&mut self) {
         // Al morir ffmpeg el lector ve fin de tubería y termina solo. `wait`
         // es para no dejar un zombi por cada cambio de fondo. La conversión
@@ -447,6 +589,7 @@ impl Drop for Video {
 /// Medido con el fondo de 1920×1080 en AV1, 10 s a 30 fps: 4,6 s de CPU de NV12
 /// directo a RGBA, 2,3 s pasando por I420. Por software, el mismo vídeo en
 /// H.264 por openh264 eran 11 s: un núcleo entero solo para el fondo.
+// 0.1.0
 fn lanzar(
     ruta: &Path,
     (w, h): (u32, u32),
@@ -534,6 +677,7 @@ fn lanzar(
 /// `deband` alisa los escalones de los degradados oscuros —el H.264 de 4,5
 /// Mbit/s del fondo los trae de serie, y a 2880 px de panel se ven—, y el
 /// escalado va con lanczos. Con `preset 10` el fondo de 10 s tarda 11 s.
+// 0.1.0
 fn convertir(ruta: &Path, sondeo: &Sondeo, destino: &Path) -> Option<Child> {
     let carpeta = destino.parent().expect("la ruta convertida tiene carpeta");
     std::fs::create_dir_all(carpeta)
@@ -595,6 +739,7 @@ fn convertir(ruta: &Path, sondeo: &Sondeo, destino: &Path) -> Option<Child> {
 
 /// Dónde va la conversión de `ruta`. El tamaño y la fecha van en el nombre para
 /// que un vídeo sobrescrito con otro del mismo nombre no reutilice la vieja.
+// 0.1.0
 fn ruta_convertida(ruta: &Path) -> Option<PathBuf> {
     let meta = std::fs::metadata(ruta).ok()?;
     let fecha = meta
@@ -616,6 +761,7 @@ fn ruta_convertida(ruta: &Path) -> Option<PathBuf> {
 
 /// Mientras se escribe va con otro nombre: si el compositor muere a medias, el
 /// fichero a medio hacer no se toma por bueno la próxima vez.
+// 0.1.0
 fn parcial(destino: &Path) -> PathBuf {
     destino.with_extension("parcial.mkv")
 }
@@ -633,6 +779,7 @@ struct Sondeo {
 
 impl Sondeo {
     /// Tamaño y ritmo a los que se decodifica, con los topes aplicados.
+    // 0.1.0
     fn salida(&self) -> (u32, u32, f64) {
         // Pares: con rgba no hace falta, pero el escalador de ffmpeg redondea
         // las impares a su manera y el tamaño leído dejaría de cuadrar.
@@ -642,6 +789,7 @@ impl Sondeo {
     }
 }
 
+// 0.1.0
 fn sondear(ruta: &Path) -> Option<Sondeo> {
     let salida = Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
@@ -683,6 +831,7 @@ fn sondear(ruta: &Path) -> Option<Sondeo> {
     })
 }
 
+// 0.1.0
 fn retraso(delay: image::Delay) -> Duration {
     let (numerador, denominador) = delay.numer_denom_ms();
     let ms = numerador as f64 / denominador.max(1) as f64;
@@ -691,6 +840,7 @@ fn retraso(delay: image::Delay) -> Duration {
     Duration::from_secs_f64((ms / 1000.0).max(0.016))
 }
 
+// 0.1.0
 fn frames_webp(ruta: &Path) -> Option<image::Frames<'static>> {
     if ruta.extension().and_then(|e| e.to_str()) != Some("webp") {
         return None;
@@ -703,6 +853,7 @@ fn frames_webp(ruta: &Path) -> Option<image::Frames<'static>> {
 impl Fondo {
     /// Carga el fondo. `None` si no hay ninguno donde mirar, y entonces el
     /// escritorio se queda con su color liso de siempre.
+    // 0.1.0
     pub fn cargar(eleccion: &Eleccion) -> Option<Self> {
         let ruta = match eleccion.para_el_tema() {
             Some(r) => PathBuf::from(r),
@@ -725,6 +876,7 @@ impl Fondo {
         );
         Some(Self {
             ruta,
+            encaje: eleccion.encaje,
             buffer: compartido(&primero.rgba),
             pixeles: primero.pixeles,
             rgba: primero.rgba,
@@ -738,6 +890,7 @@ impl Fondo {
 
     /// Tiempo hasta el siguiente fotograma. `None` también cubre movimiento
     /// reducido: congelar el primero evita despertar para no cambiar nada.
+    // 0.1.0
     pub fn hasta_siguiente(&self) -> Option<Duration> {
         if bookos_shell::tema::efectos_reducidos() {
             return None;
@@ -751,6 +904,8 @@ impl Fondo {
     }
 
     /// Cambia de fotograma solo cuando vence su retraso.
+    // 0.1.0
+    // modified 0.1.1 -- reutiliza el buffer si el fotograma mide lo mismo
     pub fn avanzar(&mut self) -> bool {
         if self
             .hasta_siguiente()
@@ -794,11 +949,13 @@ impl Fondo {
     }
 
     /// De qué fichero salió.
+    // 0.1.0
     pub fn ruta(&self) -> &std::path::Path {
         &self.ruta
     }
 
     /// Los píxeles y el tamaño, para quien necesite subirlos por su cuenta.
+    // 0.1.0
     pub fn rgba(&self) -> (&[u8], (i32, i32)) {
         (&self.rgba, self.pixeles)
     }
@@ -813,13 +970,55 @@ impl Fondo {
     /// Se le pasa el `src` completo por lo mismo que al cursor: sin él,
     /// `from_buffer` usa el tamaño de destino como recorte y se vería una
     /// esquina de la imagen ampliada.
+    // 0.1.0
+    // modificado en la 0.2.0 -- respeta el encaje elegido
     pub fn elemento_en(
         &self,
         renderer: &mut GlesRenderer,
         posicion: (i32, i32),
         logico: (i32, i32),
+        escala: f64,
     ) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
-        self.elemento_con_alfa(renderer, posicion, logico, 1.0)
+        self.elemento_con_alfa(renderer, posicion, logico, escala, 1.0)
+    }
+
+    /// Cómo cae la imagen en una pantalla de este tamaño en físicos.
+    // añadido en la 0.2.0
+    pub fn encuadre(&self, pantalla: (i32, i32)) -> Encuadre {
+        Encuadre::calcular(self.encaje, self.pixeles, pantalla)
+    }
+
+    /// Dónde va el elemento, qué trozo del buffer lleva y a qué tamaño lógico.
+    ///
+    /// `posicion` va en físicos y `logico` en lógicos, la mezcla de `from_buffer`.
+    // añadido en la 0.2.0
+    fn colocar(
+        &self,
+        posicion: (i32, i32),
+        logico: (i32, i32),
+        escala: f64,
+    ) -> (
+        (f64, f64),
+        smithay::utils::Rectangle<f64, smithay::utils::Logical>,
+        (i32, i32),
+    ) {
+        let encuadre = self.encuadre((
+            (logico.0 as f64 * escala).round() as i32,
+            (logico.1 as f64 * escala).round() as i32,
+        ));
+        let (i, p) = (encuadre.imagen, encuadre.pantalla);
+        let (w, h) = (self.pixeles.0 as f64, self.pixeles.1 as f64);
+        (
+            (
+                posicion.0 as f64 + (p.x * logico.0 as f64 * escala).round(),
+                posicion.1 as f64 + (p.y * logico.1 as f64 * escala).round(),
+            ),
+            smithay::utils::Rectangle::new((i.x * w, i.y * h).into(), (i.w * w, i.h * h).into()),
+            (
+                ((p.w * logico.0 as f64).round() as i32).max(1),
+                ((p.h * logico.1 as f64).round() as i32).max(1),
+            ),
+        )
     }
 
     /// El fondo con alfa, para el fundido entre dos imágenes.
@@ -828,22 +1027,24 @@ impl Fondo {
     /// que sale se queda opaco todo el rato. Es el orden correcto para una
     /// mezcla normal: bajarle el alfa al saliente a la vez dejaría ver el
     /// escritorio a través de los dos a mitad de camino.
+    // 0.1.0
+    // modificado en la 0.2.0 -- respeta el encaje elegido
     pub fn elemento_con_alfa(
         &self,
         renderer: &mut GlesRenderer,
         posicion: (i32, i32),
         logico: (i32, i32),
+        escala: f64,
         alfa: f32,
     ) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
-        use smithay::utils::Rectangle;
-        let src = Rectangle::from_size((self.pixeles.0 as f64, self.pixeles.1 as f64).into());
+        let (donde, src, tam) = self.colocar(posicion, logico, escala);
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            (posicion.0 as f64, posicion.1 as f64),
+            donde,
             &self.buffer,
             Some(alfa),
             Some(src),
-            Some(logico.into()),
+            Some(tam.into()),
             Kind::Unspecified,
         )
         .inspect_err(|err| tracing::warn!("no se pudo subir el fondo: {err}"))
@@ -852,23 +1053,25 @@ impl Fondo {
 
     /// El segundo fondo, el que entra por el otro lado al cambiar de
     /// escritorio. Ver [`Fondo::gemelo`].
+    // 0.1.0
+    // modificado en la 0.2.0 -- respeta el encaje elegido
     pub fn elemento_gemelo_en(
         &self,
         renderer: &mut GlesRenderer,
         posicion: (i32, i32),
         logico: (i32, i32),
+        escala: f64,
     ) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
-        use smithay::utils::Rectangle;
         let mut gemelo = self.gemelo.borrow_mut();
         let buffer = gemelo.get_or_insert_with(|| compartido(&self.rgba));
-        let src = Rectangle::from_size((self.pixeles.0 as f64, self.pixeles.1 as f64).into());
+        let (donde, src, tam) = self.colocar(posicion, logico, escala);
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            (posicion.0 as f64, posicion.1 as f64),
+            donde,
             buffer,
             None,
             Some(src),
-            Some(logico.into()),
+            Some(tam.into()),
             Kind::Unspecified,
         )
         .inspect_err(|err| tracing::warn!("no se pudo subir el segundo fondo: {err}"))
@@ -881,47 +1084,72 @@ impl Fondo {
     /// mezcla que pide `from_buffer` —y la misma que usa el shell para sus
     /// superficies—. Ponerlos los dos en lógicos dejaba la miniatura desplazada
     /// hacia arriba y a la izquierda en cuanto la escala no era 1.
+    // 0.1.0
+    // modificado en la 0.2.0 -- enseña el mismo encuadre que la pantalla
+    #[allow(clippy::too_many_arguments)]
     pub fn miniatura(
         &self,
         renderer: &mut GlesRenderer,
         indice: usize,
         posicion: (f64, f64),
         logico: (i32, i32),
+        pantalla: (i32, i32),
+        escala: f64,
+        alfa: f32,
     ) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
         use smithay::utils::Rectangle;
+        let encuadre = self.encuadre(pantalla);
+        let p = encuadre.pantalla;
+        let tam = (
+            ((p.w * logico.0 as f64).round() as i32).max(1),
+            ((p.h * logico.1 as f64).round() as i32).max(1),
+        );
+        // El recorte se hace en los píxeles y no con `src`: las esquinas
+        // redondeadas van grabadas en la copia, y con `src` se quedarían en la
+        // parte recortada y la miniatura volvería a asomar en pico.
+        let ((x, y), (cw, ch)) = en_pixeles(encuadre.imagen, self.mini_pixeles);
         let mut copias = self.mini.borrow_mut();
         while copias.len() <= indice {
             // Con las esquinas recortadas al radio del marco: compuesta en
             // rectángulo, la miniatura asomaba en pico por las cuatro esquinas
             // del borde redondeado de la vista de escritorios. El radio va en
             // píxeles de la imagen, que no es del tamaño del hueco.
-            let mut rgba = self.mini_rgba.clone();
-            let por_pixel = self.mini_pixeles.0 as f32 / logico.0.max(1) as f32;
+            let mut rgba: Vec<u8> = self
+                .mini_rgba
+                .chunks_exact(self.mini_pixeles.0 as usize * 4)
+                .skip(y as usize)
+                .take(ch as usize)
+                .flat_map(|fila| &fila[x as usize * 4..(x + cw) as usize * 4])
+                .copied()
+                .collect();
+            let por_pixel = cw as f32 / tam.0 as f32;
             bookos_shell::redondear_esquinas(
                 &mut rgba,
-                self.mini_pixeles.0 as u32,
-                self.mini_pixeles.1 as u32,
+                cw as u32,
+                ch as u32,
                 bookos_shell::RADIO_MINIATURA_ESCRITORIO * por_pixel,
                 bookos_shell::Alfa::Premultiplicado,
             );
             copias.push(MemoryRenderBuffer::from_slice(
                 &rgba,
                 Fourcc::Abgr8888,
-                (self.mini_pixeles.0, self.mini_pixeles.1),
+                (cw, ch),
                 1,
                 Transform::Normal,
                 None,
             ));
         }
-        let src =
-            Rectangle::from_size((self.mini_pixeles.0 as f64, self.mini_pixeles.1 as f64).into());
+        let src = Rectangle::from_size((cw as f64, ch as f64).into());
         MemoryRenderBufferRenderElement::from_buffer(
             renderer,
-            posicion,
+            (
+                posicion.0 + (p.x * logico.0 as f64 * escala).round(),
+                posicion.1 + (p.y * logico.1 as f64 * escala).round(),
+            ),
             &copias[indice],
-            None,
+            Some(alfa),
             Some(src),
-            Some(logico.into()),
+            Some(tam.into()),
             Kind::Unspecified,
         )
         .inspect_err(|err| tracing::warn!("no se pudo subir la miniatura del fondo: {err}"))
@@ -931,10 +1159,12 @@ impl Fondo {
 
 /// Un buffer de dibujo nuevo —con su propio id para el seguimiento de daño—
 /// sobre los mismos píxeles, sin copiarlos.
+// 0.1.0
 fn compartido(rgba: &MemoryBuffer) -> MemoryRenderBuffer {
     MemoryRenderBuffer::from_memory(rgba.clone(), 1, Transform::Normal, None)
 }
 
+// 0.1.0
 fn decodificar_estatico(ruta: &Path) -> Option<(Vec<u8>, u32, u32)> {
     if ruta.extension().and_then(|e| e.to_str()) != Some("svg") {
         return bookos_shell::decodificar_rgba(ruta);
@@ -964,6 +1194,7 @@ fn decodificar_estatico(ruta: &Path) -> Option<(Vec<u8>, u32, u32)> {
 /// Promedio y no vecino más próximo: el fondo tiene degradados y bandas finas,
 /// y saltarse píxeles deja escalones visibles en una previa de 250 px. El coste
 /// es una pasada por la imagen al arrancar.
+// 0.1.0
 fn reducir(rgba: &[u8], (w, h): (i32, i32), ancho: i32) -> (Vec<u8>, (i32, i32)) {
     if w <= ancho || w <= 0 || h <= 0 {
         return (rgba.to_vec(), (w, h));
@@ -1024,12 +1255,15 @@ const FAMILIA: &str = "blue";
 /// Se llama **cada vez que se recarga**, no solo al arrancar: es lo que hace
 /// que pasar a claro cambie también la imagen. Antes tenía `blue` escrito a
 /// fuego y las rutas de las cuatro familias instaladas no se miraban siquiera.
+// 0.1.0
+// modified 0.1.1 -- la búsqueda pasa a buscar_para, que sirve a los dos temas
 fn buscar() -> Option<PathBuf> {
     buscar_para(bookos_shell::tema::es_claro())
 }
 
 /// El fondo de un tema concreto, lo elija el usuario o venga de serie. Lo pide
 /// quien publica los dos a la vez para la pantalla de acceso.
+// 0.1.1
 pub fn ruta_para(eleccion: &Eleccion, claro: bool) -> Option<PathBuf> {
     eleccion
         .para(claro)
@@ -1037,6 +1271,7 @@ pub fn ruta_para(eleccion: &Eleccion, claro: bool) -> Option<PathBuf> {
         .or_else(|| buscar_para(claro))
 }
 
+// 0.1.1
 fn buscar_para(claro: bool) -> Option<PathBuf> {
     let (carpeta, archivo) = if claro {
         ("Light", format!("{FAMILIA}.png"))
@@ -1255,6 +1490,7 @@ mod tests {
             ambos: Some("/comun.png".into()),
             claro: Some("/claro.png".into()),
             oscuro: Some("/oscuro.png".into()),
+            ..Default::default()
         };
         assert_eq!(eleccion.para(true), Some("/claro.png"));
         assert_eq!(eleccion.para(false), Some("/oscuro.png"));
@@ -1269,6 +1505,7 @@ mod tests {
             ambos: Some("/comun.png".into()),
             claro: None,
             oscuro: Some("/oscuro.png".into()),
+            ..Default::default()
         };
         assert_eq!(eleccion.para(true), Some("/comun.png"));
         assert_eq!(eleccion.para(false), Some("/oscuro.png"));
@@ -1282,6 +1519,7 @@ mod tests {
             ambos: Some("/comun.png".into()),
             claro: None,
             oscuro: None,
+            ..Default::default()
         };
         assert!(!fijo.depende_del_tema());
 
@@ -1291,8 +1529,84 @@ mod tests {
             ambos: Some("/comun.png".into()),
             claro: Some("/claro.png".into()),
             oscuro: None,
+            ..Default::default()
         };
         assert!(con_pareja.depende_del_tema());
         assert!(Eleccion::default().depende_del_tema());
+    }
+
+    fn cerca(a: Trozo, b: (f64, f64, f64, f64)) {
+        let dif = [a.x - b.0, a.y - b.1, a.w - b.2, a.h - b.3];
+        assert!(dif.iter().all(|d| d.abs() < 1e-9), "{a:?} frente a {b:?}");
+    }
+
+    /// Cuadrada de 800 en una pantalla de 1600×1000: cada modo recorta o deja
+    /// banda en el eje que le toca.
+    #[test]
+    fn cada_encaje_recorta_o_deja_banda_donde_toca() {
+        let con = |e| Encuadre::calcular(e, (800, 800), (1600, 1000));
+
+        let e = con(EncajeFondo::Rellenar);
+        cerca(e.imagen, (0.0, 0.1875, 1.0, 0.625));
+        cerca(e.pantalla, (0.0, 0.0, 1.0, 1.0));
+
+        let e = con(EncajeFondo::Ajustar);
+        cerca(e.imagen, (0.0, 0.0, 1.0, 1.0));
+        cerca(e.pantalla, (0.1875, 0.0, 0.625, 1.0));
+
+        // Con esta imagen, a lo ancho coincide con rellenar...
+        assert_eq!(con(EncajeFondo::Ancho), con(EncajeFondo::Rellenar));
+        // ...y con una panorámica no: deja bandas arriba y abajo.
+        let e = Encuadre::calcular(EncajeFondo::Ancho, (1600, 400), (1600, 1000));
+        cerca(e.imagen, (0.0, 0.0, 1.0, 1.0));
+        cerca(e.pantalla, (0.0, 0.3, 1.0, 0.4));
+
+        let e = con(EncajeFondo::Estirar);
+        assert_eq!(e.imagen, Trozo::ENTERO);
+        assert_eq!(e.pantalla, Trozo::ENTERO);
+
+        let e = con(EncajeFondo::Centrar);
+        cerca(e.imagen, (0.0, 0.0, 1.0, 1.0));
+        cerca(e.pantalla, (0.25, 0.1, 0.5, 0.8));
+        // Mayor que la pantalla, se recorta y no se reduce.
+        let e = Encuadre::calcular(EncajeFondo::Centrar, (2000, 2000), (1600, 1000));
+        cerca(e.imagen, (0.1, 0.25, 0.8, 0.5));
+        cerca(e.pantalla, (0.0, 0.0, 1.0, 1.0));
+    }
+
+    /// El cristal lee lo mismo que se ve, y sobre una banda no se queda sin
+    /// imagen: un `uv_tam` a cero dividiría por cero en el shader.
+    #[test]
+    fn el_cristal_lee_lo_que_hay_detras() {
+        let relleno = Encuadre::calcular(EncajeFondo::Rellenar, (800, 800), (1600, 1000));
+        let arriba = relleno.detras_de(Trozo {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 0.1,
+        });
+        cerca(arriba, (0.0, 0.1875, 1.0, 0.0625));
+
+        let bandas = Encuadre::calcular(EncajeFondo::Ajustar, (800, 800), (1600, 1000));
+        let en_banda = bandas.detras_de(Trozo {
+            x: 0.0,
+            y: 0.0,
+            w: 0.1,
+            h: 1.0,
+        });
+        assert_eq!(en_banda.x, 0.0);
+        assert!(en_banda.w > 0.0);
+        assert!(!bandas.tiene_imagen_detras(Trozo {
+            x: 0.0,
+            y: 0.0,
+            w: 0.1,
+            h: 1.0,
+        }));
+        assert!(bandas.tiene_imagen_detras(Trozo {
+            x: 0.1,
+            y: 0.0,
+            w: 0.2,
+            h: 1.0,
+        }));
     }
 }

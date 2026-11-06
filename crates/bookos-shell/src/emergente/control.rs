@@ -48,6 +48,7 @@ pub const MARGEN_AGARRE: f32 = 6.0;
 /// La fuente del sistema con otro peso. El sistema de diseño solo admite
 /// Regular, Medium, Semibold, Bold y Heavy, y por eso se pide el peso y no un
 /// número.
+// 0.1.0
 pub fn peso(weight: Weight) -> Font {
     Font {
         weight,
@@ -56,6 +57,7 @@ pub fn peso(weight: Weight) -> Font {
 }
 
 /// El título de una tarjeta: 17/Bold, el del diálogo en el sistema de diseño.
+// 0.1.0
 pub fn titulo<'a>(texto: impl iced_core::text::IntoFragment<'a>) -> PanelElement<'a> {
     text(texto)
         .size(17.0)
@@ -73,6 +75,7 @@ pub fn titulo<'a>(texto: impl iced_core::text::IntoFragment<'a>) -> PanelElement
 /// a la mitad del lado corto y sale una barrita recta asomando por las curvas
 /// del surco; así, a 0 % queda un punto, que es lo que dice que ahí hay un
 /// control y no un hueco. Ver [`lleno`] para cómo se reparte el resto.
+// 0.1.0
 pub fn pildora<'a>(
     ancho: f32,
     alto: f32,
@@ -120,6 +123,7 @@ pub fn pildora<'a>(
 /// el icono en texto secundario. `señalado`, de 0 a 1, es el puntero por
 /// encima: oscurece el fondo sin cambiar de estado, que es lo que distingue «se
 /// puede pulsar» de «está pulsado».
+// 0.1.0
 pub fn boton<'a>(
     icono: Option<&'a Icono>,
     encendido: bool,
@@ -153,6 +157,7 @@ pub fn boton<'a>(
 }
 
 /// Una fila de deslizador: icono a la izquierda, píldora y, si lo hay, el botón.
+// 0.1.0
 pub fn fila_pildora<'a>(
     icono: Option<&'a Icono>,
     pildora: PanelElement<'a>,
@@ -174,12 +179,14 @@ pub fn fila_pildora<'a>(
 }
 
 /// Lo que mide la píldora de una fila de `ancho`, con o sin botón.
+// 0.1.0
 pub fn ancho_pildora(ancho: f32, con_boton: bool) -> f32 {
     ancho - ICONO - HUECO - if con_boton { BOTON + HUECO } else { 0.0 }
 }
 
 /// La etiqueta de encima de una píldora: nombre a la izquierda en 13/Semibold y
 /// el valor a la derecha en 12 secundario.
+// 0.1.0
 pub fn etiqueta<'a>(nombre: &'a str, valor: String, ancho: f32) -> PanelElement<'a> {
     container(
         row![
@@ -199,6 +206,7 @@ pub fn etiqueta<'a>(nombre: &'a str, valor: String, ancho: f32) -> PanelElement<
 }
 
 /// Un chip de cabecera: «Config», «Borrar todo», «Hoy».
+// 0.1.0
 pub fn chip<'a>(etiqueta: &'a str, fondo: Color, color: Color) -> PanelElement<'a> {
     container(
         text(etiqueta)
@@ -222,11 +230,13 @@ pub fn chip<'a>(etiqueta: &'a str, fondo: Color, color: Color) -> PanelElement<'
 }
 
 /// Lo que mide un chip, para las zonas de clic.
+// 0.1.0
 pub fn ancho_chip(etiqueta: &str) -> f32 {
     crate::widget::ancho_de(etiqueta, 13.0) + 24.0
 }
 
 /// Un grupo gris dentro de la tarjeta, con su relleno.
+// 0.1.0
 pub fn grupo<'a>(contenido: PanelElement<'a>, ancho: f32, relleno: f32) -> PanelElement<'a> {
     container(contenido)
         .width(Length::Fixed(ancho))
@@ -243,6 +253,7 @@ pub fn grupo<'a>(contenido: PanelElement<'a>, ancho: f32, relleno: f32) -> Panel
 }
 
 /// La línea de medio píxel que separa bloques dentro de un grupo.
+// 0.1.0
 pub fn divisor<'a>(ancho: f32) -> PanelElement<'a> {
     container(Space::new().height(Length::Fixed(0.5)))
         .width(Length::Fixed(ancho))
@@ -259,6 +270,8 @@ pub fn divisor<'a>(ancho: f32) -> PanelElement<'a> {
 /// Se mezcla hacia la tinta y no se superpone el `--hover`: el hover es un velo
 /// con alfa, y encima de una baldosa opaca lo que se ve es la tarjeta de detrás
 /// asomando, no un realce.
+// 0.1.0
+// modified 0.1.1 -- fondo elevado en vez de card
 pub fn baldosa(señalada: f32) -> Color {
     tema::mezclar(tema::elevado(), tema::tinta(), 0.05 * señalada)
 }
@@ -270,6 +283,8 @@ pub fn baldosa(señalada: f32) -> Color {
 ///
 /// En oscuro el 10 % sobre `#1c1c1e` apenas tiñe y la fila se leía gris
 /// sucio; parte de [`tema::elevado`] y con el doble, como el resto de filas.
+// 0.1.0
+// modified 0.1.1 -- en oscuro el acento al 20 % sobre elevado, para que se note
 pub fn seleccionada(señalada: f32) -> Color {
     let (base, mezcla) = if tema::es_claro() {
         (tema::card(), 0.10)
@@ -286,6 +301,7 @@ pub fn seleccionada(señalada: f32) -> Color {
 /// píldora de la Estación de Control (24 de alto) todo lo que había entre 0 y
 /// un 12 % se dibujaba igual: no había forma de saber si el volumen estaba a
 /// cero o al diez.
+// 0.1.0
 pub fn lleno(ancho: f32, alto: f32, nivel: u8) -> f32 {
     alto + (ancho - alto) * (nivel.min(100) as f32 / 100.0)
 }
@@ -297,12 +313,14 @@ pub fn lleno(ancho: f32, alto: f32, nivel: u8) -> f32 {
 /// mientras se arrastra, y el 0 y el 100 caen en el centro de los extremos
 /// redondos y no en el borde, que con el ratón no se alcanza sin pasarse.
 /// Arrastrar más allá deja el nivel en el tope y no en un número imposible.
+// 0.1.0
 pub fn nivel_en(x: f32, x0: f32, ancho: f32) -> u8 {
     let recorrido = ancho - PILDORA;
     (((x - x0 - PILDORA / 2.0) / recorrido).clamp(0.0, 1.0) * 100.0).round() as u8
 }
 
 /// La caja de una tarjeta emergente: fondo, borde, radio y margen del sistema.
+// 0.1.0
 pub fn tarjeta<'a>(contenido: PanelElement<'a>, ancho: f32, margen: f32) -> PanelElement<'a> {
     container(contenido)
         .padding(margen)

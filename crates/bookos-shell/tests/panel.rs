@@ -27,6 +27,7 @@ fn el_panel_de_diagnostico_se_pinta() {
     let cambio = shell.diagnostico_datos(Datos {
         cpu: 12.4,
         gpu: Some(31.0),
+        ram_mb: Some(184.0),
         salidas: vec![
             Salida {
                 nombre: "eDP-1".into(),
@@ -39,6 +40,11 @@ fn el_panel_de_diagnostico_se_pinta() {
                 ms_total: 3.42,
                 ms_escena: 2.11,
                 ms_render: 1.31,
+                // añadido en la 0.2.0
+                shell_ms: 0.14,
+                entrada_ms: Some(7.8),
+                abrir_ms: Some(12.4),
+                emergente: Some("centro".into()),
                 ms_peor: 9.87,
                 saltados: 42,
                 aplazados: 3,
@@ -72,6 +78,7 @@ fn el_panel_de_diagnostico_se_pinta() {
     let datos = Datos {
         cpu: 12.4,
         gpu: Some(31.0),
+        ram_mb: Some(184.0),
         salidas: vec![Salida {
             nombre: "eDP-1".into(),
             ..Default::default()
@@ -796,8 +803,9 @@ fn el_menu_se_abre_se_recorre_y_se_cierra() {
     );
 
     let ((w, h), _ancla, _) = shell.emergente_geometria().unwrap();
-    // Más ancho que los 210 del plasmoide desde que las filas llevan icono.
-    assert_eq!(w, 236, "el ancho del menú");
+    // El ancho sale de la entrada más larga —«Cerrar sesión de <nombre>…» con
+    // su atajo—, así que depende de la cuenta; lo fijo son sus topes.
+    assert!((200..=300).contains(&w), "el ancho del menú: {w}");
     assert!(h > 0);
 
     // Bajar señala la primera entrada, y eso obliga a repintar.
@@ -823,9 +831,9 @@ fn elegir_del_menu_lo_cierra() {
     let mut shell = shell(1.0);
     shell.panel_pulsado(20.0, 16.0);
 
-    // La primera entrada, "Acerca de este PC": empieza tras el margen de 2 px
-    // y mide 26 de alto.
-    let accion = shell.emergente_pulsar(100.0, 2.0 + 13.0);
+    // La primera entrada, "Acerca de este PC": empieza tras el margen de 5 px
+    // y mide 24 de alto.
+    let accion = shell.emergente_pulsar(100.0, 5.0 + 12.0);
     assert!(accion.is_some(), "el centro de la primera fila no responde");
     assert!(
         !shell.hay_emergente(),
@@ -834,7 +842,7 @@ fn elegir_del_menu_lo_cierra() {
 
     // Y en un separador no hay nada que elegir, así que el menú sigue abierto.
     shell.panel_pulsado(20.0, 16.0);
-    assert_eq!(shell.emergente_pulsar(100.0, 2.0 + 26.0 + 3.0), None);
+    assert_eq!(shell.emergente_pulsar(100.0, 5.0 + 24.0 + 4.0), None);
     assert!(
         shell.hay_emergente(),
         "fallar la puntería no cierra el menú"
@@ -862,7 +870,7 @@ fn el_calendario_se_abre_desde_el_reloj() {
 
     // Pulsar el logo con el calendario abierto cambia al menú, no lo cierra.
     shell.panel_pulsado(20.0, 16.0);
-    assert_eq!(shell.emergente_geometria().unwrap().0.0, 236);
+    assert_eq!(shell.emergente_nombre(), Some("menu"));
 }
 
 /// El compositor compara el nombre de la zona pulsada con el nombre interno
@@ -1413,15 +1421,16 @@ fn el_menu_del_bloqueo_se_despliega() {
         .bloqueo_buffer_size()
         .expect("hay superficie de bloqueo");
 
-    // El centro del botón de los tres puntos, en la esquina de abajo.
-    shell.bloqueo_pulsado(50.0, pantalla.1 - 50.0);
+    // El centro del botón de los tres puntos, arriba a la derecha como en el
+    // greeter (0.2.0).
+    shell.bloqueo_pulsado(pantalla.0 - 50.0, 50.0);
 
     let alto_menu = |shell: &mut Shell| -> u32 {
         let mut buf = vec![0u8; (w * h * 4) as usize];
         shell.draw_bloqueo(&mut buf);
-        let alfa = |y: u32| buf[((y * w + 60) * 4 + 3) as usize];
-        // Solo por encima del botón: es donde se despliega el menú.
-        let filas: Vec<u32> = (h / 2..h - 90).filter(|y| alfa(*y) > 30).collect();
+        let alfa = |y: u32| buf[((y * w + w - 60) * 4 + 3) as usize];
+        // Solo por debajo del botón: es donde cuelga el menú.
+        let filas: Vec<u32> = (90..h / 2).filter(|y| alfa(*y) > 30).collect();
         match (filas.first(), filas.last()) {
             (Some(a), Some(b)) => b - a,
             _ => 0,
@@ -1628,10 +1637,12 @@ fn los_avisos_se_apilan_y_el_que_sobra_se_va() {
     use bookos_shell::toast::MAXIMO_A_LA_VISTA;
 
     let mut shell = shell(1.0);
+    // Una app por aviso: los seguidos de la misma no se apilan (ver
+    // `los_de_la_misma_app_se_sustituyen`).
     let n = |id: u32| {
         Notificacion::nueva(
             id,
-            "App".into(),
+            format!("App {id}"),
             format!("Aviso {id}"),
             String::new(),
             "",
@@ -1656,6 +1667,41 @@ fn los_avisos_se_apilan_y_el_que_sobra_se_va() {
     // `replaces_id`: no vuelve arriba.
     shell.notificar(n(2), -1);
     assert_eq!(shell.toasts_ids(), vec![4, 3, 2, 1]);
+}
+
+/// Diez mensajes seguidos de un chat son un aviso, no una pila que empuja:
+/// cada uno sustituye al de delante. Todos quedan en la campana.
+#[test]
+fn los_de_la_misma_app_se_sustituyen() {
+    use bookos_shell::notificaciones::Notificacion;
+
+    let mut shell = shell(1.0);
+    let n = |id: u32, app: &str, critica: bool| {
+        Notificacion::nueva(id, app.into(), "Aviso".into(), String::new(), "", critica)
+    };
+    shell.notificar(n(1, "Chat", false), -1);
+    shell.notificar(n(2, "Chat", false), -1);
+    assert_eq!(shell.toasts_ids(), vec![2]);
+    assert_eq!(
+        shell.notificaciones().len(),
+        2,
+        "la anterior sigue en la campana"
+    );
+
+    shell.notificar(n(3, "Correo", false), -1);
+    shell.notificar(n(4, "Chat", false), -1);
+    assert_eq!(
+        shell.toasts_ids(),
+        vec![4, 3, 2],
+        "solo sustituye a la de delante"
+    );
+
+    shell.notificar(n(5, "Chat", true), -1);
+    assert_eq!(
+        shell.toasts_ids(),
+        vec![5, 4, 3, 2],
+        "una crítica no sustituye"
+    );
 }
 
 /// Abrir una tarjeta despide los avisos, y con ella abierta no salen nuevos:
@@ -2059,7 +2105,8 @@ fn la_capa_de_captura_se_pinta() {
             y: 180,
             ancho: 660,
             alto: 380,
-            guardar: false
+            guardar: false,
+            ..
         })
     ));
 }
@@ -2157,12 +2204,17 @@ fn el_bloqueo_no_se_solapa_a_1280x800() {
 fn ahorro_cambia_el_perfil_sin_cerrar_el_centro() {
     let mut shell = shell(1.0);
     shell.abrir(bookos_shell::Emergente::centro());
-    let accion = shell.emergente_pulsar(212.5, 182.0);
+    // modificado en la 0.2.0 -- la baldosa actúa al soltar, no al apretar.
+    let mut clic = |shell: &mut bookos_shell::Shell| {
+        assert_eq!(shell.emergente_pulsar(212.5, 182.0), None);
+        shell.soltar().1
+    };
+    let accion = clic(&mut shell);
     assert!(matches!(
         accion,
         Some(bookos_shell::Accion::PerfilEnergia(_))
     ));
     assert!(shell.hay_emergente(), "ahorro cerró el centro de control");
-    let siguiente = shell.emergente_pulsar(212.5, 182.0);
+    let siguiente = clic(&mut shell);
     assert_ne!(accion, siguiente, "el segundo clic repitió el mismo perfil");
 }

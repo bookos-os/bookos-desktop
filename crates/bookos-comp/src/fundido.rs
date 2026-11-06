@@ -47,6 +47,7 @@ pub struct Fundido {
 impl Fundido {
     /// Compone `elementos` —la escena con el tema viejo— en una textura del
     /// tamaño de la salida.
+    // 0.1.0
     pub fn fotografiar<E: RenderElement<GlesRenderer>>(
         renderer: &mut GlesRenderer,
         elementos: &[E],
@@ -88,11 +89,13 @@ impl Fundido {
         })
     }
 
+    // 0.1.0
     pub fn terminado(&self) -> bool {
         self.inicio.elapsed() >= tema::D_TEMA
     }
 
     /// La foto de este fotograma, encima de todo y cada vez más transparente.
+    // 0.1.0
     pub fn elemento(&self, contexto: &ContextId<GlesTexture>) -> TextureRenderElement<GlesTexture> {
         let t = tema::C_TEMA.eval(tema::avance(self.inicio.elapsed(), tema::D_TEMA));
         TextureRenderElement::from_static_texture(

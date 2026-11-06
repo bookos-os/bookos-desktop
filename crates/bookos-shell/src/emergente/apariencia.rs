@@ -54,32 +54,38 @@ const HUECO_ANILLO: f32 = 4.0;
 const MODOS: [ModoTema; 3] = [ModoTema::Claro, ModoTema::Oscuro, ModoTema::Automatico];
 
 /// Ancho de una muestra de tema. Tres, con un hueco entre cada dos.
+// 0.1.0
 fn ancho_muestra() -> f32 {
     (ANCHO - MARGEN * 2.0 - MUESTRA_HUECO * (MODOS.len() - 1) as f32) / MODOS.len() as f32
 }
 
 /// Paso horizontal de la rejilla de colores: lo que sobra se reparte entre las
 /// cuatro calles, no se acumula a la derecha.
+// 0.1.0
 fn paso() -> f32 {
     let libre = ANCHO - MARGEN * 2.0 - CASILLA * COLUMNAS as f32;
     CASILLA + libre / (COLUMNAS - 1) as f32
 }
 
+// 0.1.0
 fn filas() -> usize {
     Acento::TODOS.len().div_ceil(COLUMNAS)
 }
 
 /// Ancho de una miniatura de fondo: el de una muestra de tema.
+// 0.1.0
 fn ancho_fondo() -> f32 {
     ancho_muestra()
 }
 
 /// Alto de una miniatura: la proporción 16:10 de los fondos que trae BookOS.
+// 0.1.0
 fn alto_fondo() -> f32 {
     (ancho_fondo() * 10.0 / 16.0).round()
 }
 
 /// Lo que ocupa la rejilla de `n` familias, con el hueco entre filas.
+// 0.1.0
 fn alto_fondos(n: usize) -> f32 {
     let filas = n.div_ceil(FONDO_COLUMNAS) as f32;
     filas * alto_fondo() + (filas - 1.0).max(0.0) * FONDO_HUECO
@@ -121,6 +127,8 @@ pub struct Apariencia {
 impl Apariencia {
     /// `modo` es lo que dice la configuración, que la tarjeta no puede deducir:
     /// `tema::actual()` solo sabe qué se está pintando.
+    // 0.1.0
+    // modified 0.1.1 -- franjas para la muestra del acento automático
     pub fn new(modo: ModoTema) -> Self {
         let acento = tema::acento_actual();
         let mut marca_tema = Realce::nuevo();
@@ -153,6 +161,7 @@ impl Apariencia {
     /// La imagen de la casilla automática, rehecha solo si cambió la paleta:
     /// un `Handle` nuevo en cada `view` obligaría a iced a subirla otra vez
     /// en cada fotograma.
+    // 0.1.1
     fn franjas(&self) -> iced_core::image::Handle {
         let paleta = tema::paleta_automatica();
         let mut guardadas = self.franjas.borrow_mut();
@@ -172,6 +181,7 @@ impl Apariencia {
     /// Se compara por **nombre de familia** y no por ruta: con el tema oscuro
     /// puesto, el fichero cargado es el `_dark` de la pareja, y comparar rutas
     /// no encontraría la miniatura de su propia familia.
+    // 0.1.0
     fn fondos_para(es_claro: bool, acento: Acento) -> (Vec<crate::fondos::Familia>, Option<usize>) {
         let mut fondos = crate::fondos::instaladas(es_claro);
         ordenar_por_afinidad(&mut fondos, acento);
@@ -182,6 +192,7 @@ impl Apariencia {
         (fondos, elegido)
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let mut alto =
             CABECERA + MUESTRA + SEPARACION + ROTULO + CASILLA * filas() as f32 + MARGEN * 2.0;
@@ -193,12 +204,14 @@ impl Apariencia {
         (ANCHO, alto)
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         // Cuelga del panel por la izquierda, como el menú del que se abre.
         Ancla::BajoElPanel { x: 8.0 }
     }
 
     /// ¿Se está moviendo algo dentro de la tarjeta?
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.hover_tema.animando()
             || self.hover_color.animando()
@@ -209,14 +222,17 @@ impl Apariencia {
     }
 
     /// `y` donde empieza la fila de muestras de tema.
+    // 0.1.0
     fn y_muestras(&self) -> f32 {
         MARGEN + CABECERA
     }
 
+    // 0.1.0
     fn y_rejilla(&self) -> f32 {
         self.y_muestras() + MUESTRA + SEPARACION + ROTULO
     }
 
+    // 0.1.0
     fn muestra_en(&self, x: f32, y: f32) -> Option<usize> {
         let y0 = self.y_muestras();
         if y < y0 || y > y0 + MUESTRA || x < MARGEN || x > ANCHO - MARGEN {
@@ -234,10 +250,12 @@ impl Apariencia {
     }
 
     /// `y` donde empieza la fila de miniaturas de fondo.
+    // 0.1.0
     fn y_fondos(&self) -> f32 {
         self.y_rejilla() + CASILLA * filas() as f32 + SEPARACION + ROTULO
     }
 
+    // 0.1.0
     fn fondo_en(&self, x: f32, y: f32) -> Option<usize> {
         if self.fondos.is_empty() {
             return None;
@@ -259,6 +277,7 @@ impl Apariencia {
         (col < FONDO_COLUMNAS && i < self.fondos.len()).then_some(i)
     }
 
+    // 0.1.0
     fn color_en(&self, x: f32, y: f32) -> Option<usize> {
         let y0 = self.y_rejilla();
         if y < y0 || x < MARGEN {
@@ -277,6 +296,7 @@ impl Apariencia {
         (i < Acento::TODOS.len()).then_some(i)
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let (m, c, f) = match punto {
             Some((x, y)) => (
@@ -295,6 +315,7 @@ impl Apariencia {
         a || b || d
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         if let Some(i) = self.muestra_en(x, y) {
             self.modo = MODOS[i];
@@ -330,6 +351,7 @@ impl Apariencia {
         Some(self.accion())
     }
 
+    // 0.1.0
     fn accion(&self) -> Accion {
         Accion::Apariencia {
             modo: self.modo,
@@ -337,6 +359,7 @@ impl Apariencia {
         }
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         match tecla {
             crate::TeclaPulsada::Escape => Tecla::Cerrar,
@@ -344,6 +367,8 @@ impl Apariencia {
         }
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- muestra el acento automático con franjas
     pub fn view(&self) -> PanelElement<'_> {
         let mut rejilla = column![];
         for f in 0..filas() {
@@ -451,6 +476,7 @@ impl Apariencia {
 /// Grafito no tiene tono —es gris— y con él se deja el orden alfabético: no hay
 /// ningún fondo que le pegue más que otro. Lo mismo con las familias sin SVG,
 /// que van al final porque de ellas no se sabe el color sin decodificar el PNG.
+// 0.1.0
 fn ordenar_por_afinidad(fondos: &mut [crate::fondos::Familia], acento: Acento) {
     let Some(objetivo) = tono_de_acento(acento) else {
         return;
@@ -472,6 +498,7 @@ fn ordenar_por_afinidad(fondos: &mut [crate::fondos::Familia], acento: Acento) {
 /// con cinco niveles de diferencia entre canales, y la cuenta le sacaría un
 /// 240° azul perfectamente formal que dejaría el fondo azul el primero por un
 /// gris. Por debajo de 0,08 no hay tono que signifique nada.
+// 0.1.0
 fn tono_de_acento(acento: Acento) -> Option<f32> {
     let c = acento.color();
     let (max, min) = (c.r.max(c.g).max(c.b), c.r.min(c.g).min(c.b));
@@ -489,6 +516,7 @@ fn tono_de_acento(acento: Acento) -> Option<f32> {
     Some((h + 360.0) % 360.0)
 }
 
+// 0.1.0
 fn indice(acento: Acento) -> Option<usize> {
     Acento::TODOS.iter().position(|a| *a == acento)
 }
@@ -497,6 +525,7 @@ fn indice(acento: Acento) -> Option<usize> {
 ///
 /// Son los mismos `bg` y `card` de la tabla de tokens, pero no se le pueden
 /// preguntar a `tema::bg()`: la muestra enseña el tema que **no** está puesto.
+// 0.1.0
 fn colores(claro: bool) -> (Color, Color) {
     if claro {
         (Color::from_rgb(0.949, 0.949, 0.969), Color::WHITE)
@@ -507,6 +536,7 @@ fn colores(claro: bool) -> (Color, Color) {
 
 /// Un trozo de escritorio en miniatura: la barra del panel arriba y una tarjeta
 /// debajo, que es lo que distingue de un vistazo un tema del otro.
+// 0.1.0
 fn mini<'a>(
     claro: bool,
     ancho: f32,
@@ -579,6 +609,7 @@ fn mini<'a>(
 /// la derecha. Es lo mismo que enseña macOS, y dice lo que hace sin necesitar
 /// el rótulo. El corte es vertical y no en diagonal porque una diagonal pide un
 /// lienzo con su propio dibujado y aquí basta con dos contenedores.
+// 0.1.0
 fn muestra<'a>(cual: ModoTema, elegida: f32, señalada: f32) -> PanelElement<'a> {
     let ancho = ancho_muestra();
     let alto_lienzo = MUESTRA - 22.0;
@@ -655,6 +686,7 @@ fn muestra<'a>(cual: ModoTema, elegida: f32, señalada: f32) -> PanelElement<'a>
 /// anillo redondeado. Tapar las esquinas con una capa encima tampoco sirvió:
 /// iced coloca un SVG y una imagen con un píxel de diferencia —medido: el SVG
 /// empezaba en (100, 320) y la capa en (101, 321)— y quedaba una raya.
+// 0.1.0
 fn vistas_de(fondos: &[crate::fondos::Familia]) -> Vec<Option<iced_core::image::Handle>> {
     let (iw, ih) = (
         ancho_fondo() - HUECO_ANILLO * 2.0,
@@ -670,6 +702,7 @@ fn vistas_de(fondos: &[crate::fondos::Familia]) -> Vec<Option<iced_core::image::
         .collect()
 }
 
+// 0.1.0
 fn vista_redondeada(
     ruta: &std::path::Path,
     ancho: f32,
@@ -712,6 +745,7 @@ fn vista_redondeada(
 
 /// La miniatura de una familia de fondos. Una familia sin vectorial se queda
 /// con un rectángulo liso: se puede elegir igual, que es lo que importa.
+// 0.1.0
 fn miniatura<'a>(
     vista: Option<&iced_core::image::Handle>,
     ancho: f32,
@@ -774,6 +808,7 @@ fn miniatura<'a>(
 /// Es una imagen y no tres contenedores porque tiny-skia limita el radio a la
 /// mitad del lado más corto: una franja de 10 px no puede llevar la curva de un
 /// círculo de 30.
+// 0.1.1
 fn imagen_de_franjas(paleta: [Color; 3]) -> iced_core::image::Handle {
     // A 3× del círculo, como las miniaturas de fondo.
     const LADO: u32 = CIRCULO as u32 * 3;
@@ -790,6 +825,8 @@ fn imagen_de_franjas(paleta: [Color; 3]) -> iced_core::image::Handle {
 
 /// Una casilla de la rejilla: el círculo del color, con su anillo si está
 /// elegido y su halo si está señalado. `franjas` es la imagen del automático.
+// 0.1.0
+// modified 0.1.1 -- la casilla puede llevar las franjas del acento automático
 fn casilla<'a>(
     acento: Acento,
     franjas: Option<iced_core::image::Handle>,
@@ -838,6 +875,7 @@ fn casilla<'a>(
         .into()
 }
 
+// 0.1.0
 fn separador<'a>() -> PanelElement<'a> {
     container(
         container(Space::new().height(Length::Fixed(1.0)))

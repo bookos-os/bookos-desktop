@@ -10,6 +10,7 @@
 //! ordenar: cada grupo y sus diálogos ocupan una celda, y dos documentos
 //! independientes de una aplicación siguen teniendo una celda cada uno.
 
+use smithay::utils::{Logical, Point, Rectangle};
 use std::time::Instant;
 
 /// Ordena las ventanas por uso reciente y devuelve sus índices.
@@ -22,6 +23,7 @@ use std::time::Instant;
 /// Se trunca a `MAXIMO` celdas porque a partir de ahí la fila no cabe en la
 /// pantalla; el corte se hace **después** de ordenar, así que lo que se pierde
 /// es lo más viejo, no lo primero que se encontró.
+// 0.1.0
 pub fn orden(sellos: &[Option<Instant>], maximo: usize) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..sellos.len()).collect();
     // La ordenación es **estable**, así que las que empatan —las que nunca han
@@ -34,6 +36,30 @@ pub fn orden(sellos: &[Option<Instant>], maximo: usize) -> Vec<usize> {
     });
     indices.truncate(maximo);
     indices
+}
+
+/// Dónde se pinta de verdad una ventana de la exposición mientras viaja desde
+/// su `sitio` en el escritorio hasta su `hueco` en la rejilla.
+// añadido en la 0.2.0
+pub fn hueco_pintado(
+    sitio: Option<Rectangle<i32, Logical>>,
+    hueco: Rectangle<i32, Logical>,
+    origen_salida: Point<i32, Logical>,
+    entrada: f64,
+) -> Rectangle<i32, Logical> {
+    let Some(sitio) = sitio.filter(|_| entrada < 1.0) else {
+        return hueco;
+    };
+    let mezclar = |a: i32, b: i32| a + ((b - a) as f64 * entrada).round() as i32;
+    let desde = sitio.loc - origen_salida;
+    Rectangle::new(
+        (mezclar(desde.x, hueco.loc.x), mezclar(desde.y, hueco.loc.y)).into(),
+        (
+            mezclar(sitio.size.w, hueco.size.w),
+            mezclar(sitio.size.h, hueco.size.h),
+        )
+            .into(),
+    )
 }
 
 #[cfg(test)]
@@ -89,5 +115,18 @@ mod tests {
     fn sin_ventanas_no_hay_celdas() {
         assert!(orden(&[], 12).is_empty());
         assert_eq!(orden(&sellos(&[Some(1)]), 12), vec![0], "una sola tampoco");
+    }
+
+    #[test]
+    fn el_hueco_pintado_va_del_sitio_a_la_rejilla() {
+        let sitio = Rectangle::new((100, 100).into(), (1000, 600).into());
+        let hueco = Rectangle::new((0, 0).into(), (500, 300).into());
+        let origen = Point::from((0, 0));
+        assert_eq!(hueco_pintado(Some(sitio), hueco, origen, 0.0), sitio);
+        assert_eq!(hueco_pintado(Some(sitio), hueco, origen, 1.0), hueco);
+        assert_eq!(
+            hueco_pintado(Some(sitio), hueco, origen, 0.5),
+            Rectangle::new((50, 50).into(), (750, 450).into())
+        );
     }
 }

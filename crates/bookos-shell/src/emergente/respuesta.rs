@@ -31,6 +31,7 @@ pub struct Respuesta {
 }
 
 impl Respuesta {
+    // 0.1.0
     pub fn new(id: u32, app: &str, resumen: &str) -> Self {
         Self {
             id,
@@ -39,23 +40,28 @@ impl Respuesta {
         }
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Centrada
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         (ANCHO, CABECERA + CAMPO + PIE)
     }
 
     /// El mismo velo que el buscador: pide atención sin apagar el escritorio.
+    // 0.1.0
     pub fn velo(&self) -> iced_core::Color {
         tema::alfa(iced_core::Color::BLACK, 0.45)
     }
 
+    // 0.1.0
     pub fn animando(&self) -> bool {
         false
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
         match tecla {
@@ -85,6 +91,7 @@ impl Respuesta {
         }
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let ancho_texto = ANCHO - MARGEN * 2.0;
         let escrito: PanelElement<'_> = if self.texto.is_empty() {

@@ -29,6 +29,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use smithay::backend::renderer::Texture;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement};
 use smithay::backend::renderer::gles::{
     GlesError, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, ffi,
@@ -114,18 +115,15 @@ void main() {
 /// averiguarlo. El sesgo solo interviene cuando la textura se minifica, y el
 /// cristal se dibuja a tamaño natural, o sea magnificando — el hardware se
 /// queda en el nivel 0 y el desenfoque no aparecía por más que se subiera el
-/// número. Lo que sí funciona es `GL_TEXTURE_BASE_LEVEL`: el nivel 3 pasa a
-/// ser el nivel 0 efectivo, la textura queda a un octavo y se amplía con
-/// filtro lineal.
+/// número. Lo que funciona es que la textura **sea** ya ese nivel: se sube a
+/// un octavo de lado y se amplía con filtro lineal. Antes se subía entera y se
+/// fijaba `GL_TEXTURE_BASE_LEVEL` en 3, con el mismo resultado, pero los
+/// niveles 0 a 2 —que nadie podía leer— ocupaban 27 MB de GTT a 2880×1800.
 ///
 /// 3 es un octavo de lado. Con 2 se lee el texto de detrás a través del dock,
 /// que es lo que un cristal no debe dejar hacer; con 4 se pierde el color de
 /// lo que tapa y queda un rectángulo gris.
 const NIVEL: i32 = 3;
-
-/// `GL_TEXTURE_BASE_LEVEL`. No está en el `ffi` de Smithay, que se genera
-/// contra GLES 2.0, pero el contexto es 3.2 y la acepta.
-const TEXTURE_BASE_LEVEL: ffi::types::GLenum = 0x813C;
 
 /// Separación de las muestras sobre ese nivel, en texels de ese nivel.
 const PASO: f32 = 1.5;
@@ -142,7 +140,9 @@ const TINTE: f32 = 0.85;
 /// entre frames.
 pub struct Cristal {
     programa: GlesTexProgram,
-    /// El fondo del escritorio subido con mipmaps, del que sale el desenfoque.
+    /// El fondo del escritorio ya reducido a [`NIVEL`] y subido con mipmaps,
+    /// del que sale el desenfoque, junto al tamaño **original** del fondo: las
+    /// cuentas de qué trozo queda detrás de cada zona se hacen en ese tamaño.
     ///
     /// Se guarda el `GlesTexture` y no el identificador crudo porque Smithay
     /// libera la textura cuando el último `GlesTexture` que la envuelve se
@@ -153,6 +153,7 @@ pub struct Cristal {
 impl Cristal {
     /// Compila el shader. `None` si el driver no lo acepta: el escritorio
     /// funciona igual sin cristal, con el panel opaco de siempre.
+    // 0.1.0
     pub fn new(renderer: &mut GlesRenderer) -> Option<Rc<RefCell<Self>>> {
         // Para medir con y sin, y para salir del paso si un driver lo hace mal.
         if std::env::var_os("BOOKOS_SIN_CRISTAL").is_some() {
@@ -201,11 +202,15 @@ impl Cristal {
 
     /// Sube el fondo del escritorio con mipmaps. Se llama al cargarlo y cuando
     /// cambia el fotograma de una animación.
+    // 0.1.0
+    // modified 0.1.1 -- reutiliza la textura si el tamaño no cambia y rechaza un fondo con menos píxeles de los que dice
+    // modified 0.2.0 -- reduce el fondo en CPU antes de subirlo: −27 MB de GTT
     pub fn preparar(&mut self, renderer: &mut GlesRenderer, rgba: &[u8], tam: (i32, i32)) {
         if rgba.len() < (tam.0 * tam.1 * 4) as usize {
             tracing::warn!("el fondo no tiene los píxeles que dice su tamaño");
             return;
         }
+        let (reducido, tam_reducido) = reducir(rgba, tam);
         if let Some((ref tex, tam_actual)) = self.fondo
             && tam_actual == tam
         {
@@ -218,11 +223,11 @@ impl Cristal {
                         0,
                         0,
                         0,
-                        tam.0,
-                        tam.1,
+                        tam_reducido.0,
+                        tam_reducido.1,
                         ffi::RGBA,
                         ffi::UNSIGNED_BYTE,
-                        rgba.as_ptr() as *const _,
+                        reducido.as_ptr() as *const _,
                     );
                     gl.GenerateMipmap(ffi::TEXTURE_2D);
                     gl.BindTexture(ffi::TEXTURE_2D, 0);
@@ -232,25 +237,65 @@ impl Cristal {
                 return;
             }
         }
-        self.fondo = crear_textura(renderer, rgba, tam).map(|t| (t, tam));
+        self.fondo = crear_textura(renderer, &reducido, tam_reducido).map(|t| (t, tam));
     }
 
     /// La textura del fondo, si ya está subida.
+    // 0.1.0
     pub fn textura(&self) -> Option<(GlesTexture, (i32, i32))> {
         self.fondo.clone()
     }
 
+    // 0.1.0
     pub fn programa(&self) -> &GlesTexProgram {
         &self.programa
     }
 }
 
-/// Sube el fondo a una textura con mipmaps y deja fijado el nivel base.
-///
-/// El nivel base es lo que de verdad desenfoca: a partir de ahí la textura
-/// "empieza" a un octavo de lado y al dibujarla se amplía con filtro lineal.
-/// El sesgo del LOD no sirve para esto —solo interviene al minificar, y aquí se
-/// magnifica—, y averiguarlo costó una prueba entera.
+/// Promedia bloques de 2^[`NIVEL`] píxeles de lado: lo mismo que hacían los
+/// tres primeros mipmaps de la GPU, salvo el redondeo intermedio (±1 de 255).
+/// Los bordes de bloque se reparten sobre la imagen entera para que un lado
+/// que no es múltiplo de ocho siga cubriendo el fondo completo.
+// añadido en la 0.2.0
+fn reducir(rgba: &[u8], tam: (i32, i32)) -> (Vec<u8>, (i32, i32)) {
+    let (ancho, alto) = (tam.0 as usize, tam.1 as usize);
+    let (ancho_r, alto_r) = ((ancho >> NIVEL).max(1), (alto >> NIVEL).max(1));
+    let columnas: Vec<(usize, usize)> = (0..ancho_r)
+        .map(|x| (x * ancho / ancho_r, (x + 1) * ancho / ancho_r))
+        .collect();
+    let mut salida = vec![0u8; ancho_r * alto_r * 4];
+    let mut suma = vec![0u32; ancho_r * 4];
+    for (y, fila_salida) in salida.chunks_exact_mut(ancho_r * 4).enumerate() {
+        let (y0, y1) = (y * alto / alto_r, (y + 1) * alto / alto_r);
+        suma.fill(0);
+        for fila in rgba[y0 * ancho * 4..y1 * ancho * 4].chunks_exact(ancho * 4) {
+            for (acumulado, &(x0, x1)) in suma.chunks_exact_mut(4).zip(&columnas) {
+                for pixel in fila[x0 * 4..x1 * 4].chunks_exact(4) {
+                    for (a, &c) in acumulado.iter_mut().zip(pixel) {
+                        *a += c as u32;
+                    }
+                }
+            }
+        }
+        for ((destino, acumulado), &(x0, x1)) in fila_salida
+            .chunks_exact_mut(4)
+            .zip(suma.chunks_exact(4))
+            .zip(&columnas)
+        {
+            let n = ((y1 - y0) * (x1 - x0)) as u32;
+            for (d, &a) in destino.iter_mut().zip(acumulado) {
+                *d = ((a + n / 2) / n) as u8;
+            }
+        }
+    }
+    (salida, (ancho_r as i32, alto_r as i32))
+}
+
+/// Sube el fondo ya reducido a una textura con mipmaps. Los mipmaps siguen
+/// haciendo falta aunque casi siempre se magnifique: con `LINEAR_MIPMAP_LINEAR`
+/// una textura sin la cadena entera está incompleta y GLES la lee negra.
+// 0.1.0
+// modified 0.2.0 -- recibe el fondo ya reducido y no fija el nivel base
 fn crear_textura(renderer: &mut GlesRenderer, rgba: &[u8], tam: (i32, i32)) -> Option<GlesTexture> {
     if rgba.len() < (tam.0 * tam.1 * 4) as usize {
         tracing::warn!("el fondo no tiene los píxeles que dice su tamaño");
@@ -291,7 +336,6 @@ fn crear_textura(renderer: &mut GlesRenderer, rgba: &[u8], tam: (i32, i32)) -> O
                 rgba.as_ptr() as *const _,
             );
             gl.GenerateMipmap(ffi::TEXTURE_2D);
-            gl.TexParameteri(ffi::TEXTURE_2D, TEXTURE_BASE_LEVEL, NIVEL);
             gl.BindTexture(ffi::TEXTURE_2D, 0);
             id
         })
@@ -319,6 +363,9 @@ pub struct Desenfoque {
     /// sabe qué trozo de la imagen queda detrás de esta zona.
     fondo_tam: (i32, i32),
     pantalla: (i32, i32),
+    /// Cómo cae el fondo en la pantalla: sin él, el cristal desenfocaría otro
+    /// trozo de imagen que el que se ve alrededor de la barra.
+    encuadre: crate::fondo::Encuadre,
     textura: GlesTexture,
     cristal: Rc<RefCell<Cristal>>,
     /// Multiplicador de [`PASO`] para esta zona.
@@ -334,6 +381,8 @@ impl Desenfoque {
     // Un argumento por campo: una estructura intermedia solo repetiría esta
     // misma lista.
     #[allow(clippy::too_many_arguments)]
+    // 0.1.0
+    // modificado en la 0.2.0 -- el cristal sigue al encaje elegido para el fondo
     pub fn new(
         id: Id,
         commit: CommitCounter,
@@ -341,6 +390,7 @@ impl Desenfoque {
         radio: f32,
         fondo_tam: (i32, i32),
         pantalla: (i32, i32),
+        encuadre: crate::fondo::Encuadre,
         textura: GlesTexture,
         cristal: Rc<RefCell<Cristal>>,
         fuerza: f32,
@@ -352,6 +402,7 @@ impl Desenfoque {
             radio,
             fondo_tam,
             pantalla,
+            encuadre,
             textura,
             cristal,
             fuerza,
@@ -360,36 +411,44 @@ impl Desenfoque {
 }
 
 impl Element for Desenfoque {
+    // 0.1.0
     fn id(&self) -> &Id {
         &self.id
     }
 
+    // 0.1.0
     fn current_commit(&self) -> CommitCounter {
         self.commit
     }
 
+    // 0.1.0
     fn src(&self) -> Rectangle<f64, BufferCoords> {
         Rectangle::from_size((self.rect.size.w as f64, self.rect.size.h as f64).into())
     }
 
+    // 0.1.0
     fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.rect
     }
 
+    // 0.1.0
     fn location(&self, _scale: Scale<f64>) -> smithay::utils::Point<i32, Physical> {
         self.rect.loc
     }
 
+    // 0.1.0
     fn transform(&self) -> Transform {
         Transform::Normal
     }
 
+    // 0.1.0
     fn kind(&self) -> Kind {
         Kind::Unspecified
     }
 }
 
 impl RenderElement<GlesRenderer> for Desenfoque {
+    // 0.1.0
     fn draw(
         &self,
         frame: &mut <GlesRenderer as smithay::backend::renderer::RendererSuper>::Frame<'_, '_>,
@@ -402,27 +461,34 @@ impl RenderElement<GlesRenderer> for Desenfoque {
         let cristal = cristal.borrow();
         let tam = (dst.size.w.max(1), dst.size.h.max(1));
 
-        // El trozo del fondo que queda justo detrás de esta zona. El fondo se
-        // dibuja estirado a la pantalla, así que hay que pasar de píxeles de
-        // pantalla a píxeles de la imagen.
+        // El trozo del fondo que queda justo detrás de esta zona, según cómo
+        // esté encajado en la pantalla.
         let (ancho_fondo, alto_fondo) = (self.fondo_tam.0 as f64, self.fondo_tam.1 as f64);
         let (ancho_pantalla, alto_pantalla) = (self.pantalla.0 as f64, self.pantalla.1 as f64);
-        let src = Rectangle::new(
-            (
-                dst.loc.x as f64 * ancho_fondo / ancho_pantalla,
-                dst.loc.y as f64 * alto_fondo / alto_pantalla,
-            )
-                .into(),
-            (
-                tam.0 as f64 * ancho_fondo / ancho_pantalla,
-                tam.1 as f64 * alto_fondo / alto_pantalla,
-            )
-                .into(),
+        let detras = self.encuadre.detras_de(crate::fondo::Trozo {
+            x: dst.loc.x as f64 / ancho_pantalla,
+            y: dst.loc.y as f64 / alto_pantalla,
+            w: tam.0 as f64 / ancho_pantalla,
+            h: tam.1 as f64 / alto_pantalla,
+        });
+        let src: Rectangle<f64, BufferCoords> = Rectangle::new(
+            (detras.x * ancho_fondo, detras.y * alto_fondo).into(),
+            (detras.w * ancho_fondo, detras.h * alto_fondo).into(),
         );
 
+        // La textura está reducida: `src` va en píxeles del fondo original y
+        // Smithay lo quiere en los de la textura.
+        let reducida = self.textura.size();
+        let (rx, ry) = (
+            reducida.w as f64 / ancho_fondo,
+            reducida.h as f64 / alto_fondo,
+        );
         frame.render_texture_from_to(
             &self.textura,
-            src,
+            Rectangle::new(
+                (src.loc.x * rx, src.loc.y * ry).into(),
+                (src.size.w * rx, src.size.h * ry).into(),
+            ),
             dst,
             damage,
             &[],
@@ -459,5 +525,43 @@ impl RenderElement<GlesRenderer> for Desenfoque {
                 ),
             ],
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // añadido en la 0.2.0
+    #[test]
+    fn reducir_promedia_bloques_de_ocho() {
+        // Mitad izquierda negra y derecha blanca: cada bloque cae entero en un
+        // lado, así que no puede salir ningún gris.
+        let (ancho, alto) = (32, 16);
+        let rgba: Vec<u8> = (0..ancho * alto)
+            .flat_map(|i| {
+                if i % ancho < ancho / 2 {
+                    [0, 0, 0, 255]
+                } else {
+                    [255; 4]
+                }
+            })
+            .collect();
+        let (salida, tam) = reducir(&rgba, (ancho as i32, alto as i32));
+        assert_eq!(tam, (4, 2));
+        let fila: Vec<u8> = salida[..16].iter().step_by(4).copied().collect();
+        assert_eq!(fila, [0, 0, 255, 255]);
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn reducir_con_lados_que_no_son_multiplo_de_ocho() {
+        // 2880×1800 es múltiplo; un monitor de 1366 de ancho no. El color
+        // uniforme tiene que salir intacto y cubrir todo el fondo.
+        let (ancho, alto) = (1366, 7);
+        let rgba = [10u8, 20, 30, 255].repeat(ancho * alto);
+        let (salida, tam) = reducir(&rgba, (ancho as i32, alto as i32));
+        assert_eq!(tam, (170, 1));
+        assert!(salida.chunks_exact(4).all(|p| p == [10, 20, 30, 255]));
     }
 }

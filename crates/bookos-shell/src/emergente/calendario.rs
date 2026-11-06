@@ -79,6 +79,7 @@ pub struct Calendario {
 }
 
 impl Calendario {
+    // 0.1.0
     pub fn new() -> Self {
         let hoy = Fecha::hoy();
         Self {
@@ -90,6 +91,7 @@ impl Calendario {
         }
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         (
             ANCHO,
@@ -97,6 +99,7 @@ impl Calendario {
         )
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         // Bajo el reloj. Antes salía centrado en la pantalla, que era correcto
         // cuando el reloj iba en el centro del panel; con el orden del diseño
@@ -109,6 +112,7 @@ impl Calendario {
     ///
     /// La rejilla empieza en el lunes de la semana del día 1, así que las
     /// primeras celdas son del mes anterior y las últimas del siguiente.
+    // 0.1.0
     fn celda(&self, i: usize) -> (Fecha, bool) {
         let primero = Fecha {
             anio: self.vista_anio,
@@ -153,6 +157,7 @@ impl Calendario {
     }
 
     /// Qué celda cae en un punto lógico relativo a la esquina del calendario.
+    // 0.1.0
     fn celda_en(&self, x: f32, y: f32) -> Option<usize> {
         let x0 = MARGEN;
         let y0 = MARGEN + CABECERA + BAJO_CABECERA + DIAS_SEMANA;
@@ -170,6 +175,7 @@ impl Calendario {
 
     /// Qué botón de la cabecera cae en un punto. Se miden desde el borde
     /// derecho, que es donde están anclados.
+    // 0.1.0
     fn boton_en(&self, x: f32, y: f32) -> Option<Boton> {
         if y < MARGEN || y > MARGEN + CABECERA {
             return None;
@@ -185,6 +191,7 @@ impl Calendario {
         }
     }
 
+    // 0.1.0
     fn ir(&mut self, boton: Boton) {
         let (anio, mes) = match boton {
             Boton::Anterior => mes_anterior(self.vista_anio, self.vista_mes),
@@ -198,16 +205,19 @@ impl Calendario {
         self.vista_mes = mes;
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         self.señalada
             .señalar(punto.and_then(|(x, y)| self.celda_en(x, y)))
     }
 
     /// ¿Se mueve algo dentro de la tarjeta?
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.señalada.animando()
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         if let Some(boton) = self.boton_en(x, y) {
             self.ir(boton);
@@ -225,6 +235,7 @@ impl Calendario {
         None
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
         match tecla {
@@ -246,6 +257,7 @@ impl Calendario {
         }
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let mes = NOMBRES_MES[(self.vista_mes - 1) as usize];
         // El mes con mayúscula: en la cabecera es un título, no media frase.
@@ -326,6 +338,7 @@ impl Calendario {
         )
     }
 
+    // 0.1.0
     fn celda_view(&self, i: usize) -> PanelElement<'_> {
         let (fecha, del_mes) = self.celda(i);
         let es_hoy = fecha == self.hoy;
@@ -388,6 +401,7 @@ impl Calendario {
     }
 }
 
+// 0.1.0
 fn mes_anterior(anio: i32, mes: u32) -> (i32, u32) {
     if mes == 1 {
         (anio - 1, 12)
@@ -396,6 +410,7 @@ fn mes_anterior(anio: i32, mes: u32) -> (i32, u32) {
     }
 }
 
+// 0.1.0
 fn mes_siguiente(anio: i32, mes: u32) -> (i32, u32) {
     if mes == 12 {
         (anio + 1, 1)

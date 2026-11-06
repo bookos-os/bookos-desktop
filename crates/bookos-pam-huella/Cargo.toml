@@ -1,0 +1,21 @@
+[package]
+name = "bookos-pam-huella"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Módulo PAM de BookOS: contraseña o huella, lo primero que llegue"
+
+[lib]
+# El nombre del `.so` es el que se escribe en /etc/pam.d.
+name = "pam_bookos_huella"
+crate-type = ["cdylib"]
+
+# Las dos ya están en el árbol (bookos-comp): no añaden nada al Cargo.lock.
+# zbus con la API bloqueante y sin tokio: un módulo PAM vive dentro de un
+# proceso ajeno (el worker de greetd) y no puede montar un runtime en él.
+[dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+libc = "0.2"
+
+[dev-dependencies]
+libloading = "0.8"

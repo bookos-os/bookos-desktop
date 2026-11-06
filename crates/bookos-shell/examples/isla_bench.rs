@@ -1,5 +1,5 @@
 //! Cuánto cuesta un fotograma de la isla.
-use bookos_shell::actividad::{Clase, Estado, ItemCola, Portada};
+use bookos_shell::actividad::{Clase, Estado, Fase, ItemCola, Portada};
 use bookos_shell::{Config, Shell};
 use std::time::Instant;
 
@@ -22,6 +22,7 @@ fn estado(clase: Clase, con_portada: bool, cola: usize) -> Estado {
             Clase::Calendar => "com.bookos.calendar",
             Clase::Monitor => "com.bookos.systemmonitor",
             Clase::Auriculares => "com.bookos.buds",
+            Clase::Asistente(_) => "com.bookos.assistant",
         }
         .into(),
         clase,
@@ -113,4 +114,12 @@ fn main() {
         estado(Clase::Timer, false, 0),
         &[(180.0, 55.0)],
     );
+    // añadido en la 0.2.0 -- las fases con onda de Zenith, que repintan solas.
+    for (nombre, fase) in [
+        ("zenith escuchando", Fase::Escuchando),
+        ("zenith pensando", Fase::Pensando),
+        ("zenith minimizado", Fase::Minimizado),
+    ] {
+        medir(nombre, estado(Clase::Asistente(fase), false, 0), &[]);
+    }
 }

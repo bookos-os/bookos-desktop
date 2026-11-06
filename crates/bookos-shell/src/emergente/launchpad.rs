@@ -64,9 +64,9 @@
 //! la rejilla entera en cada fotograma. Lo que sí sale barato es rasterizar dos
 //! veces —el estado de antes y el de después— y dejar que el compositor cruce
 //! las dos superficies en la GPU, que es lo que ya hacía el cambio de página.
-//! Los cambios de vista se anuncian con [`Transicion`] y el compositor pone la
-//! curva y la duración de §2.7; el movimiento es solo escala y opacidad, que es
-//! lo único que el sistema de diseño permite animar.
+//! Los cambios de vista se anuncian con [`Transicion`] y el compositor los
+//! lleva con un muelle; el movimiento es solo escala y opacidad, que es lo
+//! único que el sistema de diseño permite animar.
 //!
 //! # Lo que **no** está, y por qué
 //!
@@ -91,7 +91,7 @@ use crate::icono::{self, Icono};
 use crate::tema;
 use crate::view::PanelElement;
 
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 
 /// Tope de columnas: con más, la búsqueda visual por fila se alarga y el
 /// paso horizontal se encoge por debajo del vertical en pantallas 16:9.
@@ -218,6 +218,7 @@ pub enum ColorCarpeta {
 }
 
 impl ColorCarpeta {
+    // 0.1.0
     pub fn color(self) -> Color {
         match self {
             ColorCarpeta::Acento(a) => a.color(),
@@ -229,6 +230,7 @@ impl ColorCarpeta {
     /// grados con una `t` delante. No es un `#rrggbb` porque lo que se guarda
     /// es el tono, no el color: el par claro/oscuro lo decide el tema al
     /// dibujar, igual que con los acentos.
+    // 0.1.0
     fn guardado(self) -> String {
         match self {
             ColorCarpeta::Acento(a) => a.nombre().to_string(),
@@ -236,6 +238,7 @@ impl ColorCarpeta {
         }
     }
 
+    // 0.1.0
     fn desde_guardado(texto: &str) -> Option<Self> {
         if let Some(grados) = texto.strip_prefix('t') {
             return grados.parse::<f32>().ok().map(ColorCarpeta::Tono);
@@ -250,6 +253,7 @@ impl ColorCarpeta {
 /// calibrado del que salen los acentos —el azul es `#007aff` en claro y
 /// `#5c95ff` en oscuro—, así que un tono libre cae en la misma familia que los
 /// diez de la tabla en vez de en cualquier sitio.
+// 0.1.0
 fn de_tono(grados: f32) -> Color {
     let (s, l): (f32, f32) = if tema::es_claro() {
         (1.0, 0.50)
@@ -278,6 +282,7 @@ fn de_tono(grados: f32) -> Color {
 /// —sacar el color dominante con ImageMagick—: esto corre dentro del proceso
 /// del compositor y lanzar procesos para pintar un velo es exactamente lo que
 /// no debe hacer.
+// 0.1.0
 fn tinte_del_fondo() -> Option<Color> {
     let elegida = crate::fondos::elegida();
     let familias = crate::fondos::instaladas(tema::es_claro());
@@ -396,6 +401,8 @@ pub struct Launchpad {
 }
 
 impl Launchpad {
+    // 0.1.0
+    // modified 0.1.1 -- carga los usos y olvida iconos que no estaban
     pub fn new(pantalla: (f32, f32)) -> Self {
         crate::icono::olvidar_ausentes();
         let apps = apps::leer();
@@ -452,6 +459,7 @@ impl Launchpad {
     /// dos ordenaciones que puedan discrepar: dentro de una carpeta, lo suyo;
     /// buscando, aplicaciones sueltas puntuadas; y en la vista normal, las
     /// carpetas primero y detrás lo que no está en ninguna.
+    // 0.1.0
     fn rehacer_visibles(&mut self) {
         if let Some(c) = self.dentro {
             self.visibles = self.apps_de(c).into_iter().map(Item::App).collect();
@@ -490,6 +498,7 @@ impl Launchpad {
     ///
     /// Las que ya no estén instaladas simplemente no salen: desinstalar algo no
     /// puede dejar un hueco que al pulsarlo no haga nada.
+    // 0.1.0
     fn apps_de(&self, carpeta: usize) -> Vec<usize> {
         let Some(c) = self.carpetas.get(carpeta) else {
             return Vec::new();
@@ -503,6 +512,7 @@ impl Launchpad {
     /// Se lleva el cambio de vista pendiente, si lo hay. Lo llama el
     /// compositor justo antes de repintar: quien se lo lleva es quien tiene la
     /// superficie de antes.
+    // 0.1.0
     pub fn tomar_transicion(&mut self) -> Option<Transicion> {
         self.transicion.take()
     }
@@ -510,6 +520,7 @@ impl Launchpad {
     /// Apunta un cambio de vista para el compositor. El fundido no pisa a una
     /// transición de carpeta: entrar en una carpeta cambia además el color del
     /// panel, y el fundido de después se comería el gesto.
+    // 0.1.0
     fn animar(&mut self, transicion: Transicion) {
         if self.transicion.is_some() && transicion == Transicion::Fundido {
             return;
@@ -519,6 +530,7 @@ impl Launchpad {
 
     /// ¿Se está viendo una carpeta por dentro?
     /// Le dice dónde queda el dock, o que no se está viendo.
+    // 0.1.0
     pub fn poner_zona_dock(&mut self, zona: Option<iced_core::Rectangle>) {
         self.zona_dock = zona;
     }
@@ -530,6 +542,7 @@ impl Launchpad {
     /// Va **centrado en el cursor** y no anclado por donde se agarró: la mano
     /// apunta con la punta del puntero y esperar que el icono la siga por su
     /// centro es lo que hacen macOS y One UI.
+    // 0.1.0
     pub fn rect_agarrado(&self) -> Option<iced_core::Rectangle> {
         let a = self.arrastre.filter(|a| a.movido)?;
         let px = self.icono_px();
@@ -546,6 +559,7 @@ impl Launchpad {
     /// Aparte de la rejilla porque moverlo tiene que ser gratis: repintar el
     /// launchpad entero cuesta 11 ms medidos, y a cada movimiento del ratón eso
     /// es un arrastre a tirones. Como superficie propia solo cambia de sitio.
+    // 0.1.0
     pub fn vista_agarrado(&self) -> Option<PanelElement<'_>> {
         let a = self.arrastre.filter(|a| a.movido)?;
         let px = self.icono_px();
@@ -558,16 +572,19 @@ impl Launchpad {
     }
 
     /// ¿Cae el punto sobre el dock que se ve debajo?
+    // 0.1.0
     fn sobre_el_dock(&self, x: f32, y: f32) -> bool {
         self.zona_dock
             .is_some_and(|r| r.contains(iced_core::Point::new(x, y)))
     }
 
+    // 0.1.0
     pub fn en_carpeta(&self) -> bool {
         self.dentro.is_some()
     }
 
     /// Sale de la carpeta abierta. `true` si había alguna.
+    // 0.1.0
     pub fn salir_de_carpeta(&mut self) -> bool {
         if self.dentro.take().is_none() {
             return false;
@@ -587,6 +604,7 @@ impl Launchpad {
     ///
     /// La ✕ mide 24 y no los 14 del dibujo: el glifo es la señal, pero lo que
     /// se pulsa tiene que caber debajo de un dedo.
+    // 0.1.0
     fn rect_busqueda(&self) -> iced_core::Rectangle {
         iced_core::Rectangle {
             x: (self.size().0 - BUSQUEDA_ANCHO) / 2.0,
@@ -596,6 +614,7 @@ impl Launchpad {
         }
     }
 
+    // 0.1.0
     fn rect_limpiar(&self) -> Option<iced_core::Rectangle> {
         if self.consulta.is_empty() || self.dentro.is_some() {
             return None;
@@ -609,9 +628,32 @@ impl Launchpad {
         })
     }
 
+    /// Qué punto de página hay bajo `(x, y)`.
+    ///
+    /// La zona de cada uno es su ranura de 20 más la mitad del hueco a cada
+    /// lado, y de alto la franja entera: un círculo de 8 px es poco blanco
+    /// para el ratón y menos para el dedo, y la guía pide margen de sobra en
+    /// lo que se toca.
+    // añadido en la 0.2.0
+    fn punto_en(&self, x: f32, y: f32) -> Option<usize> {
+        let paginas = self.paginas();
+        if paginas <= 1 || self.dentro.is_some() {
+            return None;
+        }
+        let (ancho, alto) = self.size();
+        let total = paginas as f32 * 28.0;
+        let x0 = (ancho - total) / 2.0;
+        if y < alto - PUNTOS || y > alto || x < x0 {
+            return None;
+        }
+        let i = ((x - x0) / 28.0) as usize;
+        (i < paginas).then_some(i)
+    }
+
     /// El círculo que enseña el color de la carpeta abierta y despliega el
     /// selector. Va a la derecha de su cabecera, donde no compite con el
     /// nombre.
+    // 0.1.0
     fn rect_chip_color(&self) -> iced_core::Rectangle {
         let panel = self.rect_panel();
         iced_core::Rectangle {
@@ -624,6 +666,7 @@ impl Launchpad {
 
     /// El popover del selector, cuando está desplegado: los diez acentos en
     /// fila y debajo la tira de tono libre.
+    // 0.1.0
     fn rect_paleta(&self) -> iced_core::Rectangle {
         let chip = self.rect_chip_color();
         let ancho = TONO_ANCHO + PALETA_PAD * 2.0;
@@ -638,6 +681,7 @@ impl Launchpad {
     }
 
     /// La fila de los diez acentos dentro del popover.
+    // 0.1.0
     fn rect_acentos(&self) -> iced_core::Rectangle {
         let p = self.rect_paleta();
         iced_core::Rectangle {
@@ -649,6 +693,7 @@ impl Launchpad {
     }
 
     /// La tira de tono libre, debajo de los diez.
+    // 0.1.0
     fn rect_tono(&self) -> iced_core::Rectangle {
         let p = self.rect_paleta();
         iced_core::Rectangle {
@@ -664,6 +709,8 @@ impl Launchpad {
     /// El `Option` de dentro es el color elegido: los diez de la tabla y los
     /// 360 tonos de la tira. Volver a pulsar el que ya está puesto es lo que
     /// devuelve la carpeta al gris, y eso lo decide quien llama.
+    // 0.1.0
+    // modified 0.1.1 -- solo acentos fijos, sin el automático
     fn color_en(&self, x: f32, y: f32) -> Option<ColorCarpeta> {
         if !self.paleta_abierta {
             return None;
@@ -691,6 +738,7 @@ impl Launchpad {
 
     /// Cierra el selector. `true` si estaba abierto, para saber si hay que
     /// repintar —y para que Esc lo cierre antes que la carpeta—.
+    // 0.1.0
     fn cerrar_paleta(&mut self) -> bool {
         self.foco_paleta = None;
         std::mem::take(&mut self.paleta_abierta)
@@ -702,6 +750,8 @@ impl Launchpad {
     /// Seis y no los 360 que se pueden pulsar con el ratón: recorrer una tira
     /// continua a golpe de flecha son doce pulsaciones para cruzar el rojo, y
     /// quien elige con el teclado quiere un color, no afinar el tono.
+    // 0.1.0
+    // modified 0.1.1 -- solo acentos fijos, sin el automático
     fn colores_del_teclado() -> Vec<ColorCarpeta> {
         tema::Acento::FIJOS
             .into_iter()
@@ -715,6 +765,7 @@ impl Launchpad {
 
     /// Abre el selector con el foco puesto en el color que tenga la carpeta, o
     /// lo cierra si ya estaba. Es lo que hace el tabulador.
+    // 0.1.0
     fn alternar_paleta_con_teclado(&mut self, carpeta: usize) {
         if self.paleta_abierta {
             self.cerrar_paleta();
@@ -732,6 +783,7 @@ impl Launchpad {
 
     /// Mueve el foco del selector. Se queda en los extremos en vez de dar la
     /// vuelta: pasar del gris al azul de un salto se lee como un fallo.
+    // 0.1.0
     fn mover_foco_paleta(&mut self, paso: isize) {
         let colores = Self::colores_del_teclado();
         let actual = self.foco_paleta.unwrap_or(0) as isize;
@@ -741,6 +793,7 @@ impl Launchpad {
 
     /// Pone el color que tenga el foco. Como con el ratón, repetir el que ya
     /// está devuelve la carpeta al gris.
+    // 0.1.0
     fn aplicar_foco_paleta(&mut self) {
         let (Some(carpeta), Some(i)) = (self.dentro, self.foco_paleta) else {
             return;
@@ -756,6 +809,7 @@ impl Launchpad {
     }
 
     /// El rectángulo de la ✕ de la celda `i`, si el modo edición está puesto.
+    // 0.1.0
     fn cierre_de(&self, i: usize) -> Option<iced_core::Rectangle> {
         if !self.editando {
             return None;
@@ -773,6 +827,7 @@ impl Launchpad {
     }
 
     /// Alterna el modo edición: con él salen las ✕. Lo abre el botón derecho.
+    // 0.1.0
     pub fn alternar_edicion(&mut self) -> bool {
         self.editando = !self.editando;
         self.animar(Transicion::Fundido);
@@ -781,6 +836,7 @@ impl Launchpad {
 
     /// Quita una aplicación de la rejilla. **No la desinstala**: ver
     /// [`Launchpad::ocultas`].
+    // 0.1.0
     fn quitar(&mut self, app: usize) {
         let exec = self.apps[app].exec.clone();
         // Si estaba en una carpeta, sale de ella además de ocultarse: si no,
@@ -803,6 +859,7 @@ impl Launchpad {
     /// Es la mitad izquierda de la cabecera del panel: el nombre está ahí, y a
     /// la derecha vive el chip del color, que tiene su propio hit-test y manda
     /// sobre este porque se comprueba antes.
+    // 0.1.0
     fn rect_titulo(&self) -> iced_core::Rectangle {
         let panel = self.rect_panel();
         iced_core::Rectangle {
@@ -814,6 +871,7 @@ impl Launchpad {
     }
 
     /// Empieza a renombrar la carpeta abierta.
+    // 0.1.0
     fn renombrar(&mut self) -> bool {
         let Some(c) = self.dentro else {
             return false;
@@ -824,6 +882,7 @@ impl Launchpad {
 
     /// Guarda el nombre escrito. Un nombre vacío deja el que había: una carpeta
     /// sin rótulo no se distingue de otra.
+    // 0.1.0
     fn confirmar_nombre(&mut self) {
         let (Some(nombre), Some(c)) = (self.renombrando.take(), self.dentro) else {
             return;
@@ -841,6 +900,7 @@ impl Launchpad {
     }
 
     /// Escribe el estado entero en `launchpad.conf`.
+    // 0.1.0
     fn guardar(&self) {
         let datos = crate::config::Launchpad {
             carpetas: self
@@ -863,6 +923,7 @@ impl Launchpad {
     }
 
     /// Entra en una carpeta.
+    // 0.1.0
     fn abrir_carpeta(&mut self, carpeta: usize) {
         self.animar(Transicion::AbrirCarpeta);
         self.dentro = Some(carpeta);
@@ -879,6 +940,7 @@ impl Launchpad {
     /// `stat` —la búsqueda de freedesktop recorre directorios por temas por
     /// tamaños por categorías— y el launchpad tardaría en salir justo lo que no
     /// puede tardar.
+    // 0.1.0
     fn preparar_pagina(&mut self) {
         let desde = self.pagina * self.por_pagina();
         let hasta = (desde + self.por_pagina()).min(self.visibles.len());
@@ -907,6 +969,7 @@ impl Launchpad {
     /// con lo que cambia, y el damage parcial no lo salva. El velo que ocupa la
     /// pantalla lo pinta el compositor con un color sólido, que en la GPU no
     /// cuesta nada, y aquí solo se rasteriza lo que tiene contenido.
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         (
             self.celda_ancho() * self.forma().0 as f32,
@@ -923,6 +986,7 @@ impl Launchpad {
     /// etiquetas del launchpad se pelean con lo que hay detrás. Cuando haya
     /// blur, esto baja a 0,45 y no antes: bajarlo ahora sería cumplir el token
     /// y romper lo que el token existe para conseguir.
+    // 0.1.0
     pub fn velo(&self) -> Color {
         // 0,45, que es lo que pide el sistema de diseño. Estuvo en 0,82 todo el
         // tiempo que el fondo salió nítido: sin desenfoque, un velo al 45 % no
@@ -956,6 +1020,7 @@ impl Launchpad {
     /// Se devuelve en vez de dibujarlo porque mover el ratón por la rejilla
     /// repintaría el buffer entero. Como superficie aparte, señalar otra celda
     /// es mover un rectángulo de 200 px: gratis.
+    // 0.1.0
     pub fn realce(&self) -> Option<(iced_core::Rectangle, bool)> {
         let rect = self.rect_celda(self.seleccion?)?;
         // El marco de acento dice «soltar aquí hace algo». Arrastrando eso es
@@ -975,6 +1040,7 @@ impl Launchpad {
     ///
     /// Una carpeta siempre; otra aplicación solo fuera de una carpeta, porque
     /// no hay carpetas dentro de carpetas.
+    // 0.1.0
     fn destino_valido(&self) -> bool {
         match self.seleccion.and_then(|i| self.visibles.get(i)) {
             Some(Item::Carpeta(_)) => true,
@@ -984,10 +1050,12 @@ impl Launchpad {
     }
 
     /// Tamaño lógico del realce: siempre el de una celda.
+    // 0.1.0
     pub fn realce_size(&self) -> (f32, f32) {
         (self.celda_ancho() - UNIDAD, self.celda_alto() - UNIDAD)
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Centrada
     }
@@ -999,6 +1067,7 @@ impl Launchpad {
     /// hueco y los puntos— con [`AIRE`] arriba y abajo. El 72 % solo era de la
     /// rejilla y lo demás iba encima: a 1440×900 el bloque medía 828 en los
     /// 800 que deja el dock, y el buscador acababa a 2 px del borde.
+    // 0.1.0
     fn area(&self) -> (f32, f32) {
         let cabe = self.pantalla.1 - BUSQUEDA - HUECO - PUNTOS - AIRE * 2.0;
         (
@@ -1014,6 +1083,7 @@ impl Launchpad {
     /// que se quitan filas cuando no caben a [`FILA_MINIMA`], y las columnas
     /// salen de cuántas celdas un 10 % más anchas que altas caben a lo ancho:
     /// 7×4 a 1440×900 y a 1280×800, 7×5 a 1920×1080, 4×5 en vertical.
+    // 0.1.0
     fn forma(&self) -> (usize, usize) {
         let (ancho, alto) = self.area();
         let filas = if alto / 5.0 >= FILA_MINIMA { 5 } else { 4 };
@@ -1026,6 +1096,7 @@ impl Launchpad {
     /// Sale del alto, con el ancho de tope por si la pantalla es vertical. De
     /// aquí salen también el tamaño del icono y el aire de la celda, y por eso
     /// no es simplemente `alto / filas`: es el eje que manda.
+    // 0.1.0
     fn paso(&self) -> f32 {
         let (ancho, alto) = self.area();
         let (columnas, filas) = self.forma();
@@ -1046,15 +1117,18 @@ impl Launchpad {
     /// se estira hasta donde da el 0,72 del ancho, con el tope de 1,35 para que
     /// el hueco horizontal no llegue a doblar al vertical, que es cuando
     /// vuelven las bandas.
+    // 0.1.0
     fn paso_x(&self) -> f32 {
         let paso = self.paso();
         (self.area().0 / self.forma().0 as f32).clamp(paso, paso * 1.35)
     }
 
+    // 0.1.0
     fn celda_ancho(&self) -> f32 {
         self.paso_x()
     }
 
+    // 0.1.0
     fn celda_alto(&self) -> f32 {
         self.paso()
     }
@@ -1071,6 +1145,7 @@ impl Launchpad {
     ///
     /// El mínimo de las tres unidades sigue estando de tope: en una pantalla
     /// muy baja el 58 % no cabría con la etiqueta.
+    // 0.1.0
     fn icono_px(&self) -> f32 {
         (self.paso() * 0.58)
             .min(self.paso() - UNIDAD * 3.0)
@@ -1079,6 +1154,7 @@ impl Launchpad {
 
     /// Columnas y filas de la rejilla que se está viendo. Dentro de una
     /// carpeta son las del panel, que tiene las suyas.
+    // 0.1.0
     fn columnas(&self) -> usize {
         match self.dentro {
             // Las que ocupe lo que hay dentro, hasta cuatro: con cuatro
@@ -1089,6 +1165,7 @@ impl Launchpad {
         }
     }
 
+    // 0.1.0
     fn filas(&self) -> usize {
         if self.dentro.is_some() {
             FILAS_CARPETA
@@ -1097,6 +1174,7 @@ impl Launchpad {
         }
     }
 
+    // 0.1.0
     fn por_pagina(&self) -> usize {
         self.columnas() * self.filas()
     }
@@ -1106,6 +1184,7 @@ impl Launchpad {
     /// Fuera de una carpeta empieza en el borde. Dentro, en el panel — que va
     /// centrado— pero **a la misma altura**: si la rejilla de dentro no
     /// arrancara donde la de fuera, los iconos saltarían al entrar y al salir.
+    // 0.1.0
     fn origen_rejilla(&self) -> (f32, f32) {
         match self.dentro {
             Some(_) => {
@@ -1121,6 +1200,7 @@ impl Launchpad {
     /// Solo la afecta a la última, que es la única que puede ir a medias. Fuera
     /// de la carpeta es siempre cero: la rejilla grande se lee como una tabla y
     /// centrar su última fila descolocaría las columnas.
+    // 0.1.0
     fn hueco_fila(&self, fila: usize) -> f32 {
         if self.dentro.is_none() {
             return 0.0;
@@ -1140,6 +1220,7 @@ impl Launchpad {
     /// tres siempre, una carpeta de dos aplicaciones es un panel con dos
     /// tercios de vacío. Se cuenta sobre el **total** y no sobre la página que
     /// se ve, para que pasar de página no cambie el tamaño del panel.
+    // 0.1.0
     fn filas_panel(&self) -> usize {
         self.visibles
             .len()
@@ -1149,6 +1230,7 @@ impl Launchpad {
 
     /// El panel de la carpeta abierta: la tarjeta que envuelve la cabecera y su
     /// rejilla. Es un diálogo, así que lleva el radio y la sombra de uno.
+    // 0.1.0
     fn rect_panel(&self) -> iced_core::Rectangle {
         let paso = self.paso();
         let ancho = self.columnas() as f32 * self.celda_ancho() + PANEL_PAD * 2.0;
@@ -1170,19 +1252,24 @@ impl Launchpad {
 
     /// La rejilla empieza en el borde del buffer: el centrado en la pantalla lo
     /// hace el anclaje, no un margen dibujado.
+    // 0.1.0
     fn margen_x(&self) -> f32 {
         0.0
     }
 
+    // 0.1.0
     fn margen_y(&self) -> f32 {
         0.0
     }
 
+    // 0.1.0
     fn paginas(&self) -> usize {
         self.visibles.len().div_ceil(self.por_pagina()).max(1)
     }
 
     /// Rehace la lista visible tras cambiar la búsqueda.
+    // 0.1.0
+    // modified 0.1.1 -- entre los aciertos buenos manda lo más usado
     fn filtrar(&mut self) {
         let mut con_puntos: Vec<(u32, usize)> = self
             .apps
@@ -1217,12 +1304,14 @@ impl Launchpad {
     }
 
     /// Qué celda de la página cae en un punto lógico.
+    // 0.1.0
     fn celda_en(&self, x: f32, y: f32) -> Option<usize> {
         self.posicion_en(x, y).filter(|&i| i < self.visibles.len())
     }
 
     /// Como [`Launchpad::celda_en`], pero también las celdas vacías del final
     /// de la última página: soltar ahí manda el icono al final.
+    // 0.1.0
     fn posicion_en(&self, x: f32, y: f32) -> Option<usize> {
         let (x0, y0) = self.origen_rejilla();
         if y < y0 {
@@ -1251,6 +1340,7 @@ impl Launchpad {
     /// Solo cuenta lo horizontal: el icono ocupa el centro de la celda y lo
     /// que queda a los lados es el hueco entre dos, que es donde se apunta
     /// para meter algo en medio.
+    // 0.1.0
     fn hueco_en(&self, x: f32, y: f32) -> Option<usize> {
         if self.dentro.is_some() || !self.consulta.is_empty() {
             return None;
@@ -1271,6 +1361,7 @@ impl Launchpad {
     /// Se guarda el orden **entero** de las sueltas y no solo la que se ha
     /// movido: «esta va en la 31» dejaría de ser cierto en cuanto se instalase
     /// algo que cae antes alfabéticamente.
+    // 0.1.0
     fn mover_a(&mut self, origen: usize, hasta: usize) -> bool {
         let Some(&Item::App(app)) = self.visibles.get(origen) else {
             // Las carpetas van siempre primero: no tienen a dónde moverse.
@@ -1305,10 +1396,12 @@ impl Launchpad {
 
     /// La página que se está viendo. Para que el shell sepa si el arrastre la
     /// ha cambiado y hay que repintar la rejilla.
+    // 0.1.0
     pub fn pagina(&self) -> usize {
         self.pagina
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         if let (Some(arrastre), Some((x, y))) = (self.arrastre.as_mut(), punto) {
             arrastre.actual = (x, y);
@@ -1358,6 +1451,7 @@ impl Launchpad {
     /// se salga del buffer —la rejilla es el 72 % central—, y una franja por
     /// dentro se comería el hueco izquierdo de la primera columna, que es
     /// donde se suelta para poner algo el primero.
+    // 0.1.0
     fn pasar_por_borde(&mut self, x: f32) -> bool {
         const CADA: std::time::Duration = std::time::Duration::from_millis(700);
         if self.dentro.is_some() || !self.consulta.is_empty() {
@@ -1387,6 +1481,7 @@ impl Launchpad {
 
     /// Los nombres de los primeros elementos visibles. Para el autotest: es lo
     /// que dice si una carpeta ha nacido y dónde.
+    // 0.1.0
     pub fn primeros(&self, n: usize) -> Vec<String> {
         self.visibles
             .iter()
@@ -1400,6 +1495,7 @@ impl Launchpad {
 
     /// El centro de una celda de la página actual, para el autotest: sin esto
     /// no hay forma de decir «pulsa el primer icono» desde fuera.
+    // 0.1.0
     pub fn centro_de_celda(&self, i: usize) -> Option<(f32, f32)> {
         self.rect_celda(i).map(|r| (r.center_x(), r.center_y()))
     }
@@ -1407,11 +1503,13 @@ impl Launchpad {
     /// El centro del chip del selector de color, y el de un tono de la tira.
     /// Para el autotest: sin esto no hay forma de pulsar el selector desde
     /// fuera, y sus dos rectángulos dependen del tamaño de la pantalla.
+    // 0.1.0
     pub fn centro_selector(&self) -> (f32, f32) {
         let r = self.rect_chip_color();
         (r.center_x(), r.center_y())
     }
 
+    // 0.1.0
     pub fn centro_tono(&self, grados: f32) -> (f32, f32) {
         let r = self.rect_tono();
         (
@@ -1421,6 +1519,7 @@ impl Launchpad {
     }
 
     /// El rectángulo lógico de una celda de la página actual.
+    // 0.1.0
     fn rect_celda(&self, indice: usize) -> Option<iced_core::Rectangle> {
         let en_pagina = indice.checked_sub(self.pagina * self.por_pagina())?;
         if en_pagina >= self.por_pagina() {
@@ -1436,9 +1535,21 @@ impl Launchpad {
         })
     }
 
+    // añadido en la 0.2.0 -- la cruz de edición confirma al soltar aunque esté encima de una celda.
+    pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
+        let punto = iced_core::Point::new(x, y);
+        !self.paleta_abierta
+            && !self.sobre_el_dock(x, y)
+            && self.celda_en(x, y).is_some()
+            && !(self.editando
+                && (0..self.visibles.len())
+                    .any(|i| self.cierre_de(i).is_some_and(|r| r.contains(punto))))
+    }
+
     /// Pulsar **no lanza nada**: agarra. Lo que hace el icono se decide al
     /// soltar, porque hasta entonces no se sabe si esto era un clic o el
     /// principio de un arrastre.
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         // La ✕ manda sobre la celda: está encima de su icono, y si ganara el
         // icono no habría forma de pulsarla.
@@ -1468,6 +1579,14 @@ impl Launchpad {
         {
             self.consulta.clear();
             self.filtrar();
+            return None;
+        }
+        // Pulsar un punto lleva a su página, como en macOS.
+        if let Some(pagina) = self.punto_en(x, y) {
+            if pagina != self.pagina {
+                self.pagina = pagina;
+                self.preparar_pagina();
+            }
             return None;
         }
         // El selector de color de la carpeta abierta, en tres pasos: el chip
@@ -1523,11 +1642,19 @@ impl Launchpad {
     /// ¿Hay un icono agarrado? Mientras lo haya, el puntero le sigue llegando
     /// aunque se salga de la rejilla: soltar fuera es lo que saca una
     /// aplicación de su carpeta.
+    // 0.1.0
     pub fn agarrado(&self) -> bool {
         self.arrastre.is_some()
     }
 
+    // añadido en la 0.2.0 -- perder el dispositivo no equivale a soltar sobre una carpeta o el dock.
+    pub fn cancelar_arrastre(&mut self) {
+        self.arrastre = None;
+        self.paso_por_borde = None;
+    }
+
     /// Se ha soltado el botón. Devuelve si hay que repintar y qué hacer.
+    // 0.1.0
     pub fn soltar(&mut self) -> (bool, Option<Accion>) {
         let Some(arrastre) = self.arrastre.take() else {
             return (false, None);
@@ -1557,6 +1684,7 @@ impl Launchpad {
     /// crearla juntando dos aplicaciones, meter otra dentro, y sacar una
     /// soltándola fuera de la rejilla. Recolocar no pasa por aquí: lo decide
     /// [`Launchpad::hueco_en`] antes, según se suelte en el icono o a su lado.
+    // 0.1.0
     fn soltar_en(&mut self, origen: usize, destino: Option<usize>) -> bool {
         let Some(&item_origen) = self.visibles.get(origen) else {
             return false;
@@ -1592,6 +1720,7 @@ impl Launchpad {
     }
 
     /// Crea una carpeta con dos aplicaciones. La primera da el nombre inicial.
+    // 0.1.0
     fn crear_carpeta(&mut self, primera: &str, segunda: &str) {
         // «Carpeta» a secas, como macOS cuando no puede deducir una categoría:
         // adivinarla de las categorías del `.desktop` acierta poco —media
@@ -1618,6 +1747,7 @@ impl Launchpad {
         }
     }
 
+    // 0.1.0
     fn meter_en_carpeta(&mut self, carpeta: usize, exec: &str) {
         // Antes se saca de donde estuviera: una aplicación está en una carpeta
         // o en ninguna, nunca en dos.
@@ -1630,6 +1760,7 @@ impl Launchpad {
         self.tras_cambiar_carpetas();
     }
 
+    // 0.1.0
     fn sacar_de_carpeta(&mut self, carpeta: usize, exec: &str) {
         if let Some(c) = self.carpetas.get_mut(carpeta) {
             c.apps.retain(|a| a != exec);
@@ -1640,6 +1771,7 @@ impl Launchpad {
     /// Limpia, guarda y rehace la vista. Se llama tras **cualquier** cambio en
     /// las carpetas, que es lo que garantiza que el disco y lo que se ve digan
     /// lo mismo.
+    // 0.1.0
     fn tras_cambiar_carpetas(&mut self) {
         // Una carpeta con una sola aplicación no es una carpeta: se deshace
         // sola, como en macOS al sacar la penúltima.
@@ -1671,6 +1803,7 @@ impl Launchpad {
     /// la línea del dock no lo trae —`firefox` a secas ya acierta—, y aquí no
     /// hay nada mejor: el `.desktop` no lleva el `app_id` de Wayland, lo lleva
     /// la ventana cuando aparece.
+    // 0.1.0
     fn anclar_en_el_dock(&self, i: usize) -> Option<Accion> {
         let Item::App(a) = *self.visibles.get(i)? else {
             return None;
@@ -1684,6 +1817,7 @@ impl Launchpad {
         })
     }
 
+    // 0.1.0
     fn activar(&mut self, i: usize) -> Option<Accion> {
         match *self.visibles.get(i)? {
             Item::App(a) => Some(Accion::Lanzar(self.apps[a].exec.clone())),
@@ -1702,6 +1836,7 @@ impl Launchpad {
     /// Una animación correcta necesitará dos superficies ya rasterizadas y
     /// moverlas en la GPU; hasta entonces el salto inmediato es mucho más
     /// fluido que una falsa animación hecha por CPU.
+    // 0.1.0
     pub fn animando(&self) -> bool {
         false
     }
@@ -1715,6 +1850,7 @@ impl Launchpad {
     /// inercia (esa la simulan los clientes), así que mientras llegan eventos
     /// seguidos es el mismo gesto. Con la rueda cada muesca va separada y pasa
     /// su página, como antes.
+    // 0.1.0
     pub fn desplazar(&mut self, dx: f32, dy: f32) -> bool {
         const UMBRAL: f32 = 20.0;
         const ESPERA: std::time::Duration = std::time::Duration::from_millis(180);
@@ -1748,6 +1884,7 @@ impl Launchpad {
         true
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
         // Renombrando, el teclado es del campo: escribir no busca y Esc no
@@ -1857,6 +1994,7 @@ impl Launchpad {
     }
 
     /// La acción de lo que esté seleccionado, para Intro.
+    // 0.1.0
     pub fn seleccionado(&mut self) -> Option<Accion> {
         let i = self.seleccion?;
         self.activar(i)
@@ -1865,6 +2003,7 @@ impl Launchpad {
     /// Cambia de página con el teclado y se lleva la selección con ella: sin
     /// eso, Intro después de AvPág lanzaría algo de la página anterior, que ya
     /// no se está viendo.
+    // 0.1.0
     fn pasar_pagina(&mut self, hacia: isize) -> Tecla {
         let destino = self.pagina as isize + hacia;
         if destino < 0 || destino >= self.paginas() as isize {
@@ -1879,6 +2018,7 @@ impl Launchpad {
         Tecla::Consumida
     }
 
+    // 0.1.0
     fn mover(&mut self, paso: isize) -> Tecla {
         if self.visibles.is_empty() {
             return Tecla::Consumida;
@@ -1893,6 +2033,7 @@ impl Launchpad {
         Tecla::Consumida
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         // Dentro de una carpeta, arriba va su nombre y no el buscador: es lo
         // que dice dónde estás, y buscar desde dentro sale igualmente porque
@@ -1904,7 +2045,9 @@ impl Launchpad {
         let texto_busqueda = if escribiendo {
             text(self.consulta.clone()).size(15).color(tema::texto())
         } else {
-            text("Buscar aplicaciones…").size(15).color(tema::TEXTO2)
+            text(t("Buscar aplicaciones…", "Search apps…"))
+                .size(15)
+                .color(tema::TEXTO2)
         };
         // La lupa dice para qué es el campo sin gastar una palabra, y es lo que
         // permite que el borde deje de gritarlo.
@@ -1979,6 +2122,7 @@ impl Launchpad {
 
     /// El icono de una aplicación, sin rótulo. Está aparte de [`Self::celda_view`]
     /// porque el arrastre lo pinta también, en su propia superficie.
+    // 0.1.0
     fn baldosa_app(&self, indice_app: usize, px: f32, alfa: f32) -> PanelElement<'_> {
         match self.iconos.get(&indice_app).and_then(Option::as_ref) {
             Some(Icono::Svg(handle)) => svg(handle.clone())
@@ -2029,6 +2173,7 @@ impl Launchpad {
         }
     }
 
+    // 0.1.0
     fn celda_view(&self, indice: usize) -> PanelElement<'_> {
         let (cw, ch) = (self.celda_ancho(), self.celda_alto());
         let hueco = || -> PanelElement<'_> {
@@ -2098,6 +2243,7 @@ impl Launchpad {
     }
 
     /// La rejilla de la página actual.
+    // 0.1.0
     fn rejilla_view(&self) -> PanelElement<'_> {
         let mut rejilla = column![];
         // Dentro de una carpeta se dibujan solo las filas que ocupa lo que hay:
@@ -2128,6 +2274,7 @@ impl Launchpad {
     /// diez colores suelta bajo el título: ocho aplicaciones repartidas en
     /// treinta huecos no se leen como un grupo, y los diez puntos pesaban más
     /// que el nombre.
+    // 0.1.0
     fn view_carpeta(&self, carpeta: usize) -> PanelElement<'_> {
         let panel = self.rect_panel();
         // Editando se enseña el cursor con el mismo carácter que la vista de
@@ -2225,6 +2372,7 @@ impl Launchpad {
     /// El tinte va **sobre** la tarjeta del sistema y no en vez de ella: el
     /// color que el usuario le puso tiene que reconocerse al abrirla, pero el
     /// fondo sigue siendo `card`.
+    // 0.1.0
     fn tinte_panel(&self, carpeta: usize) -> (Color, Color) {
         match self.carpetas[carpeta].color.map(ColorCarpeta::color) {
             Some(color) => (
@@ -2240,6 +2388,7 @@ impl Launchpad {
     /// Sin color es un círculo hueco con el filo de la tinta, no un punto gris
     /// relleno: relleno se lee como un color más —el gris— y no como «esta
     /// carpeta no tiene».
+    // 0.1.0
     fn chip_color_view(&self, carpeta: usize) -> PanelElement<'_> {
         let puesto = self.carpetas[carpeta].color.map(ColorCarpeta::color);
         let abierta = self.paleta_abierta;
@@ -2280,6 +2429,8 @@ impl Launchpad {
     /// para quien quiera el suyo. Lo que se elige ahí es el **tono**: la
     /// saturación y la luminosidad las pone [`de_tono`], que es lo que impide
     /// que un color libre se salga del contraste del resto de la paleta.
+    // 0.1.0
+    // modified 0.1.1 -- solo acentos fijos, sin el automático
     fn paleta_view(&self, carpeta: usize) -> PanelElement<'_> {
         let puesto = self.carpetas[carpeta].color;
         let rect = self.rect_paleta();
@@ -2373,6 +2524,7 @@ impl Launchpad {
     }
 
     /// Un punto de color del selector, con su anillo si es el puesto.
+    // 0.1.0
     fn punto_color_view<'a>(&self, color: Color, elegido: bool) -> PanelElement<'a> {
         container(
             container(Space::new())
@@ -2403,6 +2555,7 @@ impl Launchpad {
     }
 
     /// La ✕ que quita una aplicación de la rejilla, en la esquina de su icono.
+    // 0.1.0
     fn cierre_view<'a>(&self, px: f32) -> PanelElement<'a> {
         let aspa: PanelElement<'a> = match crate::icono::propio("cerrar") {
             Some(ic) => {
@@ -2438,6 +2591,7 @@ impl Launchpad {
     }
 
     /// El rótulo bajo un icono, que es el mismo para aplicaciones y carpetas.
+    // 0.1.0
     fn rotulo<'a>(&self, nombre: &str, cw: f32, alfa: f32) -> PanelElement<'a> {
         container(
             text(nombre.to_string())
@@ -2465,6 +2619,7 @@ impl Launchpad {
     /// Nueve y en rejilla de tres porque es lo que se reconoce como carpeta de
     /// un vistazo. Las miniaturas son los mismos iconos ya resueltos —no hay
     /// que cargar nada más— a un tercio del tamaño.
+    // 0.1.0
     fn tapa_carpeta<'a>(&'a self, carpeta: usize, px: f32, alfa: f32) -> PanelElement<'a> {
         let dentro = self.apps_de(carpeta);
         // Con color, la caja se tiñe de él y le sale un filo del mismo tono:
@@ -2563,12 +2718,15 @@ impl Launchpad {
     }
 
     /// Los puntos de página: píldora de 20×8 el activo, círculo de 8 los demás.
+    // 0.1.0
+    // modified 0.1.1 -- los puntos de página al fondo, separados de la última fila
+    // modificado en la 0.2.0 -- ranura de 28 (20 + 8 de hueco) que comparte con [`Launchpad::punto_en`]
     fn puntos_view(&self) -> PanelElement<'_> {
         let paginas = self.paginas();
         if paginas <= 1 {
             return Space::new().height(Length::Fixed(PUNTOS)).into();
         }
-        let mut fila = row![].spacing(8);
+        let mut fila = row![];
         for i in 0..paginas {
             let activo = i == self.pagina;
             let ancho = if activo { 20.0 } else { 8.0 };
@@ -2599,8 +2757,10 @@ impl Launchpad {
                     }),
                 )
                 // Ranura de ancho fijo: sin ella, la fila entera se recoloca al
-                // cambiar de página porque el activo mide 12 px más.
-                .width(Length::Fixed(20.0))
+                // cambiar de página porque el activo mide 12 px más. Lleva
+                // dentro el hueco de 8 entre puntos para que la zona que se
+                // pulsa sea la misma que se ve.
+                .width(Length::Fixed(28.0))
                 .align_x(Horizontal::Center),
             );
         }
@@ -2903,6 +3063,27 @@ mod tests {
     /// Entrar y salir de una carpeta deja apuntada su transición, y solo se
     /// puede recoger una vez: quien se la lleva es quien tiene la superficie de
     /// antes, y dos veces sería animar dos veces lo mismo.
+    // añadido en la 0.2.0
+    #[test]
+    fn pulsar_un_punto_lleva_a_su_pagina() {
+        sin_tocar_el_disco();
+        let nombres: Vec<String> = (0..80).map(|i| format!("App {i:02}")).collect();
+        let nombres: Vec<&str> = nombres.iter().map(String::as_str).collect();
+        let mut l = con_apps(&nombres);
+        assert!(l.paginas() >= 2);
+        let (ancho, alto) = l.size();
+        let x0 = (ancho - l.paginas() as f32 * 28.0) / 2.0;
+        // El segundo punto, pulsado un poco por encima de su círculo: el
+        // margen de la franja también cuenta.
+        assert_eq!(l.pulsar(x0 + 28.0 + 14.0, alto - 20.0), None);
+        assert_eq!(l.pagina(), 1);
+        assert_eq!(l.pulsar(x0 + 14.0, alto - 4.0), None);
+        assert_eq!(l.pagina(), 0);
+        // Fuera de la fila no cambia nada.
+        l.pulsar(x0 - 10.0, alto - 4.0);
+        assert_eq!(l.pagina(), 0);
+    }
+
     #[test]
     fn abrir_y_cerrar_una_carpeta_pide_su_transicion() {
         sin_tocar_el_disco();

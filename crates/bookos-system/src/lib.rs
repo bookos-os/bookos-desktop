@@ -17,6 +17,7 @@ pub struct State {
     pub errors: std::collections::BTreeMap<String, String>,
 }
 impl Default for State {
+    // 0.1.0
     fn default() -> Self {
         Self {
             version: 1,
@@ -58,6 +59,8 @@ pub enum Operation {
     MicrophonePower { enabled: bool },
 }
 impl Operation {
+    // 0.1.0
+    // modified 0.1.1 -- operación de conexión automática a una wifi
     pub fn domain(&self) -> &'static str {
         match self {
             Self::WifiPower { .. }
@@ -80,6 +83,7 @@ impl Operation {
 
 static FEEDBACK: std::sync::Mutex<std::collections::VecDeque<(Operation, Result<(), String>)>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
+// 0.1.0
 pub fn take_feedback() -> Option<(Operation, Result<(), String>)> {
     FEEDBACK
         .lock()
@@ -93,6 +97,7 @@ struct Lane {
     ready: Notify,
 }
 impl Lane {
+    // 0.1.0
     fn push(&self, op: Operation) -> bool {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         // Only replace adjacent absolute volume writes: never reorder toggles or steps.
@@ -122,6 +127,7 @@ impl Lane {
         self.ready.notify_one();
         true
     }
+    // 0.1.0
     async fn next(&self) -> Operation {
         loop {
             if let Some(op) = self
@@ -137,6 +143,7 @@ impl Lane {
     }
 }
 
+// 0.1.0
 fn volume_target(operation: &Operation) -> Option<&str> {
     match operation {
         Operation::Volume { target, .. } | Operation::VolumePreview { target, .. } => Some(target),
@@ -144,12 +151,15 @@ fn volume_target(operation: &Operation) -> Option<&str> {
     }
 }
 static SEND: OnceLock<[std::sync::Arc<Lane>; 3]> = OnceLock::new();
+// 0.1.0
 fn cache() -> &'static RwLock<State> {
     CACHE.get_or_init(|| RwLock::new(State::default()))
 }
+// 0.1.0
 pub fn snapshot() -> State {
     cache().read().unwrap_or_else(|e| e.into_inner()).clone()
 }
+// 0.1.0
 pub fn request(op: Operation) -> bool {
     SEND.get().is_some_and(|lanes| {
         let index = match op.domain() {
@@ -160,6 +170,7 @@ pub fn request(op: Operation) -> bool {
         lanes[index].push(op)
     })
 }
+// 0.1.0
 pub fn volume(input: bool) -> Option<(u8, bool)> {
     let s = snapshot();
     let v = &s.audio[if input { "input" } else { "output" }];
@@ -168,6 +179,7 @@ pub fn volume(input: bool) -> Option<(u8, bool)> {
 
 /// Installs one background client. Wake is called after cache updates or errors.
 /// No D-Bus operation, process wait or runtime is driven by the rendering thread.
+// 0.1.0
 pub fn start(wake: impl Fn() + Send + Sync + 'static) {
     let lanes = std::array::from_fn(|_| std::sync::Arc::new(Lane::default()));
     if SEND.set(lanes).is_err() {
@@ -225,10 +237,12 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) {
         });
     });
 }
+// 0.1.0
 async fn subscribe(wake: &(dyn Fn() + Sync)) -> Result<(), zbus::Error> {
     let conn = zbus::Connection::session().await?;
     subscribe_on(conn, wake).await
 }
+// 0.1.0
 async fn subscribe_on(conn: zbus::Connection, wake: &(dyn Fn() + Sync)) -> Result<(), zbus::Error> {
     let p = zbus::Proxy::new(&conn, NAME, PATH, NAME).await?;
     let mut changes = p.receive_signal("StateChanged").await?;
@@ -246,12 +260,14 @@ async fn subscribe_on(conn: zbus::Connection, wake: &(dyn Fn() + Sync)) -> Resul
     }
     Err(zbus::Error::Failure("Servicio desconectado".into()))
 }
+// 0.1.0
 fn update(data: &str, wake: &dyn Fn()) {
     if let Ok(state) = serde_json::from_str::<State>(data) {
         *cache().write().unwrap_or_else(|e| e.into_inner()) = state;
         wake();
     }
 }
+// 0.1.0
 pub async fn call(op: &Operation) -> Result<(), String> {
     let work = async {
         let conn = zbus::Connection::session()
@@ -270,6 +286,7 @@ pub async fn call(op: &Operation) -> Result<(), String> {
         .map_err(|_| "La operación no respondió a tiempo".to_owned())?
 }
 
+// 0.1.0
 pub fn unavailable(domain: &str) -> Option<String> {
     let s = snapshot();
     s.errors
@@ -277,6 +294,7 @@ pub fn unavailable(domain: &str) -> Option<String> {
         .or_else(|| s.errors.get(domain))
         .cloned()
 }
+// 0.1.0
 pub fn audio_request(args: &[&str], notify: bool) -> bool {
     match args {
         ["set-volume", target, value] => value.parse::<f64>().ok().is_some_and(|v| {
@@ -381,6 +399,7 @@ mod tests {
 
 /// Deterministic input for renderer tests; never connects to the real session.
 #[cfg(feature = "test-fixtures")]
+// 0.1.0
 pub fn seed_test_state(state: State) {
     assert!(
         SEND.get().is_none(),

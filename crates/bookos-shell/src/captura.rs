@@ -147,6 +147,7 @@ pub enum Destino {
 impl Destino {
     const TODOS: [Self; 2] = [Self::Portapapeles, Self::Guardar];
 
+    // 0.1.0
     fn nombre(self) -> &'static str {
         match self {
             Self::Portapapeles => "Copiar",
@@ -154,10 +155,35 @@ impl Destino {
         }
     }
 
+    // 0.1.0
     fn simbolo(self) -> &'static str {
         match self {
             Self::Portapapeles => "⧉",
             Self::Guardar => "⤓",
+        }
+    }
+}
+
+/// Lo que se ajusta de la captura sin ser ni el modo ni el destino. Son botones
+/// que se quedan puestos —y se recuerdan— en vez de acciones.
+// añadido en la 0.2.0
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opcion {
+    /// Si el cursor sale en la foto.
+    Cursor,
+    /// Cuántos segundos esperar antes de capturar, para dar tiempo a abrir un
+    /// menú o a quitar la mano del ratón.
+    Espera,
+}
+
+impl Opcion {
+    const TODOS: [Self; 2] = [Self::Cursor, Self::Espera];
+
+    // añadido en la 0.2.0
+    fn simbolo(self) -> &'static str {
+        match self {
+            Self::Cursor => "↖",
+            Self::Espera => "◷",
         }
     }
 }
@@ -173,6 +199,7 @@ pub enum Modo {
 impl Modo {
     const TODOS: [Self; 2] = [Self::Pantalla, Self::Seleccion];
 
+    // 0.1.0
     fn nombre(self) -> &'static str {
         match self {
             Self::Pantalla => "Pantalla",
@@ -183,6 +210,7 @@ impl Modo {
     /// Un pictograma dibujado con caracteres, como el selector de proyección:
     /// aquí no hay iconos propios y un `<text>` no necesita fuentes cargadas
     /// para estos, que son de la tabla de formas geométricas.
+    // 0.1.0
     fn simbolo(self) -> &'static str {
         match self {
             Self::Pantalla => "▣",
@@ -203,6 +231,7 @@ pub struct Recuadro {
 impl Recuadro {
     /// El rectángulo entre dos puntos, en cualquier orden: se arrastra hacia
     /// donde se quiera y el recuadro sale siempre con lados positivos.
+    // 0.1.0
     fn entre(a: (f32, f32), b: (f32, f32)) -> Self {
         Self {
             x: a.0.min(b.0),
@@ -212,6 +241,7 @@ impl Recuadro {
         }
     }
 
+    // 0.1.0
     fn vale(&self) -> bool {
         self.w >= MINIMO && self.h >= MINIMO
     }
@@ -220,6 +250,7 @@ impl Recuadro {
     ///
     /// Los bordes ganan al interior hasta [`AGARRE`] hacia dentro: si no, en un
     /// recuadro estrecho no habría forma de coger la arista.
+    // 0.1.0
     fn agarre(&self, x: f32, y: f32) -> Option<Agarre> {
         let dentro_x = x >= self.x - AGARRE && x <= self.x + self.w + AGARRE;
         let dentro_y = y >= self.y - AGARRE && y <= self.y + self.h + AGARRE;
@@ -245,6 +276,7 @@ impl Recuadro {
     }
 
     /// El recuadro tras arrastrar `d` desde el agarre, dentro de la pantalla.
+    // 0.1.0
     fn ajustado(&self, agarre: Agarre, d: (f32, f32), pantalla: (f32, f32)) -> Self {
         match agarre {
             // Se para en el borde en vez de encogerse: moverlo no cambia qué
@@ -279,9 +311,16 @@ pub struct Captura {
     hecho: Option<Recuadro>,
     /// Qué celda de la barra tiene el ratón encima.
     señalada: Option<usize>,
+    /// Si el cursor sale en la foto.
+    // añadido en la 0.2.0
+    cursor: bool,
+    /// Segundos de espera antes de capturar: 0 es inmediata.
+    // añadido en la 0.2.0
+    retardo: u8,
 }
 
 impl Captura {
+    // 0.1.0
     pub fn new(pantalla: (f32, f32)) -> Self {
         Self {
             pantalla,
@@ -289,15 +328,27 @@ impl Captura {
             arrastre: None,
             hecho: None,
             señalada: None,
+            cursor: false,
+            retardo: 0,
         }
     }
 
+    /// Con las opciones que se dejaron la última vez.
+    // añadido en la 0.2.0
+    pub fn con_opciones(mut self, cursor: bool, retardo: u8) -> Self {
+        self.cursor = cursor;
+        self.retardo = retardo;
+        self
+    }
+
+    // 0.1.0
     pub fn modo(&self) -> Modo {
         self.modo
     }
 
     /// Lo que se capturaría ahora mismo. `None` cuando en modo selección
     /// todavía no se ha marcado nada que valga.
+    // 0.1.0
     pub fn recuadro(&self) -> Option<Recuadro> {
         match self.modo {
             Modo::Pantalla => Some(Recuadro {
@@ -312,6 +363,7 @@ impl Captura {
 
     /// El recuadro que se está viendo: el del arrastre si hay uno, y si no el
     /// último que quedó marcado.
+    // 0.1.0
     fn marcando(&self) -> Option<Recuadro> {
         match self.arrastre {
             Some(Arrastre::Nuevo(a, b)) => Some(Recuadro::entre(a, b)),
@@ -332,15 +384,18 @@ impl Captura {
     /// Lo marcado que se ve: el velo tiene el agujero ahí. Es lo mismo que se
     /// capturaría, así que en modo pantalla es la pantalla entera y el marco
     /// la rodea por dentro: es como se ve que la foto va a ser toda.
+    // 0.1.0
     pub fn marcado(&self) -> Option<Recuadro> {
         self.recuadro()
     }
 
     /// Esquina de la barra de modos, en lógicos de la pantalla.
+    // 0.1.0
     pub fn origen_barra(&self) -> (f32, f32) {
         (self.x_barra(), self.y_barra())
     }
 
+    // 0.1.0
     pub fn tamano_barra(&self) -> (f32, f32) {
         (self.ancho_barra(), BARRA_ALTO)
     }
@@ -351,6 +406,7 @@ impl Captura {
     ///
     /// En modo pantalla no hay pastilla: las medidas son las de la pantalla, y
     /// abajo del todo se montaría encima de la barra.
+    // 0.1.0
     pub fn origen_pastilla(&self) -> Option<(f32, f32)> {
         let (pw, ph) = self.pantalla;
         let r = self.medidas().and(self.marcado())?;
@@ -366,6 +422,7 @@ impl Captura {
 
     /// Lo que pone la pastilla. Solo cambia cuando cambian los píxeles
     /// enteros, que es lo que decide si hay que repintarla.
+    // 0.1.0
     pub fn medidas(&self) -> Option<(i32, i32)> {
         match self.modo {
             Modo::Pantalla => None,
@@ -374,17 +431,23 @@ impl Captura {
     }
 
     /// `y` donde empieza la barra de modos.
+    // 0.1.0
     fn y_barra(&self) -> f32 {
         self.pantalla.1 - BARRA_MARGEN - BARRA_ALTO
     }
 
-    /// Cuántas celdas tiene la barra: los modos y los destinos.
-    const CELDAS: usize = Modo::TODOS.len() + Destino::TODOS.len();
+    /// Cuántas celdas tiene la barra: los modos, los destinos y las opciones.
+    // modificado en la 0.2.0 -- el tercer grupo, con el cursor y la espera.
+    const CELDAS: usize = Modo::TODOS.len() + Destino::TODOS.len() + Opcion::TODOS.len();
+    /// Dónde empieza cada grupo después del primero.
+    const DESTINOS: usize = Modo::TODOS.len();
+    const OPCIONES: usize = Modo::TODOS.len() + Destino::TODOS.len();
 
+    // 0.1.0
     fn ancho_barra(&self) -> f32 {
         CELDA_W * Self::CELDAS as f32
             + CELDA_HUECO * (Self::CELDAS - 1) as f32
-            + DIVISOR_HUECO
+            + DIVISOR_HUECO * 2.0
             + BARRA_PADDING * 2.0
     }
 
@@ -394,15 +457,15 @@ impl Captura {
     /// de destino todo se corre lo que ocupa. Se calcula aquí y no en el `view`
     /// para que el hit-test y el dibujo no puedan discrepar, que es el fallo
     /// que ya salió una vez en el buscador.
+    // 0.1.0
     fn x_celda(&self, i: usize) -> f32 {
         let base = self.x_barra() + BARRA_PADDING + i as f32 * (CELDA_W + CELDA_HUECO);
-        if i >= Modo::TODOS.len() {
-            base + DIVISOR_HUECO
-        } else {
-            base
-        }
+        // Un divisor por cada frontera de grupo que se haya cruzado.
+        let divisores = usize::from(i >= Self::DESTINOS) + usize::from(i >= Self::OPCIONES);
+        base + DIVISOR_HUECO * divisores as f32
     }
 
+    // 0.1.0
     fn x_barra(&self) -> f32 {
         (self.pantalla.0 - self.ancho_barra()) / 2.0
     }
@@ -412,6 +475,7 @@ impl Captura {
     /// Se recorren las celdas en vez de dividir por el paso: con el divisor en
     /// medio, la cuenta con un solo paso dejaría de valer a partir del segundo
     /// grupo, y cuatro comparaciones no cuestan nada.
+    // 0.1.0
     fn celda_en(&self, x: f32, y: f32) -> Option<usize> {
         let y0 = self.y_barra() + BARRA_PADDING;
         if y < y0 || y > y0 + CELDA_H {
@@ -425,6 +489,7 @@ impl Captura {
 
     /// ¿Cae el punto sobre la barra de modos? Ahí el arrastre no empieza: si
     /// no, ir a pulsar «Pantalla» marcaría un recuadro por el camino.
+    // 0.1.0
     fn en_la_barra(&self, x: f32, y: f32) -> bool {
         x >= self.x_barra()
             && x <= self.x_barra() + self.ancho_barra()
@@ -434,6 +499,7 @@ impl Captura {
 
     /// Mueve el puntero. `true` si hay que repintar **la barra**: lo que
     /// cambie en el recuadro lo dicen [`Self::marcado`] y [`Self::medidas`].
+    // 0.1.0
     pub fn puntero(&mut self, x: f32, y: f32) -> bool {
         let señalada = self.celda_en(x, y);
         let cambio_señal = señalada != self.señalada;
@@ -450,6 +516,7 @@ impl Captura {
 
     /// La forma del cursor en ese punto: lo que haría un clic ahí, o lo que se
     /// está haciendo si hay un arrastre.
+    // 0.1.0
     pub fn forma(&self, x: f32, y: f32) -> Forma {
         let agarre = match self.arrastre {
             Some(Arrastre::Nuevo(..)) => return Forma::Cruz,
@@ -471,14 +538,33 @@ impl Captura {
 
     /// Lo marcado, si se puede ajustar: en modo pantalla no hay aristas que
     /// coger, la foto es toda.
+    // 0.1.0
     fn hecho_ajustable(&self) -> Option<Recuadro> {
         self.hecho.filter(|_| self.modo == Modo::Seleccion)
     }
 
     /// Empieza un arrastre o pulsa un botón de la barra. `Some` solo al pulsar
     /// «Copiar» o «Guardar» con algo que capturar.
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         if let Some(i) = self.celda_en(x, y) {
+            // Las últimas son opciones: se quedan puestas y se recuerdan.
+            if i >= Self::OPCIONES {
+                match Opcion::TODOS[i - Self::OPCIONES] {
+                    Opcion::Cursor => self.cursor = !self.cursor,
+                    Opcion::Espera => {
+                        let siguiente = crate::config::RETARDOS_CAPTURA
+                            .iter()
+                            .position(|r| *r == self.retardo)
+                            .map_or(0, |p| (p + 1) % crate::config::RETARDOS_CAPTURA.len());
+                        self.retardo = crate::config::RETARDOS_CAPTURA[siguiente];
+                    }
+                }
+                return Some(Accion::CapturaOpciones {
+                    cursor: self.cursor,
+                    retardo: self.retardo,
+                });
+            }
             // Las primeras celdas son los modos y las de después los destinos.
             if let Some(destino) = Destino::TODOS.get(i.wrapping_sub(Modo::TODOS.len())) {
                 return self.accion(*destino);
@@ -514,6 +600,7 @@ impl Captura {
     ///
     /// Un clic suelto sobre el velo no deja nada marcado: se entiende como «no
     /// quiero nada de aquí» y la capa sigue abierta para volver a intentarlo.
+    // 0.1.0
     pub fn soltar(&mut self) {
         let Some(arrastre) = self.arrastre else {
             return;
@@ -528,6 +615,7 @@ impl Captura {
         };
     }
 
+    // 0.1.0
     fn accion(&self, destino: Destino) -> Option<Accion> {
         let r = self.recuadro()?;
         Some(Accion::Capturar {
@@ -536,9 +624,12 @@ impl Captura {
             ancho: r.w as i32,
             alto: r.h as i32,
             guardar: destino == Destino::Guardar,
+            cursor: self.cursor,
+            retardo: self.retardo,
         })
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: TeclaPulsada) -> crate::Tecla {
         use crate::Tecla;
         match tecla {
@@ -574,11 +665,13 @@ impl Captura {
 
     /// ¿Hay algo moviéndose? El recuadro se mueve con el ratón, así que sí
     /// mientras se arrastra.
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.arrastre.is_some()
     }
 
     /// La pastilla con las medidas, sola en su lienzo.
+    // 0.1.0
     pub fn vista_pastilla(&self) -> PanelElement<'_> {
         let (w, h) = self.medidas().unwrap_or_default();
         container(
@@ -607,6 +700,7 @@ impl Captura {
     /// La barra, sola en su lienzo: los modos a la izquierda y a dónde va la
     /// captura a la derecha, separados por un divisor. Dónde va en la pantalla
     /// lo dice [`Self::origen_barra`].
+    // 0.1.0
     pub fn vista_barra(&self) -> PanelElement<'_> {
         let mut celdas = row![];
         for i in 0..Self::CELDAS {
@@ -615,7 +709,7 @@ impl Captura {
             }
             // El divisor entre los dos grupos: la misma línea que separa las
             // secciones de las tarjetas del panel.
-            if i == Modo::TODOS.len() {
+            if i == Self::DESTINOS || i == Self::OPCIONES {
                 celdas = celdas
                     .push(Space::new().width(Length::Fixed(DIVISOR_AIRE - CELDA_HUECO)))
                     .push(
@@ -632,14 +726,45 @@ impl Captura {
             // Los modos se encienden cuando están elegidos. Los destinos son
             // botones: no se quedan encendidos, y se apagan mientras no haya
             // nada marcado que capturar.
-            let (simbolo, nombre, activa, apagada) =
+            let (simbolo, nombre, activa, apagada) = if i >= Self::OPCIONES {
+                let o = Opcion::TODOS[i - Self::OPCIONES];
+                match o {
+                    Opcion::Cursor => (
+                        o.simbolo(),
+                        if self.cursor {
+                            "Con cursor"
+                        } else {
+                            "Sin cursor"
+                        }
+                        .to_string(),
+                        self.cursor,
+                        false,
+                    ),
+                    Opcion::Espera => (
+                        o.simbolo(),
+                        if self.retardo == 0 {
+                            "Sin espera".to_string()
+                        } else {
+                            format!("{} s", self.retardo)
+                        },
+                        self.retardo > 0,
+                        false,
+                    ),
+                }
+            } else {
                 match Destino::TODOS.get(i.wrapping_sub(Modo::TODOS.len())) {
-                    Some(d) => (d.simbolo(), d.nombre(), false, self.recuadro().is_none()),
+                    Some(d) => (
+                        d.simbolo(),
+                        d.nombre().to_string(),
+                        false,
+                        self.recuadro().is_none(),
+                    ),
                     None => {
                         let m = Modo::TODOS[i];
-                        (m.simbolo(), m.nombre(), m == self.modo, false)
+                        (m.simbolo(), m.nombre().to_string(), m == self.modo, false)
                     }
-                };
+                }
+            };
             let señalada = self.señalada == Some(i) && !apagada;
             celdas = celdas.push(
                 container(
@@ -713,6 +838,7 @@ impl Captura {
 /// `Captura 2026-08-24 a las 10.42.31.png`: la fecha delante para que ordenen
 /// solas por nombre, y con puntos en la hora porque los dos puntos no se pueden
 /// escribir en un nombre de fichero en todos los sistemas de archivos.
+// 0.1.0
 pub fn guardar_png(rgba: &[u8], ancho: u32, alto: u32) -> std::io::Result<std::path::PathBuf> {
     let base = carpeta_de_capturas();
     std::fs::create_dir_all(&base)?;
@@ -726,12 +852,14 @@ pub fn guardar_png(rgba: &[u8], ancho: u32, alto: u32) -> std::io::Result<std::p
 }
 
 /// La misma captura, pero en memoria: es lo que se pone en el portapapeles.
+// 0.1.0
 pub fn png_en_memoria(rgba: &[u8], ancho: u32, alto: u32) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     codificar_png(std::io::Cursor::new(&mut bytes), rgba, ancho, alto)?;
     Ok(bytes)
 }
 
+// 0.1.0
 fn codificar_png<W: std::io::Write>(
     destino: W,
     rgba: &[u8],
@@ -752,11 +880,13 @@ fn codificar_png<W: std::io::Write>(
 /// que el fichero acabó en el disco sin adivinar su nombre, que lleva la hora.
 static ULTIMA: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
+// 0.1.0
 pub fn ultima_guardada() -> Option<std::path::PathBuf> {
     ULTIMA.lock().ok().and_then(|g| g.clone())
 }
 
 /// Dónde van las capturas.
+// 0.1.0
 fn carpeta_de_capturas() -> std::path::PathBuf {
     // `XDG_PICTURES_DIR` la pone `xdg-user-dirs`; si no está, se cae a la
     // carpeta en castellano y luego a la inglesa, que es lo que hay en un
@@ -777,6 +907,7 @@ fn carpeta_de_capturas() -> std::path::PathBuf {
 }
 
 /// `2026-08-24 a las 10.42.31`, en hora local.
+// 0.1.0
 fn sello_de_tiempo() -> String {
     let (h, m) = crate::hora_local_ahora();
     let hoy = crate::state::Fecha::hoy();
@@ -968,12 +1099,78 @@ mod tests {
                 ancho: 400,
                 alto: 300,
                 guardar,
+                cursor: false,
+                retardo: 0,
             })
         };
         let copiar = celda(&c, Modo::TODOS.len());
         let guardar = celda(&c, Modo::TODOS.len() + 1);
         assert_eq!(c.pulsar(copiar.0, copiar.1), esperada(false));
         assert_eq!(c.pulsar(guardar.0, guardar.1), esperada(true));
+    }
+
+    /// El cursor sale fuera por defecto y las opciones viajan con la captura.
+    // añadido en la 0.2.0
+    #[test]
+    fn el_cursor_y_la_espera_viajan_con_la_captura() {
+        let mut c = Captura::new(PANTALLA);
+        c.pulsar(200.0, 150.0);
+        c.puntero(600.0, 450.0);
+        c.soltar();
+        let cursor = celda(&c, Captura::OPCIONES);
+        let espera = celda(&c, Captura::OPCIONES + 1);
+        // Pulsar una opción no captura: pide guardarla y se queda puesta.
+        assert_eq!(
+            c.pulsar(cursor.0, cursor.1),
+            Some(Accion::CapturaOpciones {
+                cursor: true,
+                retardo: 0
+            })
+        );
+        assert_eq!(
+            c.pulsar(espera.0, espera.1),
+            Some(Accion::CapturaOpciones {
+                cursor: true,
+                retardo: 3
+            })
+        );
+        let copiar = celda(&c, Modo::TODOS.len());
+        assert!(matches!(
+            c.pulsar(copiar.0, copiar.1),
+            Some(Accion::Capturar {
+                cursor: true,
+                retardo: 3,
+                guardar: false,
+                ..
+            })
+        ));
+        // La espera da la vuelta: 3, 5, 10 y otra vez sin espera.
+        for esperado in [5, 10, 0] {
+            let Some(Accion::CapturaOpciones { retardo, .. }) = c.pulsar(espera.0, espera.1) else {
+                panic!("la espera es una opción");
+            };
+            assert_eq!(retardo, esperado);
+        }
+    }
+
+    /// Con las opciones recordadas, la capa abre como se dejó.
+    // añadido en la 0.2.0
+    #[test]
+    fn la_capa_abre_con_las_opciones_recordadas() {
+        let mut c = Captura::new(PANTALLA).con_opciones(true, 5);
+        let (x, y) = celda(&c, Modo::TODOS.len());
+        assert_eq!(c.pulsar(x, y), None, "sin marcar, copiar no hace nada");
+        c.pulsar(100.0, 100.0);
+        c.puntero(300.0, 300.0);
+        c.soltar();
+        assert!(matches!(
+            c.pulsar(x, y),
+            Some(Accion::Capturar {
+                cursor: true,
+                retardo: 5,
+                ..
+            })
+        ));
     }
 
     /// Sin nada marcado los botones no hacen nada: no hay foto que decidir.
@@ -1009,7 +1206,9 @@ mod tests {
                 y: 0,
                 ancho: 1920,
                 alto: 1080,
-                guardar: true
+                guardar: true,
+                cursor: false,
+                retardo: 0,
             })
         );
     }

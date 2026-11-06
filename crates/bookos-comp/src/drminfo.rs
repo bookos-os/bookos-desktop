@@ -17,6 +17,7 @@ use smithay::reexports::drm::control::{Device as ControlDevice, connector};
 struct Card(File);
 
 impl AsFd for Card {
+    // 0.1.0
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
     }
@@ -24,6 +25,7 @@ impl AsFd for Card {
 impl BasicDevice for Card {}
 impl ControlDevice for Card {}
 
+// 0.1.0
 pub fn run() -> anyhow::Result<()> {
     let mut encontradas = 0;
 
@@ -45,6 +47,7 @@ pub fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+// 0.1.0
 fn describir(ruta: &Path) -> anyhow::Result<()> {
     // Solo lectura y sin master: enumerar recursos no requiere control.
     let card = Card(File::open(ruta)?);

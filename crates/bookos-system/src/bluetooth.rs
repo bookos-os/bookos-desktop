@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use zbus::{Connection, Proxy, zvariant::OwnedObjectPath};
 type Objects =
     HashMap<OwnedObjectPath, HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>>>;
+// 0.1.0
 async fn objects(c: &Connection) -> Result<Objects, String> {
     Proxy::new(c, "org.bluez", "/", "org.freedesktop.DBus.ObjectManager")
         .await
@@ -12,11 +13,13 @@ async fn objects(c: &Connection) -> Result<Objects, String> {
         .await
         .map_err(|e| e.to_string())
 }
+// 0.1.0
 async fn proxy<'a>(c: &'a Connection, path: &'a str, iface: &'a str) -> Result<Proxy<'a>, String> {
     Proxy::new(c, "org.bluez", path, iface)
         .await
         .map_err(|e| e.to_string())
 }
+// 0.1.0
 pub async fn state(c: &Connection) -> Result<Json, String> {
     let mut enabled = false;
     let mut present = false;
@@ -57,6 +60,7 @@ pub async fn state(c: &Connection) -> Result<Json, String> {
     });
     Ok(json!({"present":present,"enabled":enabled,"devices":devices}))
 }
+// 0.1.0
 pub async fn perform(c: &Connection, op: &Operation) -> Result<(), String> {
     match op {
         Operation::BluetoothPower { enabled } | Operation::BluetoothScan { enabled } => {

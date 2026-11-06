@@ -24,13 +24,20 @@ use crate::view::PanelElement;
 /// Ancho de la tarjeta. Más estrecha que las del panel: es un aviso de paso, no
 /// algo que se lea entero.
 const ANCHO: f32 = 360.0;
-const MARGEN: f32 = 16.0;
+const MARGEN: f32 = 12.0;
 /// Lado del icono de la aplicación.
-const ICONO: f32 = 40.0;
+const ICONO: f32 = 36.0;
 /// Aire entre la cabecera, el cuerpo y los botones.
-const RESPIRO: f32 = 10.0;
+const RESPIRO: f32 = 8.0;
 /// Alto de una línea del cuerpo, a 13 px, y de la barra de progreso con su aire.
 const LINEA_CUERPO: f32 = 17.0;
+/// La app a 12 px y el resumen a 14, con el interlineado de 1,3 de iced.
+// añadido en la 0.2.0
+const ALTO_TITULOS: f32 = 34.0;
+/// El cuerpo va en la columna del resumen, a la derecha del icono. Puede ser
+/// más ancho que los títulos porque empieza por debajo de la ✕.
+// añadido en la 0.2.0
+const ANCHO_CUERPO: f32 = ANCHO - MARGEN * 2.0 - ICONO - 12.0;
 const ALTO_PROGRESO: f32 = 4.0 + RESPIRO;
 /// Hueco para que el desenfoque y su desplazamiento quepan dentro del buffer.
 pub const MARGEN_SOMBRA: f32 = 24.0;
@@ -71,6 +78,11 @@ const RECORRIDO: f32 = 48.0;
 
 pub struct Toast {
     notificacion: Notificacion,
+    /// El cuerpo ya partido en una o dos líneas. Se parte una vez porque el
+    /// alto de la tarjeta depende de cuántas salen y se pregunta cada
+    /// fotograma; reservar siempre dos dejaba un renglón vacío debajo de los
+    /// avisos cortos, que son casi todos.
+    cuerpo: String,
     /// Cuánto se queda quieto antes de empezar a irse.
     quieto: Duration,
     desde: Instant,
@@ -97,6 +109,7 @@ pub enum Pulsado {
 impl Toast {
     /// `caducidad` es el `expire_timeout` de D-Bus: negativo «lo que decida el
     /// servidor», cero «que no se vaya sola» y positivo, milisegundos.
+    // modified 0.1.1 -- parte el cuerpo una vez para el alto
     pub fn new(notificacion: Notificacion, caducidad: i32) -> Self {
         let por_defecto = if notificacion.critica {
             QUIETO_CRITICA
@@ -112,8 +125,11 @@ impl Toast {
             ms if ms > 0 => Duration::from_millis(ms as u64).clamp(MINIMO, MAXIMO),
             _ => por_defecto,
         };
+        // modificado en la 0.2.0 -- se parte al ancho de la columna del resumen
+        let cuerpo = crate::escritorio::dos_lineas(&notificacion.cuerpo, ANCHO_CUERPO, 13.0);
         Self {
             notificacion,
+            cuerpo,
             quieto,
             desde: Instant::now(),
             partida: None,
@@ -122,20 +138,35 @@ impl Toast {
         }
     }
 
+    // 0.1.0
     pub fn profundidad(&self) -> usize {
         self.profundidad
     }
 
+    // 0.1.0
     pub fn id(&self) -> u32 {
         self.notificacion.id
     }
 
+    // 0.1.1
+    pub fn app(&self) -> &str {
+        &self.notificacion.app
+    }
+
+    // 0.1.1
+    pub fn critica(&self) -> bool {
+        self.notificacion.critica
+    }
+
     /// Cuánto queda para que desaparezca del todo. `None` si ya se fue.
+    // 0.1.0
     pub fn queda(&self) -> Option<Duration> {
         (self.quieto + SALIDA).checked_sub(self.desde.elapsed())
     }
 
     /// Lo empuja a irse ya: es lo que hace pulsarlo.
+    // 0.1.0
+    // modified 0.1.1 -- sale desde donde estaba si se descarta a mitad de la entrada
     pub fn descartar(&mut self) {
         if self.saliendo() {
             return;
@@ -150,6 +181,8 @@ impl Toast {
         self.desde = Instant::now() - self.quieto;
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- la salida parte del alfa que tenía
     pub fn alfa(&self) -> f32 {
         let t = self.desde.elapsed();
         if t < self.quieto {
@@ -158,11 +191,13 @@ impl Toast {
         self.partida.map_or(1.0, |p| p.0) * (1.0 - self.avance_salida())
     }
 
+    // 0.1.1
     fn avance_salida(&self) -> f32 {
         let t = self.desde.elapsed().saturating_sub(self.quieto);
         1.0 - tema::C_ENTRADA.eval(1.0 - tema::fraccion(t, SALIDA))
     }
 
+    // 0.1.1
     pub fn desplazamiento_horizontal(&self) -> f32 {
         if tema::efectos_reducidos() {
             return 0.0;
@@ -175,11 +210,13 @@ impl Toast {
     }
 
     /// ¿Ha empezado ya a irse?
+    // 0.1.0
     pub fn saliendo(&self) -> bool {
         self.desde.elapsed() >= self.quieto
     }
 
     /// Pone el sitio en la pila. `true` si con eso hay que volver a pintarlo.
+    // 0.1.0
     pub fn colocar(&mut self, profundidad: usize, fijo: Option<f32>) -> bool {
         let cambia = self.profundidad != profundidad || self.fijo != fijo;
         self.profundidad = profundidad;
@@ -188,12 +225,12 @@ impl Toast {
     }
 
     /// El alto que tendría delante, que es el que heredan los de atrás.
+    // modified 0.1.1 -- reserva solo las líneas de cuerpo que hay
+    // modificado en la 0.2.0 -- el cuerpo cuenta dentro de la columna de títulos, junto al icono
     pub fn alto_propio(&self) -> f32 {
         let n = &self.notificacion;
-        let mut alto = MARGEN * 2.0 + ICONO;
-        if !n.cuerpo.is_empty() {
-            alto += RESPIRO + LINEA_CUERPO * 2.0;
-        }
+        let lineas = self.cuerpo.lines().count() as f32;
+        let mut alto = MARGEN * 2.0 + ICONO.max(ALTO_TITULOS + LINEA_CUERPO * lineas);
         if n.progreso.is_some() || n.progreso_indeterminado {
             alto += ALTO_PROGRESO;
         }
@@ -206,21 +243,26 @@ impl Toast {
     /// Cuánto más abajo asoma que el de delante, en lógicos. El zoom del
     /// compositor crece desde el centro, así que además de bajar `ASOMO` por
     /// nivel hay que compensar lo que la tarjeta encogida sube su base.
+    // 0.1.0
     pub fn desplazamiento(&self) -> f32 {
         let nivel = self.profundidad as f32;
         nivel * ASOMO + self.alto_tarjeta() * (1.0 - self.encogido()) / 2.0
     }
 
+    // 0.1.0
     fn encogido(&self) -> f32 {
         1.0 - ENCOGE_POR_NIVEL * self.profundidad as f32
     }
 
     /// Alto de la tarjeta, sin el margen de la sombra.
+    // 0.1.0
     pub fn alto_tarjeta(&self) -> f32 {
         self.size().1 - MARGEN_SOMBRA * 2.0
     }
 
     /// Entra creciendo un poco, como los popovers.
+    // 0.1.0
+    // modified 0.1.1 -- la salida parte de la escala que tenía; sin zoom con efectos reducidos
     pub fn escala(&self) -> f32 {
         if tema::efectos_reducidos() {
             return self.encogido();
@@ -240,6 +282,8 @@ impl Toast {
 
     /// El temporizador despierta al empezar la salida; desde ahí hacen falta
     /// fotogramas hasta acabarla aunque no haya entrada del usuario.
+    // 0.1.0
+    // modified 0.1.1 -- cuenta también la salida
     pub fn animando(&self) -> bool {
         let t = self.desde.elapsed();
         t < ENTRADA || (t >= self.quieto && t < self.quieto + SALIDA)
@@ -248,6 +292,7 @@ impl Toast {
     /// Las acciones que van en botón. `default` no es un botón: según la
     /// especificación es lo que pasa al pulsar el aviso, y las apps la mandan
     /// con etiqueta vacía o «Activate», que se pintaba como un botón más.
+    // 0.1.0
     fn botones(&self) -> Vec<&crate::notificaciones::Accion> {
         self.notificacion
             .acciones
@@ -261,12 +306,14 @@ impl Toast {
     /// dibujaban al ancho de su texto y el clic repartía la tarjeta a partes
     /// iguales, así que con «Responder» y «Marcar como leído» pulsar el
     /// segundo ejecutaba el primero.
+    // 0.1.0
     fn huecos_botones(n: usize) -> impl Iterator<Item = (f32, f32)> {
         let ancho = (ANCHO - 2.0 * MARGEN - HUECO_BOTONES * (n as f32 - 1.0)) / n as f32;
         (0..n).map(move |i| (MARGEN + i as f32 * (ancho + HUECO_BOTONES), ancho))
     }
 
     /// Si pulsar el cuerpo tiene algo que hacer: la acción `default`.
+    // 0.1.0
     pub fn accion_por_defecto(&self) -> Option<String> {
         self.notificacion
             .acciones
@@ -278,16 +325,19 @@ impl Toast {
     /// Alto de la tarjeta según lo que lleva: la cabecera siempre, y el
     /// cuerpo, la barra y los botones solo si hay. Con alto fijo, un aviso sin
     /// cuerpo dejaba un hueco y uno con cuerpo y botones no cabía.
+    // 0.1.0
     fn alto(&self) -> f32 {
         self.fijo.unwrap_or_else(|| self.alto_propio())
     }
 
     /// Dónde empiezan los botones, desde arriba de la tarjeta: pegados al
     /// margen inferior.
+    // 0.1.0
     fn y_botones(&self) -> f32 {
         self.alto() - MARGEN - ALTO_BOTON
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         (
             ANCHO + MARGEN_SOMBRA * 2.0,
@@ -298,6 +348,7 @@ impl Toast {
     /// Lo pulsado en un punto, en coordenadas relativas a la tarjeta (sin el
     /// margen reservado para la sombra). Solo el de delante tiene algo que
     /// pulsar: los de atrás no enseñan contenido.
+    // 0.1.0
     pub fn accion_en(&self, x: f32, y: f32) -> Option<Pulsado> {
         if self.profundidad > 0 {
             return None;
@@ -319,6 +370,7 @@ impl Toast {
             .map(|(_, a)| Pulsado::Boton(a.clave.clone()))
     }
 
+    // modified 0.1.1 -- tarjeta compacta: app en gris arriba y resumen en negrita
     pub fn view(&self) -> PanelElement<'_> {
         if self.profundidad > 0 {
             return self.vista_de_atras();
@@ -331,18 +383,26 @@ impl Toast {
         let ancho_texto = ANCHO - MARGEN * 2.0;
         // Sin pisar la ✕, que cuelga de la esquina de la cabecera.
         let ancho_titulos = ancho_texto - ICONO - 12.0 - CIERRE - 8.0;
-        // Quién avisa, en negrita, y debajo el resumen. En rojo si es crítica:
-        // es lo único que la distingue de las demás sin meterle un fondo de
-        // color que taparía su icono.
-        let titulos = column![
+        // Quién avisa, pequeño y en gris, y debajo el resumen en negrita: lo
+        // que se lee de un vistazo es qué pasa, no qué app lo dice. En rojo si
+        // es crítica: es lo único que la distingue de las demás sin meterle un
+        // fondo de color que taparía su icono.
+        let mut titulos = column![
             text(crate::emergente::recortar_texto(
                 &n.app,
                 ancho_titulos,
-                15.0
+                12.0
             ))
-            .size(15.0)
+            .size(12.0)
+            .color(tema::TEXTO2),
+            text(crate::emergente::recortar_texto(
+                &n.resumen,
+                ancho_titulos,
+                14.0
+            ))
+            .size(14.0)
             .font(Font {
-                weight: Weight::Bold,
+                weight: Weight::Semibold,
                 ..Font::DEFAULT
             })
             .color(if n.critica {
@@ -350,35 +410,27 @@ impl Toast {
             } else {
                 tema::texto()
             }),
-            text(crate::emergente::recortar_texto(
-                &n.resumen,
-                ancho_titulos,
-                13.0
-            ))
-            .size(13.0)
-            .color(tema::TEXTO2),
         ];
+        // modificado en la 0.2.0 -- el cuerpo va bajo el resumen y no bajo el icono
+        // Debajo del resumen y no de toda la cabecera: colgado del margen
+        // empezaba bajo el icono, desalineado del título, y además sumaba un
+        // respiro y un renglón de alto que el aviso no necesita.
+        if !self.cuerpo.is_empty() {
+            // Hasta dos líneas y no una: en una sola, un aviso normal de
+            // «Descarga completada» se quedaba en el nombre del archivo
+            // cortado a la mitad.
+            titulos = titulos.push(text(self.cuerpo.as_str()).size(13.0).color(tema::texto()));
+        }
         let cabecera = row![
             dibujo,
             Space::new().width(Length::Fixed(12.0)),
             // Ancho fijo: sin él, iced parte el resumen en dos líneas y la
-            // tarjeta se desborda por abajo.
-            container(titulos).width(Length::Fixed(ancho_titulos)),
+            // tarjeta se desborda por abajo. Los títulos ya vienen recortados
+            // al hueco que deja la ✕; el cuerpo usa el ancho entero.
+            container(titulos).width(Length::Fixed(ANCHO_CUERPO)),
         ]
         .align_y(Vertical::Center);
         let mut contenido = column![cabecera];
-        if !n.cuerpo.is_empty() {
-            contenido = contenido
-                .push(Space::new().height(Length::Fixed(RESPIRO)))
-                .push(
-                    // Dos líneas y no una: en una sola, un aviso normal de
-                    // «Descarga completada» se quedaba en el nombre del archivo
-                    // cortado a la mitad. El alto de la tarjeta las reserva.
-                    text(crate::escritorio::dos_lineas(&n.cuerpo, ancho_texto, 13.0))
-                        .size(13.0)
-                        .color(tema::texto()),
-                );
-        }
         if let Some(valor) = n.progreso {
             let lleno = (ancho_texto * valor as f32 / 100.0).max(2.0);
             contenido = contenido
@@ -501,6 +553,7 @@ impl Toast {
 
     /// La ✕ de la esquina: gris y discreta, porque la roja es la de cerrar
     /// ventanas y esta solo quita un aviso.
+    // 0.1.0
     fn cierre() -> PanelElement<'static> {
         let aspa: PanelElement<'static> = match crate::icono::propio("cerrar") {
             Some(ic) => crate::icono::ver_teñido_propio(&ic, CIERRE * 0.55, tema::TEXTO2),
@@ -527,6 +580,7 @@ impl Toast {
 
     /// Un nivel de la pila que no es el de delante: la tarjeta sola, un punto
     /// más oscura cuanto más al fondo, sin contenido ni sombra.
+    // 0.1.0
     fn vista_de_atras(&self) -> PanelElement<'_> {
         let nivel = self.profundidad as f32;
         let tarjeta = container(Space::new())

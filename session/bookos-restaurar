@@ -1,0 +1,66 @@
+#!/bin/sh
+# Puntos de restauración del sistema. Lo usan Ajustes y la pantalla de
+# recuperación, que necesitan exactamente lo mismo.
+#
+#   bookos-restaurar listar        CSV de snapper, como el usuario
+#   bookos-restaurar restaurar N   como root; hay que reiniciar después
+#
+# No usa `snapper rollback`: cambia el subvolumen por defecto, y en Fedora tanto
+# fstab como GRUB montan por nombre (`subvol=root`), así que tras reiniciar
+# seguiría arrancando el sistema de antes. Aquí el nuevo se llama `root` y nada
+# del arranque tiene que cambiar.
+#
+# `/boot` es otra partición y no vuelve atrás: hay que arrancar con un kernel que
+# exista en `/boot` y cuyos módulos estén en el punto, o el sistema se queda sin
+# controladores. Si no hay ninguno, se aborta antes de tocar nada. El `root`
+# anterior se conserva hasta la siguiente restauración.
+set -eu
+
+fallo() { echo "$1" >&2; exit 1; }
+
+case "${1:-}" in
+listar)
+    exec snapper --machine-readable csv -c root list --columns number,date,description
+    ;;
+restaurar) ;;
+*) fallo "Uso: bookos-restaurar listar | restaurar NÚMERO" ;;
+esac
+
+n="${2:-}"
+case "$n" in
+''|*[!0-9]*) fallo "Punto no válido" ;;
+esac
+case ",$(findmnt -no OPTIONS /)," in
+*,subvol=/root,*) ;;
+*) fallo "El sistema no arranca desde el subvolumen root" ;;
+esac
+
+dev=$(findmnt -no SOURCE / | sed 's/\[.*//')
+mnt=$(mktemp -d)
+mount -o subvolid=5 "$dev" "$mnt"
+trap 'umount "$mnt"; rmdir "$mnt"' EXIT
+
+src="$mnt/root/.snapshots/$n/snapshot"
+[ -d "$src" ] || fallo "No se encuentra ese punto"
+kernel=$(ls "$src/usr/lib/modules" | while read -r k; do
+    if [ -e "/boot/vmlinuz-$k" ]; then echo "$k"; fi
+done | sort -V | tail -n1)
+[ -n "$kernel" ] || fallo "Ningún kernel instalado es compatible con ese punto"
+
+snapper -c root create -c number -d "Antes de restaurar el punto $n"
+if [ -e "$mnt/root.nuevo" ]; then btrfs subvolume delete "$mnt/root.nuevo" >/dev/null; fi
+btrfs subvolume snapshot "$src" "$mnt/root.nuevo" >/dev/null
+rmdir "$mnt/root.nuevo/.snapshots"
+for viejo in "$mnt"/root.antes-*; do
+    if [ -d "$viejo" ]; then btrfs subvolume delete "$viejo" >/dev/null || true; fi
+done
+
+antes="$mnt/root.antes-$(date +%Y%m%d%H%M%S)"
+mv "$mnt/root" "$antes"
+if ! { mv "$mnt/root.nuevo" "$mnt/root" && mv "$antes/.snapshots" "$mnt/root/.snapshots"; }; then
+    if [ -e "$mnt/root" ]; then mv "$mnt/root" "$mnt/root.nuevo"; fi
+    mv "$antes" "$mnt/root"
+    fallo "No se pudo cambiar el subvolumen; el sistema sigue como estaba"
+fi
+grubby --set-default "/boot/vmlinuz-$kernel" >/dev/null
+sync

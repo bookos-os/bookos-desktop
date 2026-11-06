@@ -93,6 +93,8 @@ pub const RUTA: &str = "/org/bookos/Desktop";
 /// no va a contestar", no "está tardando".
 const ESPERA: Duration = Duration::from_secs(5);
 
+// 0.1.0
+// modified 0.1.1 -- expone salvapantallas, atenuación, apagado y pantalla táctil a Ajustes
 fn config_json(config: &bookos_shell::Config) -> serde_json::Value {
     let modo = match config.modo_tema {
         bookos_shell::tema::ModoTema::Claro => "claro",
@@ -169,12 +171,14 @@ fn config_json(config: &bookos_shell::Config) -> serde_json::Value {
     json["salvapantallas_inactividad"] = config.salvapantallas_inactividad.into();
     json["atenuacion_inactividad"] = config.atenuacion_inactividad.into();
     json["salvapantallas_estilo"] = config.salvapantallas_estilo.nombre().into();
+    json["fondo_encaje"] = config.fondo_encaje.nombre().into();
     json["apagado_inactividad"] = config.apagado_inactividad.into();
     // Fuera del `json!`: con una clave más, el macro pasa del límite de
     // recursión de rustc.
     json["sonido_volumen"] = config.sonido_volumen.into();
     json["sonidos_interfaz"] = config.sonidos_interfaz.into();
     json["genio"] = config.genio.into();
+    json["panel_tamano"] = config.panel_tamano.nombre().into();
     json["teclado_retardo"] = config.teclado_retardo.into();
     json["teclado_velocidad"] = config.teclado_velocidad.into();
     json["volumen_paso"] = config.pasos.volumen.into();
@@ -185,6 +189,7 @@ fn config_json(config: &bookos_shell::Config) -> serde_json::Value {
     json["bloqueo_energia"] = config.bloqueo.energia.into();
     json["dock_esquiva"] = config.dock_esquiva.into();
     json["pantalla_tactil"] = config.entrada.pantalla_tactil.into();
+    json["teclado_pantalla"] = config.entrada.teclado_pantalla.into();
     json["panel_esquiva"] = config.panel_esquiva.into();
     json["bloqueo_reloj_fuente"] = config.bloqueo.reloj_fuente.nombre().into();
     json["bloqueo_reloj_grosor"] = config.bloqueo.reloj_grosor.into();
@@ -209,9 +214,17 @@ fn config_json(config: &bookos_shell::Config) -> serde_json::Value {
     // Lo que se ve ahora, con el horario y lo encendido a mano ya resueltos.
     // Solo lectura, como `tema_efectivo`.
     json["luz_nocturna_activa"] = bookos_shell::luz_nocturna_encendida().into();
+    // Solo lectura, como `tema_efectivo`: los widgets que el panel sabe
+    // construir, en el orden en que Ajustes los ofrece. Fuera de `json!`
+    // porque la macro ya está en su límite de recursión.
+    json["widgets_disponibles"] = bookos_shell::WIDGETS_DISPONIBLES.into();
+    json["captura_cursor"] = config.captura_cursor.into();
+    json["captura_retardo"] = config.captura_retardo.into();
     json
 }
 
+// 0.1.0
+// modified 0.1.1 -- valida las claves nuevas de salvapantallas, atenuación, apagado y táctil
 fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
     let valor: serde_json::Value =
         serde_json::from_str(json).map_err(|err| format!("JSON no válido: {err}"))?;
@@ -262,6 +275,16 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
         }
     };
 
+    // Un widget que no existe no rompe el panel —se ignora al construirlo—,
+    // pero tampoco avisa: quien lo escribe se queda sin él sin saber por qué.
+    let widget_conocido = |s: String, clave: &str| {
+        if bookos_shell::WIDGETS_DISPONIBLES.contains(&s.as_str()) {
+            Ok(s)
+        } else {
+            Err(format!("«{clave}» lleva un widget desconocido: «{s}»"))
+        }
+    };
+
     let mut salida = Vec::new();
     for (clave, valor) in objeto {
         if clave == "version" {
@@ -272,7 +295,7 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                 if valor.is_null() {
                     String::new()
                 } else {
-                    seguro(&texto(valor, clave)?, clave, &[','])?
+                    widget_conocido(seguro(&texto(valor, clave)?, clave, &[','])?, clave)?
                 }
             }
             "fondo" | "fondo_claro" | "fondo_oscuro" | "avatar" => {
@@ -309,11 +332,21 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                 if items.len() > max {
                     return Err(format!("«{clave}» tiene demasiados elementos"));
                 }
-                items
+                let nombres = items
                     .iter()
                     .map(|v| texto(v, clave).and_then(|s| seguro(&s, clave, &[','])))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .join(", ")
+                    .collect::<Result<Vec<_>, _>>()?;
+                if clave == "derecha" {
+                    for (n, nombre) in nombres.iter().enumerate() {
+                        widget_conocido(nombre.clone(), clave)?;
+                        // El panel busca el widget por nombre para el clic: con
+                        // dos iguales, uno de ellos no respondería.
+                        if nombres[..n].contains(nombre) {
+                            return Err(format!("«derecha» repite el widget «{nombre}»"));
+                        }
+                    }
+                }
+                nombres.join(", ")
             }
             "dock" => {
                 let items = valor
@@ -372,6 +405,16 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                 }
                 v
             }
+            "fondo_encaje" => {
+                let v = texto(valor, clave)?;
+                if bookos_shell::EncajeFondo::desde_nombre(&v).is_none() {
+                    return Err(
+                        "«fondo_encaje» debe ser rellenar, ajustar, ancho, estirar o centrar"
+                            .into(),
+                    );
+                }
+                v
+            }
             "salvapantallas_estilo" => {
                 let v = texto(valor, clave)?;
                 if bookos_shell::EstiloSalvapantallas::desde_nombre(&v).is_none() {
@@ -401,7 +444,8 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
             | "panel_esquiva"
             | "toque_para_clic"
             | "scroll_natural"
-            | "pantalla_tactil" => booleano(valor, clave)?,
+            | "pantalla_tactil"
+            | "teclado_pantalla" => booleano(valor, clave)?,
             "tema" => {
                 let v = texto(valor, clave)?;
                 if !matches!(v.as_str(), "claro" | "oscuro" | "automatico") {
@@ -419,8 +463,27 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
             "alto_contraste"
             | "bloqueo_huella"
             | "brillo_automatico_pantalla"
-            | "brillo_automatico_teclado" => booleano(valor, clave)?,
+            | "brillo_automatico_teclado"
+            | "captura_cursor" => booleano(valor, clave)?,
+            "captura_retardo" => {
+                let n = valor
+                    .as_u64()
+                    .filter(|n| {
+                        bookos_shell::RETARDOS_CAPTURA
+                            .iter()
+                            .any(|r| u64::from(*r) == *n)
+                    })
+                    .ok_or("«captura_retardo» debe ser 0, 3, 5 o 10")?;
+                n.to_string()
+            }
             "dock_tamano" => entero(valor, clave, 32, 80)?,
+            "panel_tamano" => {
+                let v = texto(valor, clave)?;
+                if bookos_shell::TamanoPanel::desde_nombre(&v).is_none() {
+                    return Err("«panel_tamano» debe ser pequeno, mediano o grande".into());
+                }
+                v
+            }
             "teclado_retardo" => entero(valor, clave, 150, 1500)?,
             "teclado_velocidad" => entero(valor, clave, 0, 60)?,
             "volumen_paso" | "volumen_paso_mantener" | "brillo_paso" | "brillo_paso_mantener" => {
@@ -468,7 +531,12 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
             // Derivada y de solo lectura. Se ignora en vez de rechazarse para
             // que un cliente pueda devolver tal cual el objeto que leyó de
             // `GetConfig` sin que la llamada entera falle.
-            "tema_efectivo" | "luz_nocturna_activa" | "bloqueo_reloj_fuentes" => continue,
+            "tema_efectivo"
+            | "luz_nocturna_activa"
+            | "bloqueo_reloj_fuentes"
+            | "widgets_disponibles" => {
+                continue;
+            }
             otro => return Err(format!("clave de configuración desconocida: «{otro}»")),
         };
         salida.push((clave.clone(), guardado));
@@ -525,6 +593,9 @@ struct ActividadJson {
     repetir: bool,
     #[serde(default)]
     portada: String,
+    // añadido en la 0.2.0 -- la fase del asistente; el resto de clases no la mandan.
+    #[serde(default)]
+    fase: String,
     #[serde(default)]
     cola: Vec<ItemColaJson>,
     #[serde(default)]
@@ -563,6 +634,7 @@ struct ItemColaJson {
     portada: String,
 }
 
+// 0.1.0
 fn volumen_defecto() -> u8 {
     100
 }
@@ -573,6 +645,7 @@ struct Servidor {
 }
 
 impl Servidor {
+    // 0.1.0
     fn do_not_disturb(&self, value: Option<bool>) -> zbus::fdo::Result<bool> {
         let (tx, rx) = mpsc::channel();
         self.canal
@@ -585,24 +658,29 @@ impl Servidor {
 
 #[zbus::interface(name = "org.bookos.Desktop")]
 impl Servidor {
+    // 0.1.0
     fn get_do_not_disturb(&self) -> zbus::fdo::Result<bool> {
         self.do_not_disturb(None)
     }
+    // 0.1.0
     fn set_do_not_disturb(&self, enabled: bool) -> zbus::fdo::Result<bool> {
         self.do_not_disturb(Some(enabled))
     }
 
     /// Solicita recargar una sección. Devuelve `true` cuando la orden pudo
     /// entregarse al bucle del compositor.
+    // 0.1.0
     fn reload_config(&self, section: String) -> bool {
         self.canal.send(Aviso::Recargar(section)).is_ok()
     }
 
     /// Qué sabe hacer este backend.
+    // 0.1.0
     fn get_capabilities(&self) -> std::collections::HashMap<String, zbus::zvariant::OwnedValue> {
         self.compartido.capacidades()
     }
 
+    // 0.1.1
     fn get_screensaver_preview(&self, estilo: &str) -> zbus::fdo::Result<String> {
         let estilo = bookos_shell::EstiloSalvapantallas::desde_nombre(estilo).ok_or_else(|| {
             zbus::fdo::Error::InvalidArgs("el estilo debe ser estela o rebote".into())
@@ -612,6 +690,7 @@ impl Servidor {
             .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))
     }
 
+    // 0.1.1
     fn preview_screensaver(&self, estilo: &str) -> (bool, String) {
         let Some(estilo) = bookos_shell::EstiloSalvapantallas::desde_nombre(estilo) else {
             return (false, "el estilo debe ser estela o rebote".into());
@@ -638,12 +717,14 @@ impl Servidor {
     }
 
     /// El censo de salidas conectadas.
+    // 0.1.0
     fn get_outputs(&self) -> Vec<Salida> {
         self.compartido.salidas()
     }
 
     /// Instantánea completa para Settings. JSON mantiene el contrato legible
     /// para clientes que no usan Rust y permite añadir campos sin romper ABI.
+    // 0.1.0
     fn get_config(&self) -> String {
         config_json(&bookos_shell::Config::cargar()).to_string()
     }
@@ -651,6 +732,7 @@ impl Servidor {
     /// Valida y persiste una actualización parcial. Ninguna clave se escribe si
     /// una sola es inválida, de modo que Settings puede mostrar el error sin
     /// dejar el escritorio a medio configurar.
+    // 0.1.0
     fn apply_config(&self, json: String) -> (bool, String) {
         let valores = match validar_config_json(&json) {
             Ok(valores) => valores,
@@ -668,10 +750,12 @@ impl Servidor {
         (true, String::new())
     }
 
+    // 0.1.0
     fn get_key_remaps(&self) -> String {
         crate::teclas::cargar().a_json()
     }
 
+    // 0.1.0
     fn apply_key_remaps(&self, json: String) -> (bool, String) {
         let remapeos = match crate::teclas::Remapeos::desde_json(&json) {
             Ok(remapeos) => remapeos,
@@ -689,6 +773,7 @@ impl Servidor {
         (true, String::new())
     }
 
+    // 0.1.0
     fn capture_key(&self, armar: bool) -> bool {
         self.canal.send(Aviso::CapturarTecla(armar)).is_ok()
     }
@@ -696,6 +781,7 @@ impl Servidor {
     /// Aplica una configuración de pantallas. `(ok, error)`: `ok=false` nunca
     /// va con `error` vacío, para que la interfaz no pueda enseñar un éxito que
     /// no ocurrió.
+    // 0.1.0
     fn apply_output_config(&self, config: Vec<Peticion>) -> (bool, String) {
         let (respuesta, espera) = mpsc::channel();
         if self.canal.send(Aviso::Salidas(config, respuesta)).is_err() {
@@ -714,6 +800,7 @@ impl Servidor {
     /// Publica una tarea viva. El identificador está en una lista cerrada: una
     /// app cualquiera no puede convertir la isla en una segunda bandeja de
     /// notificaciones.
+    // 0.1.0
     fn publish_activity(
         &self,
         #[zbus(header)] cabecera: zbus::message::Header<'_>,
@@ -732,6 +819,16 @@ impl Servidor {
         let Ok(json) = serde_json::from_str::<ActividadJson>(&state_json) else {
             tracing::warn!(app_id, "estado de actividad no válido");
             return false;
+        };
+        let clase = match clase {
+            bookos_shell::actividad::Clase::Asistente(_) => {
+                let Some(fase) = bookos_shell::actividad::Fase::desde(&json.fase) else {
+                    tracing::warn!(app_id, fase = json.fase, "fase del asistente desconocida");
+                    return false;
+                };
+                bookos_shell::actividad::Clase::Asistente(fase)
+            }
+            otra => otra,
         };
         let portada = decodificar_portada(&json.portada);
         let estado = bookos_shell::actividad::Estado {
@@ -785,6 +882,7 @@ impl Servidor {
         self.canal.send(Aviso::Actividad(estado, remitente)).is_ok()
     }
 
+    // 0.1.0
     fn close_activity(&self, app_id: String) -> bool {
         if clase_permitida(&app_id, "").is_none() {
             return false;
@@ -795,6 +893,7 @@ impl Servidor {
     /// Abre una actividad ya publicada para inspeccionarla durante el
     /// desarrollo. En release se rechaza: una aplicación no debe poder forzar
     /// que su tarjeta se despliegue sobre lo que esté haciendo el usuario.
+    // 0.1.0
     fn preview_activity_open(&self, app_id: String) -> bool {
         if !cfg!(debug_assertions) || clase_permitida(&app_id, "").is_none() {
             return false;
@@ -805,10 +904,12 @@ impl Servidor {
     }
 
     #[zbus(signal)]
+    // 0.1.0
     async fn outputs_changed(emisor: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
 
     /// Orden del usuario hacia la app que publicó la actividad.
     #[zbus(signal)]
+    // 0.1.0
     async fn activity_action(
         emisor: &zbus::object_server::SignalEmitter<'_>,
         app_id: &str,
@@ -817,6 +918,8 @@ impl Servidor {
     ) -> zbus::Result<()>;
 }
 
+// 0.1.0
+// modified 0.1.1 -- atiende la previsualización del salvapantallas desde Ajustes
 pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
     match aviso {
         Aviso::NoMolestar(value, reply) => {
@@ -894,6 +997,7 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
     }
 }
 
+// 0.1.0
 fn clase_permitida(app_id: &str, kind: &str) -> Option<bookos_shell::actividad::Clase> {
     use bookos_shell::actividad::Clase;
     match (app_id, kind) {
@@ -908,10 +1012,15 @@ fn clase_permitida(app_id: &str, kind: &str) -> Option<bookos_shell::actividad::
         ("com.bookos.systemmonitor", "monitor" | "") => Some(Clase::Monitor),
         // bookos-budsd, el servicio de sesión de los Galaxy Buds.
         ("com.bookos.buds", "auriculares" | "") => Some(Clase::Auriculares),
+        // Zenith; la fase llega en el estado y la pone `publish_activity`.
+        ("com.bookos.assistant", "asistente" | "") => {
+            Some(Clase::Asistente(bookos_shell::actividad::Fase::Escuchando))
+        }
         _ => None,
     }
 }
 
+// 0.1.0
 fn limitar(mut texto: String, max: usize) -> String {
     if texto.chars().count() > max {
         texto = texto.chars().take(max).collect();
@@ -919,6 +1028,7 @@ fn limitar(mut texto: String, max: usize) -> String {
     texto
 }
 
+// 0.1.0
 fn decodificar_portada(valor: &str) -> Option<bookos_shell::actividad::Portada> {
     let b64 = valor.strip_prefix("data:image/")?.split_once(',')?.1;
     if b64.len() > 6 * 1024 * 1024 {
@@ -933,6 +1043,8 @@ fn decodificar_portada(valor: &str) -> Option<bookos_shell::actividad::Portada> 
     })
 }
 
+// 0.1.0
+// modified 0.1.1 -- aplica salvapantallas, atenuación y apagado propios; sin táctil retira el teclado en pantalla
 fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
     const CONOCIDAS: &[&str] = &[
         "lockscreen",
@@ -976,7 +1088,7 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
             aplicar(&state.entrada, state.touchpad_activo);
         }
         // Sin táctil no hay con qué usar el teclado en pantalla.
-        if !state.entrada.pantalla_tactil {
+        if !state.entrada.pantalla_tactil || !state.entrada.teclado_pantalla {
             crate::teclado::retirar(state);
         }
     }
@@ -1000,11 +1112,19 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
         }
     }
 
+    // Los widgets no cambian el alto: se rehacen aparte, y el fotograma lo pide
+    // el final de esta función.
     if matches!(seccion, "desktop" | "escritorio" | "all")
-        && state
-            .shell
-            .as_mut()
-            .is_some_and(|shell| shell.dock_tamano(config.dock_tamano))
+        && let Some(shell) = state.shell.as_mut()
+    {
+        shell.widgets_panel(config.centro.as_deref(), &config.derecha);
+    }
+
+    // `|` y no `||`: con el dock sin cambios el panel tiene que aplicarse igual.
+    if matches!(seccion, "desktop" | "escritorio" | "all")
+        && state.shell.as_mut().is_some_and(|shell| {
+            shell.panel_tamano(config.panel_tamano) | shell.dock_tamano(config.dock_tamano)
+        })
     {
         state.recolocar_encajadas();
         state.revisar_barras();
@@ -1036,6 +1156,7 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
             ambos: config.fondo.clone(),
             claro: config.fondo_claro.clone(),
             oscuro: config.fondo_oscuro.clone(),
+            encaje: config.fondo_encaje,
         };
         // Y qué familia queda marcada en la tarjeta de Apariencia.
         bookos_shell::fondos::poner_elegida(
@@ -1134,6 +1255,7 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
 /// conocido recupera su perfil; uno nuevo se extiende a la derecha. Al quitar
 /// una pantalla desaparece del mapa y la primera restante pasa a principal si
 /// hacía falta.
+// 0.1.0
 fn redetectar(state: &mut crate::state::BookosComp) {
     let Some(censar) = state.censar_pantallas.take() else {
         return;
@@ -1249,6 +1371,7 @@ fn redetectar(state: &mut crate::state::BookosComp) {
 /// Emite `OutputsChanged`. Se llama desde el hilo del compositor con la
 /// conexión bloqueante que ya se guarda en el estado: emitir una señal es
 /// escribir en el socket del bus, no hay que despertar a zbus para eso.
+// 0.1.0
 pub fn avisar_salidas(state: &crate::state::BookosComp) {
     let Some(conexion) = state.bus_ajustes.as_ref() else {
         return;
@@ -1259,6 +1382,7 @@ pub fn avisar_salidas(state: &crate::state::BookosComp) {
     }
 }
 
+// 0.1.0
 pub fn accion_actividad(
     state: &crate::state::BookosComp,
     accion: &bookos_shell::actividad::Accion,
@@ -1277,6 +1401,7 @@ pub fn accion_actividad(
     }
 }
 
+// 0.1.0
 pub fn avisar_tecla_capturada(state: &crate::state::BookosComp, evdev: u32, copilot: bool) {
     let Some(conexion) = state.bus_ajustes.as_ref() else {
         return;
@@ -1288,6 +1413,7 @@ pub fn avisar_tecla_capturada(state: &crate::state::BookosComp, evdev: u32, copi
     }
 }
 
+// 0.1.0
 pub fn arrancar(
     canal: Sender<Aviso>,
     compartido: Arc<Compartido>,
@@ -1330,6 +1456,7 @@ pub fn arrancar(
 ///
 /// La regla filtra en el propio bus por `new_owner` vacío: solo llegan las
 /// desapariciones, no cada nombre que se pide o se cede.
+// 0.1.0
 fn vigilar_remitentes(conexion: &zbus::blocking::Connection, canal: Sender<Aviso>) {
     let conexion = conexion.clone();
     let hilo = std::thread::Builder::new()
@@ -1372,6 +1499,7 @@ fn vigilar_remitentes(conexion: &zbus::blocking::Connection, canal: Sender<Aviso
 /// Pedir un nombre que ya es nuestro devuelve Ok, así que basta con repetir.
 /// Cada 5 s: un sondeo cuesta una llamada al bus y perder el nombre unos
 /// segundos es aceptable.
+// 0.1.0
 pub fn vigilar_nombres(conexiones: Vec<(zbus::blocking::Connection, &'static str)>) {
     if conexiones.is_empty() {
         return;
@@ -1468,6 +1596,53 @@ mod pruebas {
             assert!(validar_config_json(json).is_err(), "{json}");
         }
         assert!(validar_config_json(r#"{"dock_tamano":80,"bloqueo_huella":true}"#).is_ok());
+    }
+
+    /// Un widget con una errata se quedaría fuera del panel sin que nadie se
+    /// enterase; repetido, uno de los dos no recibiría los clics.
+    #[test]
+    fn los_widgets_del_panel_se_validan_por_nombre() {
+        let valores = validar_config_json(
+            r#"{"centro":"reloj","derecha":["monitor","trafico","consumo","red"]}"#,
+        )
+        .expect("widgets conocidos");
+        assert!(valores.contains(&("derecha".into(), "monitor, trafico, consumo, red".into())));
+        assert!(valores.contains(&("centro".into(), "reloj".into())));
+        // Ocultarlos todos es una lista vacía y es válido.
+        assert!(validar_config_json(r#"{"derecha":[],"centro":null}"#).is_ok());
+
+        assert!(validar_config_json(r#"{"derecha":["relog"]}"#).is_err());
+        assert!(validar_config_json(r#"{"centro":"relog"}"#).is_err());
+        assert!(validar_config_json(r#"{"derecha":["red","red"]}"#).is_err());
+    }
+
+    /// El cursor y la espera de la captura se validan, y la espera solo admite
+    /// los segundos que ofrece la barra.
+    // añadido en la 0.2.0
+    #[test]
+    fn las_opciones_de_captura_se_validan() {
+        let valores = validar_config_json(r#"{"captura_cursor":true,"captura_retardo":5}"#)
+            .expect("opciones válidas");
+        assert!(valores.contains(&("captura_cursor".into(), "si".into())));
+        assert!(valores.contains(&("captura_retardo".into(), "5".into())));
+        assert!(validar_config_json(r#"{"captura_retardo":4}"#).is_err());
+        assert!(validar_config_json(r#"{"captura_retardo":"3"}"#).is_err());
+        assert!(validar_config_json(r#"{"captura_cursor":"si"}"#).is_err());
+        let json = config_json(&bookos_shell::Config::default());
+        assert_eq!(json["captura_cursor"], false);
+        assert_eq!(json["captura_retardo"], 0);
+    }
+
+    /// `GetConfig` lo devuelve y el cliente lo puede mandar de vuelta tal cual.
+    #[test]
+    fn el_catalogo_de_widgets_es_de_solo_lectura() {
+        let json = config_json(&bookos_shell::Config::default());
+        assert_eq!(
+            json["widgets_disponibles"].as_array().map(Vec::len),
+            Some(bookos_shell::WIDGETS_DISPONIBLES.len())
+        );
+        let valores = validar_config_json(&json.to_string()).expect("el objeto entero vuelve");
+        assert!(!valores.iter().any(|(k, _)| k == "widgets_disponibles"));
     }
 
     /// Al pulsar hasta 10 y al mantener hasta 30, en volumen y en brillo.

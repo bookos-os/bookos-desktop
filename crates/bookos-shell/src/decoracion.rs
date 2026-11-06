@@ -78,6 +78,7 @@ pub struct Estado {
 /// El hit-test lo hace el compositor antes de que iced calcule ningún layout
 /// —igual que en el panel—, así que la geometría está aquí escrita a mano y es
 /// la que el dibujo tiene que respetar.
+// 0.1.0
 pub fn boton_en(ancho: f32, x: f32, y: f32) -> Option<Boton> {
     if y < 0.0 || y >= ALTO || x < 0.0 || x >= ancho {
         return None;
@@ -104,10 +105,12 @@ pub fn boton_en(ancho: f32, x: f32, y: f32) -> Option<Boton> {
 
 /// Ancho que ocupan los tres botones con su margen: lo que el título no puede
 /// invadir.
+// 0.1.0
 fn ancho_botones() -> f32 {
     MARGEN + 3.0 * (LADO + HUECO)
 }
 
+// 0.1.1
 pub fn pestana_en(ancho: f32, cantidad: usize, x: f32) -> Option<usize> {
     let libre = (ancho - ancho_botones()).max(0.0);
     if cantidad == 0 || x < 0.0 || x >= libre {
@@ -121,6 +124,7 @@ pub fn pestana_en(ancho: f32, cantidad: usize, x: f32) -> Option<usize> {
 /// Sale en blanco y lo tiñe iced al dibujarlo, como cualquier icono de estado:
 /// el color depende del foco y del cursor, y meterlo dentro del SVG obligaría a
 /// rasterizar de nuevo por cada cambio de tinta.
+// 0.1.0
 fn glifo(boton: Boton, maximizada: bool) -> String {
     const TRAZO: &str = r##"fill="none" stroke="#ffffff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round""##;
     let dibujo = match boton {
@@ -140,6 +144,7 @@ fn glifo(boton: Boton, maximizada: bool) -> String {
 }
 
 /// Un botón: la tarjeta redondeada y el glifo encima.
+// 0.1.0
 fn boton(cual: Boton, estado: &Estado) -> PanelElement<'static> {
     let señalado = estado.señalado == Some(cual);
     let pulsado = estado.pulsado == Some(cual);
@@ -192,6 +197,8 @@ fn boton(cual: Boton, estado: &Estado) -> PanelElement<'static> {
 }
 
 /// La barra entera, para un ancho de ventana dado en píxeles lógicos.
+// 0.1.0
+// modified 0.1.1 -- barra con pestañas para los grupos
 pub fn vista(estado: &Estado, ancho: f32) -> PanelElement<'static> {
     let mut botones = row![].align_y(Vertical::Center);
     for (i, cual) in [Boton::Minimizar, Boton::Maximizar, Boton::Cerrar]
@@ -294,6 +301,7 @@ pub fn vista(estado: &Estado, ancho: f32) -> PanelElement<'static> {
 /// contar caracteres: un título es texto arbitrario —«IIIII» y «MMMMM» no
 /// ocupan lo mismo— y aquí el error se ve como un rótulo que se mete debajo de
 /// los botones.
+// 0.1.0
 fn recortar(titulo: &str, ancho: f32) -> String {
     let titulo = titulo.trim();
     if ancho <= 0.0 {

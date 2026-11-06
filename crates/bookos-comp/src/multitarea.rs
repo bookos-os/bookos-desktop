@@ -30,9 +30,14 @@ pub struct Grupo {
 pub struct Multitarea {
     grupos: Vec<Grupo>,
     separador: Option<(Window, f64, bool)>,
+    /// Los grupos lado a lado que se deshicieron al maximizar una de sus
+    /// ventanas, con esa ventana. Al restaurarla se rehacen: sin esto había que
+    /// volver a arrastrar la otra al borde.
+    aparcados: Vec<(Window, Grupo)>,
     pub clic_consumido: bool,
 }
 
+// 0.1.1
 pub fn raiz(state: &BookosComp, window: &Window) -> Window {
     match ventanas::duena(state, window) {
         Some(Duena::Padre(padre)) => padre,
@@ -40,6 +45,7 @@ pub fn raiz(state: &BookosComp, window: &Window) -> Window {
     }
 }
 
+// 0.1.1
 fn indice(state: &BookosComp, window: &Window) -> Option<usize> {
     if state.multitarea.grupos.is_empty() {
         return None;
@@ -52,15 +58,18 @@ fn indice(state: &BookosComp, window: &Window) -> Option<usize> {
         .position(|g| g.ventanas.iter().any(|(w, _)| *w == raiz))
 }
 
+// 0.1.1
 pub fn agrupada(state: &BookosComp, window: &Window) -> bool {
     indice(state, window).is_some()
 }
 
+// 0.1.1
 pub fn misma_unidad(state: &BookosComp, a: &Window, b: &Window) -> bool {
     raiz(state, a) == raiz(state, b)
         || indice(state, a).is_some_and(|i| Some(i) == indice(state, b))
 }
 
+// 0.1.1
 pub fn visible(state: &BookosComp, window: &Window) -> bool {
     let Some(i) = indice(state, window) else {
         return true;
@@ -75,6 +84,7 @@ pub fn visible(state: &BookosComp, window: &Window) -> bool {
     }
 }
 
+// 0.1.1
 pub fn familia(state: &BookosComp, window: &Window) -> Vec<Window> {
     state
         .space
@@ -84,6 +94,7 @@ pub fn familia(state: &BookosComp, window: &Window) -> Vec<Window> {
         .collect()
 }
 
+// 0.1.1
 pub fn candidata(state: &BookosComp, window: &Window) -> Option<Window> {
     state
         .space
@@ -97,6 +108,7 @@ pub fn candidata(state: &BookosComp, window: &Window) -> Option<Window> {
         .cloned()
 }
 
+// modified 0.1.1 -- la barra del grupo ya no se pone aquí, la decide recolocar
 pub fn unir(state: &mut BookosComp, window: &Window, otra: &Window, pestanas: bool) {
     if misma_unidad(state, window, otra) {
         return;
@@ -121,7 +133,6 @@ pub fn unir(state: &mut BookosComp, window: &Window, otra: &Window, pestanas: bo
         return;
     }
     for (w, _) in &miembros {
-        crate::decoracion::agrupar(w, true);
         ventanas::soltar_encaje(w);
     }
     let disposicion = if pestanas || miembros.len() > 2 {
@@ -141,6 +152,60 @@ pub fn unir(state: &mut BookosComp, window: &Window, otra: &Window, pestanas: bo
     state.enfocar(&window);
 }
 
+/// Deshace el grupo lado a lado de `window` guardándolo para
+/// [`desaparcar`]. La otra se queda en su mitad. `false` si no estaba en uno.
+// 0.1.1
+pub fn aparcar(state: &mut BookosComp, window: &Window) -> bool {
+    let window = raiz(state, window);
+    let Some(i) = indice(state, &window) else {
+        return false;
+    };
+    if !matches!(
+        state.multitarea.grupos[i].disposicion,
+        Disposicion::Lados(_)
+    ) {
+        return false;
+    }
+    let grupo = state.multitarea.grupos.remove(i);
+    state.multitarea.aparcados.retain(|(w, _)| *w != window);
+    state.multitarea.aparcados.push((window, grupo));
+    true
+}
+
+/// Rehace el grupo que se aparcó al maximizar `window`, si la otra sigue en
+/// pantalla y libre. `false` si no había nada que rehacer.
+// 0.1.1
+pub fn desaparcar(state: &mut BookosComp, window: &Window) -> bool {
+    let window = raiz(state, window);
+    let Some(i) = state
+        .multitarea
+        .aparcados
+        .iter()
+        .position(|(w, _)| *w == window)
+    else {
+        return false;
+    };
+    let (_, mut grupo) = state.multitarea.aparcados.remove(i);
+    // Si entretanto la otra se cerró, se minimizó o se fue a otro grupo, no
+    // hay a quién volver: se restaura como una ventana suelta.
+    let libres = grupo.ventanas.iter().all(|(w, _)| {
+        w.alive() && state.space.element_location(w).is_some() && indice(state, w).is_none()
+    });
+    if !libres {
+        return false;
+    }
+    for (w, _) in &grupo.ventanas {
+        ventanas::soltar_encaje(w);
+    }
+    grupo.area = state.work_area();
+    grupo.area_salida = grupo.area;
+    state.multitarea.grupos.push(grupo);
+    recolocar(state, state.multitarea.grupos.len() - 1);
+    state.enfocar(&window);
+    true
+}
+
+// 0.1.1
 pub fn cambiar_disposicion(state: &mut BookosComp, window: &Window, pestanas: bool) {
     let Some(i) = indice(state, window) else {
         return;
@@ -158,6 +223,7 @@ pub fn cambiar_disposicion(state: &mut BookosComp, window: &Window, pestanas: bo
     state.enfocar(window);
 }
 
+// 0.1.1
 pub fn separar(state: &mut BookosComp, window: &Window) {
     let Some(i) = indice(state, window) else {
         return;
@@ -174,6 +240,7 @@ pub fn separar(state: &mut BookosComp, window: &Window) {
 /// Es lo que hace soltar una ventana encajada: sin esto, arrastrar una de las
 /// dos movía el grupo entero y la única salida era un menú escondido.
 /// Las pestañas sí se mueven juntas: ahí el grupo es una sola ventana.
+// 0.1.1
 pub fn sacar(state: &mut BookosComp, window: &Window) -> bool {
     let Some(i) = indice(state, window) else {
         return false;
@@ -190,6 +257,7 @@ pub fn sacar(state: &mut BookosComp, window: &Window) -> bool {
     true
 }
 
+// 0.1.1
 pub fn preparar_foco(state: &mut BookosComp, window: &Window) -> Window {
     if let Some(i) = indice(state, window) {
         let raiz = raiz(state, window);
@@ -226,6 +294,7 @@ pub fn preparar_foco(state: &mut BookosComp, window: &Window) -> Window {
         .unwrap_or_else(|| window.clone())
 }
 
+// 0.1.1
 pub fn pestanas(state: &BookosComp, window: &Window) -> (Vec<String>, usize) {
     if raiz(state, window) != *window {
         return (Vec::new(), 0);
@@ -247,6 +316,7 @@ pub fn pestanas(state: &BookosComp, window: &Window) -> (Vec<String>, usize) {
     )
 }
 
+// 0.1.1
 pub fn pulsar_pestana(state: &mut BookosComp, window: &Window, x: f64) -> bool {
     if raiz(state, window) != *window {
         return false;
@@ -271,6 +341,7 @@ pub fn pulsar_pestana(state: &mut BookosComp, window: &Window, x: f64) -> bool {
     true
 }
 
+// 0.1.1
 fn min_ancho(window: &Window) -> i32 {
     if let Some(x11) = window.x11_surface() {
         return x11.min_size().map_or(120, |s| s.w.max(120));
@@ -290,6 +361,7 @@ fn min_ancho(window: &Window) -> i32 {
     })
 }
 
+// 0.1.1
 fn reparto(
     area: Rectangle<i32, Logical>,
     proporcion: f64,
@@ -311,6 +383,7 @@ fn reparto(
     ]
 }
 
+// modified 0.1.1 -- barra del grupo solo con pestañas; lado a lado cada ventana lleva la suya
 fn recolocar(state: &mut BookosComp, i: usize) {
     let pila: Vec<_> = state.space.elements().cloned().collect();
     let grupo = &state.multitarea.grupos[i];
@@ -326,10 +399,18 @@ fn recolocar(state: &mut BookosComp, i: usize) {
         )
         .to_vec(),
     };
+    // La barra del grupo solo hace falta con pestañas, que es donde viven.
+    // Lado a lado cada ventana ya trae la suya —la de Firefox, la de GTK o la
+    // del servidor si la pidió—, y forzar otra encima salía como dos barras
+    // con el mismo título y dos juegos de botones.
+    let pestanas = matches!(grupo.disposicion, Disposicion::Pestanas(_));
     let ventanas: Vec<_> = grupo.ventanas.iter().map(|(w, _)| w.clone()).collect();
     for (w, mut rect) in ventanas.into_iter().zip(destinos) {
-        rect.loc.y += crate::decoracion::ALTO;
-        rect.size.h = (rect.size.h - crate::decoracion::ALTO).max(1);
+        crate::decoracion::agrupar(&w, pestanas);
+        if crate::decoracion::decorada(&w) {
+            rect.loc.y += crate::decoracion::ALTO;
+            rect.size.h = (rect.size.h - crate::decoracion::ALTO).max(1);
+        }
         aplicar(state, &w, rect);
         colocar_dialogos(state, &w, rect);
     }
@@ -342,6 +423,7 @@ fn recolocar(state: &mut BookosComp, i: usize) {
     state.needs_redraw = true;
 }
 
+// 0.1.1
 fn aplicar(state: &mut BookosComp, window: &Window, rect: Rectangle<i32, Logical>) {
     let delta = state.space.element_location(window).map(|p| rect.loc - p);
     if let Some(toplevel) = window.toplevel() {
@@ -362,6 +444,7 @@ fn aplicar(state: &mut BookosComp, window: &Window, rect: Rectangle<i32, Logical
     }
 }
 
+// 0.1.1
 pub fn acompanar(state: &mut BookosComp, window: &Window, delta: Point<i32, Logical>) {
     let hijos: Vec<_> = state
         .space
@@ -377,6 +460,7 @@ pub fn acompanar(state: &mut BookosComp, window: &Window, delta: Point<i32, Logi
     }
 }
 
+// 0.1.1
 pub fn separador_en(state: &BookosComp, punto: Point<f64, Logical>) -> Option<Window> {
     if state.multitarea.grupos.is_empty() {
         return None;
@@ -413,6 +497,7 @@ pub fn separador_en(state: &BookosComp, punto: Point<f64, Logical>) -> Option<Wi
     None
 }
 
+// 0.1.1
 pub fn empezar_separador(state: &mut BookosComp) -> bool {
     let Some(w) = separador_en(state, state.pointer_location) else {
         return false;
@@ -420,6 +505,7 @@ pub fn empezar_separador(state: &mut BookosComp) -> bool {
     empezar_redimension(state, &w, false)
 }
 
+// 0.1.1
 pub fn seguir_separador(state: &mut BookosComp) -> bool {
     let Some((w, desfase, _)) = state.multitarea.separador.clone() else {
         return false;
@@ -436,6 +522,7 @@ pub fn seguir_separador(state: &mut BookosComp) -> bool {
     true
 }
 
+// 0.1.1
 pub fn soltar(state: &mut BookosComp) -> bool {
     state
         .multitarea
@@ -445,6 +532,7 @@ pub fn soltar(state: &mut BookosComp) -> bool {
         | std::mem::take(&mut state.multitarea.clic_consumido)
 }
 
+// 0.1.1
 pub fn arrastrar(state: &mut BookosComp, window: &Window, delta: Point<i32, Logical>) -> bool {
     if raiz(state, window) != *window {
         return false;
@@ -457,6 +545,7 @@ pub fn arrastrar(state: &mut BookosComp, window: &Window, delta: Point<i32, Logi
     true
 }
 
+// modified 0.1.1 -- suelta los grupos aparcados con ventanas muertas
 pub fn purgar(state: &mut BookosComp) {
     let mut cambio = false;
     for g in &mut state.multitarea.grupos {
@@ -475,6 +564,10 @@ pub fn purgar(state: &mut BookosComp) {
             }
         }
     }
+    state
+        .multitarea
+        .aparcados
+        .retain(|(w, g)| w.alive() && g.ventanas.iter().all(|(v, _)| v.alive()));
     state.multitarea.grupos.retain(|g| {
         if g.ventanas.len() >= 2 {
             return true;
@@ -487,6 +580,7 @@ pub fn purgar(state: &mut BookosComp) {
     state.needs_redraw |= cambio;
 }
 
+// 0.1.1
 pub fn ajustar_monitor(state: &mut BookosComp, window: &Window, nombre: &str) {
     let Some(i) = indice(state, window) else {
         return;
@@ -508,6 +602,7 @@ pub fn ajustar_monitor(state: &mut BookosComp, window: &Window, nombre: &str) {
     recolocar(state, i);
 }
 
+// 0.1.1
 pub fn empezar_redimension(state: &mut BookosComp, window: &Window, del_cliente: bool) -> bool {
     if raiz(state, window) != *window {
         return false;
@@ -529,6 +624,7 @@ pub fn empezar_redimension(state: &mut BookosComp, window: &Window, del_cliente:
     true
 }
 
+// 0.1.1
 pub fn encajada(state: &mut BookosComp, window: &Window, zona: ventanas::Zona) {
     use ventanas::Zona;
     let opuesta = match zona {
@@ -557,6 +653,7 @@ pub fn encajada(state: &mut BookosComp, window: &Window, zona: ventanas::Zona) {
     }
 }
 
+// 0.1.1
 pub fn redimensionar(
     state: &mut BookosComp,
     window: &Window,
@@ -575,6 +672,7 @@ pub fn redimensionar(
     true
 }
 
+// 0.1.1
 pub fn retirar(state: &mut BookosComp, window: &Window) {
     for g in &mut state.multitarea.grupos {
         if let Disposicion::Pestanas(ref mut activa) = g.disposicion
@@ -592,6 +690,7 @@ pub fn retirar(state: &mut BookosComp, window: &Window) {
     purgar(state);
 }
 
+// 0.1.1
 fn colocar_dialogos(state: &mut BookosComp, window: &Window, rect: Rectangle<i32, Logical>) {
     let hijos: Vec<_> = state
         .space
@@ -613,6 +712,7 @@ fn colocar_dialogos(state: &mut BookosComp, window: &Window, rect: Rectangle<i32
     }
 }
 
+// 0.1.1
 pub fn ajustar_areas(state: &mut BookosComp) {
     for i in 0..state.multitarea.grupos.len() {
         let w = &state.multitarea.grupos[i].ventanas[0].0;
@@ -658,6 +758,7 @@ pub fn ajustar_areas(state: &mut BookosComp) {
     }
 }
 
+// 0.1.1
 pub fn separador_de(
     state: &BookosComp,
     window: &Window,
@@ -687,6 +788,7 @@ pub fn separador_de(
     ))
 }
 
+// 0.1.1
 pub fn admite_dos_paneles(state: &BookosComp, window: &Window) -> bool {
     indice(state, window).is_some_and(|i| state.multitarea.grupos[i].ventanas.len() == 2)
 }

@@ -31,6 +31,7 @@ pub enum Icono {
 /// para que un icono siga al color del texto cuando la batería se pone en rojo.
 /// Los de aplicación **no** se tiñen: convertir el zorro de Firefox en una
 /// silueta blanca no es lo que nadie quiere.
+// 0.1.0
 pub fn ver_teñido(
     icono: &Icono,
     px: f32,
@@ -57,6 +58,7 @@ pub fn ver_teñido(
 /// dibujar cada fila— y `ver_teñido` no vale porque su firma lo ata al préstamo
 /// aunque por dentro solo clone el `Handle`, que es lo único que el elemento
 /// necesita de verdad.
+// 0.1.0
 pub fn ver_teñido_propio(
     icono: &Icono,
     px: f32,
@@ -77,6 +79,7 @@ pub fn ver_teñido_propio(
 }
 
 /// Como [`ver_teñido`], con opacidad: lo que necesita un icono a medio cruzar.
+// 0.1.0
 pub fn ver_escalado(
     icono: &Icono,
     px: f32,
@@ -104,12 +107,14 @@ pub fn ver_escalado(
 /// Lo usan los widgets que se dibujan solos —la batería— en vez de tirar del
 /// tema: el pictograma cambia de relleno y de color con el estado, y un tema de
 /// iconos solo tiene escalones fijos.
+// 0.1.0
 pub fn desde_svg(svg: &str) -> Icono {
     Icono::Svg(svg::Handle::from_memory(svg.as_bytes().to_vec()))
 }
 
 /// El icono a un tamaño que no tiene por qué ser cuadrado, y sin teñir: lo que
 /// necesita un pictograma que ya trae sus colores dentro.
+// 0.1.0
 pub fn ver(icono: &Icono, ancho: f32, alto: f32) -> crate::view::PanelElement<'_> {
     use iced_core::Length;
     match icono {
@@ -144,6 +149,14 @@ const PROPIOS: &[(&str, &[u8])] = &[
     ),
     ("borrar", include_bytes!("../assets/iconos/borrar.svg")),
     ("intro", include_bytes!("../assets/iconos/intro.svg")),
+    // Los modificadores de los atajos del menú, dibujados como en macOS. Por
+    // lo mismo que las teclas de arriba: ⌘ ⌃ ⌥ ⌦ no están en la fuente del
+    // shell y salían de otra, de otro tamaño.
+    // añadido en la 0.2.0
+    ("tecla-cmd", include_bytes!("../assets/iconos/tecla-cmd.svg")),
+    ("tecla-ctrl", include_bytes!("../assets/iconos/tecla-ctrl.svg")),
+    ("tecla-alt", include_bytes!("../assets/iconos/tecla-alt.svg")),
+    ("tecla-supr", include_bytes!("../assets/iconos/tecla-supr.svg")),
     (
         "chevron-abajo",
         include_bytes!("../assets/iconos/chevron-abajo.svg"),
@@ -279,6 +292,11 @@ const PROPIOS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/iconos/ventana-nueva.svg"),
     ),
     ("fijar", include_bytes!("../assets/iconos/fijar.svg")),
+    // añadido en la 0.2.0 -- el marcador macizo para lo que ya está en el dock.
+    (
+        "fijar-anclado",
+        include_bytes!("../assets/iconos/fijar-anclado.svg"),
+    ),
     ("cerrar", include_bytes!("../assets/iconos/cerrar.svg")),
     ("ojo", include_bytes!("../assets/iconos/ojo.svg")),
     (
@@ -484,12 +502,14 @@ const SOLIDOS: &[(&str, &str, &[u8])] = &[
 /// que iced no puede reutilizar nada y resvg vuelve a rasterizar el dibujo en
 /// cada fotograma. Medido en la isla de actividades, con sus ocho pictogramas:
 /// un frame del reproductor pasa de 9 ms a 2, y con la cola abierta de 19 a 5.
+// 0.1.0
 pub fn propio(nombre: &str) -> Option<Icono> {
     con_cache(nombre, || propio_sin_cache(nombre))
 }
 
 /// La variante maciza de [`propio`], o el de siempre si no la tiene. Ver
 /// [`SOLIDOS`].
+// 0.1.1
 pub fn propio_solido(nombre: &str) -> Option<Icono> {
     match SOLIDOS.iter().find(|(n, _, _)| *n == nombre) {
         Some((_, clave, bytes)) => {
@@ -499,9 +519,92 @@ pub fn propio_solido(nombre: &str) -> Option<Icono> {
     }
 }
 
+/// El color de Temas en Ajustes. Lo llevan también los modos de tema, aunque
+/// su dibujo sea el sol o la luna: el color dice la categoría, no el glifo.
+pub const COLOR_TEMAS: &str = "#FF687F";
+
+/// Un glifo propio como [`insignia_con`], con el color de su página en Ajustes
+/// (los `assets/*.svg` de BookOS-Settings). Una sola tabla para el buscador,
+/// el bloqueo y el greeter: la misma acción tiene que verse igual en los tres.
+// añadido en la 0.2.0
+pub fn insignia(nombre: &str) -> Option<Icono> {
+    let color = match nombre {
+        // Conexiones, aplicaciones y actualizaciones.
+        "wifi" | "red" | "sin-red" | "bluetooth" | "launchpad" | "reiniciar"
+        | "perfil-equilibrado" => "#2F75FF",
+        // Batería y accesibilidad.
+        "bateria-0" | "bateria-50" | "bateria-100" | "bateria-carga" | "ojo" | "mantener"
+        | "perfil-ahorro" => "#86C100",
+        "brillo" | "pantalla" => "#AFDD00",
+        "notificaciones" | "emoji-clock" | "noche" | "salir" | "perfil-rendimiento" => "#FF9421",
+        "apariencia" | "fondo" | "apagar" => COLOR_TEMAS,
+        // Sonido, teclado, touchpad y seguridad.
+        "volumen-alto" | "teclado" | "touchpad" | "control" | "captura" | "dormir" => "#947CFF",
+        "bloquear" => "#3B80EE",
+        // Acerca de y General; también lo que no tiene categoría.
+        _ => "#665E85",
+    };
+    insignia_con(nombre, color)
+}
+
+/// Un glifo propio como icono de app de BookOS (Sistema A del HIG): cuadrado
+/// redondeado del color de su categoría y el glifo en blanco encima. La
+/// variante maciza si la hay: a 30 px el trazo de 1,5 de los de contorno se
+/// pierde dentro del color.
+///
+/// Es para ponerlo junto a iconos de aplicación —el buscador—, donde un glifo
+/// suelto teñido parecía de otro sistema.
+// añadido en la 0.2.0
+pub fn insignia_con(nombre: &str, color: &str) -> Option<Icono> {
+    let clave = format!("insignia/{nombre}/{color}");
+    con_cache(&clave, || {
+        svg_insignia(nombre, color).map(|svg| desde_svg(&svg))
+    })
+}
+
+// modificado en la 0.2.0 -- aparte de `insignia_con` para poder probar que el SVG se lee.
+fn svg_insignia(nombre: &str, color: &str) -> Option<String> {
+    let bytes = SOLIDOS
+        .iter()
+        .find(|(n, _, _)| *n == nombre)
+        .map(|(_, _, b)| *b)
+        .or_else(|| PROPIOS.iter().find(|(n, _)| *n == nombre).map(|(_, b)| *b))?;
+    let glifo = std::str::from_utf8(bytes)
+        .ok()?
+        .replace("currentColor", "#ffffff");
+    let glifo = glifo.trim_start_matches(|c| c != '<');
+    // El glifo entra como `<svg>` anidado con su propio viewBox: así no hay que
+    // reescalar sus trazados. Ocupa el 56 %, la proporción de los iconos de
+    // `Apps-Icons`. Su `width`/`height` se quitan antes de poner los nuestros:
+    // el logo del launchpad, exportado de Figma, los trae, y un atributo
+    // repetido es XML inválido —resvg no pintaba nada y el buscador lo
+    // enseñaba sin icono—.
+    let fin = glifo.find('>')?;
+    let mut raiz = glifo[..fin].to_string();
+    for atributo in [" width=\"", " height=\""] {
+        if let Some(i) = raiz.find(atributo) {
+            let valor = i + atributo.len();
+            let cierre = valor + raiz[valor..].find('"')? + 1;
+            raiz.replace_range(i..cierre, "");
+        }
+    }
+    let glifo = format!("{raiz}{}", &glifo[fin..])
+        .replacen(
+            "<svg ",
+            r#"<svg x="112" y="112" width="288" height="288" "#,
+            1,
+        )
+        // El trazo sube de 1,5 a 2, el peso que pide el HIG.
+        .replace(r#"stroke-width="1.5""#, r#"stroke-width="2""#);
+    Some(format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="120" fill="{color}"/>{glifo}</svg>"#
+    ))
+}
+
 /// Resuelve únicamente el catálogo de BookOS sin tocar la caché compartida.
 /// `cargar` lo necesita para poder completar después la búsqueda en los temas
 /// del sistema antes de decidir si guarda un `None` definitivo.
+// 0.1.0
 fn propio_sin_cache(nombre: &str) -> Option<Icono> {
     if let Some(n) = nombre.strip_prefix("escritorio-") {
         return n.parse().ok().map(escritorio);
@@ -513,6 +616,7 @@ fn propio_sin_cache(nombre: &str) -> Option<Icono> {
 }
 
 /// Lo que ya hubiera guardado con esa clave, o lo que devuelva `construir`.
+// 0.1.0
 fn con_cache(clave: &str, construir: impl FnOnce() -> Option<Icono>) -> Option<Icono> {
     let cache = CACHE.get_or_init(Default::default);
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -534,6 +638,7 @@ fn con_cache(clave: &str, construir: impl FnOnce() -> Option<Icono>) -> Option<I
 /// Se construye en memoria en vez de tener cinco ficheros —uno por escritorio—
 /// porque lo único que cambia entre ellos es un dígito, y cinco copias del
 /// mismo monitor se separan a la primera corrección del dibujo.
+// 0.1.0
 pub fn escritorio(numero: u32) -> Icono {
     let digito = digito(numero);
     desde_svg(&format!(
@@ -557,6 +662,7 @@ pub fn escritorio(numero: u32) -> Icono {
 /// ocupan la caja (6,6 – 9,4) × (4,4 – 8,5), o sea centrados y con aire por los
 /// cuatro lados. Solo hay hasta el 5 porque `escritorios::MAXIMO` son cinco: un
 /// número mayor deja el monitor sin dígito en vez de dibujar cualquier cosa.
+// 0.1.0
 fn digito(numero: u32) -> &'static str {
     match numero {
         1 => "M7.38 5.36 8.13 4.65 8.13 8.26",
@@ -593,6 +699,8 @@ static CACHE: std::sync::OnceLock<
 ///
 /// Primero los propios: un icono de BookOS no debe cambiar de dibujo porque el
 /// usuario instale otro tema.
+// 0.1.0
+// modified 0.1.1 -- los iconos temporales no se cachean
 pub fn cargar(nombre: &str) -> Option<Icono> {
     if es_dinamico(nombre) {
         return cargar_dinamico(nombre);
@@ -635,12 +743,14 @@ pub fn cargar(nombre: &str) -> Option<Icono> {
 /// se quedaban con el dibujo del arranque de la sesión.
 const DINAMICOS: &[&str] = &["bookos-clock", "bookos-calendar"];
 
+// 0.1.0
 pub fn es_dinamico(nombre: &str) -> bool {
     DINAMICOS.contains(&nombre)
 }
 
 /// Cuándo se reescribió el icono dinámico; `None` si no lo es o no está.
 /// El dock lo compara para no releer un fichero que no ha cambiado.
+// 0.1.1
 pub fn modificado_si_dinamico(nombre: &str) -> Option<std::time::SystemTime> {
     if !es_dinamico(nombre) {
         return None;
@@ -656,6 +766,7 @@ pub fn modificado_si_dinamico(nombre: &str) -> Option<std::time::SystemTime> {
 /// distinto en cada uno. Por la caché, que no olvida nada en toda la sesión,
 /// cada aviso dejaba su mapa de bits —hasta 256 KB a [`LADO_RASTER`]— para
 /// siempre. El aviso ya se queda con su `Icono`, así que no hace falta.
+// 0.1.1
 fn es_temporal(nombre: &str) -> bool {
     ["/tmp/", "/var/tmp/", "/run/"]
         .iter()
@@ -666,6 +777,7 @@ fn es_temporal(nombre: &str) -> bool {
 /// identificador del `Handle` sale de lo que se le da, así que por ruta iced
 /// seguiría sirviendo el rasterizado de la hora vieja. Por contenido solo se
 /// rasteriza de nuevo cuando el dibujo cambia de verdad.
+// 0.1.0
 fn cargar_dinamico(nombre: &str) -> Option<Icono> {
     let ruta = resolve_icon(nombre)?;
     if ruta.extension().is_some_and(|e| e == "svg") {
@@ -675,15 +787,35 @@ fn cargar_dinamico(nombre: &str) -> Option<Icono> {
     load_icon(&ruta)
 }
 
+// 0.1.0
+// modificado en la 0.2.0 -- el launchpad de serie si el tema de iconos no lo trae
 fn cargar_sin_cache(nombre: &str) -> Option<Icono> {
     if let Some(icono) = propio_sin_cache(nombre) {
         return Some(icono);
     }
-    resolve_icon(nombre).and_then(|ruta| load_icon(&ruta))
+    resolve_icon(nombre)
+        .and_then(|ruta| load_icon(&ruta))
+        .or_else(|| {
+            (nombre == LAUNCHPAD).then(|| {
+                let bytes: &[u8] = if crate::tema::actual() == crate::tema::Tema::Claro {
+                    include_bytes!("../assets/iconos/launchpad-claro.svg")
+                } else {
+                    include_bytes!("../assets/iconos/launchpad-oscuro.svg")
+                };
+                Icono::Svg(svg::Handle::from_memory(bytes))
+            })
+        })
 }
+
+/// El icono del launchpad en el dock. Va por el tema de iconos como el de
+/// cualquier aplicación —claro, oscuro o tintado— y no por [`PROPIOS`], que
+/// mandan sobre el tema. Los packs de BookOS lo traen desde la 0.2.0; con otro
+/// tema, [`cargar_sin_cache`] pone el de serie.
+pub const LAUNCHPAD: &str = "bookos-launchpad";
 
 /// Dónde mirar, en orden. Primero el tema propio de BookOS si existe, luego los
 /// del sistema.
+// 0.1.0
 fn icon_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
@@ -714,6 +846,7 @@ const TEMAS: &[&str] = &[
 /// para que GTK vea cada cambio de paleta) se aplicaban en las apps y no en el
 /// dock. Se lee por `gsettings` porque es donde Ajustes lo escribe; el nombre
 /// se descarta si no es un directorio simple, ya que acaba en una ruta.
+// 0.1.0
 pub fn tema_elegido() -> Option<String> {
     let salida = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "icon-theme"])
@@ -751,6 +884,7 @@ const CATEGORIAS: &[&str] = &[
 /// faltaban `32x32` y `512x512`, que es donde hicolor guarda los iconos de
 /// Firefox y de bookos-settings, así que el dock los dibujaba con la inicial.
 /// Enumerar lo que hay en disco no puede quedarse corto.
+// 0.1.0
 fn tamano_de(nombre: &str) -> Option<u32> {
     if nombre == "scalable" || nombre == "symbolic" {
         return Some(u32::MAX);
@@ -769,6 +903,7 @@ fn tamano_de(nombre: &str) -> Option<u32> {
 /// cada búsqueda posterior en un puñado de comprobaciones.
 ///
 /// Medido en esta máquina: buscar treinta iconos pasó de 31 ms a menos de 2.
+// 0.1.0
 fn directorios() -> std::sync::Arc<Vec<PathBuf>> {
     con_directorios(|| {
         let elegido = tema_elegido();
@@ -838,6 +973,7 @@ fn directorios() -> std::sync::Arc<Vec<PathBuf>> {
     })
 }
 
+// 0.1.0
 fn con_directorios(construir: impl FnOnce() -> Vec<PathBuf>) -> std::sync::Arc<Vec<PathBuf>> {
     let mut guardado = DIRS.lock().unwrap_or_else(|e| e.into_inner());
     guardado
@@ -860,6 +996,7 @@ static DIRS: std::sync::Mutex<Option<std::sync::Arc<Vec<PathBuf>>>> = std::sync:
 /// y el launchpad la enseñaba con la inicial aunque el icono ya estuviera en
 /// disco. Se llama donde se releen los `.desktop`, que es cuando una
 /// instalación se hace visible.
+// 0.1.1
 pub fn olvidar_ausentes() {
     if let Some(cache) = CACHE.get() {
         cache
@@ -869,6 +1006,7 @@ pub fn olvidar_ausentes() {
     }
 }
 
+// 0.1.0
 pub fn recargar_tema() {
     *DIRS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if let Some(cache) = CACHE.get() {
@@ -876,6 +1014,7 @@ pub fn recargar_tema() {
     }
 }
 
+// 0.1.0
 pub fn resolve_icon(name: &str) -> Option<PathBuf> {
     // Un nombre puede venir ya como ruta absoluta desde un `.desktop`.
     if name.starts_with('/') {
@@ -906,6 +1045,8 @@ const LADO_RASTER: u32 = 256;
 /// formato que no soportamos, devolvemos `None` y el item cae en la baldosa con
 /// la inicial. Dejárselo a iced significaría un panic, y un panic del shell
 /// apaga el panel y el dock enteros — un icono roto no puede costar tanto.
+// 0.1.0
+// modified 0.1.1 -- reduce los PNG enormes antes de cachearlos (uno de 1024 px eran 4,2 MB)
 fn load_icon(path: &Path) -> Option<Icono> {
     if path.extension().is_some_and(|e| e == "svg") {
         return Some(Icono::Svg(svg::Handle::from_path(path)));
@@ -941,6 +1082,24 @@ fn load_icon(path: &Path) -> Option<Icono> {
 
 #[cfg(test)]
 mod tests {
+    /// Todas las insignias tienen que ser SVG legible: uno roto no avisa, sale
+    /// el hueco vacío.
+    #[test]
+    fn las_insignias_se_leen() {
+        let opciones = resvg::usvg::Options::default();
+        for nombre in PROPIOS
+            .iter()
+            .map(|(n, _)| *n)
+            .chain(SOLIDOS.iter().map(|(n, _, _)| *n))
+        {
+            let svg = svg_insignia(nombre, "#2F75FF").expect("el nombre sale del catálogo");
+            assert!(
+                resvg::usvg::Tree::from_str(&svg, &opciones).is_ok(),
+                "la insignia «{nombre}» no se lee"
+            );
+        }
+    }
+
     use super::*;
 
     /// Cada escritorio tiene su icono con su número **dibujado**, no escrito:

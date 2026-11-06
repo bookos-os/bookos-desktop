@@ -80,12 +80,14 @@ struct Servicio {
 }
 
 impl Servicio {
+    // 0.1.0
     fn estado(&self) -> MutexGuard<'_, Estado> {
         self.estado
             .lock()
             .expect("nadie entra en pánico con el estado tomado")
     }
 
+    // 0.1.0
     fn con<T>(&self, f: impl FnOnce(&Conexion) -> Result<T, String>) -> zbus::fdo::Result<T> {
         let e = self.estado();
         let c = e.conexion.as_ref().ok_or_else(|| {
@@ -97,6 +99,7 @@ impl Servicio {
     /// Abre el canal con hasta tres intentos. Si ya hay uno en marcha, espera
     /// a que acabe en vez de lanzar otro: dos `ConnectProfile` a la vez se
     /// pisan el descriptor pendiente.
+    // 0.1.0
     async fn conectar(&self, ruta: OwnedObjectPath) -> Result<BudsStatus, String> {
         let aparato = conexion::aparato(&self.sistema, ruta).await?;
         loop {
@@ -188,6 +191,7 @@ impl Servicio {
         Err(legible)
     }
 
+    // 0.1.0
     fn soltar(&self, mac: &str) {
         let vieja = {
             let mut e = self.estado();
@@ -201,12 +205,14 @@ impl Servicio {
     }
 }
 
+// 0.1.0
 fn json(s: &BudsStatus) -> String {
     serde_json::to_string(s).expect("BudsStatus solo tiene tipos que serde sabe escribir")
 }
 
 #[zbus::interface(name = "org.bookos.Buds")]
 impl Servicio {
+    // 0.1.0
     async fn connect(&self, mac: &str) -> zbus::fdo::Result<String> {
         let ruta = conexion::ruta_de(&self.sistema, mac)
             .await
@@ -227,11 +233,13 @@ impl Servicio {
         self.con(|c| Ok(json(&c.estado())))
     }
 
+    // 0.1.0
     async fn disconnect(&self) {
         let vieja = self.estado().conexion.take();
         drop(vieja);
     }
 
+    // 0.1.0
     async fn get_status(&self) -> String {
         let e = self.estado();
         match &e.conexion {
@@ -245,6 +253,7 @@ impl Servicio {
     }
 
     /// 0 apagado, 1 cancelación, 2 ambiente, 3 adaptativo.
+    // 0.1.0
     async fn set_anc(&self, mode: u8) -> zbus::fdo::Result<()> {
         let mac = self.con(|c| {
             c.enviar(protocolo::MSG_NOISE_CONTROLS, &[mode])?;
@@ -264,6 +273,7 @@ impl Servicio {
     }
 
     /// 0 graves, 1 suave, 2 dinámico, 3 claro, 4 agudos.
+    // 0.1.0
     async fn set_eq(&self, preset: u8, enabled: bool) -> zbus::fdo::Result<()> {
         let mac = self.con(|c| {
             c.enviar(
@@ -285,6 +295,7 @@ impl Servicio {
         Ok(())
     }
 
+    // 0.1.0
     async fn set_touch_lock(&self, locked: bool) -> zbus::fdo::Result<()> {
         let mac = self.con(|c| {
             c.enviar(protocolo::MSG_LOCK_TOUCHPAD, &[locked as u8])?;
@@ -298,10 +309,12 @@ impl Servicio {
         Ok(())
     }
 
+    // 0.1.0
     async fn set_easy_pairing(&self, enable: bool) -> zbus::fdo::Result<()> {
         self.con(|c| c.enviar(protocolo::MSG_SET_EASY_PAIRING, &[enable as u8]))
     }
 
+    // 0.1.0
     async fn fit_test_start(&self) -> zbus::fdo::Result<()> {
         self.con(|c| {
             {
@@ -316,10 +329,12 @@ impl Servicio {
         })
     }
 
+    // 0.1.0
     async fn fit_test_stop(&self) -> zbus::fdo::Result<()> {
         self.con(|c| c.enviar(protocolo::MSG_FIT_TEST_STOP, &[]))
     }
 
+    // 0.1.0
     async fn request_info(&self) -> zbus::fdo::Result<()> {
         self.con(|c| {
             c.enviar(protocolo::MSG_DEBUG_BUILD_INFO_REQ, &[])?;
@@ -330,10 +345,12 @@ impl Servicio {
     /// Se guarda para Ajustes, que la usa en su cambio automático de audio
     /// entre portátil y móvil. El canal de control se abre siempre que BlueZ
     /// conecta unos Buds, esté o no activada.
+    // 0.1.0
     async fn set_auto_reconnect(&self, mac: &str, enable: bool) {
         protocolo::update_prefs(mac, |p| p.auto_reconnect = enable);
     }
 
+    // 0.1.0
     async fn get_prefs(&self, mac: &str) -> String {
         serde_json::to_string(&protocolo::get_prefs(mac))
             .expect("BudsPrefs solo tiene tipos simples")
@@ -342,6 +359,7 @@ impl Servicio {
 
 /// Escucha `Connected` de todos los `org.bluez.Device1`. Reactivo: Ajustes
 /// miraba la lista entera cada 4 s.
+// 0.1.0
 async fn escuchar_bluez(sistema: Connection, avisos: mpsc::UnboundedSender<Aviso>) {
     loop {
         let regla = zbus::MatchRule::builder()
@@ -398,6 +416,7 @@ const AUDIO_TOPE: Duration = Duration::from_secs(10);
 
 /// Espera a que BlueZ cuelgue un `MediaTransport1` del aparato, que es la
 /// señal de que el audio ya está negociado. `true` si llegó a tiempo.
+// 0.1.0
 async fn esperar_audio(sistema: &Connection, ruta: &OwnedObjectPath) -> bool {
     let Ok(p) = zbus::Proxy::new(
         sistema,
@@ -423,6 +442,7 @@ async fn esperar_audio(sistema: &Connection, ruta: &OwnedObjectPath) -> bool {
     false
 }
 
+// 0.1.0
 async fn buds_conectados(sistema: &Connection) -> Vec<OwnedObjectPath> {
     let Ok(p) = zbus::Proxy::new(
         sistema,
@@ -447,16 +467,19 @@ async fn buds_conectados(sistema: &Connection) -> Vec<OwnedObjectPath> {
         .collect()
 }
 
+// 0.1.0
 fn en_castellano() -> bool {
     std::env::var("LANG").is_ok_and(|l| l.starts_with("es"))
 }
 
+// 0.1.0
 fn baja(s: &BudsStatus) -> bool {
     [s.battery_l, s.battery_r]
         .iter()
         .any(|&b| b > 0 && b <= BATERIA_BAJA)
 }
 
+// 0.1.0
 async fn llamar_isla<B>(sesion: &Connection, metodo: &str, cuerpo: &B)
 where
     B: serde::Serialize + zbus::zvariant::DynamicType,
@@ -476,6 +499,7 @@ where
     }
 }
 
+// 0.1.0
 async fn publicar_isla(svc: &Servicio, sesion: &Connection, s: &BudsStatus) {
     let es = en_castellano();
     let fila = |etiqueta: &str, v: u8| {
@@ -517,6 +541,7 @@ async fn publicar_isla(svc: &Servicio, sesion: &Connection, s: &BudsStatus) {
 }
 
 /// Tocar la isla abre Ajustes en la página de los Buds.
+// 0.1.0
 async fn escuchar_isla(sesion: Connection, svc: Servicio) {
     let regla = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
@@ -549,6 +574,7 @@ async fn escuchar_isla(sesion: Connection, svc: Servicio) {
     }
 }
 
+// 0.1.0
 async fn supervisar(svc: Servicio, sesion: Connection, mut avisos: mpsc::UnboundedReceiver<Aviso>) {
     while let Some(aviso) = avisos.recv().await {
         match aviso {
@@ -632,6 +658,7 @@ async fn supervisar(svc: Servicio, sesion: Connection, mut avisos: mpsc::Unbound
 }
 
 #[tokio::main(flavor = "current_thread")]
+// 0.1.0
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sistema = Connection::system().await?;
     let pendiente = conexion::publicar_perfiles(&sistema).await?;

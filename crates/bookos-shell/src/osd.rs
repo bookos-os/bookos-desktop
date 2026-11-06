@@ -98,6 +98,7 @@ pub const MARGEN_BUFFER_INFERIOR: f32 = MARGEN_INFERIOR + MARGEN_SOMBRA;
 /// gráficos: el peor es el índigo, con 3,30, y el grafito sube a 4,41. El surco
 /// sigue viéndose sobre la cápsula negra (1,85). Con `control_apagado`
 /// (`#48484a`), el índigo se quedaba en 2,65.
+// 0.1.0
 fn surco() -> Color {
     if tema::es_claro() {
         tema::hex(0xc7c7cc)
@@ -124,6 +125,7 @@ pub struct Osd {
 }
 
 impl Osd {
+    // 0.1.0
     pub fn new(icono: &str, nivel: Option<u8>, texto: Option<String>) -> Self {
         Self {
             icono: cargar_icono(icono).0,
@@ -131,7 +133,7 @@ impl Osd {
             nivel,
             // Recién creado, la barra ya está en su sitio: el primer aviso
             // enseña el volumen que hay, no lo dibuja creciendo desde cero.
-            barra: tema::Transicion::nueva(fraccion_nivel(nivel), tema::D_HOVER, tema::C_SUAVE),
+            barra: tema::Transicion::nueva(fraccion_nivel(nivel), tema::M_RAPIDO),
             texto,
             desde: Instant::now(),
             visto: Instant::now(),
@@ -146,6 +148,7 @@ impl Osd {
     /// del volumen a media desaparición. El icono sí cambia —el del volumen
     /// tiene tres— y el tiempo vuelve a empezar, que es lo que espera quien
     /// sigue pulsando la tecla.
+    // 0.1.0
     pub fn actualizar(&mut self, icono: &str, nivel: Option<u8>, texto: Option<String>) -> bool {
         if self.nivel.is_some() != nivel.is_some() {
             return false;
@@ -171,12 +174,14 @@ impl Osd {
     }
 
     /// Cuánto queda para que desaparezca del todo. `None` si ya se fue.
+    // 0.1.0
     pub fn queda(&self) -> Option<Duration> {
         (QUIETO + SALIDA).checked_sub(self.visto.elapsed())
     }
 
     /// Opacidad de ahora mismo: entrando, entero mientras está quieto, y
     /// bajando al final.
+    // 0.1.0
     pub fn alfa(&self) -> f32 {
         // La entrada va con la curva sin rebote aunque el tamaño sí rebote:
         // un muelle en el alfa lo llevaría por encima de 1 y habría que
@@ -194,6 +199,7 @@ impl Osd {
     ///
     /// Lo aplica el compositor al componer la superficie, no el dibujo: escalar
     /// una textura ya pintada es trabajo de la GPU y no cuesta un repintado.
+    // 0.1.0
     pub fn escala(&self) -> f32 {
         let t = self.desde.elapsed();
         if t >= ENTRADA {
@@ -205,10 +211,12 @@ impl Osd {
     /// ¿Hay que repintar o recomponer? Solo mientras entra y mientras la barra
     /// se mueve; la desaparición es alfa y la lleva el compositor con un único
     /// despertar programado.
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.desde.elapsed() < ENTRADA || self.barra.animando()
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         (
             self.ancho() + MARGEN_SOMBRA * 2.0,
@@ -221,6 +229,7 @@ impl Osd {
     /// Con barra es fijo, el del diseño. Con texto se ajusta a lo que hay que
     /// escribir —«Touchpad desactivado» y «Fn lock» no ocupan lo mismo—, que es
     /// lo que hacen las cápsulas del diseño: 221 una y 199 otra.
+    // 0.1.0
     fn ancho(&self) -> f32 {
         match (&self.texto, self.nivel) {
             (Some(t), None) => {
@@ -239,6 +248,7 @@ impl Osd {
         }
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let base = match &self.icono {
             Some(ic) => icono::ver_teñido(ic, LADO_ICONO, Some(tema::texto())),
@@ -298,6 +308,7 @@ impl Osd {
         container(capsula).padding(MARGEN_SOMBRA).into()
     }
 
+    // 0.1.0
     fn barra<'a>(&self) -> PanelElement<'a> {
         // Del valor animado, no del nivel: la barra persigue lo que se acaba de
         // pulsar en vez de saltar a ello.
@@ -334,6 +345,7 @@ impl Osd {
 /// El icono de un aviso y si va tachado. Un nombre acabado en `-desactivado` es
 /// el mismo icono con la raya roja encima: así «touchpad» y «cámara» tienen su
 /// versión apagada sin duplicar el dibujo.
+// 0.1.0
 fn cargar_icono(nombre: &str) -> (Option<Icono>, bool) {
     let (base, tachado) = match nombre.strip_suffix("-desactivado") {
         Some(base) => (base, true),
@@ -343,6 +355,7 @@ fn cargar_icono(nombre: &str) -> (Option<Icono>, bool) {
 }
 
 /// El nivel como fracción del ancho de la barra. Sin nivel, vacía.
+// 0.1.0
 fn fraccion_nivel(nivel: Option<u8>) -> f32 {
     nivel.unwrap_or(0).min(100) as f32 / 100.0
 }
@@ -356,6 +369,7 @@ fn fraccion_nivel(nivel: Option<u8>) -> f32 {
 /// que cuelgan del panel; el OSD no cuelga de nada y sale sobre lo que haya en
 /// pantalla, así que el tono pleno es lo que le da su silueta. Por eso no usa
 /// `tema::card()`, que en oscuro es el gris `#1c1c1e` de las tarjetas.
+// 0.1.0
 fn fondo() -> Color {
     if tema::es_claro() {
         Color::WHITE

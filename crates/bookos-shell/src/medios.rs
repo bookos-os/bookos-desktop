@@ -42,6 +42,7 @@ pub struct Sonando {
 impl Sonando {
     /// Lo que debe salir en la tarjeta. Prefiere lo que esté reproduciendo y
     /// descarta visores de imágenes que publican MPRIS para una presentación.
+    // 0.1.0
     pub fn leer() -> Option<Self> {
         Self::consultar().unwrap_or_else(|error| {
             tracing::debug!("no se pudo consultar el reproductor: {error}");
@@ -51,6 +52,7 @@ impl Sonando {
 
     /// Una lectura fallida no confirma que se haya cerrado el reproductor.
     /// El centro conserva su última tarjeta en ese caso.
+    // 0.1.0
     pub fn consultar() -> Result<Option<Self>, String> {
         let mut pausado = None;
         let mut fallo = None;
@@ -86,6 +88,7 @@ impl Sonando {
         }
     }
 
+    // 0.1.0
     fn desde_mpris(
         bus: String,
         estado: &str,
@@ -131,6 +134,7 @@ impl Sonando {
     }
 
     /// La orden que hay que ejecutar para un botón de la tarjeta.
+    // 0.1.0
     pub fn orden(&self, que: Orden) -> String {
         let metodo = match que {
             Orden::Anterior => "Previous",
@@ -148,6 +152,7 @@ impl Sonando {
     /// El lockscreen usa este camino: el clic debe volver al compositor de
     /// inmediato y `busctl` termina por su cuenta. El nombre del bus ya se
     /// resolvió al leer la tarjeta, así que aquí no se lanza una consulta extra.
+    // 0.1.0
     pub fn ejecutar(&self, que: Orden) -> bool {
         ejecutar_en(&self.bus, que)
     }
@@ -157,12 +162,14 @@ impl Sonando {
     /// multimedia —medido el 2026-10-26: `Paused`, `Position` 6,6 s congelada,
     /// `CanSeek` falso—, así que «pausado» ahí no quiere decir «lo acabo de
     /// pausar».
+    // 0.1.1
     pub fn es_de_movil(&self) -> bool {
         self.bus.contains(".kdeconnect.")
     }
 
     /// De 0 a 1, para la barra de progreso. `None` si el reproductor no publica
     /// las dos cosas —los navegadores a menudo no dan `Position`—.
+    // 0.1.0
     pub fn avance(&self) -> Option<f32> {
         let (p, d) = (self.posicion?, self.duracion?);
         (d > 0).then(|| (p as f32 / d as f32).clamp(0.0, 1.0))
@@ -174,6 +181,7 @@ impl Sonando {
 ///
 /// La comparten el centro de control y el bloqueo; cada uno la llama solo al
 /// cambiar de fuente, no por lectura.
+// 0.1.0
 pub fn cargar_caratula(fuente: &str, lado: u32, radio: f32) -> Option<(Handle, Color)> {
     use base64::Engine;
     let bytes = match fuente.strip_prefix("data:image/") {
@@ -211,6 +219,8 @@ pub fn cargar_caratula(fuente: &str, lado: u32, radio: f32) -> Option<(Handle, C
 }
 
 /// La variante para una vista que ya guardó solo el nombre del bus.
+// 0.1.0
+// modified 0.1.1 -- la llamada a busctl pasa por llamar()
 pub fn ejecutar_en(bus: &str, que: Orden) -> bool {
     let metodo = match que {
         Orden::Anterior => "Previous",
@@ -225,11 +235,13 @@ pub fn ejecutar_en(bus: &str, que: Orden) -> bool {
 /// `Seek` relativo y no `SetPosition`: este último pide el `mpris:trackid`, que
 /// `busctl` da como ruta de objeto y no todos los reproductores publican; el
 /// relativo lo implementan igual kdeconnect (`mprisremote`) y BookOS Player.
+// 0.1.1
 pub fn saltar_en(bus: &str, desfase: i64) -> bool {
     llamar(bus, &["Seek", "x", &(desfase * 1_000_000).to_string()])
 }
 
 /// Un método de `org.mpris.MediaPlayer2.Player` sin esperar la respuesta.
+// 0.1.1
 fn llamar(bus: &str, metodo: &[&str]) -> bool {
     let Ok(mut hijo) = Command::new("busctl")
         .args([
@@ -263,10 +275,12 @@ pub enum Orden {
 }
 
 /// Formatea unos segundos como `m:ss`.
+// 0.1.0
 pub fn reloj(segundos: u64) -> String {
     format!("{}:{:02}", segundos / 60, segundos % 60)
 }
 
+// 0.1.0
 fn reproductores() -> Result<Vec<String>, String> {
     let salida = Command::new("busctl")
         .args(["--user", "list", "--no-legend"])
@@ -292,6 +306,7 @@ fn reproductores() -> Result<Vec<String>, String> {
 /// MPRIS también lo implementan algunos visores para avanzar diapositivas.
 /// Eso no convierte una foto en música: se reconoce por el reproductor o por
 /// la URL original, nunca por `mpris:artUrl` porque esa sí es una carátula.
+// 0.1.0
 fn es_imagen(bus: &str, metadatos: &str) -> bool {
     let bus = bus.to_ascii_lowercase();
     let visor = [
@@ -324,10 +339,12 @@ fn es_imagen(bus: &str, metadatos: &str) -> bool {
     .any(|extension| ruta.ends_with(&format!(".{extension}")))
 }
 
+// 0.1.0
 fn propiedad(bus: &str, nombre: &str) -> Option<String> {
     propiedad_de(bus, "org.mpris.MediaPlayer2.Player", nombre)
 }
 
+// 0.1.0
 fn identidad(bus: &str) -> Option<String> {
     // `busctl` la imprime como `s "Nombre"`.
     let volcado = propiedad_de(bus, "org.mpris.MediaPlayer2", "Identity")?;
@@ -336,10 +353,12 @@ fn identidad(bus: &str) -> Option<String> {
     (!nombre.is_empty()).then(|| nombre.to_string())
 }
 
+// 0.1.0
 fn propiedad_de(bus: &str, interfaz: &str, nombre: &str) -> Option<String> {
     consultar_propiedad_de(bus, interfaz, nombre).ok()
 }
 
+// 0.1.0
 fn consultar_propiedad_de(bus: &str, interfaz: &str, nombre: &str) -> Result<String, String> {
     let salida = Command::new("busctl")
         .args([
@@ -369,6 +388,7 @@ fn consultar_propiedad_de(bus: &str, interfaz: &str, nombre: &str) -> Result<Str
 /// cadena entrecomillada, saltándose el tipo. En vez de analizar el formato
 /// entero —que cambia entre versiones— solo se leen los tres campos que se
 /// enseñan.
+// 0.1.0
 fn campo(volcado: &str, clave: &str) -> Option<String> {
     let resto = volcado.split_once(&format!("\"{clave}\""))?.1;
     let valor = cadena(resto)?;
@@ -383,6 +403,7 @@ fn campo(volcado: &str, clave: &str) -> Option<String> {
 /// como `M\303\241s` (visto con Firefox), y las comillas de dentro como `\"`.
 /// Copiar el texto tal cual enseñaba los códigos en el bloqueo, y cortar en
 /// cualquier comilla partía los títulos que llevan comillas.
+// 0.1.0
 fn cadena(texto: &str) -> Option<String> {
     let mut bytes = texto.split_once('"')?.1.bytes();
     let mut valor = Vec::new();
@@ -408,12 +429,14 @@ fn cadena(texto: &str) -> Option<String> {
 }
 
 /// Igual, pero para un campo numérico: `"mpris:length" x 253000000`.
+// 0.1.0
 fn campo_numero(volcado: &str, clave: &str) -> Option<u64> {
     let resto = volcado.split_once(&format!("\"{clave}\""))?.1;
     numero(resto)
 }
 
 /// El primer número entero que aparece en un trozo de salida de `busctl`.
+// 0.1.0
 fn numero(texto: &str) -> Option<u64> {
     let mut digitos = String::new();
     for c in texto.chars() {

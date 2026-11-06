@@ -67,6 +67,7 @@ struct Teclado {
 
 /// Cuál es la luz del teclado, si la hay. Mismo criterio que el compositor al
 /// atender la tecla XF86: el primer `led` cuyo nombre lleve `kbd_backlight`.
+// 0.1.0
 fn leds_teclado() -> Option<Teclado> {
     let (dispositivo, nivel, maximo) = crate::brillo_teclado_actual()?;
     Some(Teclado {
@@ -122,6 +123,7 @@ enum Fila {
 }
 
 impl Brillo {
+    // 0.1.0
     pub fn new() -> Self {
         let dispositivo = crate::state::backlight_device();
         let maximo = dispositivo
@@ -147,6 +149,7 @@ impl Brillo {
         }
     }
 
+    // 0.1.0
     pub fn refrescar(&mut self) -> bool {
         if self.agarrado() {
             return false;
@@ -182,6 +185,7 @@ impl Brillo {
     }
 
     /// El nivel que dibuja la píldora: el real, o de camino hacia él.
+    // 0.1.0
     fn nivel_visible(&self) -> u8 {
         match self.transicion {
             Some((desde, t)) if t.elapsed() < D_BARRA => {
@@ -193,12 +197,14 @@ impl Brillo {
         }
     }
 
+    // 0.1.0
     fn pantalla_automatica(&self) -> bool {
         self.sensor && self.automatico.pantalla && self.dispositivo.is_some()
     }
 
     /// Cuánto se ha movido la pantalla a mano respecto a lo que pide la luz,
     /// si es bastante para enseñarlo.
+    // 0.1.0
     fn ajuste(&self) -> Option<(u8, i32)> {
         let objetivo = self.objetivo.filter(|_| self.pantalla_automatica())?;
         let ajuste = i32::from(self.nivel) - i32::from(objetivo);
@@ -208,6 +214,7 @@ impl Brillo {
     /// La línea gris bajo la pantalla. Corta a propósito: a 11 px caben unos
     /// 45 caracteres en el ancho de la tarjeta, y una segunda línea movería
     /// todo lo de abajo.
+    // 0.1.0
     fn ayuda_pantalla(&self) -> Option<String> {
         if !self.pantalla_automatica() {
             return None;
@@ -222,15 +229,18 @@ impl Brillo {
         })
     }
 
+    // 0.1.0
     fn ayuda_teclado(&self) -> Option<&'static str> {
         (self.sensor && self.automatico.teclado && self.teclado.is_some())
             .then_some("Se enciende con poca luz")
     }
 
+    // 0.1.0
     fn alto_ayuda<T>(ayuda: &Option<T>) -> f32 {
         if ayuda.is_some() { AYUDA } else { 0.0 }
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let teclado = if self.teclado.is_some() {
             SEPARACION_FILAS + SECCION + Self::alto_ayuda(&self.ayuda_teclado())
@@ -251,11 +261,13 @@ impl Brillo {
         )
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::BajoWidget("brillo")
     }
 
     /// El rectángulo de la píldora, relativo a la emergente.
+    // 0.1.0
     fn rect_pildora(&self) -> iced_core::Rectangle {
         iced_core::Rectangle {
             x: MARGEN + SANGRIA + ICONO + HUECO,
@@ -271,6 +283,7 @@ impl Brillo {
     }
 
     /// El botón «A» de una fila, a la derecha de su píldora.
+    // 0.1.0
     fn rect_boton(&self, fila: Fila) -> Option<iced_core::Rectangle> {
         if !self.sensor {
             return None;
@@ -287,11 +300,13 @@ impl Brillo {
         })
     }
 
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.boton.animando() || self.transicion.is_some_and(|(_, t)| t.elapsed() < D_BARRA)
     }
 
     /// El rectángulo de la píldora del teclado, relativo a la emergente.
+    // 0.1.0
     fn rect_teclado(&self) -> Option<iced_core::Rectangle> {
         self.teclado.as_ref()?;
         let mut r = self.rect_pildora();
@@ -300,6 +315,7 @@ impl Brillo {
     }
 
     /// La fila de la luz nocturna: el grupo del pie, entero.
+    // 0.1.0
     fn rect_nocturna(&self) -> iced_core::Rectangle {
         let alto = GRUPO * 2.0 + FILA;
         iced_core::Rectangle {
@@ -311,6 +327,7 @@ impl Brillo {
     }
 
     /// La línea de debajo de «Luz nocturna»: qué hace ahora y hasta cuándo.
+    // 0.1.0
     fn estado_nocturna(&self) -> String {
         let hora = |(h, m): tema::HoraDelDia| format!("{h:02}:{m:02}");
         match (self.nocturna, self.horario) {
@@ -322,6 +339,7 @@ impl Brillo {
     }
 
     /// El chip «Config» de la cabecera, pegado a la derecha.
+    // 0.1.0
     fn rect_config(&self) -> iced_core::Rectangle {
         let ancho = control::ancho_chip("Config");
         iced_core::Rectangle {
@@ -332,6 +350,7 @@ impl Brillo {
         }
     }
 
+    // 0.1.0
     pub fn agarrado(&self) -> bool {
         self.agarrada != Agarre::Nada
     }
@@ -341,6 +360,7 @@ impl Brillo {
     /// El nivel llega en tanto por ciento porque es lo que da la píldora, pero
     /// el dispositivo tiene pasos enteros: aquí son cuatro, así que se redondea
     /// al paso más cercano y la píldora salta de 0 a 33, 66 y 100.
+    // 0.1.0
     fn poner_teclado(&mut self, porciento: u8) -> bool {
         let Some(teclado) = self.teclado.as_mut() else {
             return false;
@@ -356,6 +376,7 @@ impl Brillo {
     }
 
     /// El nivel del teclado en tanto por ciento, para la píldora.
+    // 0.1.0
     fn porciento_teclado(&self) -> u8 {
         self.teclado
             .as_ref()
@@ -364,6 +385,7 @@ impl Brillo {
     }
 
     /// Escribe el nivel y lo manda a logind. `true` si cambió.
+    // 0.1.0
     fn poner(&mut self, nivel: u8) -> bool {
         if self.dispositivo.is_none() || self.maximo == 0 {
             return false;
@@ -386,6 +408,7 @@ impl Brillo {
         true
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         if self.agarrada == Agarre::Nada {
             let sobre = punto.and_then(|(x, y)| {
@@ -408,6 +431,19 @@ impl Brillo {
         }
     }
 
+    // añadido en la 0.2.0 -- la holgura coincide con la zona que acepta la pulsación del deslizador.
+    pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
+        [Some(self.rect_pildora()), self.rect_teclado()]
+            .into_iter()
+            .flatten()
+            .any(|mut zona| {
+                zona.y -= MARGEN_AGARRE;
+                zona.height += MARGEN_AGARRE * 2.0;
+                zona.contains(iced_core::Point::new(x, y))
+            })
+    }
+
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let punto = iced_core::Point::new(x, y);
         let holgada = |mut zona: iced_core::Rectangle| {
@@ -447,10 +483,12 @@ impl Brillo {
         None
     }
 
+    // 0.1.0
     pub fn soltar(&mut self) -> bool {
         std::mem::replace(&mut self.agarrada, Agarre::Nada) != Agarre::Nada
     }
 
+    // 0.1.0
     pub fn desplazar(&mut self, _dx: f32, dy: f32) -> bool {
         if dy == 0.0 {
             return false;
@@ -460,6 +498,7 @@ impl Brillo {
         self.poner(nivel)
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
         match tecla {
@@ -476,6 +515,7 @@ impl Brillo {
         }
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let ancho_pildora = control::ancho_pildora(BLOQUE, self.sensor);
         let boton = |encendido: bool, fila: usize| {
@@ -641,6 +681,7 @@ impl Brillo {
 
 /// El horario de la luz nocturna, si está en modo programado. Se lee al abrir
 /// la tarjeta: cambia desde Ajustes, y entonces la tarjeta no está abierta.
+// 0.1.0
 fn horario_nocturna() -> Option<(tema::HoraDelDia, tema::HoraDelDia)> {
     let luz = crate::Config::cargar().luz_nocturna;
     (luz.modo == crate::ModoLuzNocturna::Programada).then_some((luz.desde, luz.hasta))
@@ -652,6 +693,7 @@ const MARCA: f32 = 2.0;
 /// La etiqueta de encima de una píldora, con la chapa «AUTO» cuando esa fila
 /// va sola. Antes el automático se decía con «Auto · 62 %» en gris, que se
 /// leía como parte del número y se perdía.
+// 0.1.0
 fn etiqueta<'a>(nombre: &'a str, valor: String, automatico: bool) -> PanelElement<'a> {
     let mut fila = row![
         text(nombre)
@@ -691,6 +733,7 @@ fn etiqueta<'a>(nombre: &'a str, valor: String, automatico: bool) -> PanelElemen
 }
 
 /// La línea gris bajo una fila en automático, alineada con la píldora.
+// 0.1.0
 fn linea_ayuda<'a>(ayuda: String) -> PanelElement<'a> {
     container(text(ayuda).size(11.0).color(tema::TEXTO2))
         .padding(

@@ -50,6 +50,7 @@ struct Opcion {
 
 /// Las cinco, en orden de menos a más definitivo: es el orden en que se leen y
 /// deja lo irreversible lejos de donde arranca la selección.
+// 0.1.0
 fn opciones() -> [Opcion; 5] {
     [
         Opcion {
@@ -104,11 +105,13 @@ pub struct Apagar {
 }
 
 impl Apagar {
+    // 0.1.0
     pub fn confirmar(accion: crate::confirmacion::Energia) -> Self {
         let mut dialogo = Self::new();
         dialogo.confirmar = Some(crate::confirmacion::Confirmacion::new(accion));
         dialogo
     }
+    // 0.1.0
     pub fn new() -> Self {
         let mut señalada = Realce::nuevo();
         señalada.señalar(Some(INICIAL));
@@ -120,6 +123,7 @@ impl Apagar {
         }
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         if self.confirmar.is_some() {
             return (
@@ -130,12 +134,14 @@ impl Apagar {
         (ANCHO, MARGEN * 2.0 + TITULO + HUECO_TITULO + BOTON_ALTO)
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Centrada
     }
 
     /// El velo de detrás. Es un diálogo: lo de debajo se apaga porque hay que
     /// contestar antes de seguir.
+    // 0.1.0
     pub fn velo(&self) -> Color {
         Color {
             a: 0.45,
@@ -143,21 +149,25 @@ impl Apagar {
         }
     }
 
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.señalada.animando()
     }
 
     /// `x` del borde izquierdo del botón `i`. Los cinco van centrados, con el
     /// sobrante repartido a los lados.
+    // 0.1.0
     fn x_boton(&self, i: usize) -> f32 {
         let fila = BOTON_ANCHO * 5.0 + HUECO * 4.0;
         (ANCHO - fila) / 2.0 + i as f32 * (BOTON_ANCHO + HUECO)
     }
 
+    // 0.1.0
     fn y_botones(&self) -> f32 {
         MARGEN + TITULO + HUECO_TITULO
     }
 
+    // 0.1.0
     fn boton_en(&self, x: f32, y: f32) -> Option<usize> {
         let y0 = self.y_botones();
         if y < y0 || y > y0 + BOTON_ALTO {
@@ -169,6 +179,7 @@ impl Apagar {
         })
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         if self.confirmar.is_some() {
             return false;
@@ -182,6 +193,7 @@ impl Apagar {
         self.señalada.señalar(Some(nueva))
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         if let Some(c) = &self.confirmar {
             return match c.pulsar(x, y) {
@@ -194,6 +206,7 @@ impl Apagar {
         Some((self.opciones[i].accion)())
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         if let Some(c) = &mut self.confirmar {
             return match c.tecla(tecla) {
@@ -218,6 +231,7 @@ impl Apagar {
     /// Mueve la selección **sin dar la vuelta**: pasar de «Dormir» a «Apagar»
     /// por el borde izquierdo es justo el salto que no se quiere en una fila
     /// donde el último elemento apaga el equipo.
+    // 0.1.0
     fn mover(&mut self, paso: isize) -> Tecla {
         let n = self.opciones.len() as isize;
         let actual = self.señalada.actual().unwrap_or(INICIAL) as isize;
@@ -227,6 +241,7 @@ impl Apagar {
         Tecla::Consumida
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         if let Some(c) = &self.confirmar {
             return c.view();
@@ -258,6 +273,7 @@ impl Apagar {
 }
 
 /// Un botón: disco con el icono arriba y su etiqueta debajo.
+// 0.1.0
 fn boton<'a>(opcion: &'a Opcion, señalado: f32) -> PanelElement<'a> {
     // La señalada se rellena del acento —o del rojo de peligro, si es de las
     // que no tienen vuelta atrás— y su icono pasa a la tinta que se lea encima.

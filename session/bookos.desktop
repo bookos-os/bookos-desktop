@@ -1,6 +1,7 @@
 [Desktop Entry]
-Name=BookOS
-Comment=Escritorio BookOS sobre Wayland
+Name=BookUI
+Comment=BookUI, el escritorio de BookOS, sobre Wayland
+Comment[en]=BookUI, the BookOS desktop, on Wayland
 Exec=bookos-session
 TryExec=bookos-session
 Type=Application

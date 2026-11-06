@@ -68,6 +68,7 @@ pub struct Escritorios {
 }
 
 impl Escritorios {
+    // 0.1.0
     pub fn new(pantalla: (f32, f32), activo: usize, nombres: Vec<String>) -> Self {
         Self {
             pantalla,
@@ -81,18 +82,22 @@ impl Escritorios {
         }
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         (self.pantalla.0, self.alto_franja())
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Arriba
     }
 
+    // 0.1.0
     fn cabe_otro(&self) -> bool {
         self.nombres.len() < 5
     }
 
+    // 0.1.0
     fn ancho_previa(&self) -> f32 {
         let n = self.nombres.len() as f32;
         // Los lados se reservan **simétricos** aunque el botón solo esté a la
@@ -105,24 +110,29 @@ impl Escritorios {
     /// El alto sale de la proporción de la pantalla: una previa 16:9 sobre un
     /// monitor 16:10 enseñaría el escritorio recortado, y lo que se compone
     /// dentro es la pantalla entera a escala.
+    // 0.1.0
     fn alto_previa(&self) -> f32 {
         (self.ancho_previa() * (self.pantalla.1 / self.pantalla.0.max(1.0))).round()
     }
 
+    // 0.1.0
     fn alto_franja(&self) -> f32 {
         AIRE_SUPERIOR + self.alto_previa() + AIRE_NOMBRE + NOMBRE_H + AIRE_INFERIOR
     }
 
     /// Lo que ocupan las miniaturas juntas, que es lo que se centra.
+    // 0.1.0
     fn ancho_total(&self) -> f32 {
         let n = self.nombres.len() as f32;
         self.ancho_previa() * n + HUECO * (n - 1.0).max(0.0)
     }
 
+    // 0.1.0
     fn inicio_x(&self) -> f32 {
         ((self.pantalla.0 - self.ancho_total()) / 2.0).max(MARGEN)
     }
 
+    // 0.1.0
     fn previa(&self, i: usize) -> Rectangle {
         Rectangle {
             x: self.inicio_x() + i as f32 * (self.ancho_previa() + HUECO),
@@ -132,6 +142,7 @@ impl Escritorios {
         }
     }
 
+    // 0.1.0
     fn nombre_rect(&self, i: usize) -> Rectangle {
         let p = self.previa(i);
         Rectangle {
@@ -145,6 +156,7 @@ impl Escritorios {
     /// Va **debajo** de la miniatura, en la línea del nombre. Dentro de ella no
     /// se veía nunca: el compositor monta el fondo y las ventanas por delante de
     /// esta franja, así que todo lo que se dibuje en el hueco queda tapado.
+    // 0.1.0
     fn cerrar_rect(&self, i: usize) -> Rectangle {
         let n = self.nombre_rect(i);
         Rectangle {
@@ -155,6 +167,7 @@ impl Escritorios {
         }
     }
 
+    // 0.1.0
     fn mas_rect(&self) -> Rectangle {
         let p = self.previa(0);
         Rectangle {
@@ -165,11 +178,13 @@ impl Escritorios {
         }
     }
 
+    // 0.1.0
     fn contiene(r: Rectangle, x: f32, y: f32) -> bool {
         x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
     }
 
     /// Huecos en los que el compositor monta el fondo y las ventanas vivas.
+    // 0.1.0
     pub fn miniaturas(&self) -> Vec<Rectangle> {
         (0..self.nombres.len())
             .map(|i| {
@@ -184,6 +199,7 @@ impl Escritorios {
             .collect()
     }
 
+    // 0.1.0
     pub fn actualizar(&mut self, activo: usize, nombres: Vec<String>) -> bool {
         if self.activo == activo && self.nombres == nombres {
             return false;
@@ -200,6 +216,7 @@ impl Escritorios {
         true
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let nuevo = punto.and_then(|(x, y)| {
             // La línea del nombre cuenta como parte de la miniatura: la ✕ está
@@ -213,10 +230,12 @@ impl Escritorios {
     }
 
     /// ¿Se mueve algo dentro de la vista?
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.hover.animando()
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         if self.cabe_otro() && Self::contiene(self.mas_rect(), x, y) {
             return Some(Accion::CrearEscritorio);
@@ -243,6 +262,7 @@ impl Escritorios {
         None
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: TeclaPulsada) -> Tecla {
         let Some((indice, nombre)) = self.editando.as_mut() else {
             return match tecla {
@@ -277,6 +297,7 @@ impl Escritorios {
         }
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let ancho = self.ancho_previa();
         let alto = self.alto_previa();
@@ -472,6 +493,7 @@ impl Escritorios {
     /// 0,80 y no 0,62: sin el cristal que iba debajo, con menos opacidad los
     /// nombres de los escritorios se mezclan con la barra de herramientas de
     /// la ventana que pase por detrás.
+    // 0.1.0
     pub fn fondo(&self) -> Color {
         Color {
             a: 0.80,

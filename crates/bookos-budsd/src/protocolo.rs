@@ -30,6 +30,7 @@ static CRC16_TABLE: [u32; 256] = [
     20053, 24180, 11923, 16050, 3793, 7920,
 ];
 
+// 0.1.0
 fn crc16_ccitt(data: &[u8]) -> u16 {
     let mut crc: u32 = 0;
     for &b in data {
@@ -68,6 +69,7 @@ const EOM_LEG: u8 = 0xEE; // End-of-message (legacy)
 /// Encode a standard (Buds+/Live/Pro/2+) request packet.
 /// Wire format: [SOM][size_lo][size_hi|flags][msg_id][payload…][crc_lo][crc_hi][EOM]
 /// size = 1(msgId) + payload.len() + 2(CRC)
+// 0.1.0
 fn encode_std(msg_id: u8, payload: &[u8]) -> Vec<u8> {
     let size = payload.len() + 3;
     let mut crc_data = Vec::with_capacity(1 + payload.len());
@@ -89,6 +91,7 @@ fn encode_std(msg_id: u8, payload: &[u8]) -> Vec<u8> {
 
 /// Encode a legacy (original Buds) request packet.
 /// Wire format: [SOM][type=0][size][msg_id][payload…][crc_lo][crc_hi][EOM]
+// 0.1.0
 fn encode_leg(msg_id: u8, payload: &[u8]) -> Vec<u8> {
     let size = payload.len() + 3;
     let mut crc_data = Vec::with_capacity(1 + payload.len());
@@ -108,6 +111,7 @@ fn encode_leg(msg_id: u8, payload: &[u8]) -> Vec<u8> {
     pkt
 }
 
+// 0.1.0
 pub fn encode(msg_id: u8, payload: &[u8], legacy: bool) -> Vec<u8> {
     if legacy {
         encode_leg(msg_id, payload)
@@ -126,6 +130,7 @@ pub struct SppPacket {
 
 /// Read one SPP packet from `buf`, consuming the bytes.
 /// Returns None if not enough data yet.
+// 0.1.0
 fn parse_one_packet(buf: &[u8]) -> Option<(SppPacket, usize)> {
     if buf.is_empty() {
         return None;
@@ -169,6 +174,7 @@ fn parse_one_packet(buf: &[u8]) -> Option<(SppPacket, usize)> {
 }
 
 /// Read all parseable packets from the accumulated buffer.
+// 0.1.0
 pub fn parse_packets(buf: &mut Vec<u8>) -> Vec<SppPacket> {
     let mut out = Vec::new();
     loop {
@@ -237,10 +243,12 @@ pub struct BudsStatus {
     #[serde(default)]
     pub mac: String,
 }
+// 0.1.0
 fn fit_default() -> u8 {
     255
 }
 impl Default for BudsStatus {
+    // 0.1.0
     fn default() -> Self {
         Self {
             connected: false,
@@ -269,6 +277,7 @@ impl Default for BudsStatus {
 
 // ── Status decoding from EXTENDED_STATUS_UPDATED payload ─────────────────────
 
+// 0.1.0
 pub fn decode_extended_status(payload: &[u8], model_hint: &str) -> BudsStatus {
     if payload.len() < 4 {
         return BudsStatus {
@@ -354,6 +363,7 @@ pub struct BudsPrefs {
     pub bateria_estuche: u8,
 }
 
+// 0.1.0
 fn prefs_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     Some(std::path::PathBuf::from(format!(
@@ -362,6 +372,7 @@ fn prefs_path() -> Option<std::path::PathBuf> {
     )))
 }
 
+// 0.1.0
 fn load_all_prefs() -> std::collections::HashMap<String, BudsPrefs> {
     let p = match prefs_path() {
         Some(p) => p,
@@ -371,6 +382,7 @@ fn load_all_prefs() -> std::collections::HashMap<String, BudsPrefs> {
     serde_json::from_str(&txt).unwrap_or_default()
 }
 
+// 0.1.0
 fn save_all_prefs(map: &std::collections::HashMap<String, BudsPrefs>) {
     if let Some(p) = prefs_path()
         && let Err(e) = std::fs::write(
@@ -385,10 +397,12 @@ fn save_all_prefs(map: &std::collections::HashMap<String, BudsPrefs>) {
     }
 }
 
+// 0.1.0
 pub fn get_prefs(mac: &str) -> BudsPrefs {
     load_all_prefs().get(mac).cloned().unwrap_or_default()
 }
 
+// 0.1.0
 pub fn update_prefs<F: FnOnce(&mut BudsPrefs)>(mac: &str, f: F) {
     let mut all = load_all_prefs();
     let entry = all.entry(mac.to_string()).or_default();
@@ -403,6 +417,7 @@ pub fn update_prefs<F: FnOnce(&mut BudsPrefs)>(mac: &str, f: F) {
 /// prueba de ajuste, firmware, número de serie y MAC no vienen en él: antes se
 /// perdían, y como el keepalive pide estado cada 5 s, el resultado de la
 /// prueba de ajuste se borraba antes de que Ajustes lo leyera.
+// 0.1.0
 pub fn aplicar(p: &SppPacket, status: &mut BudsStatus) -> bool {
     match p.msg_id {
         MSG_DEBUG_BUILD_INFO_RES if p.payload.len() > 4 => {
@@ -480,6 +495,7 @@ pub fn aplicar(p: &SppPacket, status: &mut BudsStatus) -> bool {
 /// Un 0 del estuche es «no lo sé» (ningún auricular dentro), no un estuche
 /// vacío: se conserva lo anterior. Un valor real se guarda por MAC para
 /// enseñarlo la próxima vez, y solo se escribe a disco si cambia.
+// 0.1.0
 fn poner_estuche(status: &mut BudsStatus, valor: u8) {
     if valor == 0 || valor > 100 {
         return;

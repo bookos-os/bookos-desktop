@@ -167,6 +167,7 @@ pub struct Estado {
 }
 
 impl Estado {
+    // 0.1.1
     pub fn nuevo(segundos: u64, apagado: u64, estilo: Estilo) -> Self {
         Self {
             modo: Modo::Escritorio,
@@ -179,14 +180,17 @@ impl Estado {
         }
     }
 
+    // 0.1.1
     pub fn activo(&self) -> bool {
         matches!(self.modo, Modo::Salvapantallas { .. })
     }
 
+    // 0.1.1
     pub fn pantalla_apagada(&self) -> bool {
         matches!(self.modo, Modo::PantallaApagada)
     }
 
+    // 0.1.1
     pub fn elementos(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -318,6 +322,7 @@ impl Estado {
     }
 }
 
+// 0.1.1
 fn geometria(
     (w, h): (i32, i32),
     escala: f64,
@@ -365,6 +370,7 @@ struct Punto {
 /// Un número en `[0, 1)` fijo para cada aparición y cada uso: así cada una
 /// sale en un sitio, con un ángulo y unos colores, sin guardar estado ni
 /// depender de un generador. Es el mezclador de splitmix64.
+// 0.1.1
 fn azar(aparicion: u64, uso: u64) -> f64 {
     let mut z = aparicion
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -379,6 +385,7 @@ fn azar(aparicion: u64, uso: u64) -> f64 {
 ///
 /// Sin estado: el mismo `t` da siempre el mismo fotograma, que es lo que
 /// permite testearlo.
+// 0.1.1
 fn estela((w, h): (i32, i32), escala: f64, segundos: f64, reducidos: bool) -> Vec<Punto> {
     // En efectos reducidos, una aparición quieta por minuto, en su momento
     // de máxima presencia.
@@ -460,6 +467,7 @@ fn estela((w, h): (i32, i32), escala: f64, segundos: f64, reducidos: bool) -> Ve
     puntos
 }
 
+// 0.1.1
 fn color_degradado(paradas: [[f32; 3]; 5], t: f64) -> [f32; 3] {
     let posicion = t.clamp(0.0, 1.0) * (paradas.len() - 1) as f64;
     let tramo = (posicion.floor() as usize).min(paradas.len() - 2);
@@ -468,6 +476,7 @@ fn color_degradado(paradas: [[f32; 3]; 5], t: f64) -> [f32; 3] {
 }
 
 /// Onda triangular: posición dentro de `[0, libre]` y paredes tocadas.
+// 0.1.1
 fn rebote(recorrido: f64, libre: f64) -> (f64, usize) {
     if libre <= 0.0 {
         return (0.0, 0);
@@ -482,6 +491,7 @@ fn rebote(recorrido: f64, libre: f64) -> (f64, usize) {
     (posicion, vueltas as usize)
 }
 
+// 0.1.1
 fn rasterizar(color: &str) -> anyhow::Result<resvg::tiny_skia::Pixmap> {
     let svg = include_str!("../../bookos-shell/assets/bookos.svg").replace("white", color);
     let arbol = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default())?;
@@ -515,6 +525,7 @@ fn rasterizar(color: &str) -> anyhow::Result<resvg::tiny_skia::Pixmap> {
     Ok(imagen)
 }
 
+// 0.1.1
 pub fn previsualizar(state: &mut BookosComp, estilo: Estilo) -> Result<(), String> {
     if state.modo.kiosko()
         || !state.dpms_encendido
@@ -537,6 +548,7 @@ pub fn previsualizar(state: &mut BookosComp, estilo: Estilo) -> Result<(), Strin
 /// Las miniaturas usan el mismo modelo que la escena: Settings no mantiene
 /// otra versión de las ondas. SVG interpola muestras a 8 Hz entre sí; al
 /// retirar la imagen de la página también termina la animación.
+// 0.1.1
 pub fn miniatura(estilo: Estilo, reducidos: bool) -> anyhow::Result<String> {
     match estilo {
         Estilo::Estela => {
@@ -650,6 +662,7 @@ pub fn miniatura(estilo: Estilo, reducidos: bool) -> anyhow::Result<String> {
 
 /// Sale también sobre el bloqueo: es el escalón que va entre bloquear y
 /// apagar la pantalla, y lo que tapa no deja de estar bloqueado debajo.
+// 0.1.1
 pub fn activar(state: &mut BookosComp, origen: Origen, estilo: Estilo) {
     if state.modo.kiosko() || !state.dpms_encendido || state.salvapantallas.activo() {
         return;
@@ -715,6 +728,7 @@ pub fn activar(state: &mut BookosComp, origen: Origen, estilo: Estilo) {
     }
 }
 
+// 0.1.1
 pub fn retirar(state: &mut BookosComp) -> bool {
     if !state.salvapantallas.activo() {
         return false;
@@ -731,6 +745,7 @@ pub fn retirar(state: &mut BookosComp) -> bool {
 /// Devuelve si el salvapantallas se queda el evento. Ver [`Origen`]: puesto
 /// por inactividad se retira, y la entrada que lo quita no sigue hacia nadie,
 /// como el primer toque que enciende una pantalla.
+// 0.1.1
 pub fn actividad(state: &mut BookosComp) -> bool {
     if let Modo::Salvapantallas { origen, desde, .. } = state.salvapantallas.modo {
         let cerrar = match origen {
@@ -754,6 +769,7 @@ pub fn actividad(state: &mut BookosComp) -> bool {
     false
 }
 
+// 0.1.1
 pub fn apagar_pantalla(state: &mut BookosComp) {
     if state.aplicar_dpms.is_none() {
         tracing::warn!("el apagado físico de pantalla requiere la sesión DRM de BookOS");
@@ -767,6 +783,7 @@ pub fn apagar_pantalla(state: &mut BookosComp) {
     }
 }
 
+// 0.1.1
 pub fn programar(state: &mut BookosComp) {
     programar_apagado(state);
     if let Some(token) = state.salvapantallas.alarma.take() {
@@ -811,6 +828,7 @@ pub fn programar(state: &mut BookosComp) {
 /// Último escalón antes de la suspensión: apaga el panel. No pasa por
 /// [`apagar_pantalla`], que es la de Meta+Alt+O y cancela la suspensión; aquí
 /// la suspensión tiene que seguir contando.
+// 0.1.1
 fn programar_apagado(state: &mut BookosComp) {
     if let Some(token) = state.salvapantallas.alarma_apagado.take() {
         state.loop_handle.remove(token);

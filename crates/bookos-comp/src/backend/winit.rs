@@ -49,6 +49,8 @@ const PUMP_IDLE: Duration = Duration::from_millis(33);
 /// esta cola, mover el ratón despacio alternaría entre 8 y 33 ms y se notaría.
 const ACTIVE_TAIL: Duration = Duration::from_millis(400);
 
+// 0.1.0
+// modified 0.1.1 -- modo kiosko sin shell, banda en GPU y acento del fondo
 pub fn run(
     event_loop: &mut EventLoop<'static, BookosComp>,
     state: &mut BookosComp,
@@ -65,7 +67,8 @@ pub fn run(
     // y, con más de una previsualización abierta, no hubiese forma humana de
     // reconocer cuál era el escritorio. En una sesión real (backend udev) no
     // existe esta ventana, así que el cambio solo afecta al modo de desarrollo.
-    backend.window().set_title("BookOS Desktop");
+    // modificado en la 0.2.0 -- el escritorio se llama BookUI
+    backend.window().set_title("BookUI");
 
     if fullscreen {
         // Previsualizar el DE entero: la ventana anidada ocupa la pantalla y lo
@@ -319,6 +322,8 @@ pub fn run(
 }
 
 /// Vacía la cola de eventos del anfitrión. Devuelve `true` si había alguno.
+// 0.1.0
+// modified 0.1.1 -- recoloca las ventanas encajadas al cambiar la escala
 fn pump(winit_loop: &mut winit::WinitEventLoop, state: &mut BookosComp, refresco: i32) -> bool {
     let mut hubo = false;
     winit_loop.dispatch_new_events(|event| {
@@ -388,6 +393,7 @@ fn pump(winit_loop: &mut winit::WinitEventLoop, state: &mut BookosComp, refresco
 /// volver a apuntar a la ventana al terminar: la vuelta siguiente pregunta la
 /// edad del buffer **antes** de apuntar, y sin esto `eglQuerySurface` fallaba y
 /// cada captura costaba además un redibujo completo del fotograma siguiente.
+// 0.1.0
 fn servir_capturas(
     backend: &mut WinitGraphicsBackend<GlesRenderer>,
     state: &mut BookosComp,
@@ -404,6 +410,7 @@ fn servir_capturas(
 }
 
 /// Devuelve `true` si llegó a enviarse un frame a la pantalla.
+// 0.1.0
 fn draw(
     backend: &mut WinitGraphicsBackend<GlesRenderer>,
     state: &mut BookosComp,
@@ -537,6 +544,11 @@ fn draw(
     }
     crate::backend::enviar_frames_capas(output, time, periodo);
 
+    // añadido en la 0.2.0 -- anidado confirma al terminar submit, no existe vblank de KMS.
+    state.metricas.encolado(
+        &nombre,
+        state.shell.as_ref().and_then(|s| s.emergente_nombre()),
+    );
     state.metricas.presentado(&nombre);
 
     servir_capturas(backend, state, output);
@@ -553,6 +565,7 @@ fn draw(
 /// aplican de verdad y se ven, y es como se prueba la escala fraccional sin
 /// salir a un TTY. Lo que no se puede es cambiar el modo —el tamaño lo decide
 /// el compositor de debajo— ni pedir frecuencia variable.
+// 0.1.0
 fn censo_anidado(output: &Output) -> Vec<Salida> {
     let modo = output.current_mode().unwrap_or(Mode {
         size: (0, 0).into(),
@@ -595,6 +608,7 @@ fn censo_anidado(output: &Output) -> Vec<Salida> {
     }]
 }
 
+// 0.1.0
 fn instalar_pantallas(state: &mut BookosComp, output: &Output) {
     *state
         .pantallas

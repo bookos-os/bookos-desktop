@@ -3,9 +3,11 @@ use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
 use tokio::{io::AsyncReadExt, process::Command};
 
+// 0.1.0
 pub async fn run(program: &str, args: &[&str]) -> Result<String, String> {
     run_with_timeout(program, args, Duration::from_secs(10)).await
 }
+// 0.1.0
 async fn run_with_timeout(program: &str, args: &[&str], limit: Duration) -> Result<String, String> {
     let mut child = Command::new(program)
         .args(args)
@@ -45,10 +47,12 @@ async fn run_with_timeout(program: &str, args: &[&str], limit: Duration) -> Resu
     }
     Ok(String::from_utf8_lossy(&out).trim().to_owned())
 }
+// 0.1.0
 async fn list(kind: &str) -> Result<Value, String> {
     serde_json::from_str(&run("pactl", &["--format=json", "list", kind]).await?)
         .map_err(|e| e.to_string())
 }
+// 0.1.0
 fn percent(item: &Value) -> u32 {
     item["volume"]
         .as_object()
@@ -59,6 +63,7 @@ fn percent(item: &Value) -> u32 {
         .max()
         .unwrap_or(0)
 }
+// 0.1.0
 fn balance(item: &Value) -> i32 {
     let channel = |name: &str| item["volume"][name]["value"].as_f64().unwrap_or(0.);
     let left = channel("front-left");
@@ -69,11 +74,13 @@ fn balance(item: &Value) -> i32 {
         ((right - left) / left.max(right) * 100.).round() as i32
     }
 }
+// 0.1.0
 fn device(item: &Value, default: &str) -> Value {
     json!({"index":item["index"],"name":item["name"],"description":item["description"],
         "state":item["state"],"volume":percent(item),"balance":balance(item),"muted":item["mute"],"isDefault":item["name"] == default,
         "ports":item["ports"],"activePort":item["active_port"]})
 }
+// 0.1.0
 pub async fn state() -> Result<Value, String> {
     let (sinks, sources, apps, cards, out, input) = tokio::try_join!(
         list("sinks"),
@@ -110,6 +117,7 @@ pub async fn state() -> Result<Value, String> {
         "sinks":sinks,"sources":sources,"defaultSink":out,"defaultSource":input,"apps":apps,"cards":cards}),
     )
 }
+// 0.1.0
 fn target(t: &str) -> Result<(&str, &str), String> {
     match t {
         "@DEFAULT_AUDIO_SINK@" | "output" => Ok(("sink", "@DEFAULT_SINK@")),
@@ -117,6 +125,7 @@ fn target(t: &str) -> Result<(&str, &str), String> {
         _ => Err("Destino de audio desconocido".into()),
     }
 }
+// 0.1.0
 pub async fn perform(op: &Operation) -> Result<(), String> {
     match op {
         Operation::Volume { target: t, value } | Operation::VolumePreview { target: t, value } => {

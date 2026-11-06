@@ -14,12 +14,14 @@ struct Servidor {
 }
 
 impl Servidor {
+    // 0.1.1
     fn nuevo(
         atender: impl FnOnce(UnixStream) -> anyhow::Result<()> + Send + 'static,
     ) -> anyhow::Result<(Acceso, Self)> {
         Self::con_personas(Vec::new(), atender)
     }
 
+    // 0.1.1
     fn con_personas(
         personas: Vec<Persona>,
         atender: impl FnOnce(UnixStream) -> anyhow::Result<()> + Send + 'static,
@@ -50,6 +52,7 @@ impl Servidor {
         ))
     }
 
+    // 0.1.1
     fn terminar(mut self) -> anyhow::Result<()> {
         self.hilo
             .take()
@@ -60,11 +63,13 @@ impl Servidor {
 }
 
 impl Drop for Servidor {
+    // 0.1.1
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.directorio);
     }
 }
 
+// 0.1.1
 fn recibir(tarea: Task<Mensaje>) -> Mensaje {
     let mut acciones =
         iced_runtime::task::into_stream(tarea).expect("la petición produce una respuesta");
@@ -79,6 +84,7 @@ fn recibir(tarea: Task<Mensaje>) -> Mensaje {
     })
 }
 
+// 0.1.1
 fn pregunta(socket: &mut UnixStream, tipo: AuthMessageType, texto: &str) -> anyhow::Result<()> {
     Response::AuthMessage {
         auth_message_type: tipo,
@@ -88,6 +94,7 @@ fn pregunta(socket: &mut UnixStream, tipo: AuthMessageType, texto: &str) -> anyh
     Ok(())
 }
 
+// 0.1.1
 fn comprobar_respuesta(socket: &mut UnixStream, esperada: Option<&str>) -> anyhow::Result<()> {
     match Request::read_from(socket)? {
         Request::PostAuthMessageResponse { response } => assert_eq!(response.as_deref(), esperada),
@@ -96,6 +103,7 @@ fn comprobar_respuesta(socket: &mut UnixStream, esperada: Option<&str>) -> anyho
     Ok(())
 }
 
+// 0.1.1
 fn comenzar(socket: &mut UnixStream) -> anyhow::Result<Request> {
     assert!(matches!(
         Request::read_from(socket)?,
@@ -106,6 +114,7 @@ fn comenzar(socket: &mut UnixStream) -> anyhow::Result<Request> {
 }
 
 #[test]
+// 0.1.1
 fn autentica_con_varias_preguntas_y_sale_solo_tras_arrancar() -> anyhow::Result<()> {
     let (mut acceso, servidor) = Servidor::nuevo(|mut socket| {
         assert!(
@@ -165,6 +174,7 @@ fn autentica_con_varias_preguntas_y_sale_solo_tras_arrancar() -> anyhow::Result<
 }
 
 #[test]
+// 0.1.1
 fn cancela_pam_antes_de_permitir_cambiar_de_usuario() -> anyhow::Result<()> {
     let (mut acceso, servidor) = Servidor::nuevo(|mut socket| {
         assert!(matches!(
@@ -209,6 +219,7 @@ fn cancela_pam_antes_de_permitir_cambiar_de_usuario() -> anyhow::Result<()> {
 }
 
 #[test]
+// 0.1.1
 fn un_fallo_al_arrancar_mantiene_el_greeter_abierto() -> anyhow::Result<()> {
     let (mut acceso, servidor) = Servidor::nuevo(|mut socket| {
         assert!(matches!(
@@ -245,6 +256,7 @@ fn un_fallo_al_arrancar_mantiene_el_greeter_abierto() -> anyhow::Result<()> {
 }
 
 #[test]
+// 0.1.1
 fn la_vista_previa_no_autentica_y_los_diagnosticos_ocultan_respuestas() {
     let (mut acceso, _) = Acceso::nuevo(None, "/sesion-no-utilizada".into(), Vec::new());
     let _ = acceso.actualizar(Mensaje::Usuario("eve".into()));
@@ -259,6 +271,7 @@ fn la_vista_previa_no_autentica_y_los_diagnosticos_ocultan_respuestas() {
     assert!(!format!("{:?}", Mensaje::Respuesta("secreto".into())).contains("secreto"));
 }
 
+// 0.1.1
 fn de_pega(cuentas: &[(&str, &str)]) -> Vec<Persona> {
     cuentas
         .iter()
@@ -267,6 +280,7 @@ fn de_pega(cuentas: &[(&str, &str)]) -> Vec<Persona> {
 }
 
 #[test]
+// 0.1.1
 fn elegir_en_la_lista_abre_la_sesion_pam_de_esa_cuenta() -> anyhow::Result<()> {
     let personas = de_pega(&[("daniel", "Daniel"), ("laura", "Laura")]);
     let (mut acceso, servidor) = Servidor::con_personas(personas, |mut socket| {
@@ -286,6 +300,7 @@ fn elegir_en_la_lista_abre_la_sesion_pam_de_esa_cuenta() -> anyhow::Result<()> {
 }
 
 #[test]
+// 0.1.1
 fn una_contrasena_mala_vuelve_a_preguntar_sin_salir_del_usuario() -> anyhow::Result<()> {
     let (mut acceso, servidor) = Servidor::nuevo(|mut socket| {
         for _ in 0..2 {
@@ -333,6 +348,41 @@ fn una_contrasena_mala_vuelve_a_preguntar_sin_salir_del_usuario() -> anyhow::Res
 }
 
 #[test]
+// añadido en la 0.2.0
+fn la_huella_suelta_la_pregunta_de_pam_bookos_huella() -> anyhow::Result<()> {
+    let (mut acceso, servidor) = Servidor::nuevo(|mut socket| {
+        assert!(matches!(
+            comenzar(&mut socket)?,
+            Request::CreateSession { .. }
+        ));
+        pregunta(&mut socket, AuthMessageType::Secret, PREGUNTA_HUELLA)?;
+        // Con la huella casada la respuesta es vacía: solo suelta la
+        // conversación, el módulo ya sabe que casó.
+        comprobar_respuesta(&mut socket, Some(""))?;
+        Response::Success.write_to(&mut socket)?;
+        assert!(matches!(
+            Request::read_from(&mut socket)?,
+            Request::StartSession { .. }
+        ));
+        Response::Success.write_to(&mut socket)?;
+        Ok(())
+    })?;
+    let _ = acceso.actualizar(Mensaje::Usuario("eve".into()));
+    let mensaje = recibir(acceso.actualizar(Mensaje::Continuar));
+    let _ = acceso.actualizar(mensaje);
+    assert!(matches!(&acceso.estado, Estado::Pregunta { texto, .. } if texto == PREGUNTA_HUELLA));
+    // Un fallo del lector avisa sin contestar: la contraseña sigue valiendo.
+    let _ = acceso.actualizar(Mensaje::Huella("no-coincide 1".into()));
+    assert!(acceso.error.is_some());
+    assert!(matches!(acceso.estado, Estado::Pregunta { .. }));
+    let mensaje = recibir(acceso.actualizar(Mensaje::Huella("coincide".into())));
+    let inicio = acceso.actualizar(mensaje);
+    let _ = acceso.actualizar(recibir(inicio));
+    servidor.terminar()
+}
+
+#[test]
+// 0.1.1
 fn solo_se_listan_las_cuentas_de_persona() {
     let passwd = "root:x:0:0:Super User:/root:/bin/bash\n\
         sddm:x:977:977:SDDM:/var/lib/sddm:/usr/sbin/nologin\n\
@@ -350,6 +400,7 @@ fn solo_se_listan_las_cuentas_de_persona() {
 }
 
 #[test]
+// 0.1.1
 fn lo_publicado_por_otro_usuario_no_se_acepta() -> anyhow::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let carpeta = std::env::temp_dir().join(format!("bookos-greeter-pub-{}", std::process::id()));
@@ -368,6 +419,7 @@ fn lo_publicado_por_otro_usuario_no_se_acepta() -> anyhow::Result<()> {
 }
 
 #[test]
+// 0.1.1
 fn la_apariencia_publicada_viste_a_su_usuario() -> anyhow::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let raiz = std::env::temp_dir().join(format!("bookos-greeter-ap-{}", std::process::id()));
@@ -397,6 +449,7 @@ fn la_apariencia_publicada_viste_a_su_usuario() -> anyhow::Result<()> {
 }
 
 #[test]
+// 0.1.1
 fn un_clic_sobre_una_fila_elige_esa_cuenta() {
     use iced::mouse::{self, Cursor};
     use iced::{Event, Font, Pixels, Point, Size};
@@ -440,6 +493,7 @@ fn un_clic_sobre_una_fila_elige_esa_cuenta() {
 }
 
 #[test]
+// 0.1.1
 fn renderiza_las_vistas_para_inspeccion() -> anyhow::Result<()> {
     use bookos_shell::tema::Tema;
     use iced::mouse::Cursor;
@@ -595,6 +649,7 @@ fn renderiza_las_vistas_para_inspeccion() -> anyhow::Result<()> {
 }
 
 #[test]
+// 0.1.1
 fn cambia_idioma_teclado_y_visibilidad_de_contrasena() {
     let (mut acceso, _) = Acceso::nuevo(None, "/sesion-no-utilizada".into(), Vec::new());
     let _ = acceso.actualizar(Mensaje::AbrirPanel(Some(Panel::Idioma)));
@@ -626,6 +681,7 @@ fn cambia_idioma_teclado_y_visibilidad_de_contrasena() {
 }
 
 #[test]
+// 0.1.1
 fn gestiona_redes_wifi_y_perfiles_de_energia_en_vista_previa() {
     let (mut acceso, _) = Acceso::nuevo(None, "/sesion-no-utilizada".into(), Vec::new());
     let _ = acceso.actualizar(Mensaje::AbrirPanel(Some(Panel::Red)));

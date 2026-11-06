@@ -35,6 +35,7 @@ const BTN_RIGHT: u32 = 0x111;
 ///
 /// Un evento de botón no los trae: hay que preguntárselos al teclado, que es
 /// quien lleva la cuenta.
+// 0.1.0
 fn modificadores(state: &BookosComp) -> smithay::input::keyboard::ModifiersState {
     state
         .seat
@@ -43,6 +44,7 @@ fn modificadores(state: &BookosComp) -> smithay::input::keyboard::ModifiersState
         .unwrap_or_default()
 }
 
+// 0.1.0
 fn modificador_conmutador_suelto(
     modo: bookos_shell::conmutador::Modo,
     modifiers: &smithay::input::keyboard::ModifiersState,
@@ -59,6 +61,8 @@ fn modificador_conmutador_suelto(
 /// porque algunas teclas Fn llegan sin keysym aunque el kernel sí haya
 /// identificado correctamente su botón físico.
 /// Una tecla, venga de libinput, de winit o de un autotest.
+// modified 0.1.1 -- con el cuentagotas, Esc o su atajo lo quitan y nada más pasa
+// modificado en la 0.2.0 -- mantener Meta abre la hoja de atajos
 pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u32) {
     let Some(kbd) = state.seat.get_keyboard() else {
         return;
@@ -115,6 +119,17 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
                 return FilterResult::Intercept(accion);
             }
             let bloqueado = state.shell.as_ref().is_some_and(|s| s.esta_bloqueado());
+            // Con el cuentagotas, igual que con la captura: Esc lo quita, su
+            // propio atajo también, y nada más llega a la ventana de debajo.
+            if state.cuentagotas {
+                let salir = pulsada
+                    && (handle.modified_sym().raw() == keysyms::KEY_Escape
+                        || crate::keybinds::resolver(modifiers, &handle, codigo.raw())
+                            == Some(crate::keybinds::Accion::Cuentagotas));
+                return FilterResult::Intercept(
+                    salir.then_some(crate::keybinds::Accion::Cuentagotas),
+                );
+            }
             // Con la capa de captura abierta, el teclado es suyo: Esc
             // la cierra, Intro captura y las flechas cambian de modo.
             // Nada de eso puede llegar a la ventana de debajo.
@@ -175,6 +190,18 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
                 if meta && std::mem::take(&mut state.meta_sola) {
                     state.abrir_launchpad = true;
                 }
+                if meta {
+                    state.meta_desde = None;
+                    // La hoja que abrió mantener Meta se va al soltarla. La
+                    // que se abrió desde el buscador no: se cierra con Esc.
+                    if std::mem::take(&mut state.hoja_por_meta)
+                        && let Some(shell) = state.shell.as_mut()
+                        && shell.emergente_nombre() == Some("atajos")
+                    {
+                        shell.cerrar_emergente();
+                        state.needs_redraw = true;
+                    }
+                }
                 return FilterResult::Forward;
             }
             // Cada tecla que llega, con sus modificadores. Es la única
@@ -194,12 +221,19 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
             // Meta empieza a contar como «sola» solo si no hay nada más
             // pulsado; cualquier otra tecla la descarta hasta que se
             // vuelva a pulsar.
+            let ya_contaba = state.meta_sola;
             state.meta_sola = matches!(
                 handle.modified_sym().raw(),
                 keysyms::KEY_Super_L | keysyms::KEY_Super_R
             ) && !modifiers.alt
                 && !modifiers.ctrl
                 && !modifiers.shift;
+            // Solo la primera pulsación arranca la cuenta: si llega la
+            // autorrepetición de Meta, cada repetición la reiniciaría y la
+            // hoja no saldría nunca mientras se mantiene.
+            if state.meta_sola && !ya_contaba {
+                contar_meta_mantenida(state);
+            }
             // Escape cancela el conmutador sin ir a ninguna parte, y no
             // llega al cliente: es la salida del propio conmutador.
             if state.shell.as_ref().is_some_and(|s| s.hay_conmutador())
@@ -383,6 +417,70 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
 /// Las repeticiones las genera el **cliente** a partir de la pulsación que
 /// recibe; una tecla que el filtro consume para el shell no le llega a nadie,
 /// así que en el launchpad mantener Retroceso borraba un solo carácter.
+/// Mantener Meta sola este tiempo abre la hoja de atajos. Un segundo, como
+/// CheatSheet: pulsarla y soltarla tiene que seguir abriendo el launchpad, y
+/// quien la mantiene mientras piensa qué letra va con ella es justo quien
+/// necesita la hoja.
+const MANTENER_META: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Mantener la tecla del asistente más que esto es pulsar para hablar. Un
+/// toque dura unos 100 ms; 400 deja margen a quien pulsa despacio, y no se
+/// nota la espera porque Zenith ya está escuchando desde que se pulsó.
+// añadido en la 0.2.0
+const MANTENER_ASISTENTE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Si la tecla sigue abajo pasado `MANTENER_ASISTENTE`, Zenith deja de cortar
+/// en los silencios hasta que se suelte.
+// añadido en la 0.2.0
+fn contar_asistente_mantenido(state: &mut BookosComp, evdev: u32) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    let pulsada = std::time::Instant::now();
+    state.asistente_tecla = Some((evdev, pulsada));
+    let programado = state.loop_handle.insert_source(
+        Timer::from_duration(MANTENER_ASISTENTE),
+        move |_, _, state| {
+            // La misma pulsación, aún sin soltar.
+            if state.asistente_tecla == Some((evdev, pulsada)) {
+                crate::keybinds::lanzar(state, "bookos-assistant --mantener");
+            }
+            TimeoutAction::Drop
+        },
+    );
+    if let Err(err) = programado {
+        tracing::warn!("no se pudo contar la pulsación del asistente: {err}");
+    }
+}
+
+// añadido en la 0.2.0
+fn contar_meta_mantenida(state: &mut BookosComp) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    let pulsada = std::time::Instant::now();
+    state.meta_desde = Some(pulsada);
+    let programado =
+        state
+            .loop_handle
+            .insert_source(Timer::from_duration(MANTENER_META), move |_, _, state| {
+                // Sigue sola y es la misma pulsación: nada la ha convertido en
+                // un atajo ni se ha soltado y vuelto a pulsar entre medias.
+                if state.meta_sola && state.meta_desde == Some(pulsada) {
+                    // Ya no es «Meta a secas»: al soltarla no abre el launchpad.
+                    state.meta_sola = false;
+                    if let Some(shell) = state.shell.as_mut()
+                        && !shell.hay_emergente()
+                    {
+                        shell.abrir_atajos();
+                        state.hoja_por_meta = true;
+                        state.needs_redraw = true;
+                    }
+                }
+                TimeoutAction::Drop
+            });
+    if let Err(err) = programado {
+        tracing::warn!("no se pudo contar la pulsación de Meta: {err}");
+    }
+}
+
+// 0.1.0
 fn repetir_retroceso(state: &mut BookosComp) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     let (retardo, velocidad) = state.teclado_repeticion;
@@ -414,6 +512,7 @@ fn repetir_retroceso(state: &mut BookosComp) {
 
 /// La acción de un remapeo. Con el bloqueo echado no hace nada: una tecla
 /// cambiada no puede ser una forma de saltárselo.
+// 0.1.0
 fn remapeada(state: &mut BookosComp, accion: crate::keybinds::Accion) {
     if state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()) {
         return;
@@ -430,6 +529,7 @@ fn remapeada(state: &mut BookosComp, accion: crate::keybinds::Accion) {
 /// Los modificadores no se capturan: son la primera mitad del acorde de
 /// Copilot, y al pulsarlos no se sabe si viene algo detrás. Quien quiera
 /// remapear uno lo escribe a mano en `teclas.conf`.
+// 0.1.0
 fn capturar(state: &mut BookosComp, evdev: u32) -> bool {
     const MODIFICADORES: [u32; 8] = [29, 97, 42, 54, 56, 100, 125, 126];
     if !state.captura_tecla
@@ -445,8 +545,13 @@ fn capturar(state: &mut BookosComp, evdev: u32) -> bool {
     true
 }
 
+// 0.1.0
+// modified 0.1.1 -- el salvapantallas se traga puntero y tacto, la pantalla táctil entra por toques y el kiosko ignora los gestos
 pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
-    state.last_input = Some(std::time::Instant::now());
+    // añadido en la 0.2.0 -- se asocia al próximo fotograma compuesto, nunca al que ya está en vuelo.
+    let ahora = std::time::Instant::now();
+    state.last_input = Some(ahora);
+    state.metricas.entrada(ahora);
     crate::atenuacion::actividad(state);
     state.idle_notifier_state.notify_activity(&state.seat);
     crate::backend::despertar_dpms(state);
@@ -504,6 +609,13 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
             if pulsada {
                 crate::teclado::retirar(state);
             }
+            // añadido en la 0.2.0 -- soltar la tecla del asistente mantenida envía lo dicho.
+            if !pulsada
+                && let Some((_, desde)) = state.asistente_tecla.take_if(|(k, _)| *k == evdev)
+                && desde.elapsed() >= MANTENER_ASISTENTE
+            {
+                crate::keybinds::lanzar(state, "bookos-assistant --soltar");
+            }
             let time = event.time_msec();
             let eventos = if pulsada && capturar(state, evdev) {
                 Vec::new()
@@ -525,6 +637,11 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
                         remapeada(state, crate::keybinds::Accion::Lanzar(cmd));
                     }
                 }
+            }
+            // Aquí y no en `keybinds`: por Meta+Alt+A o por una tecla
+            // remapeada (Copilot), la que hay que vigilar es esta física.
+            if pulsada && std::mem::take(&mut state.asistente_armado) {
+                contar_asistente_mantenido(state, evdev);
             }
         }
 
@@ -602,27 +719,77 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         // muerto en el backend anidado. La lógica vive en `crate::gestos`, que
         // sí se puede probar sin touchpad.
         InputEvent::GestureSwipeBegin { event } => {
-            state.gestos.deslizamiento_inicio(event.fingers());
+            // añadido en la 0.2.0 -- agarrar no espera al primer desplazamiento reconocido.
+            if !state.modo.kiosko() {
+                match event.fingers() {
+                    4 => crate::escritorios::agarrar_dedos(state),
+                    3 => agarrar_exposicion(state),
+                    _ => {}
+                }
+            }
+            let ancho = state
+                .salida_del_puntero()
+                .and_then(|o| state.space.output_geometry(o))
+                .map_or(1.0, |r| r.size.w as f64);
+            state
+                .gestos
+                .deslizamiento_inicio(event.fingers(), ancho, event.time());
+            // añadido en la 0.2.0 -- cuatro dedos en vertical siguen a la mano con la vista de escritorios: subir la abre, abierta, bajar la cierra.
+            if event.fingers() == 4 && !state.modo.kiosko() {
+                let abierta = state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.vista_escritorios_abierta());
+                state.gestos.vista_continua(abierta);
+            }
+            // añadido en la 0.2.0 -- con la vista de escritorios abierta, cuatro dedos la cierran como antes.
+            if event.fingers() == 4
+                && !state.modo.kiosko()
+                && !state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.vista_escritorios_abierta())
+            {
+                state
+                    .gestos
+                    .despeje_continuo(if state.escritorios.apartando() {
+                        -1.0
+                    } else {
+                        1.0
+                    });
+            }
         }
 
         // Los gestos mueven escritorios y ventanas: en el kiosko no hay de eso.
         InputEvent::GestureSwipeUpdate { .. } if state.modo.kiosko() => {}
 
         InputEvent::GestureSwipeUpdate { event } => {
-            if let Some(gesto) = state
-                .gestos
-                .deslizamiento_avance(event.delta_x(), event.delta_y())
+            if let Some(gesto) =
+                state
+                    .gestos
+                    .deslizamiento_avance(event.delta_x(), event.delta_y(), event.time())
             {
                 tracing::debug!(?gesto, "gesto de touchpad");
                 match gesto {
-                    Gesto::Escritorio(pasos) => {
-                        let destino = crate::escritorios::destino(
-                            crate::escritorios::activo_aqui(state),
-                            pasos,
-                            state.escritorios.cuantos(),
-                        );
-                        crate::escritorios::cambiar_aqui(state, destino);
+                    Gesto::Continuo(crate::gestos::Movimiento::Escritorio, progreso) => {
+                        crate::escritorios::seguir_dedos(state, progreso);
                     }
+                    Gesto::Continuo(crate::gestos::Movimiento::Exposicion, progreso) => {
+                        seguir_exposicion(state, progreso);
+                    }
+                    Gesto::Continuo(crate::gestos::Movimiento::Despeje, progreso) => {
+                        crate::escritorios::seguir_despeje(state, progreso);
+                    }
+                    Gesto::Continuo(crate::gestos::Movimiento::Vista, progreso) => {
+                        let activo = crate::escritorios::activo_aqui(state);
+                        let nombres = state.escritorios.nombres().to_vec();
+                        if let Some(shell) = state.shell.as_mut() {
+                            shell.seguir_vista(progreso, activo, nombres);
+                        }
+                        state.revisar_barras();
+                        state.needs_redraw = true;
+                    }
+                    Gesto::Continuo(crate::gestos::Movimiento::Launchpad, _) => {}
                     // Con la vista abierta, bajar es deshacer el subir que la
                     // abrió. Antes despejaba por debajo de la vista: las
                     // ventanas quedaban escondidas sin que se viera, y ni el
@@ -649,29 +816,44 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
                             );
                         }
                     }
-                    // La exposición es el conmutador de ventanas sin tecla que
-                    // sostener: se abre y se queda, y se cierra al elegir una
-                    // miniatura, con Esc o con el gesto contrario. El `0` es que
-                    // no mueva la selección al abrir —no hay Tab que aplicar—.
-                    Gesto::Exponer => exponer(state),
-                    Gesto::CerrarExposicion => {
-                        if state.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
-                            crate::keybinds::ejecutar(
-                                state,
-                                crate::keybinds::Accion::ConmutarCancelar,
-                            );
-                        }
-                    }
-                    // El pellizco no sale de un deslizamiento.
-                    Gesto::AbrirLaunchpad | Gesto::CerrarLaunchpad => {}
                 }
             }
         }
 
-        InputEvent::GestureSwipeEnd { .. } => state.gestos.deslizamiento_fin(),
+        InputEvent::GestureSwipeEnd { event } => {
+            if let Some(suelta) = state
+                .gestos
+                .deslizamiento_fin(event.cancelled(), event.time())
+            {
+                match suelta.movimiento {
+                    crate::gestos::Movimiento::Escritorio => {
+                        crate::escritorios::soltar_dedos(state, suelta)
+                    }
+                    crate::gestos::Movimiento::Exposicion => soltar_exposicion(state, suelta),
+                    crate::gestos::Movimiento::Despeje => {
+                        crate::escritorios::soltar_despeje(state, suelta)
+                    }
+                    crate::gestos::Movimiento::Vista => {
+                        if let Some(shell) = state.shell.as_mut() {
+                            shell.soltar_vista(suelta);
+                        }
+                        state.revisar_barras();
+                        state.needs_redraw = true;
+                    }
+                    crate::gestos::Movimiento::Launchpad => {}
+                }
+            }
+        }
 
         InputEvent::GesturePinchBegin { event } => {
-            state.gestos.pellizco_inicio(event.fingers());
+            state.gestos.pellizco_inicio(event.fingers(), event.time());
+            // añadido en la 0.2.0 -- una apertura puede devolverse desde el fotograma que estaba mostrando.
+            if !state.modo.kiosko()
+                && (4..=5).contains(&event.fingers())
+                && let Some(shell) = state.shell.as_mut()
+            {
+                shell.agarrar_launchpad();
+            }
             if state.gestos.pellizco_de_la_ventana() {
                 let pointer = state.pointer.clone();
                 pointer.gesture_pinch_begin(
@@ -699,18 +881,11 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         }
 
         InputEvent::GesturePinchUpdate { event } => {
-            let abierto = state
-                .shell
-                .as_ref()
-                .is_some_and(|s| s.emergente_nombre() == Some("launchpad"));
-            if let Some(gesto) = state.gestos.pellizco_avance(event.scale(), abierto) {
-                tracing::debug!(?gesto, escala = event.scale(), "gesto de touchpad");
-                // Los dos gestos alternan lo mismo; `pellizco_avance` ya se ha
-                // encargado de que solo salga el que corresponde al estado
-                // actual, así que aquí no hay nada que distinguir.
-                if let Some(shell) = state.shell.as_mut() {
-                    shell.alternar_launchpad();
-                }
+            if !state.modo.kiosko()
+                && let Some(progreso) = state.gestos.pellizco_avance(event.scale(), event.time())
+                && let Some(shell) = state.shell.as_mut()
+            {
+                shell.seguir_launchpad(progreso);
                 state.needs_redraw = true;
             }
         }
@@ -727,7 +902,12 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
                     },
                 );
             }
-            state.gestos.pellizco_fin();
+            if let Some(suelta) = state.gestos.pellizco_fin(event.cancelled(), event.time()) {
+                if let Some(shell) = state.shell.as_mut() {
+                    shell.soltar_launchpad(suelta);
+                }
+                state.needs_redraw = true;
+            }
         }
 
         // «Mantener» —dedos quietos sobre el touchpad— no es de nadie del
@@ -783,6 +963,7 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
 /// el anidado no hay `eDP` y se usa la única salida, como `PointerMotionAbsolute`.
 /// La rotación de la salida no se aplica: `output_geometry` ya da el tamaño
 /// girado, pero el eje del digitalizador no gira con él.
+// 0.1.1
 fn punto_tactil<B: InputBackend>(
     state: &BookosComp,
     event: &impl AbsolutePositionEvent<B>,
@@ -814,6 +995,8 @@ fn punto_tactil<B: InputBackend>(
 /// emula el ratón: todo eso ya sabe de clics y arrastres, y enseñarle un
 /// segundo idioma solo duplicaría la lógica de `boton`. Esa emulación es de un
 /// solo dedo; los demás se ignoran hasta que se levanta.
+// 0.1.1
+// modificado en la 0.2.0 -- el apoyo resalta; la acción espera únicamente a la liberación del dedo.
 pub fn toque_abajo(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Logical>, time: u32) {
     crate::teclado::iniciar_toque(state, slot, punto, time);
     if crate::teclado::pulsar(state, punto, crate::teclado::Dedo::Toque(slot)) {
@@ -849,17 +1032,51 @@ pub fn toque_abajo(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Lo
             touch.down(state, Some(foco), &evento);
         }
         None if state.toque_emulado.is_none() => {
-            state.toque_emulado = Some(slot);
             set_pointer(state, punto, time);
-            boton(state, BTN_LEFT, ButtonState::Pressed, time);
+            let del_shell = state.shell_contiene(punto)
+                || state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.esta_bloqueado() || s.hay_captura() || s.hay_conmutador());
+            state.toque_emulado = Some(if del_shell {
+                ToqueEmulado::Pendiente {
+                    slot,
+                    origen: punto,
+                    arrastrable: state
+                        .shell
+                        .as_ref()
+                        .is_some_and(|s| s.toque_arrastrable(punto.x, punto.y)),
+                }
+            } else {
+                // Las decoraciones ya confirman al soltar; el escritorio necesita iniciar su selección al apoyar.
+                boton(state, BTN_LEFT, ButtonState::Pressed, time);
+                ToqueEmulado::Arrastrando(slot)
+            });
         }
         None => {}
     }
 }
 
+// 0.1.1
+// modificado en la 0.2.0 -- superar el margen elige arrastre o cancelación sin activar botones.
 pub fn toque_mueve(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Logical>, time: u32) {
     crate::teclado::mover_toque(state, slot, punto);
-    if state.toque_emulado == Some(slot) {
+    if let Some(toque) = state.toque_emulado.filter(|t| t.slot() == slot) {
+        if let ToqueEmulado::Pendiente {
+            origen,
+            arrastrable,
+            ..
+        } = toque
+            && (punto.x - origen.x).hypot(punto.y - origen.y) > 10.0
+        {
+            if arrastrable {
+                set_pointer(state, origen, time);
+                boton(state, BTN_LEFT, ButtonState::Pressed, time);
+                state.toque_emulado = Some(ToqueEmulado::Arrastrando(slot));
+            } else {
+                state.toque_emulado = Some(ToqueEmulado::Cancelado(slot));
+            }
+        }
         set_pointer(state, punto, time);
         return;
     }
@@ -877,14 +1094,27 @@ pub fn toque_mueve(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Lo
     touch.motion(state, foco, &evento);
 }
 
+// 0.1.1
+// modificado en la 0.2.0 -- la holgura conserva el objetivo inicial al confirmar.
 pub fn toque_arriba(state: &mut BookosComp, slot: TouchSlot, time: u32) {
     crate::teclado::terminar_toque(state, slot, time);
     if crate::teclado::soltar(state, crate::teclado::Dedo::Toque(slot)) {
         return;
     }
-    if state.toque_emulado == Some(slot) {
+    if let Some(toque) = state.toque_emulado.filter(|t| t.slot() == slot) {
         state.toque_emulado = None;
-        boton(state, BTN_LEFT, ButtonState::Released, time);
+        match toque {
+            ToqueEmulado::Pendiente { origen, .. } => {
+                // añadido en la 0.2.0 -- los 10 puntos de holgura pertenecen al control de origen, nunca al vecino.
+                let posicion = state.pointer_location;
+                set_pointer(state, origen, time);
+                boton(state, BTN_LEFT, ButtonState::Pressed, time);
+                boton(state, BTN_LEFT, ButtonState::Released, time);
+                set_pointer(state, posicion, time);
+            }
+            ToqueEmulado::Arrastrando(_) => boton(state, BTN_LEFT, ButtonState::Released, time),
+            ToqueEmulado::Cancelado(_) => {}
+        }
         return;
     }
     let Some(touch) = state.seat.get_touch() else {
@@ -898,15 +1128,45 @@ pub fn toque_arriba(state: &mut BookosComp, slot: TouchSlot, time: u32) {
     touch.up(state, &evento);
 }
 
-fn toque_cancelar(state: &mut BookosComp, time: u32) {
+// 0.1.1
+// modificado en la 0.2.0 -- perder el contacto no ejecuta la acción pendiente.
+pub(crate) fn toque_cancelar(state: &mut BookosComp, time: u32) {
     crate::teclado::cancelar_toques(state);
     // Un botón pulsado sin su soltar deja al shell creyendo que se sigue
     // arrastrando: se suelta aunque el toque se haya anulado.
-    if state.toque_emulado.take().is_some() {
+    if matches!(
+        state.toque_emulado.take(),
+        Some(ToqueEmulado::Arrastrando(_))
+    ) {
+        if let Some(shell) = state.shell.as_mut() {
+            shell.cancelar_toque();
+        }
+        state.decoracion.pulsado = None;
         boton(state, BTN_LEFT, ButtonState::Released, time);
     }
     if let Some(touch) = state.seat.get_touch() {
         touch.cancel(state);
+    }
+}
+
+// añadido en la 0.2.0 -- un toque anulado no puede reaparecer como clic al recibir TouchUp.
+#[derive(Debug, Clone, Copy)]
+pub enum ToqueEmulado {
+    Pendiente {
+        slot: TouchSlot,
+        origen: Point<f64, Logical>,
+        arrastrable: bool,
+    },
+    Arrastrando(TouchSlot),
+    Cancelado(TouchSlot),
+}
+
+impl ToqueEmulado {
+    // añadido en la 0.2.0 -- los demás dedos no cambian la captura del primer contacto.
+    fn slot(self) -> TouchSlot {
+        match self {
+            Self::Pendiente { slot, .. } | Self::Arrastrando(slot) | Self::Cancelado(slot) => slot,
+        }
     }
 }
 
@@ -915,6 +1175,7 @@ fn toque_cancelar(state: &mut BookosComp, time: u32) {
 /// El shell no conoce xkb a propósito: su enum es una docena de variantes sin
 /// ninguna dependencia, así que la frontera aguanta aunque debajo cambie la
 /// capa de teclado.
+// 0.1.0
 fn traducir_tecla(
     handle: &smithay::input::keyboard::KeysymHandle<'_>,
     ctrl: bool,
@@ -954,6 +1215,7 @@ fn traducir_tecla(
 
 /// Un botón del ratón, venga de libinput, de winit o de un autotest: todos
 /// pasan por aquí para que el clic de prueba recorra el mismo camino.
+// modified 0.1.1 -- con el cuentagotas, el clic izquierdo coge el color y otro lo cancela
 pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u32) {
     // Meta+clic mueve y redimensiona ventanas: si hubo clic, la tecla
     // era un modificador y no debe abrir nada al soltarla.
@@ -968,6 +1230,25 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
             crate::keybinds::hacer(state, accion);
         }
         state.needs_redraw = true;
+        return;
+    }
+    // El clic izquierdo coge el color y cualquier otro lo cancela. La suelta
+    // también se traga: la pulsación no llegó al cliente. Va con su propia
+    // marca porque la pulsación ya quitó el cuentagotas y la suelta llega con
+    // él apagado; sin ella, la ventana recibía una suelta sin pulsación.
+    // modificado en la 0.2.0 -- la suelta del clic que elige ya no llega a la ventana
+    if pulsado == ButtonState::Released && std::mem::take(&mut state.cuentagotas_clic) {
+        return;
+    }
+    if state.cuentagotas {
+        if pulsado == ButtonState::Pressed {
+            state.cuentagotas_clic = true;
+            if button == BTN_LEFT {
+                crate::cuentagotas::elegir(state);
+            } else {
+                crate::cuentagotas::cancelar(state);
+            }
+        }
         return;
     }
     // Bloqueado, los clics no salen hacia los clientes: lo único que
@@ -1040,13 +1321,14 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
         state.conmutador_clic = true;
         let elegida = (button == BTN_LEFT)
             .then(|| {
-                state.shell.as_ref().and_then(|s| {
-                    s.conmutador_en(state.pointer_location.x, state.pointer_location.y)
-                })
+                crate::keybinds::celda_bajo(state, state.pointer_location.x, state.pointer_location.y)
             })
             .flatten();
         if let Some(i) = elegida {
-            if let Some(shell) = state.shell.as_mut() {
+            // Un segundo clic durante la vuelta no cambia lo ya elegido.
+            if state.conmutador_salida.is_none()
+                && let Some(shell) = state.shell.as_mut()
+            {
                 shell.conmutador_elegir(i);
             }
             crate::keybinds::ejecutar(state, crate::keybinds::Accion::ConmutarFin);
@@ -1163,12 +1445,34 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
         return;
     }
     if pulsado == ButtonState::Pressed
+        && button == BTN_LEFT
+        && let Some(accion) = state
+            .shell
+            .as_mut()
+            .and_then(|s| s.despedir_asistente_fuera(punto.x, punto.y))
+    {
+        crate::keybinds::hacer(state, accion);
+    } else if pulsado == ButtonState::Pressed
         && state
             .shell
             .as_mut()
             .is_some_and(|s| s.recoger_actividad_fuera(punto.x, punto.y))
     {
         state.needs_redraw = true;
+    }
+    // Clic derecho en otro sitio del escritorio con su menú ya abierto: el menú
+    // se muda ahí. Sin esto el clic se gastaba en cerrarlo y había que pulsar
+    // dos veces para ver el menú donde se quería.
+    if pulsado == ButtonState::Pressed
+        && button == BTN_RIGHT
+        && state.space.element_under(punto).is_none()
+        && state.shell.as_ref().is_some_and(|s| {
+            s.emergente_nombre() == Some("menu-dock") && !s.emergente_contiene(punto.x, punto.y)
+        })
+        && pulsar_derecho_escritorio(state, punto)
+    {
+        state.menu_ventana_suelta = true;
+        return;
     }
     if state.shell_contiene(punto) {
         // Ni la pulsación ni el soltar llegan al cliente: para él este
@@ -1288,6 +1592,8 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
 
 /// Mueve el cursor a un punto lógico, lo confina al escritorio y reenvía el
 /// movimiento al cliente que haya debajo.
+// modified 0.1.1 -- con el cuentagotas, el puntero no llega a los clientes y lleva la cruz
+// modificado en la 0.2.0 -- la cruz deja paso a la lupa
 pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u32) {
     // No se confina al rectángulo envolvente: con una pantalla arriba y otra a
     // la derecha ese rectángulo contiene una esquina vacía donde el cursor
@@ -1385,11 +1691,13 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
     }
 
     if state.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
-        let celda = state
-            .shell
-            .as_ref()
-            .and_then(|s| s.conmutador_en(location.x, location.y));
-        if let (Some(i), Some(shell)) = (celda, state.shell.as_mut()) {
+        let celda = crate::keybinds::celda_bajo(state, location.x, location.y);
+        // añadido en la 0.2.0 -- con la vuelta de la exposición en marcha la
+        // elegida ya está decidida: seguir al cursor la cambiaba y, al reposar
+        // el muelle, `conmutar_fin` enfocaba otra ventana (el «pop»).
+        if state.conmutador_salida.is_none()
+            && let (Some(i), Some(shell)) = (celda, state.shell.as_mut())
+        {
             state.needs_redraw |= shell.conmutador_elegir(i);
         }
         // Es una capa modal: lo de debajo no recibe hover mientras elegimos.
@@ -1404,6 +1712,26 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
             },
         );
         pointer.frame(state);
+        return;
+    }
+
+    // Sin foco, como con el conmutador: la ventana de debajo no puede poner
+    // su cursor encima de la cruz.
+    if state.cuentagotas {
+        let pointer = state.pointer.clone();
+        pointer.motion(
+            state,
+            None,
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        pointer.frame(state);
+        state.cursor_status = smithay::input::pointer::CursorImageStatus::Hidden;
+        crate::cuentagotas::muestrear(state);
+        state.needs_redraw = true;
         return;
     }
 
@@ -1521,6 +1849,7 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
     pointer.frame(state);
 }
 
+// 0.1.0
 fn confinar_a_salidas(
     destino: Point<f64, Logical>,
     salidas: &[smithay::utils::Rectangle<i32, Logical>],
@@ -1569,6 +1898,7 @@ const DOBLE_CLIC_RADIO: f64 = 6.0;
 ///
 /// Apunta el clic actual pase lo que pase: dos clics lentos no son un doble,
 /// pero el segundo sí puede ser el primero de otro par.
+// 0.1.0
 fn es_doble_clic(state: &mut BookosComp) -> bool {
     let ahora = std::time::Instant::now();
     let punto = state.pointer_location;
@@ -1582,6 +1912,7 @@ fn es_doble_clic(state: &mut BookosComp) -> bool {
 
 /// El doble clic sobre **nuestra** barra: no hace falta mirar dónde cae dentro
 /// de la ventana, porque la barra entera es zona de título.
+// 0.1.0
 fn doble_clic_en_barra(state: &mut BookosComp) -> bool {
     if !es_doble_clic(state) {
         return false;
@@ -1603,6 +1934,8 @@ const UMBRAL_ARRASTRE: f64 = 4.0;
 ///
 /// Devuelve `true` si el clic era suyo, que lo es siempre que haya shell: el
 /// escritorio es el último que mira, y por debajo de él no hay nadie.
+// 0.1.0
+// modified 0.1.1 -- el escritorio se queda el teclado al pulsarlo
 fn pulsar_escritorio(state: &mut BookosComp, punto: Point<f64, Logical>) -> bool {
     // Los iconos viven en la principal, igual que el resto del shell. El
     // hit-test de un icono ya se acota solo —ningún rectángulo cae fuera—, pero
@@ -1684,6 +2017,8 @@ fn pulsar_escritorio(state: &mut BookosComp, punto: Point<f64, Logical>) -> bool
 /// entradas.
 ///
 /// `true` si el clic era del escritorio y no debe llegar a nadie más.
+// 0.1.0
+// modified 0.1.1 -- menú propio del escritorio: abrir, papelera, nueva carpeta, fondo, pantalla y mostrar u ocultar iconos
 fn pulsar_derecho_escritorio(state: &mut BookosComp, punto: Point<f64, Logical>) -> bool {
     if !state
         .shell
@@ -1741,12 +2076,12 @@ fn pulsar_derecho_escritorio(state: &mut BookosComp, punto: Point<f64, Logical>)
             .collect()
     } else {
         let visibles = state.shell.as_ref().is_some_and(|s| s.escritorio_visible());
-        // Con los iconos ocultos, «Nueva carpeta» crearía algo que no se ve:
+        // Con los iconos ocultos, «Crear» crearía algo que no se ve:
         // sale solo cuando se ven.
         let nueva = visibles.then_some(Some((
-            "Nueva carpeta".to_string(),
+            "Crear".to_string(),
             "carpeta-nueva",
-            Accion::EscritorioNuevaCarpeta,
+            Accion::EscritorioNuevo(bookos_shell::escritorio::NuevoElemento::Carpeta),
         )));
         let iconos = match visibles {
             true => ("Ocultar iconos".to_string(), "ojo-tachado"),
@@ -1787,6 +2122,7 @@ fn pulsar_derecho_escritorio(state: &mut BookosComp, punto: Point<f64, Logical>)
 
 /// Mueve la banda elástica o los iconos agarrados. `true` si el movimiento era
 /// del escritorio y no debe llegar a nadie más.
+// 0.1.0
 fn seguir_arrastre_escritorio(state: &mut BookosComp, location: Point<f64, Logical>) -> bool {
     // Se saca y se vuelve a poner porque el gesto y el shell viven los dos en
     // `state`: con el gesto prestado no se puede tocar el shell.
@@ -1824,6 +2160,7 @@ fn seguir_arrastre_escritorio(state: &mut BookosComp, location: Point<f64, Logic
 }
 
 /// Cierra el gesto del escritorio: quita la banda o deja los iconos en su celda.
+// 0.1.0
 pub(crate) fn soltar_escritorio(state: &mut BookosComp) -> bool {
     let Some(arrastre) = state.arrastre_escritorio.take() else {
         return false;
@@ -1843,6 +2180,8 @@ pub(crate) fn soltar_escritorio(state: &mut BookosComp) -> bool {
 }
 
 /// Da el foco de teclado a la ventana bajo el cursor y la sube del todo.
+// 0.1.0
+// modified 0.1.1 -- los menús X11 no roban el foco a su aplicación
 fn focus_under_pointer(state: &mut BookosComp) {
     let bajo = state.ventana_bajo(state.pointer_location).map(|(w, _)| w);
     if let Some(window) = bajo {
@@ -1862,6 +2201,7 @@ fn focus_under_pointer(state: &mut BookosComp) {
 ///
 /// El modo de la salida está en físicos, pero el puntero y la escena razonan en
 /// lógicos: sin dividir por la escala, a 1,75 los clics caen desplazados un 75 %.
+// 0.1.0
 fn logical_size(state: &BookosComp) -> (i32, i32) {
     state
         .space
@@ -1883,6 +2223,7 @@ fn logical_size(state: &BookosComp) -> (i32, i32) {
 /// está abierta nadie tiene el foco del puntero. Al cerrarla hay que devolver
 /// la flecha a mano: sobre el escritorio vacío ningún cliente va a pedir otro
 /// cursor y se quedaría la cruz.
+// 0.1.0
 pub fn cursor_de_captura(state: &mut BookosComp) {
     use bookos_shell::captura::Forma;
     use smithay::input::pointer::{CursorIcon, CursorImageStatus};
@@ -1902,12 +2243,85 @@ pub fn cursor_de_captura(state: &mut BookosComp) {
     };
 }
 
+// añadido en la 0.2.0 -- el destino previo sobrevive al apoyo para poder cancelar una inversión.
+fn agarrar_exposicion(state: &mut BookosComp) {
+    if !state.conmutador_pegado {
+        state.exposicion_gesto = Some(crate::gestos::Agarre::nuevo(0.0, 0.0));
+        return;
+    }
+    if let Some(muelle) = state.conmutador_entrada.as_mut() {
+        state.exposicion_gesto = Some(crate::gestos::Agarre::nuevo(
+            muelle.valor(),
+            muelle.destino(),
+        ));
+        muelle.fijar(muelle.valor());
+        state.conmutador_salida = None;
+    }
+}
+
+// modificado en la 0.2.0 -- el exceso en un extremo no se acumula como recorrido invisible al invertir.
+fn seguir_exposicion(state: &mut BookosComp, progreso: f32) {
+    if state.exposicion_gesto.is_none() {
+        agarrar_exposicion(state);
+    }
+    let Some(agarre) = state.exposicion_gesto.as_mut() else {
+        return;
+    };
+    let posicion = agarre.seguir(progreso, 0.0, 1.0);
+    if !state.conmutador_pegado {
+        if posicion == 0.0 {
+            return;
+        }
+        let agarre = *agarre;
+        exponer(state);
+        if !state.conmutador_pegado {
+            return;
+        }
+        state.exposicion_gesto = Some(agarre);
+        state.conmutador_salida = None;
+    }
+    if let Some(muelle) = state.conmutador_entrada.as_mut() {
+        muelle.fijar(posicion);
+    }
+    state.needs_redraw = true;
+}
+
+// añadido en la 0.2.0
+fn soltar_exposicion(state: &mut BookosComp, suelta: crate::gestos::Suelta) {
+    let Some(agarre) = state.exposicion_gesto.take() else {
+        return;
+    };
+    let Some(muelle) = state.conmutador_entrada.as_mut() else {
+        return;
+    };
+    let abrir = agarre.destino(suelta) > 0.0;
+    muelle.soltar_gesto(
+        if abrir { 1.0 } else { 0.0 },
+        if suelta.cancelada {
+            0.0
+        } else {
+            suelta.velocidad
+        },
+    );
+    if !abrir {
+        state.conmutador_salida = Some(crate::keybinds::Accion::ConmutarCancelar);
+    }
+    state.needs_redraw = true;
+}
+
 /// Tres dedos hacia arriba: el conmutador de ventanas, abierto hasta elegir.
 /// Aparte porque el guion de los autotests la llama igual: en el anidado no
 /// llegan gestos.
+// 0.1.0
+// modified 0.1.1 -- apunta cuándo empezó la exposición para animar la entrada
 pub fn exponer(state: &mut BookosComp) {
     if state.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
         return;
+    }
+    // añadido en la 0.2.0 -- la tarjeta de un widget (batería, red…) es modal
+    // y se quedaba abierta debajo de la exposición, que no la cerraba nadie.
+    if let Some(shell) = state.shell.as_mut() {
+        shell.cerrar_emergente();
     }
     // Con el escritorio despejado no hay ventanas mapeadas que exponer: se
     // devuelven primero, que es lo que pide quien quiere verlas.
@@ -1917,7 +2331,11 @@ pub fn exponer(state: &mut BookosComp) {
         crate::keybinds::Accion::Conmutar(bookos_shell::conmutador::Modo::Ventanas, 0),
     );
     state.conmutador_pegado = state.shell.as_ref().is_some_and(|s| s.hay_conmutador());
-    state.conmutador_entrada = state.conmutador_pegado.then(std::time::Instant::now);
+    state.conmutador_entrada = state.conmutador_pegado.then(|| {
+        let mut muelle = bookos_shell::tema::Muelle::nuevo(0.0, bookos_shell::tema::M_SUAVE);
+        muelle.ir_a(1.0);
+        muelle
+    });
 }
 
 #[cfg(test)]

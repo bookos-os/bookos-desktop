@@ -212,6 +212,18 @@ pub(super) const CATALOGO: &[Emoji] = &[
         categoria: 1,
     },
     Emoji {
+        simbolo: "🥹",
+        es: "Cara conteniendo las lágrimas",
+        en: "holding back tears emocion emocionado",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "😮‍💨",
+        es: "Cara resoplando",
+        en: "exhaling sigh suspiro alivio",
+        categoria: 1,
+    },
+    Emoji {
         simbolo: "😤",
         es: "Resoplando",
         en: "triumph angry enfado",
@@ -269,6 +281,30 @@ pub(super) const CATALOGO: &[Emoji] = &[
         simbolo: "🤗",
         es: "Abrazo",
         en: "hug hugging",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🫠",
+        es: "Cara derritiéndose",
+        en: "melting derretir verguenza calor",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🫡",
+        es: "Cara saludando",
+        en: "saluting salute saludo militar",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🫣",
+        es: "Cara mirando entre los dedos",
+        en: "peeking eye miedo curiosidad",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🫢",
+        es: "Cara tapándose la boca",
+        en: "hand over mouth sorpresa asombro",
         categoria: 1,
     },
     Emoji {
@@ -389,6 +425,12 @@ pub(super) const CATALOGO: &[Emoji] = &[
         simbolo: "💀",
         es: "Calavera",
         en: "skull death halloween",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🤡",
+        es: "Payaso",
+        en: "clown circo",
         categoria: 1,
     },
     Emoji {
@@ -527,6 +569,36 @@ pub(super) const CATALOGO: &[Emoji] = &[
         simbolo: "🙏",
         es: "Manos juntas",
         en: "pray thanks gracias por favor",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🫶",
+        es: "Manos en corazón",
+        en: "heart hands love amor carino",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🫰",
+        es: "Mano con dedos cruzados en corazón",
+        en: "hand index thumb crossed heart love amor",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🤌",
+        es: "Dedos juntos",
+        en: "pinched fingers italian que dices",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "💅",
+        es: "Pintándose las uñas",
+        en: "nail polish manicura unas slay",
+        categoria: 1,
+    },
+    Emoji {
+        simbolo: "🫂",
+        es: "Abrazo",
+        en: "people hugging hug abrazar",
         categoria: 1,
     },
     Emoji {
@@ -791,6 +863,30 @@ pub(super) const CATALOGO: &[Emoji] = &[
         simbolo: "🌹",
         es: "Rosa",
         en: "rose flower flor",
+        categoria: 2,
+    },
+    Emoji {
+        simbolo: "🥀",
+        es: "Rosa marchita",
+        en: "wilted flower dead rose marchitarse triste",
+        categoria: 2,
+    },
+    Emoji {
+        simbolo: "🌷",
+        es: "Tulipán",
+        en: "tulip flor",
+        categoria: 2,
+    },
+    Emoji {
+        simbolo: "🌺",
+        es: "Hibisco",
+        en: "hibiscus flor",
+        categoria: 2,
+    },
+    Emoji {
+        simbolo: "💐",
+        es: "Ramo de flores",
+        en: "bouquet flowers ramo",
         categoria: 2,
     },
     Emoji {
@@ -1700,6 +1796,24 @@ pub(super) const CATALOGO: &[Emoji] = &[
         categoria: 7,
     },
     Emoji {
+        simbolo: "🩷",
+        es: "Corazón rosa",
+        en: "pink heart love amor",
+        categoria: 7,
+    },
+    Emoji {
+        simbolo: "🩵",
+        es: "Corazón celeste",
+        en: "light blue heart love amor",
+        categoria: 7,
+    },
+    Emoji {
+        simbolo: "🩶",
+        es: "Corazón gris",
+        en: "grey gray heart love amor",
+        categoria: 7,
+    },
+    Emoji {
         simbolo: "🧡",
         es: "Corazón naranja",
         en: "orange heart love amor",
@@ -1739,6 +1853,12 @@ pub(super) const CATALOGO: &[Emoji] = &[
         simbolo: "🤍",
         es: "Corazón blanco",
         en: "white heart love amor",
+        categoria: 7,
+    },
+    Emoji {
+        simbolo: "⚧️",
+        es: "Símbolo transgénero",
+        en: "transgender symbol trans lgtb lgbt",
         categoria: 7,
     },
     Emoji {
@@ -1964,12 +2084,6 @@ pub(super) const CATALOGO: &[Emoji] = &[
         categoria: 7,
     },
     Emoji {
-        simbolo: "🏳️‍🌈",
-        es: "Bandera arcoíris",
-        en: "rainbow flag pride orgullo",
-        categoria: 7,
-    },
-    Emoji {
         simbolo: "🏁",
         es: "Bandera de cuadros",
         en: "chequered flag finish meta",
@@ -1991,6 +2105,18 @@ pub(super) const CATALOGO: &[Emoji] = &[
         simbolo: "🏴",
         es: "Bandera negra",
         en: "black flag",
+        categoria: 8,
+    },
+    Emoji {
+        simbolo: "🏳️‍🌈",
+        es: "Bandera arcoíris",
+        en: "rainbow flag pride orgullo gay lgtb lgbt lgbtq",
+        categoria: 8,
+    },
+    Emoji {
+        simbolo: "🏳️‍⚧️",
+        es: "Bandera trans",
+        en: "transgender flag pride orgullo trans lgtb lgbt lgbtq",
         categoria: 8,
     },
     Emoji {

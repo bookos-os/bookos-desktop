@@ -20,6 +20,7 @@ pub struct Broker {
     pending: Mutex<Option<Pendiente>>,
 }
 impl Broker {
+    // 0.1.0
     pub async fn current(&self) -> String {
         self.pending
             .lock()
@@ -28,6 +29,7 @@ impl Broker {
             .map(|p| p.1.to_string())
             .unwrap_or("null".into())
     }
+    // 0.1.0
     pub async fn answer(&self, id: u64, answer: Option<String>) -> zbus::fdo::Result<()> {
         let mut p = self.pending.lock().await;
         if p.as_ref().is_none_or(|p| p.0 != id) {
@@ -38,6 +40,7 @@ impl Broker {
         }
         Ok(())
     }
+    // 0.1.0
     pub async fn clear(&self) {
         self.pending.lock().await.take();
     }
@@ -47,6 +50,7 @@ pub struct Agent {
     pub session: Connection,
 }
 impl Agent {
+    // 0.1.0
     async fn prompt(
         &self,
         device: &OwnedObjectPath,
@@ -89,15 +93,19 @@ impl Agent {
 }
 #[zbus::interface(name = "org.bluez.Agent1")]
 impl Agent {
+    // 0.1.0
     async fn release(&self) {
         self.broker.clear().await;
     }
+    // 0.1.0
     async fn cancel(&self) {
         self.broker.clear().await;
     }
+    // 0.1.0
     async fn request_pin_code(&self, device: OwnedObjectPath) -> zbus::fdo::Result<String> {
         self.prompt(&device, "pin", String::new()).await
     }
+    // 0.1.0
     async fn request_passkey(&self, device: OwnedObjectPath) -> zbus::fdo::Result<u32> {
         let text = self.prompt(&device, "passkey", String::new()).await?;
         text.parse::<u32>()
@@ -105,6 +113,7 @@ impl Agent {
             .filter(|n| *n <= 999999)
             .ok_or_else(|| zbus::fdo::Error::InvalidArgs("Código inválido".into()))
     }
+    // 0.1.0
     async fn request_confirmation(
         &self,
         device: OwnedObjectPath,
@@ -114,11 +123,13 @@ impl Agent {
             .await
             .map(|_| ())
     }
+    // 0.1.0
     async fn request_authorization(&self, device: OwnedObjectPath) -> zbus::fdo::Result<()> {
         self.prompt(&device, "authorize", String::new())
             .await
             .map(|_| ())
     }
+    // 0.1.0
     async fn authorize_service(
         &self,
         device: OwnedObjectPath,
@@ -126,6 +137,7 @@ impl Agent {
     ) -> zbus::fdo::Result<()> {
         self.prompt(&device, "authorize", uuid).await.map(|_| ())
     }
+    // 0.1.0
     async fn display_pin_code(
         &self,
         device: OwnedObjectPath,
@@ -143,6 +155,7 @@ impl Agent {
             .await
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))
     }
+    // 0.1.0
     async fn display_passkey(
         &self,
         device: OwnedObjectPath,
@@ -152,6 +165,7 @@ impl Agent {
         self.display_pin_code(device, format!("{passkey:06}")).await
     }
 }
+// 0.1.0
 pub async fn register(c: &Connection) -> Result<(), String> {
     let p = zbus::Proxy::new(c, "org.bluez", "/org/bluez", "org.bluez.AgentManager1")
         .await

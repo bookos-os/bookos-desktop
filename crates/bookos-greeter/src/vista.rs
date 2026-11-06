@@ -26,16 +26,18 @@ const ANCHO_PANEL: f32 = 296.0;
 // Macizos y no de trazo, como los del resto del shell: sobre una foto, un
 // trazo de 1,5 se pierde. Wi-Fi y encendido son los `solid` de Heroicons de
 // la copia del HIG; el teclado no tiene versión maciza y va con trazo de 2.
-pub const WIFI: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" d="M1.371 8.143c5.858-5.857 15.356-5.857 21.213 0a.75.75 0 0 1 0 1.061l-.53.53a.75.75 0 0 1-1.06 0c-4.98-4.979-13.053-4.979-18.032 0a.75.75 0 0 1-1.06 0l-.53-.53a.75.75 0 0 1 0-1.06Zm3.182 3.182c4.1-4.1 10.749-4.1 14.85 0a.75.75 0 0 1 0 1.061l-.53.53a.75.75 0 0 1-1.062 0 8.25 8.25 0 0 0-11.667 0 .75.75 0 0 1-1.06 0l-.53-.53a.75.75 0 0 1 0-1.06Zm3.204 3.182a6 6 0 0 1 8.486 0 .75.75 0 0 1 0 1.061l-.53.53a.75.75 0 0 1-1.061 0 3.75 3.75 0 0 0-5.304 0 .75.75 0 0 1-1.06 0l-.53-.53a.75.75 0 0 1 0-1.06Zm3.182 3.182a1.5 1.5 0 0 1 2.122 0 .75.75 0 0 1 0 1.061l-.53.53a.75.75 0 0 1-1.061 0l-.53-.53a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd"/></svg>"##;
-pub const ENCENDIDO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" d="M12 2.25a.75.75 0 0 1 .75.75v9a.75.75 0 0 1-1.5 0V3a.75.75 0 0 1 .75-.75ZM6.166 5.106a.75.75 0 0 1 0 1.06 8.25 8.25 0 1 0 11.668 0 .75.75 0 1 1 1.06-1.06c3.808 3.807 3.808 9.98 0 13.788-3.807 3.808-9.98 3.808-13.788 0-3.808-3.807-3.808-9.98 0-13.788a.75.75 0 0 1 1.06 0Z" clip-rule="evenodd"/></svg>"##;
+pub const WIFI: &str = bloqueo::WIFI;
+pub const ENCENDIDO: &str = bloqueo::ENCENDIDO;
 pub const TECLADO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M6 9.25h.5m3.25 0h.5m3.25 0h.5m3.25 0h.5M6 12.25h.5m3.25 0h.5m3.25 0h.5m3.25 0h.5M8 15.25h8"/></svg>"##;
 
 type Elemento<'a> = Element<'a, Mensaje>;
 
+// 0.1.1
 fn blanco(a: f32) -> Color {
     Color { a, ..Color::WHITE }
 }
 
+// 0.1.1
 fn peso(weight: Weight) -> Font {
     Font {
         weight,
@@ -43,10 +45,12 @@ fn peso(weight: Weight) -> Font {
     }
 }
 
+// 0.1.1
 fn alto(valor: f32) -> Space {
     Space::new().height(valor.max(0.0))
 }
 
+// 0.1.1
 fn pictograma<'a>(icono: &Icono, ancho: f32, alto: f32, color: Option<Color>) -> Elemento<'a> {
     match icono {
         // El alfa va aparte: el teñido de un SVG sustituye el color y no hace
@@ -70,6 +74,7 @@ fn propio<'a>(nombre: &str, lado: f32, color: Color) -> Elemento<'a> {
     }
 }
 
+// 0.1.1
 fn sin_fondo() -> button::Style {
     button::Style {
         background: None,
@@ -78,6 +83,7 @@ fn sin_fondo() -> button::Style {
 }
 
 /// Un pictograma blanco con la misma sombra que [`rotulo`], por lo mismo.
+// 0.1.1
 fn con_sombra<'a>(icono: &Icono, lado: f32, alfa: f32, u: f32) -> Elemento<'a> {
     let caida = u.round().max(1.0);
     let capa = |color: Color, arriba: f32| {
@@ -101,6 +107,7 @@ fn con_sombra<'a>(icono: &Icono, lado: f32, alfa: f32, u: f32) -> Elemento<'a> {
 
 /// Texto blanco con una sombra debajo. Va sobre el fondo de pantalla sin
 /// píldora que lo separe, y con un fondo claro el blanco solo no se lee.
+// 0.1.1
 fn rotulo<'a>(texto: String, cuerpo: f32, fuente: Font, alfa: f32) -> Elemento<'a> {
     let capa = move |color: Color| text(texto.clone()).size(cuerpo).font(fuente).color(color);
     let caida = (cuerpo / 16.0).max(1.0);
@@ -124,6 +131,7 @@ fn rotulo<'a>(texto: String, cuerpo: f32, fuente: Font, alfa: f32) -> Elemento<'
         .into()
 }
 
+// 0.1.1
 fn avatar<'a>(
     foto: Option<&image::Handle>,
     sin_foto: Elemento<'a>,
@@ -156,6 +164,7 @@ fn avatar<'a>(
         .into()
 }
 
+// 0.1.1
 fn separador_panel<'a>(ancho: f32, u: f32, alfa: f32) -> Elemento<'a> {
     container(
         container(Space::new().height(u.round()))
@@ -170,28 +179,27 @@ fn separador_panel<'a>(ancho: f32, u: f32, alfa: f32) -> Elemento<'a> {
 }
 
 impl Acceso {
+    // 0.1.1
     fn persona(&self) -> Option<&Persona> {
         self.personas.iter().find(|p| p.cuenta == self.usuario)
     }
 
+    // 0.1.1
     fn paleta(&self) -> Option<crate::usuarios::Paleta> {
         self.personas.get(self.de)?.apariencia.paleta
     }
 
+    // 0.1.1
     fn acento(&self) -> Color {
         self.paleta().map_or_else(tema::acento, |p| p.acento)
     }
 
+    // 0.1.1
     fn sobre_acento(&self) -> Color {
         self.paleta().map_or(Color::WHITE, |p| p.sobre_acento)
     }
 
-    /// El blanco del reloj, llevado hacia el tono claro de la paleta.
-    fn tinta_reloj(&self) -> Color {
-        self.paleta()
-            .map_or(Color::WHITE, |p| tema::mezclar(Color::WHITE, p.claro, 0.55))
-    }
-
+    // 0.1.1
     fn config(&self) -> bookos_shell::ConfigBloqueo {
         self.personas
             .get(self.de)
@@ -199,6 +207,7 @@ impl Acceso {
             .unwrap_or_default()
     }
 
+    // 0.1.1
     fn sacudida(&self) -> f32 {
         let t = self
             .fallo_desde
@@ -206,6 +215,7 @@ impl Acceso {
         (t * std::f32::consts::TAU * 3.0).sin() * (1.0 - t) * 11.0 * self.escala
     }
 
+    // 0.1.1
     pub fn vista(&self) -> Elemento<'_> {
         let entrada =
             tema::C_ENTRADA.eval(tema::avance(self.cambio_desde.elapsed(), tema::D_PAGINA));
@@ -249,44 +259,51 @@ impl Acceso {
             .into()
     }
 
-    /// La fecha encima y la hora debajo, pegadas, con el tono de la paleta.
+    /// Hora y fecha, en el mismo orden y blanco que el bloqueo: al entrar y al
+    /// bloquear es la misma pantalla.
+    // modificado en la 0.2.0 -- antes la fecha iba encima y con el tono de la paleta.
+    // 0.1.1
     fn reloj(&self) -> Elemento<'_> {
         let (u, config) = (self.escala, self.config());
         let familia = Family::Name(config.reloj_fuente.familia());
-        let tinta = self.tinta_reloj();
-        let mut reloj = column![alto(self.pantalla.height * config.reloj_y)];
+        let tinta = Color::WHITE;
+        let mut reloj = column![
+            alto(self.pantalla.height * config.reloj_y),
+            text(&self.hora)
+                .size(config.reloj_tamano * u)
+                .font(Font {
+                    family: familia,
+                    weight: bloqueo::grosor(config.reloj_grosor),
+                    ..Font::DEFAULT
+                })
+                .color(tinta)
+                .width(Fill)
+                .align_x(Center),
+        ];
         if config.fecha {
             reloj = reloj.push(
                 text(&self.fecha)
                     .size(22.0 * u)
                     .font(Font {
                         family: familia,
-                        weight: Weight::Semibold,
+                        weight: Weight::Medium,
                         ..Font::DEFAULT
                     })
-                    .color(tema::alfa(tinta, 0.85))
+                    .color(tema::alfa(tinta, 0.75))
                     .width(Fill)
                     .align_x(Center),
             );
         }
-        reloj
-            .push(
-                text(&self.hora)
-                    .size(config.reloj_tamano * u)
-                    .line_height(1.0)
-                    .font(Font {
-                        family: familia,
-                        weight: bloqueo::grosor(config.reloj_grosor),
-                        ..Font::DEFAULT
-                    })
-                    .color(tema::alfa(tinta, 0.92))
-                    .width(Fill)
-                    .align_x(Center),
-            )
-            .into()
+        reloj.into()
     }
 
-    fn boton_estado<'a>(&'a self, contenido: Elemento<'a>, cual: Panel, circular: bool) -> Elemento<'a> {
+    // 0.1.1
+    fn boton_estado<'a>(
+        &'a self,
+        contenido: Elemento<'a>,
+        cual: Panel,
+        circular: bool,
+    ) -> Elemento<'a> {
         let u = self.escala;
         let alto_boton = BOTON_ESTADO * u;
         let activo = self.panel_abierto == Some(cual) && self.menu.destino() > 0.0;
@@ -314,6 +331,7 @@ impl Acceso {
             .into()
     }
 
+    // 0.1.1
     fn fila_de_estado(&self) -> Elemento<'_> {
         let u = self.escala;
         let lado = ICONO_ESTADO * u;
@@ -328,17 +346,19 @@ impl Acceso {
 
         let mut fila = row![].spacing(6.0 * u).align_y(Center);
         if let Some(distribucion) = &self.teclado {
-            fila = fila.push(self.boton_estado(
-                row![
-                    etiqueta(distribucion),
-                    con_sombra(&self.tecla, lado, 1.0, u)
-                ]
-                .spacing(6.0 * u)
-                .align_y(Center)
-                .into(),
-                Panel::Idioma,
-                false,
-            ));
+            fila = fila.push(
+                self.boton_estado(
+                    row![
+                        etiqueta(distribucion),
+                        con_sombra(&self.tecla, lado, 1.0, u)
+                    ]
+                    .spacing(6.0 * u)
+                    .align_y(Center)
+                    .into(),
+                    Panel::Idioma,
+                    false,
+                ),
+            );
         }
         if let Some((icono, (ancho, alto), cifra, tinta)) = &self.bateria {
             let cifra: Elemento<'_> = if *tinta == Color::WHITE {
@@ -350,14 +370,16 @@ impl Acceso {
                     .color(*tinta)
                     .into()
             };
-            fila = fila.push(self.boton_estado(
-                row![pictograma(icono, ancho * u, alto * u, None), cifra]
-                    .spacing(5.0 * u)
-                    .align_y(Center)
-                    .into(),
-                Panel::Bateria,
-                false,
-            ));
+            fila = fila.push(
+                self.boton_estado(
+                    row![pictograma(icono, ancho * u, alto * u, None), cifra]
+                        .spacing(5.0 * u)
+                        .align_y(Center)
+                        .into(),
+                    Panel::Bateria,
+                    false,
+                ),
+            );
         }
         let icono_red: Elemento<'_> = match self.red {
             Some(Network {
@@ -382,6 +404,7 @@ impl Acceso {
             .into()
     }
 
+    // 0.1.1
     fn panel_emergente(&self, panel: Panel, avance: f32) -> Elemento<'_> {
         let u = self.escala;
         let alfa = avance.clamp(0.0, 1.0);
@@ -416,6 +439,7 @@ impl Acceso {
             .into()
     }
 
+    // 0.1.1
     fn menu_de_idioma(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
         let acento = self.acento();
@@ -501,11 +525,7 @@ impl Acceso {
                 marca,
                 text(nombre)
                     .size(14.0 * u)
-                    .font(peso(if activo {
-                        Weight::Bold
-                    } else {
-                        Weight::Medium
-                    }))
+                    .font(peso(if activo { Weight::Bold } else { Weight::Medium }))
                     .color(tinta),
                 Space::new().width(Fill),
                 text(codigo.to_uppercase())
@@ -539,6 +559,8 @@ impl Acceso {
         .into()
     }
 
+    // 0.1.1
+    // modificado en la 0.2.0 -- glifos blancos, como el bloqueo: las insignias de color son de aplicación
     fn menu_de_bateria(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
         let acento = self.acento();
@@ -693,22 +715,12 @@ impl Acceso {
                 Space::new().width(14.0 * u).height(14.0 * u).into()
             };
             let fila = row![
-                propio(
-                    icono_nombre,
-                    18.0 * u,
-                    if activo {
-                        tema::alfa(acento, alfa)
-                    } else {
-                        tinta
-                    }
-                ),
+                // El activo ya lo dice la marca de la derecha: el glifo no
+                // cambia de color.
+                propio(icono_nombre, 18.0 * u, blanco(alfa)),
                 text(nombre)
                     .size(14.0 * u)
-                    .font(peso(if activo {
-                        Weight::Bold
-                    } else {
-                        Weight::Medium
-                    }))
+                    .font(peso(if activo { Weight::Bold } else { Weight::Medium }))
                     .color(tinta),
                 Space::new().width(Fill),
                 marca,
@@ -731,6 +743,7 @@ impl Acceso {
         col.push(alto(8.0 * u)).into()
     }
 
+    // 0.1.1
     fn menu_de_red(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
         let acento = self.acento();
@@ -1051,6 +1064,8 @@ impl Acceso {
         col.into()
     }
 
+    // 0.1.1
+    // modificado en la 0.2.0 -- glifos blancos, como el bloqueo: las insignias de color son de aplicación
     fn menu_de_energia(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
         let tinta = blanco(alfa);
@@ -1068,7 +1083,7 @@ impl Acceso {
                 Peticion::CerrarSesion => *etiqueta,
             };
             let fila = row![
-                propio(icono, 18.0 * u, tinta),
+                propio(icono, 18.0 * u, blanco(alfa)),
                 text(etiqueta_traducida)
                     .size(15.0 * u)
                     .font(peso(Weight::Bold))
@@ -1095,6 +1110,7 @@ impl Acceso {
         filas.into()
     }
 
+    // 0.1.1
     fn lista_de_usuarios(&self, entrada: f32) -> Elemento<'_> {
         let u = self.escala;
         let (filas, k, arriba) = self.lista();
@@ -1143,6 +1159,7 @@ impl Acceso {
 
     /// Avatar y nombre sueltos sobre el fondo, como en la ventana de acceso de
     /// macOS. `s` ya trae la escala de pantalla y el aumento de la lente.
+    // 0.1.1
     fn fila(&self, i: usize, s: f32, alfa: f32) -> Elemento<'_> {
         let persona = self.personas.get(i);
         // A píxeles enteros: la lente pasa por decenas de tamaños intermedios y
@@ -1193,6 +1210,7 @@ impl Acceso {
             .into()
     }
 
+    // 0.1.1
     fn bloque_de_acceso(&self, entrada: f32) -> Elemento<'_> {
         let (u, config) = (self.escala, self.config());
         let persona = self.persona().filter(|_| !self.manual);
@@ -1258,6 +1276,7 @@ impl Acceso {
         .into()
     }
 
+    // 0.1.1
     fn campo(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
         let acento = self.acento();
@@ -1272,19 +1291,40 @@ impl Acceso {
         let mut es_secreta = false;
         let (dentro, listo): (Elemento<'_>, bool) = match &self.estado {
             Estado::Usuario => (
-                text_input(self.idioma.t("Nombre de usuario", "Username"), &self.usuario)
-                    .id("usuario")
-                    .size(15.0 * u)
-                    .padding(0)
-                    .on_input(Mensaje::Usuario)
-                    .on_submit(Mensaje::Continuar)
-                    .style(estilo)
-                    .into(),
+                text_input(
+                    self.idioma.t("Nombre de usuario", "Username"),
+                    &self.usuario,
+                )
+                .id("usuario")
+                .size(16.0 * u)
+                .font(peso(Weight::Medium))
+                .padding(0)
+                .on_input(Mensaje::Usuario)
+                .on_submit(Mensaje::Continuar)
+                .style(estilo)
+                .into(),
                 !self.usuario.trim().is_empty(),
             ),
             Estado::Pregunta { tipo, .. } => {
                 let secreta = matches!(tipo, TipoEntrada::Secreta);
                 es_secreta = secreta;
+                let con_puntos = secreta && !self.mostrar_respuesta;
+                // Los «•» de `secure` salen diminutos al tamaño del texto. Se
+                // deja el campo de verdad, invisible, para el teclado y el foco,
+                // y encima se ven los mismos puntos del bloqueo.
+                let estilo_campo = move |tema_: &iced::Theme, estado| text_input::Style {
+                    value: if con_puntos {
+                        Color::TRANSPARENT
+                    } else {
+                        blanco(alfa)
+                    },
+                    selection: if con_puntos {
+                        Color::TRANSPARENT
+                    } else {
+                        tema::alfa(acento, 0.5)
+                    },
+                    ..estilo(tema_, estado)
+                };
                 (
                     text_input(
                         if secreta {
@@ -1296,16 +1336,65 @@ impl Acceso {
                     )
                     .id("respuesta")
                     .secure(secreta && !self.mostrar_respuesta)
-                    .size(15.0 * u)
+                    .size(16.0 * u)
+                    .font(peso(Weight::Medium))
                     .padding(0)
                     .on_input(Mensaje::Respuesta)
                     .on_submit(Mensaje::Continuar)
-                    .style(estilo)
+                    .style(estilo_campo)
                     .into(),
                     !self.respuesta.is_empty(),
                 )
             }
             Estado::Aviso(_) | Estado::Ocupado(_) => (Space::new().width(Fill).into(), false),
+        };
+        let dentro: Elemento<'_> = if es_secreta && !self.mostrar_respuesta {
+            let lado = bloqueo::PUNTO * u;
+            let mut puntos = row![].spacing(6.0 * u).align_y(Center);
+            // Con el ojo y el botón al lado caben menos que en el bloqueo.
+            let caben = ((bloqueo::CAMPO - 120.0) / (bloqueo::PUNTO + 6.0)) as usize;
+            for _ in 0..self.respuesta.chars().count().min(caben) {
+                puntos = puntos.push(container(Space::new().width(lado).height(lado)).style(
+                    move |_| container::Style {
+                        background: Some(blanco(alfa).into()),
+                        border: Border {
+                            radius: (lado / 2.0).into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                ));
+            }
+            // Quieto, como en el bloqueo. Con el campo vacío va solo la pista.
+            if !self.respuesta.is_empty() {
+                puntos = puntos.push(
+                    container(
+                        Space::new()
+                            .width(2.0 * u)
+                            .height(bloqueo::ALTO_CAMPO * 0.42 * u),
+                    )
+                    .style(move |_| container::Style {
+                        background: Some(blanco(0.8 * alfa).into()),
+                        ..Default::default()
+                    }),
+                );
+            }
+            // Con el campo arriba para que el clic siga cayendo en él.
+            Stack::new()
+                .width(Fill)
+                .push(
+                    container(puntos)
+                        .height(bloqueo::ALTO_CAMPO * u)
+                        .center_y(bloqueo::ALTO_CAMPO * u),
+                )
+                .push(
+                    container(dentro)
+                        .height(bloqueo::ALTO_CAMPO * u)
+                        .center_y(bloqueo::ALTO_CAMPO * u),
+                )
+                .into()
+        } else {
+            dentro
         };
         let borde = match self.estado {
             Estado::Aviso(_) | Estado::Ocupado(_) => blanco(0.35 * alfa),
@@ -1388,6 +1477,8 @@ impl Acceso {
             .into()
     }
 
+    // 0.1.1
+    // modificado en la 0.2.0 -- la pregunta de pam_bookos_huella invita a poner el dedo
     fn mensaje(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
         let (texto, color) = match (&self.error, &self.estado) {
@@ -1399,6 +1490,13 @@ impl Acceso {
             ),
             // pam_unix pregunta a secas «Password:» o «Contraseña:»; el
             // campo ya lo dice, y en crudo parecía texto de terminal.
+            (None, Estado::Pregunta { texto, .. }) if texto == crate::PREGUNTA_HUELLA => (
+                self.idioma.t(
+                    "Escribe tu contraseña o pon el dedo",
+                    "Enter your password or use your fingerprint",
+                ),
+                blanco(0.55),
+            ),
             (
                 None,
                 Estado::Pregunta {

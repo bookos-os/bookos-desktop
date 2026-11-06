@@ -19,6 +19,7 @@ pub struct Estado {
     recientes: Vec<String>,
 }
 
+// 0.1.1
 pub fn alternar(state: &mut BookosComp) {
     state.emojis.destino = state.seat.get_keyboard().and_then(|k| k.current_focus());
     let campo = state.seat.text_input().campo_activo();
@@ -44,6 +45,7 @@ pub fn alternar(state: &mut BookosComp) {
     state.needs_redraw = true;
 }
 
+// 0.1.1
 pub fn insertar(state: &mut BookosComp, texto: &str) {
     let Some(teclado) = state.seat.get_keyboard() else {
         return;
@@ -116,6 +118,7 @@ pub fn insertar(state: &mut BookosComp, texto: &str) {
     state.needs_redraw = true;
 }
 
+// 0.1.1
 fn copiar(state: &mut BookosComp, texto: &str) {
     let tipos = vec![
         "text/plain;charset=utf-8".into(),
@@ -135,6 +138,7 @@ fn copiar(state: &mut BookosComp, texto: &str) {
     );
 }
 
+// 0.1.1
 fn pegar(
     state: &mut BookosComp,
     teclado: &smithay::input::keyboard::KeyboardHandle<BookosComp>,
@@ -189,6 +193,7 @@ fn pegar(
     );
 }
 
+// 0.1.1
 fn es_terminal(id: &str) -> bool {
     let id = id.to_lowercase();
     id.contains("terminal")
@@ -201,6 +206,7 @@ fn es_terminal(id: &str) -> bool {
         )
 }
 
+// 0.1.1
 fn recordar(recientes: &mut Vec<String>, texto: &str) {
     recientes.retain(|s| s != texto);
     recientes.insert(0, texto.to_string());

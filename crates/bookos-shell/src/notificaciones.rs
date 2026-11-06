@@ -58,6 +58,7 @@ impl Notificacion {
     /// con el nombre de la aplicación, que acierta a menudo —Firefox se
     /// presenta como «Firefox» y su icono se llama `firefox`— y es mejor que
     /// dejar el hueco vacío.
+    // 0.1.0
     pub fn nueva(
         id: u32,
         app: String,
@@ -82,6 +83,7 @@ impl Notificacion {
     // Son los campos de Notify tal cual llegan por D-Bus; agruparlos en una
     // estructura solo movería la misma lista a otro sitio.
     #[allow(clippy::too_many_arguments)]
+    // 0.1.0
     pub fn nueva_con_datos(
         id: u32,
         app: String,
@@ -113,6 +115,7 @@ impl Notificacion {
 
     /// «ahora», «hace 3 min», «hace 2 h». Lo que se lee en la esquina de la
     /// fila; los segundos exactos no le importan a nadie.
+    // 0.1.0
     pub fn hace(&self) -> String {
         let s = self.llegada.elapsed().as_secs();
         match s {
@@ -136,6 +139,7 @@ impl Registro {
     /// su sitio**, que es lo que pide la especificación para `replaces_id`: un
     /// reproductor que avisa de cada canción tiene que actualizar su aviso, no
     /// llenar la lista con veinte.
+    // 0.1.0
     pub fn añadir(&mut self, nueva: Notificacion) {
         if let Some(hueco) = self.lista.iter_mut().find(|n| n.id == nueva.id) {
             *hueco = nueva;
@@ -146,6 +150,7 @@ impl Registro {
     }
 
     /// Quita la del `id`. `true` si estaba.
+    // 0.1.0
     pub fn cerrar(&mut self, id: u32) -> bool {
         let antes = self.lista.len();
         self.lista.retain(|n| n.id != id);
@@ -154,19 +159,23 @@ impl Registro {
 
     /// Vacía la cola. Devuelve los identificadores que había, porque a cada uno
     /// hay que avisarle por D-Bus de que su notificación se cerró.
+    // 0.1.0
     pub fn vaciar(&mut self) -> Vec<u32> {
         self.lista.drain(..).map(|n| n.id).collect()
     }
 
+    // 0.1.0
     pub fn lista(&self) -> &[Notificacion] {
         &self.lista
     }
 
+    // 0.1.0
     pub fn cuantas(&self) -> u32 {
         self.lista.iter().filter(|n| !n.leida).count() as u32
     }
 
     /// Marca el historial como leído y devuelve si cambió algo.
+    // 0.1.0
     pub fn marcar_leidas(&mut self) -> bool {
         let mut cambio = false;
         for n in &mut self.lista {
@@ -178,6 +187,7 @@ impl Registro {
         cambio
     }
 
+    // 0.1.0
     pub fn hay(&self) -> bool {
         !self.lista.is_empty()
     }

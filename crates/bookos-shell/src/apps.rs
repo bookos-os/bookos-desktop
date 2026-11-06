@@ -24,6 +24,7 @@ pub struct App {
 }
 
 /// Dónde busca la especificación de freedesktop, de más prioritario a menos.
+// 0.1.0
 fn directorios() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
@@ -36,6 +37,7 @@ fn directorios() -> Vec<PathBuf> {
 }
 
 /// Todas las aplicaciones visibles, ordenadas por nombre.
+// 0.1.0
 pub fn leer() -> Vec<App> {
     let mut vistos = HashSet::new();
     let mut apps = Vec::new();
@@ -74,6 +76,7 @@ pub fn leer() -> Vec<App> {
 /// el último componente, `konsole.desktop`— antes de recorrer todo el
 /// directorio: acertar es un `stat`, y solo se paga la lectura completa cuando
 /// el `.desktop` no se llama como la aplicación dice llamarse.
+// 0.1.0
 pub fn por_app_id(app_id: &str) -> Option<App> {
     let cola = app_id.rsplit('.').next().unwrap_or(app_id);
     // En minúsculas también: VirtualBox en Wayland se anuncia como
@@ -118,6 +121,7 @@ pub fn por_app_id(app_id: &str) -> Option<App> {
 }
 
 /// `StartupWMClass` del grupo principal de una entrada de escritorio.
+// 0.1.0
 fn startup_wm_class(texto: &str) -> Option<&str> {
     let mut en_entrada = false;
     for linea in texto.lines().map(str::trim) {
@@ -132,6 +136,7 @@ fn startup_wm_class(texto: &str) -> Option<&str> {
     None
 }
 
+// 0.1.0
 pub(crate) fn leer_una(ruta: &std::path::Path) -> Option<App> {
     leer_entrada(ruta).and_then(|(app, sin_menu)| (!sin_menu).then_some(app))
 }
@@ -143,6 +148,7 @@ pub(crate) fn leer_una(ruta: &std::path::Path) -> Option<App> {
 /// el `liveinst.desktop` de Anaconda es uno. Descartarlo aquí hacía que el
 /// escritorio cayera a `xdg-open`, y el lanzador se abría en el bloc de notas
 /// como texto (`application/x-desktop` hereda de `text/plain`).
+// 0.1.0
 pub(crate) fn leer_lanzador(ruta: &std::path::Path) -> Option<App> {
     leer_entrada(ruta).map(|(app, _)| app)
 }
@@ -150,6 +156,7 @@ pub(crate) fn leer_lanzador(ruta: &std::path::Path) -> Option<App> {
 /// Un `Icon=` con ruta absoluta se salta el tema de iconos y sale sin teñir
 /// con los pack Tinted (Zen trae `.../default128.png`). Si el tema tiene un
 /// icono con el nombre de su `StartupWMClass`, gana ese.
+// 0.1.0
 fn icono_del_tema(icono: Option<String>, clase: Option<&str>) -> Option<String> {
     let clase = clase.map(str::to_lowercase);
     match (icono, clase) {
@@ -161,6 +168,8 @@ fn icono_del_tema(icono: Option<String>, clase: Option<&str>) -> Option<String> 
 }
 
 /// La aplicación y si pide quedarse fuera de los menús (`NoDisplay`).
+// 0.1.0
+// modificado en la 0.2.0 -- respeta TryExec
 fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
     let texto = std::fs::read_to_string(ruta).ok()?;
 
@@ -170,6 +179,7 @@ fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
     let mut icono = None;
     let mut oculta = false;
     let mut sin_menu = false;
+    let mut prueba = None;
     let mut es_app = false;
     let mut en_entrada = false;
 
@@ -195,6 +205,7 @@ fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
             "Name" => nombre = Some(valor.trim().to_string()),
             "Name[es]" => nombre_es = Some(valor.trim().to_string()),
             "Exec" => exec = Some(limpiar_exec(valor.trim())),
+            "TryExec" => prueba = Some(valor.trim().to_string()),
             "Icon" => icono = Some(valor.trim().to_string()),
             // `Hidden` es «esta entrada está borrada»; `NoDisplay`, solo «no
             // en los menús».
@@ -205,7 +216,11 @@ fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
         }
     }
 
-    if oculta || !es_app {
+    // `TryExec` es «enséñame solo si este programa existe» (especificación
+    // de freedesktop). Sin respetarlo, un lanzador sin su programa —el
+    // `bookos-captura.desktop` que se instalaba sin `bookos-captura`— salía en
+    // el buscador por delante de la acción de captura, y no hacía nada.
+    if oculta || !es_app || prueba.is_some_and(|p| !existe_programa(&p)) {
         return None;
     }
     let nombre = if std::env::var("LANG").unwrap_or_default().starts_with("es") {
@@ -227,10 +242,25 @@ fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
     ))
 }
 
+/// ¿Existe el programa? Una ruta absoluta se mira tal cual; un nombre suelto,
+/// en cada carpeta del `PATH`.
+// añadido en la 0.2.0
+pub fn existe_programa(programa: &str) -> bool {
+    if programa.is_empty() {
+        return false;
+    }
+    if programa.starts_with('/') {
+        return std::path::Path::new(programa).is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(programa).is_file()))
+}
+
 /// Quita los códigos de campo de la especificación.
 ///
 /// `Exec=firefox %u` lanzado tal cual le pasa un `%u` literal a Firefox. Se
 /// quitan todos los `%x` menos `%%`, que es un porcentaje de verdad.
+// 0.1.0
 fn limpiar_exec(exec: &str) -> String {
     let mut salida = String::with_capacity(exec.len());
     let mut chars = exec.chars().peekable();
@@ -254,6 +284,8 @@ fn limpiar_exec(exec: &str) -> String {
 /// No es una normalización Unicode de verdad —eso sería NFD y una tabla— sino
 /// la lista de vocales acentuadas y la eñe, que es lo que aparece en los
 /// nombres de aplicaciones que vamos a ver.
+// 0.1.0
+// modified 0.1.1 -- pública para el buscador
 pub fn normalizar(s: &str) -> String {
     s.to_lowercase()
         .chars()
@@ -275,6 +307,7 @@ pub fn normalizar(s: &str) -> String {
 /// La escala es la del launchpad de Plasma, y el orden importa más que los
 /// números: lo que se busca es que escribir "fir" ponga Firefox el primero y no
 /// una aplicación cualquiera que lleve "fir" a mitad de palabra.
+// 0.1.0
 pub fn puntuar(app: &App, consulta: &str) -> Option<u32> {
     let consulta = normalizar(consulta);
     if consulta.is_empty() {
@@ -381,6 +414,32 @@ mod tests {
         let _ = std::fs::remove_file(&ruta);
         assert!(en_menu.is_none());
         assert_eq!(lanzador.as_deref(), Some("liveinst"));
+    }
+
+    /// Un lanzador cuyo `TryExec` no existe no sale: es el caso de
+    /// `bookos-captura`, que ganaba a la acción de captura en el buscador.
+    #[test]
+    fn try_exec_que_no_existe_quita_la_entrada() {
+        let ruta = std::env::temp_dir().join(format!(
+            "bookos-test-tryexec-{}.desktop",
+            std::process::id()
+        ));
+        std::fs::write(
+            &ruta,
+            "[Desktop Entry]\nName=Captura\nExec=bookos-programa-que-no-existe\n\
+             TryExec=bookos-programa-que-no-existe\nType=Application\n",
+        )
+        .expect("escribir el .desktop de prueba");
+        let sin_programa = leer_una(&ruta);
+        std::fs::write(
+            &ruta,
+            "[Desktop Entry]\nName=Shell\nExec=sh\nTryExec=sh\nType=Application\n",
+        )
+        .expect("escribir el .desktop de prueba");
+        let con_programa = leer_una(&ruta);
+        let _ = std::fs::remove_file(&ruta);
+        assert!(sin_programa.is_none());
+        assert!(con_programa.is_some());
     }
 
     #[test]

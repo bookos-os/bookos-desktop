@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use iced_core::alignment::{Horizontal, Vertical};
 use iced_core::{Border, Length};
-use iced_widget::{Space, column, container, image as imagen, pin, row, svg, text};
+use iced_widget::{Space, column, container, image as imagen, row, svg, text};
 
 use super::{Ancla, Tecla, control, t};
 use crate::icono;
@@ -115,13 +115,8 @@ pub struct Emojis {
     agarre: Option<(f32, f32)>,
 }
 
-/// Lo que dura cada tramo del desplazamiento. Es el de un popover: lo bastante
-/// corto para que el touchpad, que manda un evento cada pocos milisegundos, no
-/// vaya por detrás del dedo, y lo bastante largo para suavizar un clic de
-/// rueda o una tecla.
-const D_DESPLAZAR: std::time::Duration = tema::D_POPOVER;
-
 impl Emojis {
+    // 0.1.1
     pub fn new(x: f32, y: f32, recientes: &[String]) -> Self {
         let recientes: Vec<_> = recientes
             .iter()
@@ -134,7 +129,9 @@ impl Emojis {
             recientes,
             resultados: Vec::new(),
             elegido: 0,
-            desplazamiento: tema::Transicion::nueva(0.0, D_DESPLAZAR, tema::C_SUAVE),
+            // El rápido: el touchpad manda un evento cada pocos milisegundos y
+            // con el suave el contenido tarda más en alcanzar al dedo.
+            desplazamiento: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
             señalado: tema::Realce::nuevo(),
             categoria_señalada: tema::Realce::nuevo(),
             agarre: None,
@@ -143,12 +140,15 @@ impl Emojis {
         selector
     }
 
+    // 0.1.1
     pub fn size(&self) -> (f32, f32) {
         (ANCHO, ALTO)
     }
+    // 0.1.1
     pub fn ancla(&self) -> Ancla {
         self.ancla
     }
+    // 0.1.1
     pub fn animando(&self) -> bool {
         self.señalado.animando()
             || self.categoria_señalada.animando()
@@ -157,6 +157,7 @@ impl Emojis {
 
     /// Hasta dónde se puede bajar: lo justo para que la última fila quede
     /// apoyada abajo.
+    // 0.1.1
     fn maximo(&self) -> f32 {
         self.resultados
             .len()
@@ -166,6 +167,7 @@ impl Emojis {
     }
 
     /// Lleva la rejilla a `y`, recortado a lo que hay. `true` si se mueve.
+    // 0.1.1
     fn desplazar_a(&mut self, y: f32) -> bool {
         let y = y.clamp(0.0, self.maximo());
         if tema::efectos_reducidos() {
@@ -176,6 +178,7 @@ impl Emojis {
         self.desplazamiento.ir_a(y)
     }
 
+    // 0.1.1
     fn filtrar(&mut self) {
         let consulta = normalizar(self.consulta.trim());
         self.resultados = if !consulta.is_empty() {
@@ -206,17 +209,20 @@ impl Emojis {
         self.señalado.señalar(None);
     }
 
+    // 0.1.1
     fn cambiar_categoria(&mut self, categoria: usize) {
         self.categoria = categoria;
         self.consulta.clear();
         self.filtrar();
     }
 
+    // 0.1.1
     fn elegir(&self, indice: usize) -> Option<Accion> {
         let e = CATALOGO.get(*self.resultados.get(indice)?)?;
         Some(Accion::InsertarEmoji(e.simbolo.to_string()))
     }
 
+    // 0.1.1
     fn celda_en(&self, x: f32, y: f32) -> Option<usize> {
         if !(MARGEN..ANCHO - MARGEN).contains(&x)
             || !(REJILLA_Y..REJILLA_Y + FILAS as f32 * CELDA).contains(&y)
@@ -229,11 +235,13 @@ impl Emojis {
         (i < self.resultados.len()).then_some(i)
     }
 
+    // 0.1.1
     fn categoria_en(x: f32, y: f32) -> Option<usize> {
         ((MARGEN..ANCHO - MARGEN).contains(&x) && (CATEGORIAS_Y..CATEGORIAS_Y + 40.0).contains(&y))
             .then(|| ((x - MARGEN) / CATEGORIA_ANCHO) as usize)
     }
 
+    // 0.1.1
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         // Arrastrando, el punto llega relativo a donde está la tarjeta ahora:
         // lo que se ha separado del agarre es lo que hay que moverla.
@@ -251,6 +259,12 @@ impl Emojis {
         celda_cambio || categoria_cambio
     }
 
+    // añadido en la 0.2.0 -- el cierre ocupa parte de la cabecera y no debe empezar un arrastre.
+    pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
+        (MARGEN..MARGEN + 24.0).contains(&y) && x < ANCHO - MARGEN - 24.0
+    }
+
+    // 0.1.1
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         if let Some(categoria) = Self::categoria_en(x, y) {
             self.cambiar_categoria(categoria);
@@ -266,14 +280,24 @@ impl Emojis {
         None
     }
 
+    // 0.1.1
     pub fn soltar(&mut self) -> bool {
         self.agarre.take().is_some()
     }
 
+    /// La deja donde el compositor la pudo poner. Ver
+    /// `Shell::emergente_recortada`.
+    // 0.1.1
+    pub fn recortar_ancla(&mut self, x: f32, y: f32) {
+        self.ancla = Ancla::Punto { x, y };
+    }
+
+    // 0.1.1
     pub fn agarrado(&self) -> bool {
         self.agarre.is_some()
     }
 
+    // 0.1.1
     fn asegurar_visible(&mut self) {
         // Contra el destino, no contra lo que se ve: con varias flechas
         // seguidas la rejilla aún va de camino y cada tecla tiene que sumar.
@@ -287,6 +311,7 @@ impl Emojis {
         self.señalado.señalar(None);
     }
 
+    // 0.1.1
     pub fn desplazar(&mut self, dy: f32) -> bool {
         let destino = self.desplazamiento.destino() + dy;
         if !self.desplazar_a(destino) {
@@ -309,6 +334,7 @@ impl Emojis {
         true
     }
 
+    // 0.1.1
     pub fn tecla(&mut self, tecla: TeclaPulsada) -> Tecla {
         use TeclaPulsada as T;
         match tecla {
@@ -353,6 +379,7 @@ impl Emojis {
         Tecla::Consumida
     }
 
+    // 0.1.1
     pub fn view(&self) -> PanelElement<'_> {
         let ancho = ANCHO - 2.0 * MARGEN;
         let titulo = row![
@@ -431,16 +458,14 @@ impl Emojis {
                 let contenido: PanelElement<'_> = if let Some(&indice) = self.resultados.get(i) {
                     let hover = self.señalado.intensidad(i);
                     let elegido = i == self.elegido;
+                    let fondo = if elegido { 0.10 } else { 0.07 * hover };
                     container(imagen(GLIFOS[indice].clone()).width(36).height(36))
                         .center(CELDA)
                         .style(move |_| container::Style {
-                            background: Some(
-                                tema::alfa(
-                                    tema::acento(),
-                                    if elegido { 0.10 } else { 0.07 * hover },
-                                )
-                                .into(),
-                            ),
+                            // Sin fondo si no se ve: un relleno translúcido al
+                            // 0 % se rasteriza igual, y eran 50 por repintado.
+                            background: (fondo > 0.0)
+                                .then(|| tema::alfa(tema::acento(), fondo).into()),
                             border: Border {
                                 radius: tema::R_ITEM_POPOVER.into(),
                                 width: if elegido { 1.0 } else { 0.0 },
@@ -482,11 +507,16 @@ impl Emojis {
             .align_y(Vertical::Center)
             .into()
         } else {
-            container(pin(rejilla).y(primera as f32 * CELDA - y))
-                .width(ancho)
-                .height(CELDA * FILAS as f32)
-                .clip(true)
-                .into()
+            // Recorte de capa y no `.clip(true)`: ver `recorte.rs`. Las filas
+            // que asoman a medias salían enteras por arriba y encogidas por
+            // abajo.
+            crate::recorte::Recorte::new(
+                rejilla,
+                ancho,
+                CELDA * FILAS as f32,
+                y - primera as f32 * CELDA,
+            )
+            .into()
         };
         let detalle = self.señalado.actual().unwrap_or(self.elegido);
         let descripcion = self
@@ -516,6 +546,7 @@ impl Emojis {
         for (i, &(_, _, bytes)) in CATEGORIAS.iter().enumerate() {
             let activo = self.consulta.trim().is_empty() && self.categoria == i;
             let hover = self.categoria_señalada.intensidad(i);
+            let fondo = if activo { 0.10 } else { 0.07 * hover };
             let color = if activo { tema::acento() } else { tema::TEXTO2 };
             categorias = categorias.push(
                 container(
@@ -529,9 +560,8 @@ impl Emojis {
                 .align_x(Horizontal::Center)
                 .align_y(Vertical::Center)
                 .style(move |_| container::Style {
-                    background: Some(
-                        tema::alfa(tema::acento(), if activo { 0.10 } else { 0.07 * hover }).into(),
-                    ),
+                    // Como en las celdas: sin fondo si no se ve.
+                    background: (fondo > 0.0).then(|| tema::alfa(tema::acento(), fondo).into()),
                     border: Border {
                         radius: tema::R_BOTON_PEQUENO.into(),
                         ..Default::default()
@@ -561,6 +591,7 @@ impl Emojis {
     }
 }
 
+// 0.1.1
 fn normalizar(texto: &str) -> String {
     texto
         .to_lowercase()
@@ -594,12 +625,39 @@ mod tests {
         assert!(
             matches!(selector.tecla(TeclaPulsada::Intro), Tecla::Hacer(Accion::InsertarEmoji(s)) if s == "💙")
         );
+        // Las dos palabras a la vez: solo los corazones azules, no todos los
+        // corazones ni todo lo azul. Desde que está 🩵 son dos.
         buscar(&mut selector, "blue heart");
-        assert_eq!(selector.resultados.len(), 1);
+        let simbolos: Vec<_> = selector
+            .resultados
+            .iter()
+            .map(|&i| CATALOGO[i].simbolo)
+            .collect();
+        assert_eq!(simbolos.len(), 2);
+        assert!(simbolos.contains(&"💙") && simbolos.contains(&"🩵"));
         buscar(&mut selector, "🧑‍💻");
         assert!(
             matches!(selector.tecla(TeclaPulsada::Intro), Tecla::Hacer(Accion::InsertarEmoji(s)) if s == "🧑‍💻")
         );
+    }
+
+    #[test]
+    fn las_banderas_del_orgullo_y_la_rosa_marchita_se_encuentran() {
+        let mut selector = Emojis::new(0.0, 0.0, &[]);
+        for (consulta, simbolo) in [
+            ("gay", "🏳️‍🌈"),
+            ("bandera trans", "🏳️‍⚧️"),
+            ("rosa marchita", "🥀"),
+        ] {
+            buscar(&mut selector, consulta);
+            assert!(
+                selector
+                    .resultados
+                    .iter()
+                    .any(|&i| CATALOGO[i].simbolo == simbolo),
+                "«{consulta}» no encuentra {simbolo}"
+            );
+        }
     }
 
     #[test]
@@ -656,6 +714,25 @@ mod tests {
         assert!(selector.puntero(Some((70.0, MARGEN + 30.0))));
         assert!(selector.soltar());
         assert_eq!(selector.ancla(), Ancla::Punto { x: 130.0, y: 120.0 });
+    }
+
+    /// Pasado el borde, la vuelta mueve la tarjeta desde el primer píxel: el
+    /// compositor recorta el ancla y el exceso no se acumula.
+    #[test]
+    fn arrastrar_contra_el_borde_no_la_deja_pegada() {
+        let mut selector = Emojis::new(100.0, 100.0, &[]);
+        selector.pulsar(40.0, MARGEN + 10.0);
+        selector.puntero(Some((40.0 - 300.0, MARGEN + 10.0)));
+        assert_eq!(
+            selector.ancla(),
+            Ancla::Punto {
+                x: -200.0,
+                y: 100.0
+            }
+        );
+        selector.recortar_ancla(8.0, 100.0);
+        selector.puntero(Some((40.0 + 20.0, MARGEN + 10.0)));
+        assert_eq!(selector.ancla(), Ancla::Punto { x: 28.0, y: 100.0 });
     }
 
     #[test]

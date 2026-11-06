@@ -166,6 +166,7 @@ pub struct Compartido {
 }
 
 impl Default for Compartido {
+    // 0.1.0
     fn default() -> Self {
         Self {
             salidas: Mutex::new(Vec::new()),
@@ -175,6 +176,7 @@ impl Default for Compartido {
 }
 
 impl Compartido {
+    // 0.1.0
     pub fn salidas(&self) -> Vec<Salida> {
         // Un `Mutex` envenenado significa que el hilo del compositor entró en
         // pánico mientras publicaba. La sesión ya está perdida; devolver el
@@ -185,6 +187,7 @@ impl Compartido {
         }
     }
 
+    // 0.1.0
     pub fn publicar(&self, salidas: Vec<Salida>) {
         match self.salidas.lock() {
             Ok(mut guard) => *guard = salidas,
@@ -194,6 +197,7 @@ impl Compartido {
 
     /// Lo que este backend sabe hacer, para `GetCapabilities`. Diccionario y no
     /// estructura para poder añadir capacidades sin romper la firma D-Bus.
+    // 0.1.0
     pub fn capacidades(&self) -> std::collections::HashMap<String, zbus::zvariant::OwnedValue> {
         use zbus::zvariant::Value;
         let backend = *self.backend.lock().unwrap_or_else(|e| e.into_inner());
@@ -262,11 +266,13 @@ pub struct Estado {
 // ── Validación ───────────────────────────────────────────────────────────
 
 /// ¿Es un nombre de transformación de los que entiende el compositor?
+// 0.1.0
 pub fn transformacion_valida(t: &str) -> bool {
     transformacion(t).is_some()
 }
 
 /// El `Transform` de Smithay que corresponde al nombre, si existe.
+// 0.1.0
 pub fn transformacion(t: &str) -> Option<smithay::utils::Transform> {
     use smithay::utils::Transform::*;
     Some(match t {
@@ -283,6 +289,7 @@ pub fn transformacion(t: &str) -> Option<smithay::utils::Transform> {
 }
 
 /// El nombre de un `Transform`, para el camino de vuelta.
+// 0.1.0
 pub fn nombre_transformacion(t: smithay::utils::Transform) -> &'static str {
     use smithay::utils::Transform as T;
     match t {
@@ -298,6 +305,7 @@ pub fn nombre_transformacion(t: smithay::utils::Transform) -> &'static str {
 }
 
 /// ¿La rotación intercambia ancho y alto?
+// 0.1.0
 fn gira_un_cuarto(t: &str) -> bool {
     matches!(t, "90" | "270" | "flipped-90" | "flipped-270")
 }
@@ -311,6 +319,7 @@ fn gira_un_cuarto(t: &str) -> bool {
 /// del kernel y no dice qué monitor es; el modelo del EDID sí. El panel
 /// interno se llama por lo que es, porque su EDID suele traer un código de
 /// pieza (`ATNA40YK`) que nadie reconoce.
+// 0.1.0
 pub fn nombre_visible(conector: &str, modelo: &str) -> String {
     let interno = ["eDP", "LVDS", "DSI"]
         .iter()
@@ -325,6 +334,7 @@ pub fn nombre_visible(conector: &str, modelo: &str) -> String {
     }
 }
 
+// 0.1.0
 pub fn tamano_logico(ancho: u32, alto: u32, escala: f64, transformacion: &str) -> (i32, i32) {
     let (w, h) = if gira_un_cuarto(transformacion) {
         (alto, ancho)
@@ -342,6 +352,7 @@ pub fn tamano_logico(ancho: u32, alto: u32, escala: f64, transformacion: &str) -
 /// No basta con `> 0`: un `NaN` pasa cualquier comparación que se le ponga
 /// delante y acabaría dividiendo el tamaño de la pantalla, que es como se
 /// consigue una salida de 0×0 y un compositor que no vuelve a arrancar.
+// 0.1.0
 pub fn escala_valida(escala: f64) -> bool {
     if !escala.is_finite() || escala <= 0.0 {
         return false;
@@ -357,6 +368,7 @@ pub fn escala_valida(escala: f64) -> bool {
 
 /// Comprueba que una configuración se puede aplicar sin dejar la sesión
 /// inservible. Es pura a propósito: es la parte que se puede probar sin GPU.
+// 0.1.0
 pub fn validar(actual: &[Salida], peticion: &[Peticion]) -> Result<(), String> {
     if peticion.is_empty() {
         return Err("la configuración no menciona ninguna salida".into());
@@ -478,6 +490,7 @@ pub fn validar(actual: &[Salida], peticion: &[Peticion]) -> Result<(), String> {
     Ok(())
 }
 
+// 0.1.0
 fn salidas_conectadas(a: &Peticion, b: &Peticion) -> bool {
     let (aw, ah) = tamano_logico(a.ancho, a.alto, a.escala, &a.transformacion);
     let (bw, bh) = tamano_logico(b.ancho, b.alto, b.escala, &b.transformacion);
@@ -490,6 +503,7 @@ fn salidas_conectadas(a: &Peticion, b: &Peticion) -> bool {
 /// Rellena lo que la petición no decide: si nadie se declaró principal, lo es
 /// la primera encendida. Se hace después de validar para que el hueco no se
 /// confunda con un error.
+// 0.1.0
 pub fn normalizar(peticion: &mut [Peticion]) {
     if !peticion.iter().any(|p| p.principal && p.activa)
         && let Some(p) = peticion.iter_mut().find(|p| p.activa)
@@ -512,6 +526,7 @@ pub fn normalizar(peticion: &mut [Peticion]) {
 
 // ── Persistencia ─────────────────────────────────────────────────────────
 
+// 0.1.0
 fn ruta() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -524,6 +539,7 @@ fn ruta() -> Option<PathBuf> {
 /// pantalla, y mezclarlo con la configuración escrita a mano acabaría pisando
 /// los comentarios de alguien. Es la misma decisión que ya tomó
 /// `launchpad.conf`.
+// 0.1.0
 pub fn serializar(peticion: &[Peticion]) -> String {
     let mut s = String::from(
         "# Pantallas de BookOS. Lo escribe el escritorio: se reescribe entero.\n\
@@ -549,6 +565,7 @@ pub fn serializar(peticion: &[Peticion]) -> String {
     s
 }
 
+// 0.1.0
 fn si_no(v: bool) -> &'static str {
     if v { "si" } else { "no" }
 }
@@ -558,6 +575,7 @@ fn si_no(v: bool) -> &'static str {
 /// Una línea con una errata se descarta sola; el fichero entero se descarta si
 /// lo que queda no encendería ninguna pantalla, que es la salvaguarda de la que
 /// habla la cabecera del módulo.
+// 0.1.0
 pub fn deserializar(texto: &str) -> Vec<Peticion> {
     let mut salidas = Vec::new();
     for (n, linea) in texto.lines().enumerate() {
@@ -581,6 +599,7 @@ pub fn deserializar(texto: &str) -> Vec<Peticion> {
     salidas
 }
 
+// 0.1.0
 fn linea_a_peticion(linea: &str) -> Option<Peticion> {
     let mut campos = linea.split(';').map(str::trim);
     let id = campos
@@ -644,6 +663,7 @@ fn linea_a_peticion(linea: &str) -> Option<Peticion> {
     Some(p)
 }
 
+// 0.1.0
 fn booleano(v: &str) -> Option<bool> {
     match v.trim() {
         "si" | "sí" | "true" | "1" => Some(true),
@@ -652,6 +672,7 @@ fn booleano(v: &str) -> Option<bool> {
     }
 }
 
+// 0.1.0
 pub fn cargar() -> Vec<Peticion> {
     let Some(ruta) = ruta() else {
         return Vec::new();
@@ -666,6 +687,7 @@ pub fn cargar() -> Vec<Peticion> {
 /// `rename`. Un corte de corriente a mitad de un `write` deja un
 /// `pantallas.conf` truncado, y un truncado es exactamente el fichero que
 /// enciende cero pantallas.
+// 0.1.0
 pub fn guardar(peticion: &[Peticion]) -> std::io::Result<()> {
     use std::io::Write;
     let Some(ruta) = ruta() else {
@@ -690,6 +712,7 @@ pub fn guardar(peticion: &[Peticion]) -> std::io::Result<()> {
 
 /// Convierte el censo actual en la petición equivalente. Es el punto de
 /// partida al que se vuelve cuando una configuración nueva no cuela.
+// 0.1.0
 pub fn peticion_de(salidas: &[Salida]) -> Vec<Peticion> {
     salidas
         .iter()
@@ -715,6 +738,7 @@ pub fn peticion_de(salidas: &[Salida]) -> Vec<Peticion> {
 /// Aplica una configuración: valida, la manda al hardware, la persiste y
 /// reajusta lo que ve el usuario. Si el hardware la rechaza, se vuelve a la
 /// anterior y **no** se guarda nada.
+// 0.1.0
 pub fn aplicar(
     state: &mut crate::state::BookosComp,
     mut peticion: Vec<Peticion>,
@@ -765,6 +789,7 @@ pub fn aplicar(
 
 /// Construye y aplica los cinco perfiles del selector Fn+F4. La decisión se
 /// toma con el censo actual para no guardar resoluciones inventadas.
+// 0.1.0
 pub fn aplicar_modo_rapido(
     state: &mut crate::state::BookosComp,
     modo: bookos_shell::ModoProyeccion,
@@ -862,6 +887,7 @@ pub fn aplicar_modo_rapido(
 
 /// Reajusta el escritorio a un censo nuevo: dónde va cada salida, de qué tamaño
 /// se dibuja el shell y qué escala se les anuncia a los clientes.
+// 0.1.0
 pub fn tras_aplicar(state: &mut crate::state::BookosComp, aplicado: Aplicado) {
     let Aplicado {
         salidas,

@@ -111,6 +111,8 @@ const ACCIONES: &[(&str, AccionRemap)] = &[
 ];
 
 impl AccionRemap {
+    // 0.1.0
+    // modified 0.1.1 -- remapeos a apagar pantalla y salvapantallas
     pub fn accion(self) -> crate::keybinds::Accion {
         use crate::keybinds::Accion;
         match self {
@@ -150,6 +152,7 @@ pub enum Evento {
     Comando(String),
 }
 
+// 0.1.0
 fn tecla_de_texto(texto: &str) -> Result<u32, String> {
     if let Some(n) = texto.strip_prefix("evdev:") {
         let codigo: u32 = n
@@ -168,6 +171,7 @@ fn tecla_de_texto(texto: &str) -> Result<u32, String> {
         .ok_or_else(|| format!("tecla desconocida: «{texto}»"))
 }
 
+// 0.1.0
 fn tecla_a_texto(codigo: u32) -> String {
     NOMBRES
         .iter()
@@ -177,6 +181,7 @@ fn tecla_a_texto(codigo: u32) -> String {
 }
 
 impl Origen {
+    // 0.1.0
     fn desde_texto(texto: &str) -> Result<Self, String> {
         match texto {
             "copilot" => Ok(Origen::Copilot),
@@ -184,6 +189,7 @@ impl Origen {
         }
     }
 
+    // 0.1.0
     fn a_texto(self) -> String {
         match self {
             Origen::Copilot => "copilot".into(),
@@ -193,6 +199,7 @@ impl Origen {
 }
 
 impl Destino {
+    // 0.1.0
     fn desde_texto(texto: &str) -> Result<Self, String> {
         if texto == "nada" {
             return Ok(Destino::Nada);
@@ -214,6 +221,7 @@ impl Destino {
         tecla_de_texto(texto).map(Destino::Tecla)
     }
 
+    // 0.1.0
     fn a_texto(&self) -> String {
         match self {
             Destino::Tecla(codigo) => tecla_a_texto(*codigo),
@@ -240,10 +248,12 @@ struct EntradaJson {
 }
 
 impl Remapeos {
+    // 0.1.0
     pub fn buscar(&self, origen: Origen) -> Option<&Destino> {
         self.0.iter().find(|(o, _)| *o == origen).map(|(_, d)| d)
     }
 
+    // 0.1.0
     fn validar(entradas: Vec<(Origen, Destino)>) -> Result<Self, String> {
         for (i, (origen, _)) in entradas.iter().enumerate() {
             if entradas[..i].iter().any(|(o, _)| o == origen) {
@@ -255,6 +265,7 @@ impl Remapeos {
 
     /// Lectura estricta: una línea mala invalida todo. Es la que usa D-Bus,
     /// donde el error vuelve a quien lo puede enseñar.
+    // 0.1.0
     fn desde_texto(texto: &str) -> Result<Self, String> {
         let entradas = texto
             .lines()
@@ -273,6 +284,7 @@ impl Remapeos {
         Self::validar(entradas)
     }
 
+    // 0.1.0
     fn a_texto(&self) -> String {
         let mut salida = String::from("# Remapeo de teclas de BookOS: origen = destino.\n");
         for (origen, destino) in &self.0 {
@@ -281,6 +293,7 @@ impl Remapeos {
         salida
     }
 
+    // 0.1.0
     pub fn desde_json(json: &str) -> Result<Self, String> {
         let entradas: Vec<EntradaJson> =
             serde_json::from_str(json).map_err(|e| format!("JSON no válido: {e}"))?;
@@ -300,6 +313,7 @@ impl Remapeos {
         Self::validar(entradas)
     }
 
+    // 0.1.0
     pub fn a_json(&self) -> String {
         let entradas: Vec<EntradaJson> = self
             .0
@@ -313,6 +327,7 @@ impl Remapeos {
     }
 }
 
+// 0.1.0
 fn ruta() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(dir).join("bookos/teclas.conf"));
@@ -323,6 +338,7 @@ fn ruta() -> Option<PathBuf> {
 
 /// Sin fichero no hay remapeos. Con un fichero roto tampoco, y se dice: aplicar
 /// la mitad buena dejaría teclas cambiadas que el usuario no reconoce.
+// 0.1.0
 pub fn cargar() -> Remapeos {
     let Some(ruta) = ruta() else {
         return Remapeos::default();
@@ -336,6 +352,7 @@ pub fn cargar() -> Remapeos {
     })
 }
 
+// 0.1.0
 pub fn guardar(remapeos: &Remapeos) -> std::io::Result<()> {
     let Some(ruta) = ruta() else {
         return Err(std::io::Error::other("sin HOME ni XDG_CONFIG_HOME"));
@@ -365,6 +382,7 @@ pub struct Traductor {
 
 impl Traductor {
     /// ¿Esta pulsación es la F23 del acorde de Copilot?
+    // 0.1.0
     pub fn es_copilot(&self, evdev: u32) -> bool {
         evdev == KEY_F23
             && self.fisicas.contains(&KEY_LEFTMETA)
@@ -373,10 +391,12 @@ impl Traductor {
 
     /// La pulsación se la quedó otro —la captura de la app—: que su suelta
     /// tampoco salga.
+    // 0.1.0
     pub fn tragar_suelta(&mut self, evdev: u32) {
         self.tragar.push(evdev);
     }
 
+    // 0.1.0
     pub fn traducir(&mut self, mapa: &Remapeos, evdev: u32, pulsada: bool) -> Vec<Evento> {
         if pulsada {
             self.fisicas.push(evdev);

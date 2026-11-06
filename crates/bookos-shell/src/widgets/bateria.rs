@@ -35,6 +35,7 @@ const ANCHO_ICONO: f32 = 33.0;
 const ALTO_ICONO: f32 = 20.0;
 
 /// El color en `#rrggbb`, que es lo que entiende el SVG.
+// 0.1.0
 fn hex(c: iced_core::Color) -> String {
     let b = c.into_rgba8();
     format!("#{:02x}{:02x}{:02x}", b[0], b[1], b[2])
@@ -55,6 +56,7 @@ enum Simbolo {
 }
 
 impl Simbolo {
+    // 0.1.0
     fn de(bat: &Battery) -> Self {
         if !bat.plugged && bat.percent <= 20 {
             Self::Alerta
@@ -72,6 +74,7 @@ impl Simbolo {
     /// Sale de las coordenadas de los `path` de abajo; si se redibuja un
     /// símbolo hay que traerlo aquí, porque es lo que decide el color con el
     /// que se pinta sobre el relleno.
+    // 0.1.0
     fn borde_derecho(self) -> f32 {
         match self {
             // Sin símbolo el umbral da igual: no se dibuja nada.
@@ -84,6 +87,7 @@ impl Simbolo {
     }
 
     /// Para la clave del icono cacheado.
+    // 0.1.0
     fn clave(self) -> &'static str {
         match self {
             Self::Nada => "-",
@@ -104,12 +108,15 @@ impl Simbolo {
 /// El `viewBox` va recortado a la caja del dibujo para que el widget no arrastre
 /// el aire muerto del `viewBox` de 24: con él, la batería se vería un tercio
 /// más pequeña que sus vecinas a igualdad de altura.
+// 0.1.0
+// modified 0.1.1 -- el dibujo pasa a pictograma_con para poder elegir el contorno
 fn pictograma(porciento: u8, simbolo: Simbolo, color: iced_core::Color) -> String {
     pictograma_con(porciento, simbolo, color, crate::view::TEXT())
 }
 
 /// El contorno aparte del tema: sobre un fondo de pantalla no vale el color del
 /// texto, que con el tema claro es negro.
+// 0.1.1
 fn pictograma_con(
     porciento: u8,
     simbolo: Simbolo,
@@ -183,6 +190,7 @@ fn pictograma_con(
 ///
 /// Es el `bolt` 16/solid del sistema de diseño, centrado en (15, 12.75), que es
 /// el centro de la tinta de la pila.
+// 0.1.0
 fn rayo_ac(color: iced_core::Color) -> String {
     format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{VIEWBOX}">
@@ -200,6 +208,7 @@ fn rayo_ac(color: iced_core::Color) -> String {
 /// El perfil de energía no se lee: es una llamada a la ACPI (ver
 /// [`Bateria::perfil`]) y el color de perfil no aporta nada en un aviso de
 /// tres segundos.
+// 0.1.0
 pub fn icono_aviso(bat: &Battery) -> Icono {
     if bat.plugged {
         return icono::desde_svg(&rayo_ac(tema::verde()));
@@ -221,6 +230,7 @@ pub fn icono_aviso(bat: &Battery) -> Icono {
 /// verde, con el rayo dentro.
 ///
 /// Devuelve el pictograma, su tamaño, la etiqueta y el color de la etiqueta.
+// 0.1.1
 pub fn sobre_fondo(bat: &Battery) -> (Icono, (f32, f32), String, iced_core::Color) {
     let blanco = iced_core::Color::WHITE;
     let color = if bat.plugged {
@@ -288,6 +298,7 @@ const LATIDOS: u32 = 2;
 const CADA_MINUTOS: Duration = Duration::from_secs(30);
 
 impl Bateria {
+    // 0.1.0
     pub fn new() -> Self {
         let mut b = Self {
             dato: None,
@@ -310,6 +321,7 @@ impl Bateria {
     /// El SVG se regenera solo cuando cambia el escalón entero o el color:
     /// rasterizarlo en cada lectura sería trabajo por nada, y el relleno no se
     /// distingue por debajo de un punto porcentual.
+    // 0.1.0
     fn actualizar_icono(&mut self) {
         let Some(bat) = self.dato else {
             self.icono = None;
@@ -340,6 +352,7 @@ impl Bateria {
     /// cursor y las animaciones siguen respondiendo. Al conectar corriente o
     /// superar el 20 % se rearma, pero no se cambia de vuelta el perfil que
     /// haya elegido el usuario.
+    // 0.1.0
     fn revisar_ahorro_automatico(&mut self, bat: Option<&Battery>) {
         let baja = bat.is_some_and(|b| !b.plugged && b.percent <= 20);
         if !baja {
@@ -386,6 +399,7 @@ impl Bateria {
     /// solo miran el porcentaje dejarían `minutes` en `None` y la etiqueta
     /// perdería el «2:15» hasta la siguiente lectura, un parpadeo cada pocos
     /// segundos.
+    // 0.1.0
     fn conservar_minutos(&self, fresco: &mut Battery, leido: bool) {
         // Enchufar o desenchufar cambia el signo de lo que se mide: la cifra
         // anterior no vale. El evento de udev del cargador llega casi siempre
@@ -412,6 +426,7 @@ impl Bateria {
     ///
     /// La única excepción es el rojo bajo mínimos y desenchufado, que es un
     /// aviso y no un estado: ahí el perfil da igual.
+    // 0.1.0
     fn color(bat: &Battery, perfil: Option<&str>) -> iced_core::Color {
         if bat.percent <= 15 && !bat.plugged {
             PELIGRO()
@@ -443,6 +458,7 @@ impl Bateria {
     /// Por eso no se lee en cada refresco sino como mucho cada [`CADA_PERFIL`]:
     /// el perfil solo cambia cuando alguien lo cambia a mano, y los refrescos
     /// llegan en ráfaga con cada evento de `power_supply`.
+    // 0.1.0
     fn perfil(&mut self) -> Option<String> {
         if self.perfil_leido.elapsed() < CADA_PERFIL {
             return self.perfil.clone();
@@ -462,6 +478,7 @@ impl Bateria {
     ///
     /// Está aparte de `ver` porque `ancho` necesita contar sus caracteres, y
     /// dos copias de esta regla se desincronizan a la primera.
+    // 0.1.0
     fn etiqueta(bat: &crate::state::Battery) -> String {
         // Con espacio, como se escribe el tanto por ciento en castellano, y
         // como lo escribe el diseño («67 %»).
@@ -477,14 +494,17 @@ impl Bateria {
 }
 
 impl Widget for Bateria {
+    // 0.1.0
     fn nombre(&self) -> &'static str {
         "bateria"
     }
 
+    // 0.1.0
     fn subsistemas(&self) -> &'static [&'static str] {
         &["power_supply"]
     }
 
+    // 0.1.0
     fn refrescar(&mut self) -> bool {
         // El tiempo restante solo se estima de tanto en tanto: es la parte que
         // le cuesta medio milisegundo al controlador embebido.
@@ -512,12 +532,14 @@ impl Widget for Bateria {
         true
     }
 
+    // 0.1.0
     fn animando(&self) -> bool {
         self.alerta_desde
             .is_some_and(|t| t.elapsed() < D_ALERTA * LATIDOS)
     }
 
     /// Icono, su hueco y el texto, que puede ser "85 %" o "85 % 2:15".
+    // 0.1.0
     fn ancho(&self) -> f32 {
         let Some(bat) = &self.dato else {
             return 0.0;
@@ -525,6 +547,7 @@ impl Widget for Bateria {
         ANCHO_ICONO + 5.0 + crate::widget::ancho_de(&Self::etiqueta(bat), tema::T_CUERPO)
     }
 
+    // 0.1.0
     fn ver(&self) -> PanelElement<'_> {
         let Some(bat) = &self.dato else {
             return crate::widget::vacio();

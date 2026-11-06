@@ -64,5 +64,14 @@ export CAGE_TOUCHPAD_SPEED="$touchpad" CAGE_MOUSE_SPEED="$raton" CAGE_TAP="$toqu
 # pantalla de acceso no desaparezca si falta el parcheado.
 cage=/usr/local/libexec/bookos-cage
 [ -x "$cage" ] || cage=cage
-exec dbus-run-session -- "$cage" -s -- /usr/local/libexec/bookos-greeter \
+# Una sola arena de malloc y mmap desde 128 KB: glibc abre una arena por cada
+# hilo que reserva y se queda con los bloques grandes que ya se liberaron.
+# Medido con `bookos-greeter --preview` en el compositor anidado (debug): el
+# Pss pasa de 89 MB a 65 MB. No llega a la sesión del usuario: greetd la arranca
+# con su propio entorno y las variables de `ipc::iniciar_sesion`.
+export MALLOC_ARENA_MAX=1 MALLOC_MMAP_THRESHOLD_=131072
+# Sin dbus-run-session: nada de esto usa el bus de sesión (lo del sistema va
+# por `busctl --system`, nmcli y systemctl), y su dbus-daemon se quedaba
+# residente toda la pantalla de acceso sin que nadie le hablara.
+exec "$cage" -s -- /usr/local/libexec/bookos-greeter \
     --session /usr/local/bin/bookos-session

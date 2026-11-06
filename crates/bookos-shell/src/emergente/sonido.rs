@@ -76,6 +76,7 @@ struct Canal {
 }
 
 impl Canal {
+    // 0.1.0
     fn nuevo(destino: &'static str, micro: bool) -> Self {
         let (nivel, silenciado) = crate::widgets::volumen::consultar(destino).unwrap_or((0, false));
         let mut canal = Self {
@@ -92,6 +93,7 @@ impl Canal {
     }
 
     /// El nombre del icono que le toca al estado actual.
+    // 0.1.0
     fn nombre_icono(&self) -> &'static str {
         match (self.micro, self.silenciado, self.nivel) {
             (true, true, _) => "micro-silencio",
@@ -103,11 +105,13 @@ impl Canal {
         }
     }
 
+    // 0.1.0
     fn actualizar_icono(&mut self) {
         self.icono = crate::icono::propio(self.nombre_icono());
     }
 
     /// Manda el nivel a PipeWire. No espera: ver la cabecera del módulo.
+    // 0.1.0
     fn poner(&mut self, nivel: u8, notificar: bool) {
         if !self.disponible {
             return;
@@ -127,6 +131,7 @@ impl Canal {
         self.actualizar_icono();
     }
 
+    // 0.1.0
     fn enviar_volumen(&self, notificar: bool) {
         let _ = lanzar(
             &[
@@ -138,6 +143,7 @@ impl Canal {
         );
     }
 
+    // 0.1.0
     fn alternar_silencio(&mut self) {
         if !self.disponible {
             return;
@@ -147,6 +153,7 @@ impl Canal {
         self.actualizar_icono();
     }
 
+    // 0.1.0
     fn etiqueta(&self) -> String {
         if !self.disponible {
             "No disponible".into()
@@ -159,6 +166,7 @@ impl Canal {
 }
 
 impl Sonido {
+    // 0.1.0
     pub fn refrescar(&mut self) -> bool {
         if self.agarrada.is_some() {
             return false;
@@ -182,6 +190,7 @@ impl Sonido {
         changed
     }
 
+    // 0.1.0
     pub fn new() -> Self {
         Self {
             salida: Canal::nuevo("@DEFAULT_AUDIO_SINK@", false),
@@ -191,6 +200,7 @@ impl Sonido {
         }
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         (
             ANCHO,
@@ -199,11 +209,13 @@ impl Sonido {
     }
 
     /// Cuelga del icono del volumen, como el calendario cuelga del reloj.
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::BajoWidget("volumen")
     }
 
     /// El rectángulo de la píldora de una fila, relativo a la emergente.
+    // 0.1.0
     fn rect_pildora(&self, fila: Fila) -> iced_core::Rectangle {
         let y0 = MARGEN + CABECERA + BAJO_CABECERA;
         let y = match fila {
@@ -224,6 +236,7 @@ impl Sonido {
     }
 
     /// El rectángulo del botón de silencio de una fila.
+    // 0.1.0
     fn rect_boton(&self, fila: Fila) -> iced_core::Rectangle {
         let p = self.rect_pildora(fila);
         iced_core::Rectangle {
@@ -235,6 +248,7 @@ impl Sonido {
     }
 
     /// El chip «Config» de la cabecera, pegado a la derecha.
+    // 0.1.0
     fn rect_config(&self) -> iced_core::Rectangle {
         let ancho = control::ancho_chip("Config");
         iced_core::Rectangle {
@@ -245,6 +259,7 @@ impl Sonido {
         }
     }
 
+    // 0.1.0
     fn canal(&mut self, fila: Fila) -> &mut Canal {
         match fila {
             Fila::Salida => &mut self.salida,
@@ -253,6 +268,7 @@ impl Sonido {
     }
 
     /// De una `x` dentro de la píldora al nivel que le toca.
+    // 0.1.0
     fn nivel_en(&self, fila: Fila, x: f32) -> u8 {
         let r = self.rect_pildora(fila);
         control::nivel_en(x, r.x, r.width)
@@ -260,10 +276,12 @@ impl Sonido {
 
     /// ¿Hay una píldora agarrada? Mientras la haya, el puntero le llega aunque
     /// se salga de la tarjeta.
+    // 0.1.0
     pub fn agarrado(&self) -> bool {
         self.agarrada.is_some()
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         // Con una píldora agarrada, el puntero es el deslizador y nada más: el
         // ratón puede estar sobre un botón mientras se arrastra, y encenderlo
@@ -286,10 +304,22 @@ impl Sonido {
     }
 
     /// ¿Se mueve algo dentro de la tarjeta?
+    // 0.1.0
     pub fn animando(&self) -> bool {
         self.boton.animando()
     }
 
+    // añadido en la 0.2.0 -- distinguir el deslizador evita confirmar un botón al convertir el toque en arrastre.
+    pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
+        [Fila::Salida, Fila::Entrada].into_iter().any(|fila| {
+            let mut zona = self.rect_pildora(fila);
+            zona.y -= MARGEN_AGARRE;
+            zona.height += MARGEN_AGARRE * 2.0;
+            zona.contains(iced_core::Point::new(x, y))
+        })
+    }
+
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let punto = iced_core::Point::new(x, y);
         if self.rect_config().contains(punto) {
@@ -317,6 +347,7 @@ impl Sonido {
     }
 
     /// Soltar el botón deja de arrastrar. Devuelve si hay que repintar.
+    // 0.1.0
     pub fn soltar(&mut self) -> bool {
         let Some((fila, nivel_inicial, silencio_inicial)) = self.agarrada.take() else {
             return false;
@@ -329,6 +360,7 @@ impl Sonido {
     }
 
     /// La rueda sobre una fila sube y baja su nivel, como en el plasmoide.
+    // 0.1.0
     pub fn desplazar(&mut self, _dx: f32, dy: f32) -> bool {
         if dy == 0.0 {
             return false;
@@ -342,6 +374,7 @@ impl Sonido {
         true
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
         match tecla {
@@ -360,6 +393,7 @@ impl Sonido {
         }
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let cabecera = container(
             row![
@@ -387,6 +421,7 @@ impl Sonido {
     }
 
     /// Una sección: etiqueta y valor arriba; icono, píldora y botón abajo.
+    // 0.1.0
     fn seccion<'a>(
         &'a self, titulo: &'a str, canal: &'a Canal, señalado: f32
     ) -> PanelElement<'a> {
@@ -431,6 +466,7 @@ impl Sonido {
     }
 }
 
+// 0.1.0
 fn lanzar(args: &[&str], notificar: bool) -> bool {
     bookos_system::audio_request(args, notificar)
 }

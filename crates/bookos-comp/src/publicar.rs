@@ -41,16 +41,19 @@ static ACTIVA: AtomicBool = AtomicBool::new(false);
 static ESCALA: AtomicU64 = AtomicU64::new(0);
 
 /// Apunta la escala del panel principal para la próxima publicación.
+// 0.1.1
 pub fn escala_de_pantalla(escala: f64) {
     ESCALA.store(escala.to_bits(), Ordering::Relaxed);
 }
 
 /// Solo publica la sesión real. Anidado para desarrollar, con un `panel.conf`
 /// de prueba, pisaría la apariencia de verdad del usuario.
+// 0.1.1
 pub fn activar() {
     ACTIVA.store(true, Ordering::Relaxed);
 }
 
+// 0.1.1
 pub fn publicar(eleccion: &Eleccion) {
     let raiz = match std::env::var_os("BOOKOS_APARIENCIA_PUBLICA") {
         Some(raiz) => PathBuf::from(raiz),
@@ -75,6 +78,7 @@ pub fn publicar(eleccion: &Eleccion) {
     }
 }
 
+// 0.1.1
 fn escribir(carpeta: &Path, fondos: &[(&str, Option<PathBuf>)]) -> std::io::Result<()> {
     if !carpeta.is_dir() {
         std::fs::create_dir(carpeta)?;
@@ -113,7 +117,9 @@ fn escribir(carpeta: &Path, fondos: &[(&str, Option<PathBuf>)]) -> std::io::Resu
 
 /// Las líneas de `panel.conf` que puede leer el greeter, más la escala en uso
 /// si la configuración no fija ninguna. `escala` 0 es «aún no se sabe».
+// 0.1.1
 fn lo_publico(config: &str, escala: f64) -> String {
+    // 0.1.1
     fn clave(linea: &str) -> &str {
         linea.split('=').next().unwrap_or_default().trim()
     }
@@ -134,6 +140,7 @@ fn lo_publico(config: &str, escala: f64) -> String {
 /// Copia `origen` si cambió, o retira lo publicado si ya no hay nada que
 /// enseñar: un vídeo, un fichero enorme o ninguno. El greeter cae entonces al
 /// fondo de serie en vez de quedarse con el de la semana pasada.
+// 0.1.1
 fn copiar(origen: Option<&Path>, destino: &Path) -> std::io::Result<()> {
     let valido = origen
         .filter(|ruta| !crate::fondo::es_video(ruta))
@@ -158,6 +165,7 @@ fn copiar(origen: Option<&Path>, destino: &Path) -> std::io::Result<()> {
 }
 
 /// Escribe al lado y renombra, para que el greeter nunca lea medio fichero.
+// 0.1.1
 fn reemplazar(
     destino: &Path,
     escribir: impl FnOnce(&Path) -> std::io::Result<()>,

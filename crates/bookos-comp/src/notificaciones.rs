@@ -54,6 +54,7 @@ impl Servidor {
     /// El método que usa todo el mundo. Devuelve el identificador con el que la
     /// aplicación podrá cerrarla o sustituirla.
     #[allow(clippy::too_many_arguments)]
+    // 0.1.0
     fn notify(
         &self,
         app_name: String,
@@ -119,11 +120,13 @@ impl Servidor {
         id
     }
 
+    // 0.1.0
     fn close_notification(&self, id: u32) {
         let _ = self.canal.send(Aviso::Cerrar(id));
     }
 
     /// Capacidades que se pueden usar sin quedarse esperando una respuesta.
+    // 0.1.0
     fn get_capabilities(&self) -> Vec<String> {
         vec![
             "body".into(),
@@ -137,6 +140,7 @@ impl Servidor {
         ]
     }
 
+    // 0.1.0
     fn get_server_information(&self) -> (String, String, String, String) {
         (
             "BookOS".into(),
@@ -150,6 +154,7 @@ impl Servidor {
     /// La señal que espera una aplicación para saber que su aviso ya no está.
     /// La emite el compositor desde el bucle, con [`cerrada`].
     #[zbus(signal)]
+    // 0.1.0
     async fn notification_closed(
         emisor: &zbus::object_server::SignalEmitter<'_>,
         id: u32,
@@ -160,6 +165,7 @@ impl Servidor {
     /// de KDE —no está en la especificación— y la que ya escuchan KDE Connect y
     /// Lumina.
     #[zbus(signal)]
+    // 0.1.0
     async fn notification_replied(
         emisor: &zbus::object_server::SignalEmitter<'_>,
         id: u32,
@@ -167,6 +173,7 @@ impl Servidor {
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
+    // 0.1.0
     async fn action_invoked(
         emisor: &zbus::object_server::SignalEmitter<'_>,
         id: u32,
@@ -175,7 +182,9 @@ impl Servidor {
 }
 
 /// Lo que llega del bus, ya en el bucle del compositor.
+// modified 0.1.1 -- sobre pantalla completa la notificación va a la campana sin aviso
 pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
+    let completa = state.hay_pantalla_completa();
     let Some(shell) = state.shell.as_mut() else {
         return;
     };
@@ -189,7 +198,14 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
                 resumen = %notificacion.resumen,
                 "notificación"
             );
-            shell.notificar(notificacion, caducidad)
+            // Sobre un vídeo o un juego a pantalla completa el aviso tapaba
+            // justo lo que se miraba. Queda en la campana; las críticas
+            // —batería a punto de agotarse— salen igual.
+            if completa && !notificacion.critica {
+                shell.archivar_notificacion(notificacion)
+            } else {
+                shell.notificar(notificacion, caducidad)
+            }
         }
         Aviso::Cerrar(id) => {
             let estaba = shell.cerrar_notificacion(id);
@@ -215,6 +231,7 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
 /// pantalla hasta que otra cosa provocara un frame. Uno **por aviso**: con la
 /// pila, cada uno se va a su hora, y el despertar del primero no sirve para el
 /// segundo.
+// 0.1.0
 fn despertar_para_la_salida(state: &mut crate::state::BookosComp) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     let quedan = state
@@ -243,6 +260,7 @@ fn despertar_para_la_salida(state: &mut crate::state::BookosComp) {
 /// y el nombre se pierde. Si no hay bus de sesión —una sesión de prueba en un
 /// TTY pelado— no es un error de los que tumban el escritorio: se avisa y se
 /// sigue sin notificaciones.
+// 0.1.0
 pub fn arrancar(canal: Sender<Aviso>) -> Option<zbus::blocking::Connection> {
     let servidor = Servidor {
         canal,
@@ -268,6 +286,7 @@ pub fn arrancar(canal: Sender<Aviso>) -> Option<zbus::blocking::Connection> {
 }
 
 /// Le dice a la aplicación que su notificación se ha cerrado.
+// 0.1.0
 pub fn cerrada(conexion: Option<&zbus::blocking::Connection>, id: u32, motivo: u32) {
     let Some(conexion) = conexion else {
         return;
@@ -283,6 +302,7 @@ pub fn cerrada(conexion: Option<&zbus::blocking::Connection>, id: u32, motivo: u
     }
 }
 
+// 0.1.0
 pub fn accion_invocada(conexion: Option<&zbus::blocking::Connection>, id: u32, accion: &str) {
     let Some(conexion) = conexion else {
         return;
@@ -294,6 +314,7 @@ pub fn accion_invocada(conexion: Option<&zbus::blocking::Connection>, id: u32, a
     }
 }
 
+// 0.1.0
 pub fn respondida(conexion: Option<&zbus::blocking::Connection>, id: u32, texto: &str) {
     let Some(conexion) = conexion else {
         return;

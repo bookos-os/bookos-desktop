@@ -23,6 +23,7 @@ pub struct Brillo {
 }
 
 impl Brillo {
+    // 0.1.0
     pub fn new() -> Self {
         let sensor = crate::retroiluminacion::hay_sensor_luz();
         let automatico = sensor && crate::retroiluminacion::automatico().pantalla;
@@ -35,11 +36,13 @@ impl Brillo {
         }
     }
 
+    // 0.1.0
     fn color(&self) -> iced_core::Color {
         if self.legible { TEXT() } else { tema::TEXTO2 }
     }
 }
 
+// 0.1.0
 fn nombre_icono(automatico: bool) -> &'static str {
     if automatico {
         "brillo-automatico"
@@ -49,10 +52,12 @@ fn nombre_icono(automatico: bool) -> &'static str {
 }
 
 impl Widget for Brillo {
+    // 0.1.0
     fn nombre(&self) -> &'static str {
         "brillo"
     }
 
+    // 0.1.0
     fn subsistemas(&self) -> &'static [&'static str] {
         &["backlight"]
     }
@@ -60,6 +65,7 @@ impl Widget for Brillo {
     /// `true` solo si cambia el dibujo. Antes bastaba con que cambiara el nivel,
     /// y con el automático eso es cada paso de su rampa: un repintado del panel
     /// entero por un sol que se ve igual.
+    // 0.1.0
     fn refrescar(&mut self) -> bool {
         let legible = read_brightness().is_some();
         let automatico = self.sensor && crate::retroiluminacion::automatico().pantalla;
@@ -77,14 +83,17 @@ impl Widget for Brillo {
         true
     }
 
+    // 0.1.0
     fn animando(&self) -> bool {
         self.cruce.animando()
     }
 
+    // 0.1.0
     fn ancho(&self) -> f32 {
         tema::ICONO_PANEL
     }
 
+    // 0.1.0
     fn ver(&self) -> PanelElement<'_> {
         self.icono
             .as_ref()

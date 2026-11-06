@@ -74,5 +74,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         println!("{}", ruta.display());
     }
+    // añadido en la 0.2.0 -- lo que cuesta cada repintado al pasar el ratón.
+    let mut shell = Shell::con_config(1280, 2.0, Config::default());
+    shell.abrir(Emergente::emojis(0.0, 0.0, &[]));
+    let (w, h) = shell
+        .emergente_buffer_size()
+        .expect("el selector tiene superficie");
+    let mut buffer = vec![0; (w * h * 4) as usize];
+    shell.draw_emergente(&mut buffer);
+    let mut costes: Vec<_> = (0..30)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            shell.draw_emergente(&mut buffer);
+            t.elapsed()
+        })
+        .collect();
+    costes.sort();
+    println!(
+        "repintado {w}x{h}: mediana {:?}, máx {:?}",
+        costes[15], costes[29]
+    );
     Ok(())
 }

@@ -22,7 +22,7 @@
 //! solo se dibujan. Este módulo no sabe medir nada.
 
 use iced_core::{Border, Color, Font, Length};
-use iced_widget::{Space, column, container, row, text};
+use iced_widget::{column, container, row, text};
 
 use crate::tema;
 use crate::view::PanelElement;
@@ -44,6 +44,11 @@ pub struct Salida {
     pub ms_total: f32,
     pub ms_escena: f32,
     pub ms_render: f32,
+    // añadido en la 0.2.0 -- una raya distingue ausencia de muestras de latencia cero.
+    pub shell_ms: f32,
+    pub entrada_ms: Option<f32>,
+    pub abrir_ms: Option<f32>,
+    pub emergente: Option<String>,
     /// El peor fotograma de la ventana. La media sola engaña: 4 ms de media con
     /// un pico de 40 se ve peor que 8 ms constantes.
     pub ms_peor: f32,
@@ -66,9 +71,11 @@ pub struct Datos {
     /// Porcentaje de un núcleo que consume el **proceso del compositor**, no la
     /// máquina: es lo que se puede achacar a este código.
     pub cpu: f32,
-    /// Ocupación de la GPU, cuando el driver la publica. `amdgpu` e `i915`
-    /// reciente traen `gpu_busy_percent`; otros no, y entonces no se inventa.
+    /// Ocupación de la GPU, cuando el driver la publica: `amdgpu` la da hecha
+    /// y en `xe` se deduce del tiempo dormida. Si no, no se inventa.
     pub gpu: Option<f32>,
+    // añadido en la 0.2.0 -- memoria residente del compositor, en MB.
+    pub ram_mb: Option<f32>,
     pub salidas: Vec<Salida>,
 }
 
@@ -79,7 +86,8 @@ const MARGEN: f32 = 14.0;
 /// Alto de una línea de texto pequeño, con su interlineado.
 const LINEA: f32 = 17.0;
 /// Líneas que ocupa cada salida: título, ritmo y desglose.
-const LINEAS_SALIDA: f32 = 3.0;
+// modificado en la 0.2.0 -- una línea propia permite leer las latencias sin apretarlas.
+const LINEAS_SALIDA: f32 = 4.0;
 /// Aire entre salidas.
 const HUECO: f32 = 8.0;
 
@@ -88,6 +96,7 @@ pub struct Hud {
 }
 
 impl Hud {
+    // 0.1.0
     pub fn new() -> Self {
         Self {
             datos: Datos::default(),
@@ -96,12 +105,14 @@ impl Hud {
 
     /// Tamaño lógico de la tarjeta. Depende de cuántos monitores haya, así que
     /// el buffer se rehace cuando cambia — de eso se encarga quien la pinta.
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let salidas = self.datos.salidas.len().max(1) as f32;
         let alto = MARGEN * 2.0 + LINEA + salidas * (LINEAS_SALIDA * LINEA + HUECO);
         (ANCHO, alto)
     }
 
+    // 0.1.0
     pub fn view<'a>(&self) -> PanelElement<'a> {
         let gpu = match self.datos.gpu {
             Some(v) => format!("GPU {v:.0} %"),
@@ -109,9 +120,18 @@ impl Hud {
             // cero sería mentir.
             None => "GPU —".to_string(),
         };
+        let ram = match self.datos.ram_mb {
+            Some(mb) => format!("RAM {mb:.0} MB"),
+            None => "RAM —".to_string(),
+        };
+        // modificado en la 0.2.0 -- tres columnas fijas para que no bailen al cambiar de cifras.
         let cabecera = row![
-            etiqueta(format!("CPU {:.1} %", self.datos.cpu), tema::tinta()),
-            Space::new().width(Length::Fill),
+            container(etiqueta(
+                format!("CPU {:.1} %", self.datos.cpu),
+                tema::tinta()
+            ))
+            .width(Length::Fill),
+            container(etiqueta(ram, tema::tinta())).width(Length::Fill),
             etiqueta(gpu, tema::tinta()),
         ];
 
@@ -138,14 +158,13 @@ impl Hud {
             .into()
     }
 
+    // 0.1.0
     fn bloque<'a>(&self, s: &Salida) -> PanelElement<'a> {
         let vrr = if s.vrr { " · VRR" } else { "" };
         let titulo = format!(
             "{} · {}×{} @{:.2} · {:.0} Hz{}",
             s.nombre, s.ancho, s.alto, s.escala, s.hz, vrr
         );
-        // El fps se colorea contra el refresco del **modo**, no contra 60: en un
-        // monitor de 144 Hz, 60 fps es la mitad de lo que puede dar.
         let color = ritmo(s);
         column![
             etiqueta(titulo, tema::TEXTO2),
@@ -156,10 +175,27 @@ impl Hud {
                 ),
                 color,
             ),
+            // modificado en la 0.2.0 -- una línea de costes y otra de sucesos, con
+            // palabras enteras: «salt/apl/perd» había que saberlo de memoria.
             etiqueta(
                 format!(
-                    "escena {:.2} · render {:.2} · salt {} · apl {} · perd {}",
-                    s.ms_escena, s.ms_render, s.saltados, s.aplazados, s.perdidos
+                    "escena {:.2} · render {:.2} · shell {:.2} ms",
+                    s.ms_escena, s.ms_render, s.shell_ms
+                ),
+                tema::TEXTO2,
+            ),
+            etiqueta(
+                format!(
+                    "perdidos {} · aplazados {} · entrada {} · abrir {}{}",
+                    s.perdidos,
+                    s.aplazados,
+                    s.entrada_ms
+                        .map_or_else(|| "—".to_owned(), |v| format!("{v:.0}")),
+                    s.abrir_ms
+                        .map_or_else(|| "—".to_owned(), |v| format!("{v:.0}")),
+                    s.emergente
+                        .as_deref()
+                        .map_or_else(String::new, |e| format!(" {e}"))
                 ),
                 tema::TEXTO2,
             ),
@@ -169,26 +205,33 @@ impl Hud {
 }
 
 impl Default for Hud {
+    // 0.1.0
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Verde mientras se llega al refresco, ámbar por debajo, rojo si además se
-/// pierden fotogramas. Sin fotogramas presentados no se pinta de rojo: un
-/// escritorio quieto tiene 0 fps y está perfecto.
+/// Rojo si se pierden fotogramas, ámbar si el peor se acerca al periodo del
+/// modo, tinta normal en el resto.
+///
+/// No se compara el fps con los Hz: el compositor solo dibuja cuando hay
+/// damage, así que un escritorio casi quieto da 6–25 fps y está perfecto.
+/// Con esa regla el panel salía ámbar justo en reposo.
+// 0.1.0
+// modificado en la 0.2.0 -- se juzga el coste del fotograma, no cuántos hubo.
 fn ritmo(s: &Salida) -> Color {
     if s.perdidos > 0 {
         return tema::rojo();
     }
-    if s.fps <= 0.0 || s.hz <= 0.0 || s.fps >= s.hz * 0.9 {
-        return tema::tinta();
+    if s.hz > 0.0 && s.ms_peor > 1000.0 / s.hz * 0.75 {
+        return tema::amarillo();
     }
-    tema::amarillo()
+    tema::tinta()
 }
 
 /// Monoespaciada a propósito: con proporcional, los dígitos cambian de ancho al
 /// actualizarse y la columna entera se mueve cada segundo.
+// 0.1.0
 fn etiqueta<'a>(txt: String, color: Color) -> PanelElement<'a> {
     text(txt)
         .font(Font::MONOSPACE)
@@ -200,6 +243,7 @@ fn etiqueta<'a>(txt: String, color: Color) -> PanelElement<'a> {
 /// Opaco, como el OSD y por lo mismo: sale sobre cualquier cosa y el contraste
 /// lo tiene que poner él. Además aquí hay letra pequeña, que es lo primero que
 /// se pierde sobre un fondo de pantalla con detalle.
+// 0.1.0
 fn fondo() -> Color {
     if tema::es_claro() {
         Color::WHITE
@@ -225,8 +269,8 @@ mod tests {
         assert_eq!(dos - uno, LINEAS_SALIDA * LINEA + HUECO);
     }
 
-    /// Un escritorio quieto no está fallando: 0 fps sin fotogramas perdidos se
-    /// pinta con la tinta normal, no en ámbar.
+    /// Un escritorio casi quieto no está fallando: pocos fps baratos se
+    /// pintan con la tinta normal; el ámbar es para fotogramas al límite.
     #[test]
     fn quieto_no_es_lento() {
         let parado = Salida {
@@ -234,9 +278,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(ritmo(&parado), tema::tinta());
+        let pocos_y_baratos = Salida {
+            hz: 120.0,
+            fps: 8.0,
+            ms_peor: 2.0,
+            ..Default::default()
+        };
+        assert_eq!(ritmo(&pocos_y_baratos), tema::tinta());
         let lento = Salida {
             hz: 60.0,
             fps: 31.0,
+            ms_peor: 14.0,
             ..Default::default()
         };
         assert_eq!(ritmo(&lento), tema::amarillo());

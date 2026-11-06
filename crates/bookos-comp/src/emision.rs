@@ -59,6 +59,7 @@ pub struct Emisiones {
 }
 
 impl std::fmt::Debug for Emisiones {
+    // 0.1.0
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Emisiones")
             .field("activas", &self.activas.len())
@@ -68,6 +69,7 @@ impl std::fmt::Debug for Emisiones {
 }
 
 impl Default for Emisiones {
+    // 0.1.0
     fn default() -> Self {
         Self::new()
     }
@@ -77,6 +79,7 @@ impl Emisiones {
     /// No arranca el hilo de PipeWire: eso se hace en [`Self::hilo`] la primera
     /// vez que alguien quiere compartir. Una sesión que nunca comparte pantalla
     /// no paga una conexión a PipeWire ni un hilo.
+    // 0.1.0
     pub fn new() -> Self {
         Self {
             emisor: None,
@@ -88,6 +91,7 @@ impl Emisiones {
     }
 
     /// El emisor, arrancando el hilo si hacía falta.
+    // 0.1.0
     pub fn hilo(&mut self) -> Option<&Emisor> {
         if self.emisor.is_none()
             && let Some((emisor, reciclado)) = crate::pw::arrancar()
@@ -98,11 +102,13 @@ impl Emisiones {
         self.emisor.as_ref()
     }
 
+    // 0.1.0
     pub fn anadir(&mut self, emision: Emision) {
         self.activas.push(emision);
     }
 
     /// Para una sesión y le dice al hilo que suelte el nodo.
+    // 0.1.0
     pub fn quitar(&mut self, sesion: u32) {
         self.activas.retain(|e| e.sesion != sesion);
         self.pendientes.remove(&sesion);
@@ -111,11 +117,13 @@ impl Emisiones {
         }
     }
 
+    // 0.1.0
     pub fn hay(&self) -> bool {
         !self.activas.is_empty()
     }
 
     /// Las emisiones de esta salida a las que ya les toca fotograma.
+    // 0.1.0
     pub fn tocan(&mut self, output: &Output, ahora: Instant) -> Vec<usize> {
         self.recoger();
         self.activas
@@ -136,6 +144,7 @@ impl Emisiones {
     /// `Transform` de la salida. Antes salía de `TextureMapping::flipped`, que
     /// es una constante, y por eso quien miraba la pantalla compartida desde una
     /// sesión de verdad la veía espejada en vertical.
+    // 0.1.0
     pub fn emitir(
         &mut self,
         indice: usize,
@@ -187,6 +196,7 @@ impl Emisiones {
     }
 
     /// Recupera los `Vec` que el hilo ya ha soltado.
+    // 0.1.0
     fn recoger(&mut self) {
         let Some(reciclado) = self.reciclado.as_ref() else {
             return;

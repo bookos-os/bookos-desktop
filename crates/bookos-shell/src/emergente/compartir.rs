@@ -61,6 +61,7 @@ pub struct Compartir {
 }
 
 impl Compartir {
+    // 0.1.0
     pub fn new(sesion: u32, app: String, pantallas: Vec<Pantalla>) -> Self {
         Self {
             sesion,
@@ -73,6 +74,7 @@ impl Compartir {
 
     /// La negativa que hay que mandar si esto se cierra por cualquier otro
     /// camino: un clic fuera, o el compositor recogiendo la tarjeta.
+    // 0.1.0
     pub fn denegar(&self) -> Accion {
         Accion::Compartir {
             sesion: self.sesion,
@@ -80,11 +82,13 @@ impl Compartir {
         }
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let (w, h) = self.contenido_size();
         (w + MARGEN_SOMBRA * 2.0, h + MARGEN_SOMBRA * 2.0)
     }
 
+    // 0.1.0
     fn contenido_size(&self) -> (f32, f32) {
         let n = self.pantallas.len().max(1) as f32;
         let ancho = MARGEN * 2.0 + CELDA_W * n + HUECO * (n - 1.0);
@@ -97,11 +101,13 @@ impl Compartir {
     }
 
     /// La `x` del primer botón, dentro del contenido. Los dos van a la derecha.
+    // 0.1.0
     fn botones_x(&self) -> f32 {
         let (w, _) = self.contenido_size();
         w - MARGEN - BOTON_W * 2.0 - HUECO
     }
 
+    // 0.1.0
     fn botones_y(&self) -> f32 {
         FILA_Y + CELDA_H + BOTONES_HUECO
     }
@@ -109,6 +115,7 @@ impl Compartir {
     /// La `x` de la primera celda. Las pantallas van centradas, no pegadas al
     /// margen: con una sola, dejarla a la izquierda de una tarjeta ancha se ve
     /// descolgada.
+    // 0.1.0
     fn celdas_x(&self) -> f32 {
         let n = self.pantallas.len().max(1) as f32;
         let fila = CELDA_W * n + HUECO * (n - 1.0);
@@ -117,6 +124,7 @@ impl Compartir {
     }
 
     /// Qué hay bajo ese punto, ya en coordenadas del **contenido**.
+    // 0.1.0
     fn zona(&self, x: f32, y: f32) -> Zona {
         if (FILA_Y..FILA_Y + CELDA_H).contains(&y) {
             let paso = CELDA_W + HUECO;
@@ -141,14 +149,17 @@ impl Compartir {
         Zona::Nada
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Centrada
     }
 
+    // 0.1.0
     pub fn animando(&self) -> bool {
         false
     }
 
+    // 0.1.0
     pub fn velo(&self) -> Color {
         // El mismo velo que el diálogo de apagar, y por lo mismo: hay que
         // contestarle antes de seguir.
@@ -158,6 +169,7 @@ impl Compartir {
         }
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let Some((x, y)) = punto.map(|(x, y)| (x - MARGEN_SOMBRA, y - MARGEN_SOMBRA)) else {
             let cambio = self.sobre_boton.is_some();
@@ -184,6 +196,7 @@ impl Compartir {
         }
     }
 
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let (x, y) = (x - MARGEN_SOMBRA, y - MARGEN_SOMBRA);
         match self.zona(x, y) {
@@ -197,6 +210,7 @@ impl Compartir {
         }
     }
 
+    // 0.1.0
     fn aceptar(&self) -> Accion {
         Accion::Compartir {
             sesion: self.sesion,
@@ -204,6 +218,7 @@ impl Compartir {
         }
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: TeclaPulsada) -> Tecla {
         let n = self.pantallas.len().max(1);
         match tecla {
@@ -222,6 +237,7 @@ impl Compartir {
         }
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let cabecera = column![
             text("Compartir pantalla")
@@ -308,6 +324,7 @@ impl Compartir {
         container(tarjeta).padding(MARGEN_SOMBRA).into()
     }
 
+    // 0.1.0
     fn boton(&self, texto: &'static str, indice: usize) -> PanelElement<'_> {
         let principal = indice == 1;
         let sobre = self.sobre_boton == Some(indice);
@@ -345,6 +362,7 @@ enum Zona {
     Nada,
 }
 
+// 0.1.0
 fn tarjeta(_: &iced_widget::Theme) -> iced_widget::container::Style {
     iced_widget::container::Style {
         background: Some(tema::card().into()),

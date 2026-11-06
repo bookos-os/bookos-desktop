@@ -72,6 +72,36 @@ pub struct Elemento {
     seleccionado: bool,
 }
 
+/// Lo que ofrece el submenú «Crear» del clic derecho.
+// 0.2.0
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NuevoElemento {
+    Carpeta,
+    Texto,
+    Script,
+    Vacio,
+}
+
+impl NuevoElemento {
+    /// Nombre base y extensión.
+    fn nombre(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Carpeta => ("Nueva carpeta", ""),
+            Self::Texto => ("Nuevo documento de texto", ".txt"),
+            Self::Script => ("Nuevo script", ".sh"),
+            Self::Vacio => ("Nuevo archivo", ""),
+        }
+    }
+
+    /// Un script sin shebang no se ejecuta; los demás nacen vacíos.
+    fn contenido(self) -> &'static str {
+        match self {
+            Self::Script => "#!/bin/sh\n",
+            _ => "",
+        }
+    }
+}
+
 pub struct Escritorio {
     elementos: Vec<Elemento>,
     /// La zona de la rejilla en lógicos: `(x, y, ancho, alto)`. Empieza bajo el
@@ -90,6 +120,8 @@ pub struct Escritorio {
 
 impl Escritorio {
     /// `alto_panel` y `pantalla` van en píxeles lógicos.
+    // 0.1.0
+    // modified 0.1.1 -- puede nacer con los iconos ocultos
     pub fn new(alto_panel: f32, pantalla: (f32, f32), visible: bool) -> Self {
         let mut escritorio = Self {
             elementos: if visible { leer() } else { Vec::new() },
@@ -106,6 +138,7 @@ impl Escritorio {
     /// Rehace la rejilla para un tamaño de pantalla. Conserva la columna y la
     /// fila de cada icono mientras quepan; lo que se sale se recoloca al primer
     /// hueco libre, que es mejor que dejarlo fuera de la pantalla.
+    // 0.1.0
     pub fn recolocar(&mut self, alto_panel: f32, (ancho, alto): (f32, f32)) {
         self.zona = (
             MARGEN_X,
@@ -120,6 +153,7 @@ impl Escritorio {
 
     /// Reparte las celdas: primero las guardadas que siguen cabiendo, y el
     /// resto al primer hueco libre, llenando por columnas de arriba abajo.
+    // 0.1.0
     fn asignar_celdas(&mut self) {
         let guardadas = posiciones_guardadas();
         let mut ocupadas: Vec<(i32, i32)> = Vec::new();
@@ -153,6 +187,8 @@ impl Escritorio {
     /// Compara nombres y no marcas de tiempo a propósito: lo que se ve en el
     /// escritorio es la lista, y `mtime` del directorio cambia también cuando
     /// se toca un fichero que ya estaba.
+    // 0.1.0
+    // modified 0.1.1 -- no relee con los iconos ocultos
     pub fn releer(&mut self, alto_panel: f32, pantalla: (f32, f32)) -> bool {
         if !self.visible {
             return false;
@@ -174,25 +210,59 @@ impl Escritorio {
         true
     }
 
-    /// Crea una carpeta nueva y la deja seleccionada.
+    /// Crea una carpeta o un archivo vacío y lo deja seleccionado.
     ///
     /// Sin escotilla propia: si no hay `~/Escritorio` —ni siquiera se ha usado
     /// nunca el escritorio en esta cuenta— no hay dónde crear nada, y no es
     /// este el sitio para decidir que de repente sí la hay.
-    pub fn crear_carpeta(&mut self, alto_panel: f32, pantalla: (f32, f32)) -> bool {
+    // 0.2.0
+    pub fn crear_nuevo(
+        &mut self,
+        tipo: NuevoElemento,
+        alto_panel: f32,
+        pantalla: (f32, f32),
+    ) -> bool {
         let Some(carpeta) = carpeta_escritorio() else {
             tracing::warn!("sin carpeta de escritorio: no se puede crear nada en ella");
             return false;
         };
-        let mut nombre = "Nueva carpeta".to_string();
-        let mut intento = 2;
-        while carpeta.join(&nombre).exists() {
-            nombre = format!("Nueva carpeta ({intento})");
-            intento += 1;
-        }
-        if let Err(err) = std::fs::create_dir(carpeta.join(&nombre)) {
-            tracing::warn!(nombre, "no se pudo crear la carpeta: {err}");
+        let (base, extension) = tipo.nombre();
+        // El número va antes de la extensión: «Nuevo documento (2).txt» sigue
+        // abriéndose con el programa de los .txt, «Nuevo documento.txt (2)» no.
+        let con_numero = |n: u32| match n {
+            1 => format!("{base}{extension}"),
+            n => format!("{base} ({n}){extension}"),
+        };
+        let nombre = (1..)
+            .map(con_numero)
+            .find(|nombre| !carpeta.join(nombre).exists())
+            .expect("la secuencia de números es infinita");
+        let ruta = carpeta.join(&nombre);
+        let creado = match tipo {
+            NuevoElemento::Carpeta => std::fs::create_dir(&ruta),
+            // `create_new` y no `File::create`: entre el `exists` y aquí otro
+            // proceso puede haber puesto el nombre, y truncarle el archivo
+            // sería perder datos de quien sea.
+            _ => std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&ruta)
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    f.write_all(tipo.contenido().as_bytes())
+                }),
+        };
+        if let Err(err) = creado {
+            tracing::warn!(nombre, "no se pudo crear: {err}");
             return false;
+        }
+        if tipo == NuevoElemento::Script {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(err) =
+                std::fs::set_permissions(&ruta, std::fs::Permissions::from_mode(0o755))
+            {
+                tracing::warn!(nombre, "no se pudo hacer ejecutable: {err}");
+            }
         }
         self.releer(alto_panel, pantalla);
         for elemento in &mut self.elementos {
@@ -209,6 +279,7 @@ impl Escritorio {
     /// jugársela con los ficheros de quien sea. `~/.local/share/Trash` es la
     /// misma que usan Dolphin y Nautilus, así que lo que se borra desde aquí
     /// se recupera desde cualquiera de los dos.
+    // 0.1.0
     pub fn eliminar_seleccionados(&mut self, alto_panel: f32, pantalla: (f32, f32)) -> bool {
         let rutas: Vec<PathBuf> = self
             .elementos
@@ -232,11 +303,13 @@ impl Escritorio {
         alguno
     }
 
+    // 0.1.1
     pub fn visible(&self) -> bool {
         self.visible
     }
 
     /// Enseña u oculta los iconos. `true` si cambió algo.
+    // 0.1.1
     pub fn mostrar(&mut self, visible: bool, alto_panel: f32, pantalla: (f32, f32)) -> bool {
         if self.visible == visible {
             return false;
@@ -251,6 +324,7 @@ impl Escritorio {
     /// El color de las carpetas seleccionadas, para marcar su muestra en el
     /// menú. `None` si la selección no es solo de carpetas: un fichero no tiene
     /// color que elegir. `Some(None)` es el automático, o colores mezclados.
+    // 0.1.1
     pub fn color_seleccion(&self) -> Option<Option<&str>> {
         let mut seleccion = self.elementos.iter().filter(|e| e.seleccionado).peekable();
         seleccion.peek()?;
@@ -269,12 +343,23 @@ impl Escritorio {
         comun
     }
 
+    /// Nombre y color de las carpetas seleccionadas, para el diálogo de color.
+    // añadido en la 0.2.0
+    pub fn carpetas_seleccionadas(&self) -> Vec<(&str, Option<&str>)> {
+        self.elementos
+            .iter()
+            .filter(|e| e.seleccionado && e.ruta.is_dir())
+            .map(|e| (e.nombre.as_str(), e.color.as_deref()))
+            .collect()
+    }
+
     /// Pone `color` a las carpetas seleccionadas, o les devuelve el automático
     /// con `None`. `true` si alguna cambió.
     ///
     /// Se escribe en el fichero de bookos-explorer y no en uno propio: una
     /// carpeta es la misma en el escritorio que en el explorador, y dos colores
     /// distintos para ella serían dos verdades.
+    // 0.1.1
     pub fn colorear(&mut self, color: Option<&str>) -> bool {
         if color.is_some_and(|c| !hex_valido(c)) {
             tracing::warn!(?color, "color de carpeta no válido");
@@ -304,20 +389,24 @@ impl Escritorio {
         true
     }
 
+    // 0.1.0
     pub fn cuantos(&self) -> usize {
         self.elementos.len()
     }
 
+    // 0.1.0
     pub fn seleccionado(&self, i: usize) -> bool {
         self.elementos.get(i).is_some_and(|e| e.seleccionado)
     }
 
+    // 0.1.0
     pub fn hay_seleccion(&self) -> bool {
         self.elementos.iter().any(|e| e.seleccionado)
     }
 
     /// El rectángulo de una celda en lógicos, ya con el desplazamiento del
     /// arrastre si el icono va en él.
+    // 0.1.0
     pub fn rect(&self, i: usize) -> Option<(f32, f32, f32, f32)> {
         let elemento = self.elementos.get(i)?;
         let (dx, dy) = match self.arrastre {
@@ -334,6 +423,7 @@ impl Escritorio {
 
     /// Qué icono hay en un punto lógico. Se recorre al revés para que, si dos
     /// se solapan durante un arrastre, gane el que se dibuja encima.
+    // 0.1.0
     pub fn en(&self, x: f32, y: f32) -> Option<usize> {
         (0..self.elementos.len()).rev().find(|&i| {
             self.rect(i)
@@ -345,6 +435,7 @@ impl Escritorio {
     /// alterna ese solo y deja el resto como estaba.
     ///
     /// Devuelve `true` si cambió algo, o sea si hay que repintar.
+    // 0.1.0
     pub fn seleccionar(&mut self, i: Option<usize>, aditivo: bool) -> bool {
         let mut cambio = false;
         match (i, aditivo) {
@@ -368,6 +459,7 @@ impl Escritorio {
     /// Marca lo que toca la banda elástica. `rect` va en lógicos y ya
     /// normalizado; `previa` es la selección de antes de empezar el gesto, que
     /// se conserva —es lo que hace Ctrl+arrastrar— y va vacía sin Ctrl.
+    // 0.1.0
     pub fn banda(&mut self, rect: (f32, f32, f32, f32), previa: &[bool]) -> bool {
         let (bx, by, bw, bh) = rect;
         let mut cambio = false;
@@ -385,21 +477,25 @@ impl Escritorio {
     }
 
     /// La selección de ahora mismo, para poder sumarle una banda encima.
+    // 0.1.0
     pub fn seleccion(&self) -> Vec<bool> {
         self.elementos.iter().map(|e| e.seleccionado).collect()
     }
 
     /// Corre los iconos seleccionados mientras dura el arrastre.
+    // 0.1.0
     pub fn arrastrar(&mut self, delta: (f32, f32)) {
         self.arrastre = Some(delta);
     }
 
+    // 0.1.0
     pub fn arrastrando(&self) -> bool {
         self.arrastre.is_some()
     }
 
     /// Deja los iconos arrastrados en la celda que les toque y guarda las
     /// posiciones. `true` si alguno cambió de sitio.
+    // 0.1.0
     pub fn soltar(&mut self) -> bool {
         let Some((dx, dy)) = self.arrastre.take() else {
             return false;
@@ -432,6 +528,7 @@ impl Escritorio {
         true
     }
 
+    // 0.1.0
     fn guardar_posiciones(&self) {
         let posiciones: Vec<(&str, (i32, i32))> = self
             .elementos
@@ -445,6 +542,7 @@ impl Escritorio {
 
     /// Qué hacer al abrir un icono: su `Exec` si es un lanzador, y si no,
     /// `xdg-open`, que es quien sabe con qué se abre cada cosa.
+    // 0.1.0
     pub fn abrir(&self, i: usize) -> Option<crate::Accion> {
         let elemento = self.elementos.get(i)?;
         Some(crate::Accion::Lanzar(elemento.orden.clone()))
@@ -452,6 +550,7 @@ impl Escritorio {
 
     /// La celda `i` dibujada. Ocupa el buffer entero: es lo que hace que
     /// repintar una selección cueste una celda y no la pantalla.
+    // 0.1.0
     pub fn ver(&self, i: usize) -> PanelElement<'_> {
         let Some(elemento) = self.elementos.get(i) else {
             return Space::new().into();
@@ -531,6 +630,7 @@ impl Escritorio {
 ///
 /// El sobrante se remata con puntos suspensivos. Se hace aquí y no con el
 /// ajuste de línea de iced porque iced no sabe parar a las dos líneas.
+// 0.1.0
 pub(crate) fn dos_lineas(nombre: &str, ancho: f32, tamaño: f32) -> String {
     let (primera, resto) = cortar(nombre, ancho, tamaño);
     if resto.is_empty() {
@@ -549,6 +649,7 @@ pub(crate) fn dos_lineas(nombre: &str, ancho: f32, tamaño: f32) -> String {
 /// Parte `texto` en renglones que quepan en `ancho`, respetando los saltos de
 /// línea, hasta `max`. Lo que sobra se remata con puntos suspensivos en el
 /// último renglón, como [`dos_lineas`] pero para cualquier número de líneas.
+// 0.1.0
 pub(crate) fn lineas(texto: &str, ancho: f32, tamaño: f32, max: usize) -> Vec<String> {
     let mut salida: Vec<String> = Vec::new();
     for parrafo in texto.lines() {
@@ -580,6 +681,7 @@ pub(crate) fn lineas(texto: &str, ancho: f32, tamaño: f32, max: usize) -> Vec<S
 /// de verdad. Medir carácter a carácter sería un `Paragraph` por letra —treinta
 /// por nombre— y esto se paga en cada repintado de celda, o sea en cada celda
 /// que cruza la banda elástica.
+// 0.1.0
 fn cortar(texto: &str, ancho: f32, tamaño: f32) -> (String, String) {
     if crate::widget::ancho_de(texto, tamaño) <= ancho {
         return (texto.to_string(), String::new());
@@ -618,6 +720,7 @@ fn cortar(texto: &str, ancho: f32, tamaño: f32) -> (String, String) {
 ///
 /// Si no queda ninguno se apila en la última: perder un icono porque la
 /// pantalla es pequeña es peor que solaparlo.
+// 0.1.0
 fn primer_hueco(ocupadas: &[(i32, i32)], columnas: i32, filas: i32) -> (i32, i32) {
     (0..columnas)
         .flat_map(|col| (0..filas).map(move |fila| (col, fila)))
@@ -631,6 +734,8 @@ fn primer_hueco(ocupadas: &[(i32, i32)], columnas: i32, filas: i32) -> (i32, i32
 /// Se ignoran los ocultos, como cualquier gestor de archivos, y los que no se
 /// pueden leer: un `.desktop` roto es un icono menos, no un escritorio sin
 /// iconos.
+// 0.1.0
+// modified 0.1.1 -- lee los colores de carpeta del explorador
 fn leer() -> Vec<Elemento> {
     let Some(carpeta) = carpeta_escritorio() else {
         return Vec::new();
@@ -655,6 +760,8 @@ fn leer() -> Vec<Elemento> {
 }
 
 impl Elemento {
+    // 0.1.0
+    // modified 0.1.1 -- carpetas con su color y lanzadores sin icono con el de fichero
     fn leer(ruta: &Path, colores: &HashMap<String, String>) -> Option<Self> {
         let nombre_fichero = ruta.file_name()?.to_string_lossy().into_owned();
         // Un `.desktop` en el escritorio es un lanzador, no un fichero de
@@ -713,6 +820,7 @@ pub const MUESTRAS: [&str; 6] = [
 const CARPETA_POR_DEFECTO: &str = "#3B9BFF";
 
 /// El color que le toca a una carpeta por su nombre, si no tiene uno puesto.
+// 0.1.1
 fn color_automatico(nombre: &str) -> &'static str {
     match nombre.to_lowercase().as_str() {
         "downloads" | "descargas" => "#AF52DE",
@@ -729,7 +837,8 @@ fn color_automatico(nombre: &str) -> &'static str {
 
 /// La pestaña se aclara con opacidad y no con un segundo tono, como en el
 /// explorador: así un color nuevo es una sola cadena.
-fn icono_carpeta(nombre: &str, color: Option<&str>) -> Icono {
+// 0.1.1
+pub(crate) fn icono_carpeta(nombre: &str, color: Option<&str>) -> Icono {
     let c = color.unwrap_or_else(|| color_automatico(nombre));
     crate::icono::desde_svg(&format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 82"><path d="M2 16a12 12 0 0 1 12-12h20.7a12 12 0 0 1 8.5 3.5L47 12h39a12 12 0 0 1 12 12v8H2z" fill="{c}" opacity=".55"/><rect x="2" y="20" width="96" height="60" rx="13" fill="{c}"/></svg>"#
@@ -738,6 +847,7 @@ fn icono_carpeta(nombre: &str, color: Option<&str>) -> Icono {
 
 /// La hoja con la esquina doblada, del color de su tipo y con la extensión
 /// escrita encima.
+// 0.1.1
 fn icono_fichero(ruta: &Path) -> Icono {
     let ext = ruta
         .extension()
@@ -767,6 +877,7 @@ fn icono_fichero(ruta: &Path) -> Icono {
 
 /// El color de cada tipo de fichero, por extensión: la tabla `KINDS` del
 /// explorador. Lo que no se reconoce va en gris.
+// 0.1.1
 fn color_de_tipo(ext: &str) -> &'static str {
     match ext {
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "svg" | "avif" | "heic" | "ico"
@@ -791,11 +902,13 @@ fn color_de_tipo(ext: &str) -> &'static str {
 
 /// Solo `#RRGGBB`, como exige el explorador: el valor acaba dentro de un
 /// atributo `fill`, y cualquier otra cosa sería inyectar en el SVG.
+// 0.1.1
 fn hex_valido(c: &str) -> bool {
     c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 /// `~/.config/bookos-explorer/colors.json`: ruta absoluta → color.
+// 0.1.1
 fn ruta_colores() -> Option<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -805,6 +918,7 @@ fn ruta_colores() -> Option<PathBuf> {
 
 /// Un fichero que no está o no se entiende es un mapa vacío: todas las
 /// carpetas en su color automático, que es lo que enseña el explorador igual.
+// 0.1.1
 fn colores_explorer() -> HashMap<String, String> {
     ruta_colores()
         .and_then(|ruta| std::fs::read_to_string(ruta).ok())
@@ -814,6 +928,7 @@ fn colores_explorer() -> HashMap<String, String> {
 
 /// Lee, cambia esas rutas y reescribe. Se relee justo antes para no pisar lo
 /// que haya cambiado el explorador desde que se cargó el escritorio.
+// 0.1.1
 fn guardar_colores(rutas: &[String], color: Option<&str>) -> std::io::Result<()> {
     let ruta = ruta_colores().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "sin HOME ni XDG_CONFIG_HOME")
@@ -834,6 +949,7 @@ fn guardar_colores(rutas: &[String], color: Option<&str>) -> std::io::Result<()>
 
 /// Entrecomilla una ruta para `sh -c`: es lo que ejecuta el compositor, y un
 /// nombre con espacios o con `;` no puede acabar siendo dos órdenes.
+// 0.1.0
 fn entrecomillar(ruta: &Path) -> String {
     format!("'{}'", ruta.to_string_lossy().replace('\'', r"'\''"))
 }
@@ -847,6 +963,7 @@ fn entrecomillar(ruta: &Path) -> String {
 /// Manda un fichero o carpeta a la papelera de freedesktop
 /// (`~/.local/share/Trash`), la que siguen Dolphin, Nautilus y el resto de
 /// gestores que respetan la especificación.
+// 0.1.0
 fn mover_a_papelera(ruta: &Path) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind};
     let datos = std::env::var_os("XDG_DATA_HOME")
@@ -924,6 +1041,7 @@ fn mover_a_papelera(ruta: &Path) -> std::io::Result<()> {
 /// A mano y no con una dependencia: una ruta de escritorio real lleva letras,
 /// números y como mucho espacios o acentos, y son unos pocos bytes por
 /// fichero borrado.
+// 0.1.0
 fn codificar_ruta(ruta: &Path) -> String {
     let mut salida = String::new();
     for byte in ruta.to_string_lossy().bytes() {
@@ -945,6 +1063,7 @@ fn codificar_ruta(ruta: &Path) -> String {
 /// En UTC y no en hora local: este crate no lleva ninguna dependencia de
 /// zonas horarias, y la especificación pide "una fecha", sin exigir el
 /// desplazamiento local. Dolphin y Nautilus la leen igual.
+// 0.1.0
 fn fecha_papelera() -> String {
     let ahora = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -963,6 +1082,7 @@ fn fecha_papelera() -> String {
 /// pura, sin tabla de meses ni de años bisiestos escrita a mano. Comprobado
 /// contra `datetime` de Python en varias fechas, incluyendo negativas y
 /// bisiestos.
+// 0.1.0
 fn civil_desde_dias(dias: i64) -> (i64, u32, u32) {
     let z = dias + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -977,6 +1097,7 @@ fn civil_desde_dias(dias: i64) -> (i64, u32, u32) {
     (y, mes, d)
 }
 
+// 0.1.0
 fn carpeta_escritorio() -> Option<PathBuf> {
     // La escotilla es para la previsualización y para las pruebas: apuntar a
     // una carpeta de mentira es la única forma de mirar la rejilla sin
@@ -995,6 +1116,7 @@ fn carpeta_escritorio() -> Option<PathBuf> {
         .find(|d| d.is_dir())
 }
 
+// 0.1.0
 fn leer_user_dirs(home: &Path) -> Option<PathBuf> {
     let ruta = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(dir) => PathBuf::from(dir).join("user-dirs.dirs"),
@@ -1014,6 +1136,7 @@ fn leer_user_dirs(home: &Path) -> Option<PathBuf> {
 }
 
 /// Las posiciones que el usuario dejó puestas arrastrando.
+// 0.1.0
 fn posiciones_guardadas() -> Vec<(String, (i32, i32))> {
     crate::config::cargar_escritorio()
 }
@@ -1187,7 +1310,7 @@ mod tests {
         let mut e = Escritorio::new(32.0, (1440.0, 900.0), true);
         assert_eq!(e.cuantos(), 0, "el directorio de prueba nace vacío");
 
-        assert!(e.crear_carpeta(32.0, (1440.0, 900.0)));
+        assert!(e.crear_nuevo(NuevoElemento::Carpeta, 32.0, (1440.0, 900.0)));
         assert_eq!(e.cuantos(), 1);
         assert!(escritorio_tmp.join("Nueva carpeta").is_dir());
         assert!(
@@ -1195,8 +1318,31 @@ mod tests {
             "la carpeta recién creada queda seleccionada"
         );
 
+        // Un archivo lleva el número antes de la extensión, y un script nace ejecutable.
+        assert!(e.crear_nuevo(NuevoElemento::Texto, 32.0, (1440.0, 900.0)));
+        assert!(e.crear_nuevo(NuevoElemento::Texto, 32.0, (1440.0, 900.0)));
+        assert!(
+            escritorio_tmp
+                .join("Nuevo documento de texto (2).txt")
+                .is_file()
+        );
+        assert!(e.crear_nuevo(NuevoElemento::Script, 32.0, (1440.0, 900.0)));
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let modo = std::fs::metadata(escritorio_tmp.join("Nuevo script.sh"))
+                .expect("el script se acaba de crear")
+                .permissions()
+                .mode();
+            assert_eq!(modo & 0o111, 0o111);
+        }
+        std::fs::remove_file(escritorio_tmp.join("Nuevo documento de texto.txt")).unwrap();
+        std::fs::remove_file(escritorio_tmp.join("Nuevo documento de texto (2).txt")).unwrap();
+        std::fs::remove_file(escritorio_tmp.join("Nuevo script.sh")).unwrap();
+        e.releer(32.0, (1440.0, 900.0));
+        assert_eq!(e.cuantos(), 1);
+
         // Una segunda no choca con el nombre de la primera.
-        assert!(e.crear_carpeta(32.0, (1440.0, 900.0)));
+        assert!(e.crear_nuevo(NuevoElemento::Carpeta, 32.0, (1440.0, 900.0)));
         assert_eq!(e.cuantos(), 2);
         assert!(escritorio_tmp.join("Nueva carpeta (2)").is_dir());
 

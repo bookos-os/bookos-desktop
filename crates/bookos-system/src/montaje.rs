@@ -38,10 +38,12 @@ struct Volumen {
 }
 
 /// ¿Se monta solo?
+// 0.1.0
 fn debe_montarse(v: &Volumen) -> bool {
     !v.montado && !v.ignorar && v.con_unidad && (!v.sistema || v.auto)
 }
 
+// 0.1.0
 async fn leer(c: &Connection, ruta: &OwnedObjectPath) -> Option<Volumen> {
     let bloque = zbus::Proxy::new(c, UDISKS, ruta.as_ref(), BLOQUE)
         .await
@@ -62,6 +64,7 @@ async fn leer(c: &Connection, ruta: &OwnedObjectPath) -> Option<Volumen> {
     })
 }
 
+// 0.1.0
 async fn montar_si_toca(c: &Connection, ruta: &OwnedObjectPath) {
     let Some(volumen) = leer(c, ruta).await else {
         return;
@@ -84,6 +87,7 @@ async fn montar_si_toca(c: &Connection, ruta: &OwnedObjectPath) {
 }
 
 /// Monta lo que ya hay y vigila lo que llegue. No vuelve nunca.
+// 0.1.0
 pub async fn vigilar(c: Connection) {
     loop {
         let _ = una_vuelta(&c).await;
@@ -94,6 +98,7 @@ pub async fn vigilar(c: Connection) {
 
 /// Mientras udisks2 siga en el bus. La suscripción va antes del recorrido:
 /// al revés, lo que se enchufara entre los dos se quedaría sin montar.
+// 0.1.0
 async fn una_vuelta(c: &Connection) -> zbus::Result<()> {
     let om = zbus::fdo::ObjectManagerProxy::builder(c)
         .destination(UDISKS)?

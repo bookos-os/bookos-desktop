@@ -68,6 +68,10 @@ const ENTRE_FILAS: f32 = 14.0;
 /// Alto de una celda de la rejilla: solo el círculo, sin rótulo debajo. Con
 /// iconos macizos se reconocen solos, y la tarjeta gana 40 px de alto.
 const CELDA: f32 = BOTON;
+/// Cuánto encoge un botón apretado: lo justo para notarse bajo el dedo sin
+/// que el icono parezca cambiar de tamaño.
+// añadido en la 0.2.0
+const HUNDIDO: f32 = 0.08;
 /// Relleno de los grupos de los deslizadores y de lo que suena.
 const GRUPO_MARGEN: f32 = 12.0;
 /// Aire entre los dos deslizadores.
@@ -97,6 +101,7 @@ const MEDIOS: f32 =
 /// acento se elige: con la constante, poner el escritorio en verde dejaba esta
 /// tarjeta —la más azul de todas— en azul, y el apagado `#AECAFF` de al lado,
 /// que sí es un azul deliberado, se leía como el activo de otro tema.
+// 0.1.0
 fn acento_centro() -> Color {
     tema::acento()
 }
@@ -105,6 +110,7 @@ fn acento_centro() -> Color {
 /// El mismo gris en los dos temas —lo fija así el sistema de diseño—, y por eso
 /// no se calcula contra el fondo como cuando el círculo era de acento: sobre
 /// `--surface`, que es casi el fondo, sale igual en claro y en oscuro.
+// 0.1.0
 fn tinta_apagado() -> Color {
     tema::TEXTO2
 }
@@ -116,6 +122,7 @@ fn tinta_apagado() -> Color {
 /// `#1c1c1e`. Las cuatro subdivisiones existían en el árbol de widgets y no se
 /// veía ninguna. En claro pasaba lo mismo de forma más suave: `bg` al 80 %
 /// sobre la tarjeta blanca deja `#f5f5f9`, tres puntos por canal.
+// 0.1.0
 fn contenedor() -> Color {
     tema::superficie_en_tarjeta()
 }
@@ -157,24 +164,28 @@ enum Detalle {
 const DESVIO: f32 = (ANCHO - lista::ANCHO) / 2.0;
 
 impl Detalle {
+    // 0.1.0
     fn alto(&self) -> f32 {
         match self {
             Self::Red(r) => r.size().1,
             Self::Bluetooth(b) => b.size().1,
         }
     }
+    // 0.1.0
     fn contenido(&self) -> PanelElement<'_> {
         match self {
             Self::Red(r) => r.contenido(true),
             Self::Bluetooth(b) => b.contenido(true),
         }
     }
+    // 0.1.0
     fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         match self {
             Self::Red(r) => r.pulsar(x - DESVIO, y),
             Self::Bluetooth(b) => b.pulsar(x - DESVIO, y),
         }
     }
+    // 0.1.0
     fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let punto = punto.map(|(x, y)| (x - DESVIO, y));
         match self {
@@ -182,12 +193,28 @@ impl Detalle {
             Self::Bluetooth(b) => b.puntero(punto),
         }
     }
+    // añadido en la 0.2.0
+    fn desplazar(&mut self, dy: f32) -> bool {
+        match self {
+            Self::Red(r) => r.desplazar(dy),
+            Self::Bluetooth(b) => b.desplazar(dy),
+        }
+    }
+    // añadido en la 0.2.0
+    fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
+        match self {
+            Self::Red(r) => r.tecla(tecla),
+            Self::Bluetooth(b) => b.tecla(tecla),
+        }
+    }
+    // 0.1.0
     fn animando(&self) -> bool {
         match self {
             Self::Red(r) => r.animando(),
             Self::Bluetooth(b) => b.animando(),
         }
     }
+    // 0.1.0
     fn refrescar(&mut self) -> bool {
         match self {
             Self::Red(r) => r.refrescar(),
@@ -202,6 +229,19 @@ enum Agarre {
     Nada,
     Volumen,
     Brillo,
+}
+
+/// Lo que se puede apretar en la estación: actúa al soltar encima, como un
+/// botón de verdad. Al apretar solo se hunde, y salirse antes de soltar lo
+/// anula sin que haya pasado nada.
+// añadido en la 0.2.0
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Zona {
+    Baldosa(usize),
+    Conexion(bool),
+    Cabecera(bool),
+    Boton(Agarre),
+    Medio(medios::Orden),
 }
 
 pub struct Centro {
@@ -245,17 +285,34 @@ pub struct Centro {
     detalle: Option<Box<Detalle>>,
     transicion: Option<super::Transicion>,
     origen_detalle: iced_core::Rectangle,
+    // añadido en la 0.2.0 -- dónde se apretó, esperando a que se suelte.
+    apretada: Option<(Zona, f32, f32)>,
+    /// La que se dibuja hundida. Sobrevive a `apretada` para que la vuelta
+    /// del muelle se vea después de soltar.
+    hundida: Option<Zona>,
+    hundido: tema::Transicion,
+    puntero_en: Option<(f32, f32)>,
 }
 
 // El compositor decide el bloqueo y la atenuación sin consultar logind.
 // Este estado dura toda la sesión, aunque se destruya la tarjeta.
 static MANTENER_DESPIERTO: AtomicBool = AtomicBool::new(false);
 
+// 0.1.0
 pub fn mantener_despierto() -> bool {
     MANTENER_DESPIERTO.load(Ordering::Relaxed)
 }
 
+/// Cambia «mantener despierto» y devuelve cómo queda. Lo usan la baldosa del
+/// centro y el buscador: [`Accion::MantenerDespierto`] solo le dice al
+/// compositor que vuelva a leerlo, no lo cambia.
+// añadido en la 0.2.0
+pub fn alternar_mantener_despierto() -> bool {
+    !MANTENER_DESPIERTO.fetch_xor(true, Ordering::Relaxed)
+}
+
 impl Centro {
+    // 0.1.0
     pub fn refrescar(&mut self) -> bool {
         if let Some(d) = self.detalle.as_mut() {
             return d.refrescar();
@@ -330,6 +387,7 @@ impl Centro {
         changed
     }
 
+    // 0.1.0
     pub fn new() -> Self {
         let state = bookos_system::snapshot();
         let wifi_disponible = !state.network.is_null();
@@ -372,6 +430,10 @@ impl Centro {
             detalle: None,
             transicion: None,
             origen_detalle: iced_core::Rectangle::default(),
+            apretada: None,
+            hundida: None,
+            hundido: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
+            puntero_en: None,
         };
         // La primera lectura en el sitio: si fuera por el hilo, la tarjeta
         // abriría sin la parte de la música y crecería un segundo después.
@@ -388,6 +450,7 @@ impl Centro {
         c
     }
 
+    // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         if let Some(d) = &self.detalle {
             return (ANCHO, d.alto());
@@ -406,36 +469,44 @@ impl Centro {
         (ANCHO, alto)
     }
 
+    // 0.1.0
     fn alto_rejilla(&self) -> f32 {
         let filas = self.baldosas.len().div_ceil(COLUMNAS) as f32;
         REJILLA_MARGEN * 2.0 + filas * CELDA + (filas - 1.0).max(0.0) * ENTRE_FILAS
     }
 
+    // 0.1.0
     fn alto_deslizadores(&self) -> f32 {
         GRUPO_MARGEN * 2.0 + control::FILA_PILDORA * 2.0 + ENTRE_DESLIZADORES
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::BajoWidget("control")
     }
 
+    // 0.1.0
     fn y_conexiones(&self) -> f32 {
         MARGEN + CABECERA + HUECO
     }
 
+    // 0.1.0
     fn y_rejilla(&self) -> f32 {
         self.y_conexiones() + CONEXION + HUECO
     }
 
+    // 0.1.0
     fn y_deslizadores(&self) -> f32 {
         self.y_rejilla() + self.alto_rejilla() + HUECO
     }
 
+    // 0.1.0
     fn y_medios(&self) -> f32 {
         self.y_deslizadores() + self.alto_deslizadores() + HUECO
     }
 
     /// Qué baldosa cae en un punto.
+    // 0.1.0
     fn baldosa_en(&self, x: f32, y: f32) -> Option<usize> {
         let x0 = MARGEN + REJILLA_MARGEN;
         let y0 = self.y_rejilla() + REJILLA_MARGEN;
@@ -456,6 +527,7 @@ impl Centro {
 
     /// Cuál de las dos píldoras de conectividad cae en un punto: `false` la del
     /// Wi-Fi, `true` la del Bluetooth.
+    // 0.1.0
     fn conexion_en(&self, x: f32, y: f32) -> Option<bool> {
         let y0 = self.y_conexiones();
         if y < y0 || y > y0 + CONEXION || x < MARGEN || x > ANCHO - MARGEN {
@@ -466,6 +538,7 @@ impl Centro {
 
     /// Los dos botones redondos de la cabecera: `false` Preferencias, `true`
     /// apagar.
+    // 0.1.0
     fn cabecera_en(&self, x: f32, y: f32) -> Option<bool> {
         let y0 = MARGEN + (CABECERA - BOTON_CABECERA) / 2.0;
         if y < y0 || y > y0 + BOTON_CABECERA {
@@ -481,14 +554,17 @@ impl Centro {
     }
 
     /// El ancho de la fila de un deslizador, dentro de su grupo.
+    // 0.1.0
     fn ancho_fila(&self) -> f32 {
         ANCHO - (MARGEN + GRUPO_MARGEN) * 2.0
     }
 
+    // 0.1.0
     fn ancho_pildora(&self) -> f32 {
         control::ancho_pildora(self.ancho_fila(), true)
     }
 
+    // 0.1.0
     fn rect_pildora(&self, cual: Agarre) -> iced_core::Rectangle {
         let y0 = self.y_deslizadores() + GRUPO_MARGEN;
         let y = match cual {
@@ -504,6 +580,7 @@ impl Centro {
     }
 
     /// El botón redondo a la derecha de una píldora.
+    // 0.1.0
     fn rect_boton(&self, cual: Agarre) -> iced_core::Rectangle {
         let p = self.rect_pildora(cual);
         iced_core::Rectangle {
@@ -516,6 +593,7 @@ impl Centro {
 
     /// Dónde está la barra de avance, con la holgura vertical que hace falta
     /// para acertarle a un surco de 4 px.
+    // 0.1.1
     fn avance_en(&self, x: f32, y: f32) -> Option<f32> {
         let y0 = self.y_medios() + GRUPO_MARGEN + CARATULA + 10.0;
         let x0 = MARGEN + GRUPO_MARGEN;
@@ -525,6 +603,7 @@ impl Centro {
     }
 
     /// Los tres mandos de lo que suena, si está.
+    // 0.1.0
     fn medio_en(&self, x: f32, y: f32) -> Option<medios::Orden> {
         self.sonando.as_ref()?;
         let y0 = self.y_medios() + MEDIOS - GRUPO_MARGEN - REPRODUCIR;
@@ -542,7 +621,15 @@ impl Centro {
         })
     }
 
+    // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
+        self.puntero_en = punto;
+        // Salirse con el botón apretado devuelve la baldosa a su sitio, y
+        // volver a entrar la hunde otra vez: así se ve si soltar hará algo.
+        if let Some((zona, ..)) = self.apretada {
+            let encima = punto.and_then(|(x, y)| self.zona_en(x, y)) == Some(zona);
+            self.hundido.ir_a(encima as u8 as f32);
+        }
         if let Some(d) = self.detalle.as_mut() {
             return d.puntero(punto);
         }
@@ -560,15 +647,31 @@ impl Centro {
     }
 
     /// ¿Se mueve algo dentro de la tarjeta?
+    // 0.1.0
     pub fn animando(&self) -> bool {
-        self.señalada.animando() || self.detalle.as_ref().is_some_and(|d| d.animando())
+        self.señalada.animando()
+            || self.hundido.animando()
+            || self.detalle.as_ref().is_some_and(|d| d.animando())
     }
 
+    // 0.1.0
     pub fn agarrado(&self) -> bool {
         self.agarre != Agarre::Nada
     }
 
-    pub fn soltar(&mut self) -> bool {
+    // 0.1.0
+    // modified 0.2.0 -- lo apretado actúa aquí, si se suelta encima
+    pub fn soltar(&mut self) -> (bool, Option<Accion>) {
+        if let Some((zona, x, y)) = self.apretada.take() {
+            self.hundido.ir_a(0.0);
+            let encima = self.puntero_en.and_then(|(px, py)| self.zona_en(px, py)) == Some(zona);
+            return (true, if encima { self.ejecutar(x, y) } else { None });
+        }
+        (self.soltar_agarre(), None)
+    }
+
+    // 0.1.0
+    fn soltar_agarre(&mut self) -> bool {
         let agarre = std::mem::replace(&mut self.agarre, Agarre::Nada);
         if agarre == Agarre::Volumen && self.volumen != self.volumen_inicial {
             bookos_system::request(bookos_system::Operation::Volume {
@@ -579,7 +682,78 @@ impl Centro {
         agarre != Agarre::Nada
     }
 
+    // añadido en la 0.2.0 -- las baldosas se confirman al soltar; solo las píldoras admiten arrastre.
+    pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
+        self.detalle.is_none()
+            && [Agarre::Volumen, Agarre::Brillo].into_iter().any(|cual| {
+                let mut zona = self.rect_pildora(cual);
+                zona.y -= control::MARGEN_AGARRE;
+                zona.height += control::MARGEN_AGARRE * 2.0;
+                zona.contains(iced_core::Point::new(x, y))
+            })
+    }
+
+    /// Qué botón cae en un punto, en el mismo orden en que `ejecutar` los
+    /// mira. Las píldoras y la barra de avance no: se arrastran y responden
+    /// desde el primer momento.
+    // añadido en la 0.2.0
+    fn zona_en(&self, x: f32, y: f32) -> Option<Zona> {
+        let punto = iced_core::Point::new(x, y);
+        if self.rect_boton(Agarre::Volumen).contains(punto) {
+            return Some(Zona::Boton(Agarre::Volumen));
+        }
+        if self.sensor && self.rect_boton(Agarre::Brillo).contains(punto) {
+            return Some(Zona::Boton(Agarre::Brillo));
+        }
+        if let Some(apagar) = self.cabecera_en(x, y) {
+            return Some(Zona::Cabecera(apagar));
+        }
+        if self.avance_en(x, y).is_some() {
+            return None;
+        }
+        if let Some(orden) = self.medio_en(x, y) {
+            return Some(Zona::Medio(orden));
+        }
+        if let Some(bluetooth) = self.conexion_en(x, y) {
+            return Some(Zona::Conexion(bluetooth));
+        }
+        self.baldosa_en(x, y).map(Zona::Baldosa)
+    }
+
+    /// Cuánto se dibuja hundido algo, de 0 a 1.
+    // añadido en la 0.2.0
+    fn hundimiento(&self, zona: Zona) -> f32 {
+        if self.hundida == Some(zona) {
+            self.hundido.valor()
+        } else {
+            0.0
+        }
+    }
+
+    /// La rueda solo mueve algo con una lista de Wi-Fi o Bluetooth abierta.
+    // añadido en la 0.2.0
+    pub fn desplazar(&mut self, dy: f32) -> bool {
+        self.detalle.as_mut().is_some_and(|d| d.desplazar(dy))
+    }
+
+    // 0.1.0
+    // modified 0.2.0 -- los botones esperan a soltar; aquí solo se hunden
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
+        if self.detalle.is_none()
+            && let Some(zona) = self.zona_en(x, y)
+        {
+            self.apretada = Some((zona, x, y));
+            self.hundida = Some(zona);
+            self.puntero_en = Some((x, y));
+            self.hundido.ir_a(1.0);
+            return None;
+        }
+        self.ejecutar(x, y)
+    }
+
+    // 0.1.0
+    // modified 0.1.1 -- pulsar la barra de avance salta en la canción
+    fn ejecutar(&mut self, x: f32, y: f32) -> Option<Accion> {
         if let Some(d) = self.detalle.as_mut() {
             if lista::volver_en(x - DESVIO, y) {
                 self.volver();
@@ -738,6 +912,7 @@ impl Centro {
 
     /// «No molestar» lo guarda el shell, que es quien lo sabe; la tarjeta solo
     /// lo enseña. Ver `Shell::abrir`.
+    // 0.1.0
     pub fn poner_no_molestar(&mut self, activo: bool) {
         if let Some(b) = self
             .baldosas
@@ -748,17 +923,18 @@ impl Centro {
         }
     }
 
+    // 0.1.0
     fn alternar(&mut self, cual: Interna, i: usize) -> Accion {
         match cual {
             Interna::Mantener => {
-                let activo = !mantener_despierto();
-                MANTENER_DESPIERTO.store(activo, Ordering::Relaxed);
+                let activo = alternar_mantener_despierto();
                 self.baldosas[i].activa = activo;
                 Accion::MantenerDespierto
             }
         }
     }
 
+    // 0.1.0
     fn poner_volumen(&mut self, nivel: u8) -> bool {
         if nivel == self.volumen {
             return false;
@@ -771,6 +947,7 @@ impl Centro {
         true
     }
 
+    // 0.1.0
     fn poner_brillo(&mut self, nivel: u8) -> bool {
         // Mismo suelo que el emergente del brillo: a cero no se ve ni el
         // deslizador con el que volver a subirlo.
@@ -789,6 +966,7 @@ impl Centro {
         true
     }
 
+    // 0.1.0
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         match tecla {
             // Dentro de una lista, Esc vuelve a la estación, como la flecha.
@@ -797,22 +975,29 @@ impl Centro {
                 Tecla::Consumida
             }
             crate::TeclaPulsada::Escape => Tecla::Cerrar,
-            _ => Tecla::Ignorada,
+            // Dentro de una lista, el resto de teclas son de la lista.
+            tecla => match self.detalle.as_mut() {
+                Some(d) => d.tecla(tecla),
+                None => Tecla::Ignorada,
+            },
         }
     }
 
+    // 0.1.0
     fn animar(&mut self, transicion: super::Transicion) {
         if !tema::efectos_reducidos() {
             self.transicion = Some(transicion);
         }
     }
 
+    // 0.1.0
     pub fn tomar_transicion(&mut self) -> Option<super::Transicion> {
         self.transicion.take()
     }
 
     /// De la lista a la estación. Se relee al volver: mientras estaba en la
     /// lista no se refrescaba, y la píldora diría la red de antes.
+    // 0.1.0
     fn volver(&mut self) {
         self.detalle = None;
         self.animar(super::Transicion::CerrarDetalle(self.origen_detalle));
@@ -824,6 +1009,8 @@ impl Centro {
     // --- Dibujo ------------------------------------------------------------
 
     /// Un círculo con un icono dentro, que es la forma de casi todo aquí.
+    // 0.1.0
+    // modified 0.1.1 -- iconos sólidos
     fn circulo(
         nombre: &str,
         lado: f32,
@@ -851,6 +1038,7 @@ impl Centro {
             .into()
     }
 
+    // 0.1.0
     fn cabecera(&self) -> PanelElement<'_> {
         let avatar: PanelElement<'_> = match &self.usuario.foto {
             Some(handle) => iced_widget::image(handle.clone())
@@ -944,11 +1132,13 @@ impl Centro {
     }
 
     /// Una de las dos píldoras de conectividad.
+    // 0.1.0
+    // modified 0.1.1 -- fondo elevado en vez de card
     fn conexion(&self, bluetooth: bool) -> PanelElement<'_> {
         // El círculo va en acento cuando hay **conexión**, no cuando la radio
         // está encendida. Es la misma regla que la rejilla: el acento dice que
         // algo está funcionando. Con la antena encendida y sin red, la píldora
-        // se queda apagada y el subtítulo dice «Sin conexión», que es lo que
+        // se queda apagada y el subtítulo dice «No conectado», que es lo que
         // hay que ver cuando algo no va.
         let disponible = if bluetooth {
             self.bluetooth_disponible
@@ -985,7 +1175,7 @@ impl Centro {
         } else {
             match (encendido, conectado) {
                 (_, Some(donde)) => recortar(donde, 14),
-                (true, None) => "Sin conexión".to_owned(),
+                (true, None) => "No conectado".to_owned(),
                 (false, None) => "Desactivado".to_owned(),
             }
         };
@@ -994,9 +1184,15 @@ impl Centro {
         } else {
             (tema::elevado(), tinta_apagado())
         };
+        let h = self.hundimiento(Zona::Conexion(bluetooth));
+        let fondo = tema::mezclar(fondo, Color::BLACK, 0.12 * h);
+        let lado = ICONO_CONEXION * (1.0 - HUNDIDO * h);
+        let caja = tema::mezclar(contenedor(), Color::BLACK, 0.08 * h);
         container(
             row![
-                Self::circulo(icono, ICONO_CONEXION, 18.0, fondo, tinta),
+                container(Self::circulo(icono, lado, 18.0, fondo, tinta))
+                    .width(Length::Fixed(ICONO_CONEXION))
+                    .center_x(Length::Fixed(ICONO_CONEXION)),
                 Space::new().width(Length::Fixed(10.0)),
                 column![
                     text(nombre)
@@ -1024,8 +1220,8 @@ impl Centro {
         })
         .center_y(Length::Fixed(CONEXION))
         .clip(true)
-        .style(|_theme: &iced_widget::Theme| container::Style {
-            background: Some(contenedor().into()),
+        .style(move |_theme: &iced_widget::Theme| container::Style {
+            background: Some(caja.into()),
             border: Border {
                 radius: (CONEXION / 2.0).into(),
                 ..Default::default()
@@ -1035,6 +1231,8 @@ impl Centro {
         .into()
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- baldosas solo con el círculo, sin rótulo, sobre fondo elevado
     fn baldosa(&self, i: usize) -> PanelElement<'_> {
         let baldosa = &self.baldosas[i];
         // Lo que cambia entre encendida y apagada es el círculo de detrás, no
@@ -1048,14 +1246,28 @@ impl Centro {
             (tema::elevado(), tema::texto())
         };
         let fondo = tema::mezclar(base, tema::tinta(), 0.08 * self.señalada.intensidad(i));
+        // Hundida encoge y se oscurece un poco, como un botón que cede bajo
+        // el dedo. El hueco de la celda no cambia: los vecinos no se mueven.
+        let h = self.hundimiento(Zona::Baldosa(i));
+        let fondo = tema::mezclar(fondo, Color::BLACK, 0.12 * h);
+        let lado = BOTON * (1.0 - HUNDIDO * h);
         let celda = (ANCHO - (MARGEN + REJILLA_MARGEN) * 2.0) / COLUMNAS as f32;
-        container(Self::circulo(baldosa.icono, BOTON, 20.0, fondo, tinta))
-            .width(Length::Fixed(celda))
-            .height(Length::Fixed(CELDA))
-            .center_x(Length::Fixed(celda))
-            .into()
+        container(Self::circulo(
+            baldosa.icono,
+            lado,
+            20.0 * (1.0 - HUNDIDO * h),
+            fondo,
+            tinta,
+        ))
+        .width(Length::Fixed(celda))
+        .height(Length::Fixed(BOTON))
+        .center_x(Length::Fixed(celda))
+        .center_y(Length::Fixed(BOTON))
+        .into()
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- iconos sólidos y fondo elevado
     fn deslizador(&self, cual: Agarre) -> PanelElement<'_> {
         let (nivel, icono, boton, encendido, apagado) = match cual {
             Agarre::Brillo => (
@@ -1119,6 +1331,8 @@ impl Centro {
         .into()
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- iconos sólidos y barra de avance que se puede pulsar
     fn medios(&self, sonando: &Sonando) -> PanelElement<'_> {
         let ancho = ANCHO - (MARGEN + GRUPO_MARGEN) * 2.0;
         let ancho_texto = ancho - CARATULA - 12.0;
@@ -1214,12 +1428,14 @@ impl Centro {
 
     /// Un grupo gris con su alto fijo: el alto es lo que usan las zonas de
     /// clic, así que se fija en vez de dejarlo al contenido.
+    // 0.1.0
     fn grupo<'a>(contenido: PanelElement<'a>, alto: f32, relleno: f32) -> PanelElement<'a> {
         container(control::grupo(contenido, ANCHO - MARGEN * 2.0, relleno))
             .height(Length::Fixed(alto))
             .into()
     }
 
+    // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         if let Some(d) = &self.detalle {
             // El margen de la estación más el desvío: la lista queda centrada.
@@ -1273,6 +1489,8 @@ impl Centro {
 }
 
 /// Las ocho baldosas de la rejilla, en el orden del plasmoide.
+// 0.1.0
+// modified 0.1.1 -- sin rótulos en las baldosas
 fn baldosas() -> Vec<Baldosa> {
     // `rfkill list` dice si hay algo bloqueado por software; el modo avión es
     // exactamente eso.
@@ -1337,6 +1555,7 @@ fn baldosas() -> Vec<Baldosa> {
 }
 
 /// Recorta al ancho en píxeles, con la misma medida que las listas.
+// 0.1.0
 fn recortar_px(texto: &str, ancho: f32, tamaño: f32) -> String {
     super::lista::recortar(texto, ancho, tamaño)
 }
@@ -1347,6 +1566,7 @@ fn recortar_px(texto: &str, ancho: f32, tamaño: f32) -> String {
 /// no está, y el error de contar caracteres solo se nota con un SSID lleno de
 /// emes. El corte es por `char` y no por byte para no partir una letra acentuada
 /// en dos.
+// 0.1.0
 fn recortar(texto: &str, max: usize) -> String {
     if texto.chars().count() <= max {
         return texto.to_owned();
@@ -1354,6 +1574,7 @@ fn recortar(texto: &str, max: usize) -> String {
     texto.chars().take(max - 1).collect::<String>() + "…"
 }
 
+// 0.1.0
 fn conectado_a() -> Option<String> {
     let s = bookos_system::snapshot();
     s.network["ssid"]
@@ -1361,6 +1582,7 @@ fn conectado_a() -> Option<String> {
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
+// 0.1.0
 fn emparejado_con() -> Option<String> {
     let s = bookos_system::snapshot();
     s.bluetooth["devices"]
@@ -1386,6 +1608,7 @@ impl Lectura {
     /// Descodifica la carátula solo si ha cambiado de fichero. `previa` es la
     /// de la lectura anterior, que se reutiliza tal cual: un JPEG por segundo
     /// para la misma canción sería trabajo tirado.
+    // 0.1.0
     fn nueva(
         sonando: Option<Sonando>,
         previa: Option<(String, iced_widget::image::Handle)>,
@@ -1410,6 +1633,7 @@ impl Lectura {
 /// (`multimedia::vigilar_centro`).
 ///
 /// `previa` es la carátula ya descodificada con su ruta, para reutilizarla.
+// 0.1.0
 fn vigilar_medios(
     lectura: &Arc<Mutex<Option<Lectura>>>,
     mut previa: Option<(String, iced_widget::image::Handle)>,
@@ -1452,6 +1676,7 @@ fn vigilar_medios(
 /// Sin duración —el móvil a veces no la manda, y en una radio no la hay— queda
 /// el surco vacío y sin tirador: un tirador clavado al principio dice «0:00»,
 /// y eso es mentira.
+// 0.1.1
 fn barra_avance<'a>(ancho: f32, avance: Option<f32>) -> PanelElement<'a> {
     let pildora = |ancho: f32, alto: f32, color: Color| {
         container(Space::new())
@@ -1485,6 +1710,7 @@ fn barra_avance<'a>(ancho: f32, avance: Option<f32>) -> PanelElement<'a> {
     iced_widget::stack![surco, lleno, tirador].into()
 }
 
+// 0.1.0
 fn caratula(ruta: &str) -> Option<iced_widget::image::Handle> {
     // Tres píxeles por punto: nítida hasta escala 3 y aun así 144×144.
     medios::cargar_caratula(ruta, (CARATULA * 3.0) as u32, tema::R_BOTON_PEQUENO * 3.0)
@@ -1494,6 +1720,34 @@ fn caratula(ruta: &str) -> Option<iced_widget::image::Handle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Apretar y soltar en el mismo sitio, que es lo que hace un clic.
+    fn clic(c: &mut Centro, x: f32, y: f32) -> Option<Accion> {
+        c.pulsar(x, y).or_else(|| c.soltar().1)
+    }
+
+    #[test]
+    fn apretar_hunde_y_salirse_antes_de_soltar_lo_anula() {
+        let mut c = Centro::new();
+        let i = c
+            .baldosas
+            .iter()
+            .position(|b| b.icono == "ahorro")
+            .expect("la estación trae ahorro");
+        let celda = (ANCHO - (MARGEN + REJILLA_MARGEN) * 2.0) / COLUMNAS as f32;
+        let x = MARGEN + REJILLA_MARGEN + celda * ((i % COLUMNAS) as f32 + 0.5);
+        let y = c.y_rejilla()
+            + REJILLA_MARGEN
+            + (CELDA + ENTRE_FILAS) * (i / COLUMNAS) as f32
+            + CELDA / 2.0;
+        let antes = c.baldosas[i].activa;
+        assert_eq!(c.pulsar(x, y), None, "apretar todavía no hace nada");
+        assert_eq!(c.baldosas[i].activa, antes);
+        assert!(c.animando(), "la baldosa empieza a hundirse");
+        c.puntero(Some((2.0, 2.0)));
+        assert_eq!(c.soltar().1, None, "soltar fuera no hace nada");
+        assert_eq!(c.baldosas[i].activa, antes);
+    }
 
     /// La rejilla reparte los clics por celdas, cuatro por dos.
     #[test]
@@ -1546,14 +1800,14 @@ mod tests {
         c.sensor = true;
         c.automatico = false;
         let r = c.rect_boton(Agarre::Brillo);
-        let accion = c.pulsar(r.x + r.width / 2.0, r.y + r.height / 2.0);
+        let accion = clic(&mut c, r.x + r.width / 2.0, r.y + r.height / 2.0);
         assert!(c.automatico, "el botón no puso el automático");
         match accion {
             Some(Accion::BrilloAutomatico(elegido)) => assert!(elegido.pantalla),
             otra => panic!("se esperaba BrilloAutomatico con pantalla=true, llegó {otra:?}"),
         }
 
-        let accion = c.pulsar(r.x + r.width / 2.0, r.y + r.height / 2.0);
+        let accion = clic(&mut c, r.x + r.width / 2.0, r.y + r.height / 2.0);
         assert!(!c.automatico, "el segundo toque no lo quitó");
         match accion {
             Some(Accion::BrilloAutomatico(elegido)) => assert!(!elegido.pantalla),
@@ -1569,7 +1823,7 @@ mod tests {
         c.sensor = false;
         c.automatico = false;
         let r = c.rect_boton(Agarre::Brillo);
-        c.pulsar(r.x + r.width / 2.0, r.y + r.height / 2.0);
+        clic(&mut c, r.x + r.width / 2.0, r.y + r.height / 2.0);
         assert!(!c.automatico, "sin sensor no debería haber cambiado nada");
     }
 
@@ -1582,14 +1836,14 @@ mod tests {
         c.bluetooth_disponible = true;
         let y = c.y_conexiones() + CONEXION / 2.0;
         // Fuera del círculo: la mitad derecha de cada tarjeta.
-        assert_eq!(c.pulsar(140.0, y), None);
+        assert_eq!(clic(&mut c, 140.0, y), None);
         assert!(matches!(c.detalle.as_deref(), Some(Detalle::Red(_))));
         c.tecla(crate::TeclaPulsada::Escape);
         assert!(c.detalle.is_none(), "Esc vuelve a la estación");
         // Volver relee el estado real, y en una máquina sin Bluetooth eso
         // deshace lo forzado arriba.
         c.bluetooth_disponible = true;
-        assert_eq!(c.pulsar(ANCHO - 40.0, y), None);
+        assert_eq!(clic(&mut c, ANCHO - 40.0, y), None);
         assert!(matches!(c.detalle.as_deref(), Some(Detalle::Bluetooth(_))));
     }
 
@@ -1599,7 +1853,7 @@ mod tests {
         let mut c = Centro::new();
         let y = c.y_conexiones() + CONEXION / 2.0;
         let antes = c.wifi;
-        let accion = c.pulsar(MARGEN + ICONO_CONEXION / 2.0, y);
+        let accion = clic(&mut c, MARGEN + ICONO_CONEXION / 2.0, y);
         assert_eq!(
             c.wifi, antes,
             "el estado solo cambia al confirmarlo el servicio"
@@ -1638,7 +1892,7 @@ mod tests {
             + 2.5 * (ANCHO - 2.0 * (MARGEN + REJILLA_MARGEN)) / COLUMNAS as f32;
         let y = c.y_rejilla() + REJILLA_MARGEN + BOTON / 2.0;
         for perfil in ["power-saver", "balanced", "power-saver"] {
-            assert_eq!(c.pulsar(x, y), Some(Accion::PerfilEnergia(perfil)));
+            assert_eq!(clic(&mut c, x, y), Some(Accion::PerfilEnergia(perfil)));
         }
     }
 
@@ -1653,7 +1907,7 @@ mod tests {
         ] {
             let x = MARGEN + REJILLA_MARGEN + (columna as f32 + 0.5) * ancho;
             let y = c.y_rejilla() + REJILLA_MARGEN + CELDA + ENTRE_FILAS + BOTON / 2.0;
-            assert_eq!(c.pulsar(x, y), Some(accion));
+            assert_eq!(clic(&mut c, x, y), Some(accion));
             assert!(!c.baldosas[COLUMNAS + columna].activa);
         }
     }
@@ -1664,7 +1918,8 @@ mod tests {
         for (x, inicio) in [(140.0, MARGEN), (ANCHO - 40.0, ANCHO / 2.0 + 4.0)] {
             c.wifi_disponible = true;
             c.bluetooth_disponible = true;
-            c.pulsar(x, c.y_conexiones() + CONEXION / 2.0);
+            let y = c.y_conexiones() + CONEXION / 2.0;
+            clic(&mut c, x, y);
             let Some(super::super::Transicion::AbrirDetalle(origen)) = c.tomar_transicion() else {
                 panic!("la lista no pidió la animación desde su tarjeta");
             };

@@ -110,6 +110,7 @@ struct Colocada {
 impl Colocada {
     /// El hit-test incluye la mitad del hueco de cada lado: un toque que cae
     /// entre dos teclas es de la más cercana, no de nadie.
+    // 0.1.1
     fn contiene(&self, x: f32, y: f32) -> bool {
         let m = HUECO / 2.0;
         x >= self.x - m
@@ -120,6 +121,7 @@ impl Colocada {
 }
 
 /// Cada fila con el ancho de cada tecla en unidades de tecla de letra.
+// 0.1.1
 fn filas(capa: Capa) -> [Vec<(Tecla, f32)>; 4] {
     let cars = |s: &str| s.chars().map(|c| (Tecla::Car(c), 1.0)).collect::<Vec<_>>();
     let con = |ini: (Tecla, f32), medio: Vec<(Tecla, f32)>, fin: (Tecla, f32)| {
@@ -170,6 +172,7 @@ fn filas(capa: Capa) -> [Vec<(Tecla, f32)>; 4] {
 /// La variante que escribe una pulsación larga, la que en un teclado español
 /// se busca más. Una sola y no un menú: elegir entre cinco con el dedo encima
 /// es otra interacción entera, y en castellano casi siempre se quiere la aguda.
+// 0.1.1
 fn variante(c: char) -> Option<char> {
     Some(match c {
         'a' => 'á',
@@ -202,6 +205,7 @@ struct Colores {
 }
 
 impl Colores {
+    // 0.1.1
     fn ahora() -> Self {
         let acento = tema::acento();
         let fondo = tema::mezclar(tema::bg(), acento, 0.10);
@@ -233,8 +237,9 @@ pub struct Teclado {
 }
 
 impl Teclado {
+    // 0.1.1
     pub fn new(ancho: f32, capa: Capa) -> Self {
-        let mut visible = tema::Transicion::nueva(0.0, tema::D_TARJETA, tema::C_ENTRADA);
+        let mut visible = tema::Transicion::nueva(0.0, tema::M_SUAVE);
         visible.ir_a(1.0);
         Self {
             ancho,
@@ -246,11 +251,13 @@ impl Teclado {
         }
     }
 
+    // 0.1.1
     pub fn size(&self) -> (f32, f32) {
         (self.ancho, ALTO)
     }
 
     /// Vuelve a entrar si se estaba yendo, con la capa que pida el campo.
+    // 0.1.1
     pub fn mostrar(&mut self, capa: Capa) {
         if self.visible.destino() < 1.0 {
             self.capa = capa;
@@ -258,30 +265,36 @@ impl Teclado {
         }
     }
 
+    // 0.1.1
     pub fn ocultar(&mut self) {
         self.pulsada = None;
         self.visible.ir_a(0.0);
     }
 
     /// Se está yendo o ya se fue.
+    // 0.1.1
     pub fn saliendo(&self) -> bool {
         self.visible.destino() < 1.0
     }
 
     /// Ya no se ve y se puede tirar.
+    // 0.1.1
     pub fn terminado(&self) -> bool {
         self.saliendo() && !self.visible.animando()
     }
 
+    // 0.1.1
     pub fn animando(&self) -> bool {
         self.visible.animando()
     }
 
     /// Cuánto asoma, en lógicos: lo que tapa de la pantalla ahora mismo.
+    // 0.1.1
     pub fn asoma(&self) -> f32 {
         ALTO * self.visible.valor()
     }
 
+    // 0.1.1
     fn teclas(&self) -> Vec<Colocada> {
         let bloque = self.ancho - 2.0 * MARGEN;
         let x0 = (self.ancho - bloque) / 2.0;
@@ -317,6 +330,7 @@ impl Teclado {
         colocadas
     }
 
+    // 0.1.1
     fn tecla_en(&self, x: f32, y: f32) -> Option<Tecla> {
         self.teclas()
             .into_iter()
@@ -325,6 +339,7 @@ impl Teclado {
     }
 
     /// Un dedo baja en `(x, y)`, en lógicos relativos al teclado.
+    // 0.1.1
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let tecla = self.tecla_en(x, y)?;
         self.pulsada = Some((tecla, Instant::now()));
@@ -334,6 +349,7 @@ impl Teclado {
     /// El dedo se levanta. La tecla que cuenta es la que se pulsó, no la que
     /// haya debajo ahora: un dedo que resbala medio milímetro sobre el borde
     /// escribiría la letra de al lado.
+    // 0.1.1
     pub fn soltar(&mut self) -> Option<Accion> {
         let (tecla, desde) = self.pulsada.take()?;
         let larga = desde.elapsed() >= PULSACION_LARGA;
@@ -370,6 +386,7 @@ impl Teclado {
         }
     }
 
+    // 0.1.1
     pub fn view(&self) -> PanelElement<'_> {
         let colores = Colores::ahora();
         let pulsada = self.pulsada.map(|(t, _)| t);
@@ -401,6 +418,7 @@ impl Teclado {
             .into()
     }
 
+    // 0.1.1
     fn tecla<'a>(&self, c: &Colocada, colores: &Colores, pulsada: bool) -> PanelElement<'a> {
         let (fondo, tinta) = match c.tecla {
             Tecla::Intro => (colores.intro, colores.sobre_intro),
@@ -488,6 +506,7 @@ impl Teclado {
             .into()
     }
 
+    // 0.1.1
     fn icono<'a>(&self, nombre: &str, lado: f32, color: Color) -> PanelElement<'a> {
         match icono::propio(nombre) {
             Some(ic) => icono::ver_teñido_propio(&ic, lado, color),
@@ -496,6 +515,7 @@ impl Teclado {
     }
 
     /// El color con el que se limpia el buffer: el del fondo del teclado.
+    // 0.1.1
     pub fn fondo(&self) -> Color {
         Colores::ahora().fondo
     }

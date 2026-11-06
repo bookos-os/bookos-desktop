@@ -10,16 +10,17 @@
 //! pero no se comportan igual.
 
 use iced_core::{Border, Length};
-use iced_widget::{Space, column, container, text};
+use iced_widget::{Space, column, container, row, text};
 
 use crate::Accion;
+use crate::escritorio::NuevoElemento;
 use crate::tema;
 use crate::view::PanelElement;
 
-use super::menu::{DIVISOR, FILA, HUECO_ICONO, ICONO, MARGEN as MARGEN_FILA, divisor, fila};
+use super::menu::{DIVISOR, FILA, HUECO_ICONO, ICONO, MARGEN as MARGEN_FILA, caja, divisor, fila};
 use super::{Ancla, Tecla};
 
-/// Más ancho que el del logo: "Quitar del dock" con su icono no cabía en 210.
+/// Más ancho que el del logo: "Desanclar del dock" con su icono no cabía en 210.
 const ANCHO: f32 = 230.0;
 const BORDE_SUP: f32 = 4.0;
 const BORDE_INF: f32 = 4.0;
@@ -44,19 +45,18 @@ enum Entrada {
         accion: Accion,
     },
     Divisor,
-    /// Las muestras de color de carpeta, con la puesta ahora si la hay.
-    Colores(Option<String>),
+    /// Una fila que despliega a su derecha otra lista al pasar el puntero.
+    Submenu {
+        etiqueta: String,
+        icono: &'static str,
+        hijos: Vec<(String, &'static str, Accion)>,
+    },
 }
 
-/// Lado de la casilla de cada muestra: el círculo y su anillo de elegida.
-const MUESTRA: f32 = 20.0;
-/// El círculo de color dentro de la casilla.
-const CIRCULO: f32 = 14.0;
-const HUECO_MUESTRA: f32 = 6.0;
-/// Dónde empieza la primera muestra: en la columna de los iconos de las filas,
-/// que es `MARGEN_FILA` más el relleno de 11 de `menu::fila`, menos el aire del
-/// anillo para que el círculo —y no su casilla— quede alineado con ellos.
-const X_MUESTRAS: f32 = MARGEN_FILA + 11.0 - (MUESTRA - CIRCULO) / 2.0;
+/// Hueco entre el menú y su submenú. Cuenta como zona del submenú al mover el
+/// puntero: si no, cruzarlo en diagonal cerraba el submenú justo antes de
+/// llegar.
+const HUECO_SUBMENU: f32 = 2.0;
 
 pub struct MenuDock {
     ventana: bool,
@@ -69,12 +69,21 @@ pub struct MenuDock {
     /// Punto lógico donde anclar la esquina superior izquierda, si lo hay.
     /// `None` es el menú de ventana centrado de toda la vida.
     punto: Option<(f32, f32)>,
+    /// La entrada de tipo `Submenu` que tiene el submenú desplegado.
+    abierto: Option<usize>,
+    /// La fila del submenú bajo el puntero o el teclado.
+    señalada_sub: tema::Realce,
+    /// Las flechas mueven la lista del submenú y no la principal.
+    foco_sub: bool,
+    ancho_sub: f32,
 }
 
 impl MenuDock {
+    // 0.1.0
     pub fn es_ventana(&self) -> bool {
         self.ventana
     }
+    // 0.1.0
     pub fn ventana(opciones: Vec<(String, Accion)>) -> Self {
         Self::construir(opciones, None)
     }
@@ -85,12 +94,9 @@ impl MenuDock {
     /// 48 px del menú de ventana: aquel está pensado para leerse centrado en
     /// pantalla, y junto al puntero salía una losa de 310 px para una sola
     /// entrada. `None` en `opciones` es un divisor.
-    ///
-    /// `colores` añade al final las muestras de color de carpeta, con la que
-    /// tenga ahora la selección: `Some(None)` es el automático.
+    // 0.1.1
     pub fn escritorio(
         opciones: Vec<Option<(String, &'static str, Accion)>>,
-        colores: Option<Option<&str>>,
         punto: (f32, f32),
     ) -> Self {
         let texto = opciones
@@ -104,9 +110,45 @@ impl MenuDock {
         let ancho = (MARGEN_FILA * 2.0 + 22.0 + ICONO + HUECO_ICONO + texto + 16.0)
             .ceil()
             .max(160.0);
-        let mut entradas: Vec<Entrada> = opciones
+        // La entrada de crear carpeta se despliega en el submenú «Crear» con
+        // los demás tipos. Los tipos viven aquí y no en quien arma las
+        // opciones: es una forma de dibujarla, no una decisión de qué ofrecer.
+        let mut ancho_sub: f32 = 0.0;
+        let entradas: Vec<Entrada> = opciones
             .into_iter()
             .map(|opcion| match opcion {
+                Some((etiqueta, icono, Accion::EscritorioNuevo(NuevoElemento::Carpeta))) => {
+                    let hijos = vec![
+                        (
+                            "Carpeta".to_string(),
+                            "carpeta-nueva",
+                            NuevoElemento::Carpeta,
+                        ),
+                        (
+                            "Documento de texto".to_string(),
+                            "editar",
+                            NuevoElemento::Texto,
+                        ),
+                        (
+                            "Script de shell".to_string(),
+                            "terminal",
+                            NuevoElemento::Script,
+                        ),
+                        ("Archivo vacío".to_string(), "abrir", NuevoElemento::Vacio),
+                    ]
+                    .into_iter()
+                    .map(|(e, i, t)| (e, i, Accion::EscritorioNuevo(t)))
+                    .collect::<Vec<_>>();
+                    ancho_sub = hijos
+                        .iter()
+                        .map(|(e, ..)| crate::widget::ancho_de(e, tema::T_CUERPO))
+                        .fold(0.0, f32::max);
+                    Entrada::Submenu {
+                        etiqueta,
+                        icono,
+                        hijos,
+                    }
+                }
                 Some((etiqueta, icono, accion)) => Entrada::Item {
                     etiqueta,
                     icono,
@@ -115,10 +157,11 @@ impl MenuDock {
                 None => Entrada::Divisor,
             })
             .collect();
-        if let Some(actual) = colores {
-            entradas.push(Entrada::Divisor);
-            entradas.push(Entrada::Colores(actual.map(str::to_string)));
-        }
+        let ancho_sub = if ancho_sub > 0.0 {
+            (MARGEN_FILA * 2.0 + 22.0 + ICONO + HUECO_ICONO + ancho_sub + 16.0).ceil()
+        } else {
+            0.0
+        };
         Self {
             ventana: false,
             ancho,
@@ -126,9 +169,15 @@ impl MenuDock {
             señalada: tema::Realce::nuevo(),
             x: 0.0,
             punto: Some(punto),
+            abierto: None,
+            señalada_sub: tema::Realce::nuevo(),
+            foco_sub: false,
+            ancho_sub,
         }
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- ancho guardado en el menú
     fn construir(opciones: Vec<(String, Accion)>, punto: Option<(f32, f32)>) -> Self {
         Self {
             ancho: 310.0,
@@ -144,8 +193,14 @@ impl MenuDock {
             x: 0.0,
             ventana: true,
             punto,
+            abierto: None,
+            señalada_sub: tema::Realce::nuevo(),
+            foco_sub: false,
+            ancho_sub: 0.0,
         }
     }
+    // 0.1.0
+    // modified 0.1.1 -- «Abrir» si la aplicación está cerrada
     pub fn new(objetivo: Objetivo) -> Self {
         // «Nueva ventana» solo tiene sentido si ya hay una: sobre una
         // aplicación cerrada lo que hace la entrada es abrirla, y así se llama.
@@ -160,11 +215,16 @@ impl MenuDock {
         }];
         entradas.push(Entrada::Item {
             etiqueta: if objetivo.anclada {
-                "Quitar del dock".into()
+                "Desanclar del dock".into()
             } else {
-                "Fijar en el dock".into()
+                "Anclar al dock".into()
             },
-            icono: "fijar",
+            // modificado en la 0.2.0 -- macizo si ya está anclada: se lee el estado sin leer la etiqueta.
+            icono: if objetivo.anclada {
+                "fijar-anclado"
+            } else {
+                "fijar"
+            },
             accion: Accion::Anclar {
                 app_id: objetivo.app_id.clone(),
                 exec: objetivo.exec.clone(),
@@ -191,28 +251,92 @@ impl MenuDock {
             señalada: tema::Realce::nuevo(),
             x: objetivo.x,
             punto: None,
+            abierto: None,
+            señalada_sub: tema::Realce::nuevo(),
+            foco_sub: false,
+            ancho_sub: 0.0,
         }
     }
 
+    // 0.1.0
+    // modified 0.2.0 -- reserva sitio para el submenú, abierto o no
     pub fn size(&self) -> (f32, f32) {
-        let alto: f32 = self
-            .entradas
-            .iter()
-            .map(|e| match e {
-                Entrada::Item { .. } | Entrada::Colores(_) => self.alto_fila(),
-                Entrada::Divisor => DIVISOR,
-            })
-            .sum();
-        (self.ancho(), alto + BORDE_SUP + BORDE_INF)
+        let (ancho, alto) = (self.ancho(), self.alto_principal());
+        let Some((i, hijos)) = self.submenu() else {
+            return (ancho, alto);
+        };
+        // Se reserva con el submenú cerrado también: crecer al abrirlo
+        // desplazaría el menú entero si estaba junto al borde derecho, justo
+        // bajo el puntero.
+        let alto_sub = self.y_de(i) - BORDE_SUP + Self::alto_sub(hijos.len());
+        (ancho + HUECO_SUBMENU + self.ancho_sub, alto.max(alto_sub))
     }
 
+    // 0.2.0
+    fn alto_entrada(&self, entrada: &Entrada) -> f32 {
+        match entrada {
+            Entrada::Divisor => DIVISOR,
+            _ => self.alto_fila(),
+        }
+    }
+
+    // 0.2.0
+    fn alto_principal(&self) -> f32 {
+        let filas: f32 = self.entradas.iter().map(|e| self.alto_entrada(e)).sum();
+        filas + BORDE_SUP + BORDE_INF
+    }
+
+    /// La `y` donde empieza la entrada `i`.
+    // 0.2.0
+    fn y_de(&self, i: usize) -> f32 {
+        BORDE_SUP
+            + self.entradas[..i]
+                .iter()
+                .map(|e| self.alto_entrada(e))
+                .sum::<f32>()
+    }
+
+    // 0.2.0
+    fn alto_sub(n: usize) -> f32 {
+        n as f32 * FILA + BORDE_SUP + BORDE_INF
+    }
+
+    /// La entrada con submenú y sus hijos, si el menú tiene una.
+    // 0.2.0
+    fn submenu(&self) -> Option<(usize, &[(String, &'static str, Accion)])> {
+        self.entradas.iter().enumerate().find_map(|(i, e)| match e {
+            Entrada::Submenu { hijos, .. } => Some((i, hijos.as_slice())),
+            _ => None,
+        })
+    }
+
+    /// Qué fila del submenú abierto cae en el punto. Cuenta el hueco con el
+    /// menú, pero solo a la altura del propio submenú.
+    // 0.2.0
+    fn fila_sub_en(&self, x: f32, y: f32) -> Option<usize> {
+        let (i, hijos) = self.submenu().filter(|(i, _)| self.abierto == Some(*i))?;
+        let arriba = self.y_de(i) - BORDE_SUP;
+        if x < self.ancho() || x > self.ancho() + HUECO_SUBMENU + self.ancho_sub {
+            return None;
+        }
+        let dentro = y - arriba - BORDE_SUP;
+        if dentro < 0.0 || y > arriba + Self::alto_sub(hijos.len()) {
+            return None;
+        }
+        Some(((dentro / FILA) as usize).min(hijos.len() - 1))
+    }
+
+    // 0.1.0
+    // modified 0.1.1 -- ancho guardado en el menú
     fn ancho(&self) -> f32 {
         self.ancho
     }
+    // 0.1.0
     fn alto_fila(&self) -> f32 {
         if self.ventana { 48.0 } else { FILA }
     }
 
+    // 0.1.0
     pub fn ancla(&self) -> Ancla {
         if let Some((x, y)) = self.punto {
             return Ancla::Punto { x, y };
@@ -223,64 +347,136 @@ impl MenuDock {
         Ancla::SobreElDock { x: self.x }
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- la fila de muestras de color se puede pulsar
+    // modified 0.2.0 -- también las filas con submenú
     fn entrada_en(&self, x: f32, y: f32) -> Option<usize> {
         if x < 0.0 || x > self.ancho() {
             return None;
         }
         let mut cursor = BORDE_SUP;
         for (i, entrada) in self.entradas.iter().enumerate() {
-            let alto = match entrada {
-                Entrada::Item { .. } | Entrada::Colores(_) => self.alto_fila(),
-                Entrada::Divisor => DIVISOR,
-            };
+            let alto = self.alto_entrada(entrada);
             if y >= cursor && y < cursor + alto {
-                return matches!(entrada, Entrada::Item { .. } | Entrada::Colores(_)).then_some(i);
+                return (!matches!(entrada, Entrada::Divisor)).then_some(i);
             }
             cursor += alto;
         }
         None
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- la fila de muestras no se realza entera
+    // modified 0.2.0 -- pasar sobre una fila con submenú lo abre; sobre otra, lo cierra
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
-        // La fila de muestras no se realza entera: lo que se elige es un
-        // círculo, y pintar la fila de acento taparía los colores.
-        let fila = punto
-            .and_then(|(x, y)| self.entrada_en(x, y))
-            .filter(|&i| matches!(self.entradas[i], Entrada::Item { .. }));
-        self.señalada.señalar(fila)
+        let Some((x, y)) = punto else {
+            return self.señalada.señalar(None) | self.señalada_sub.señalar(None);
+        };
+        if let Some(j) = self.fila_sub_en(x, y) {
+            // Mientras se recorre el submenú su fila madre sigue encendida,
+            // como en macOS: es lo que dice de dónde cuelga.
+            let madre = self.abierto;
+            self.foco_sub = false;
+            return self.señalada.señalar(madre) | self.señalada_sub.señalar(Some(j));
+        }
+        let Some(i) = self.entrada_en(x, y) else {
+            // Fuera de toda fila: no se cierra nada. Cruzar el borde del menú
+            // hacia el submenú pasa por un píxel así, y cerrarlo ahí lo
+            // volvería imposible de alcanzar.
+            return false;
+        };
+        let abierto = matches!(self.entradas[i], Entrada::Submenu { .. }).then_some(i);
+        let cambia = self.abierto != abierto;
+        self.abierto = abierto;
+        let fila = matches!(
+            self.entradas[i],
+            Entrada::Item { .. } | Entrada::Submenu { .. }
+        )
+        .then_some(i);
+        self.señalada.señalar(fila) | self.señalada_sub.señalar(None) | cambia
     }
 
+    // 0.1.0
+    // modified 0.2.0 -- también la fila del submenú
     pub fn animando(&self) -> bool {
-        self.señalada.animando()
+        self.señalada.animando() || self.señalada_sub.animando()
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- elegir o quitar el color de una carpeta del escritorio
+    // modified 0.2.0 -- pulsar una fila con submenú lo abre; una del submenú actúa
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
+        if let Some(j) = self.fila_sub_en(x, y) {
+            return self.submenu().map(|(_, hijos)| hijos[j].2.clone());
+        }
         let i = self.entrada_en(x, y)?;
         match &self.entradas[i] {
             Entrada::Item { accion, .. } => Some(accion.clone()),
             Entrada::Divisor => None,
-            Entrada::Colores(actual) => {
-                let k = muestra_en(x)?;
-                let muestra = crate::escritorio::MUESTRAS[k];
-                // Pulsar otra vez la que ya está la quita, como en el
-                // explorador: es la vuelta al color automático.
-                let elegido = (actual.as_deref() != Some(muestra)).then(|| muestra.to_string());
-                Some(Accion::EscritorioColor(elegido))
+            Entrada::Submenu { .. } => {
+                // Para quien no usa el ratón con hover (táctil): el toque
+                // abre el submenú, y el siguiente elige.
+                self.abierto = Some(i);
+                None
             }
         }
     }
 
+    // 0.1.0
+    // modified 0.2.0 -- Derecha abre el submenú, Izquierda y Esc lo cierran
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
+        use crate::TeclaPulsada as T;
+        if self.foco_sub
+            && let Some((_, hijos)) = self.submenu()
+        {
+            let n = hijos.len();
+            let actual = self.señalada_sub.actual();
+            match tecla {
+                T::Arriba => {
+                    self.señalada_sub
+                        .señalar(Some(actual.map_or(n - 1, |a| (a + n - 1) % n)));
+                    return Tecla::Consumida;
+                }
+                T::Abajo | T::Tabulador => {
+                    self.señalada_sub
+                        .señalar(Some(actual.map_or(0, |a| (a + 1) % n)));
+                    return Tecla::Consumida;
+                }
+                T::Intro => {
+                    return match actual {
+                        Some(j) => Tecla::Hacer(hijos[j].2.clone()),
+                        None => Tecla::Consumida,
+                    };
+                }
+                T::Izquierda | T::Escape => {
+                    self.foco_sub = false;
+                    self.abierto = None;
+                    self.señalada_sub.señalar(None);
+                    return Tecla::Consumida;
+                }
+                _ => {}
+            }
+        }
+        let sobre_submenu = self
+            .señalada
+            .actual()
+            .filter(|&i| matches!(self.entradas.get(i), Some(Entrada::Submenu { .. })));
         match tecla {
-            crate::TeclaPulsada::Escape => Tecla::Cerrar,
-            crate::TeclaPulsada::Arriba
-            | crate::TeclaPulsada::Abajo
-            | crate::TeclaPulsada::Tabulador => {
+            T::Escape => Tecla::Cerrar,
+            T::Derecha | T::Intro if sobre_submenu.is_some() => {
+                self.abierto = sobre_submenu;
+                self.foco_sub = true;
+                self.señalada_sub.señalar(Some(0));
+                Tecla::Consumida
+            }
+            T::Arriba | T::Abajo | T::Tabulador => {
                 let indices: Vec<_> = self
                     .entradas
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, e)| matches!(e, Entrada::Item { .. }).then_some(i))
+                    .filter_map(|(i, e)| {
+                        matches!(e, Entrada::Item { .. } | Entrada::Submenu { .. }).then_some(i)
+                    })
                     .collect();
                 if indices.is_empty() {
                     return Tecla::Consumida;
@@ -289,7 +485,7 @@ impl MenuDock {
                     .señalada
                     .actual()
                     .and_then(|a| indices.iter().position(|i| *i == a));
-                let n = if tecla == crate::TeclaPulsada::Arriba {
+                let n = if tecla == T::Arriba {
                     actual.map_or(indices.len() - 1, |a| {
                         (a + indices.len() - 1) % indices.len()
                     })
@@ -297,9 +493,11 @@ impl MenuDock {
                     actual.map_or(0, |a| (a + 1) % indices.len())
                 };
                 self.señalada.señalar(Some(indices[n]));
+                // Moverse a otra fila cierra el submenú que hubiera.
+                self.abierto = None;
                 Tecla::Consumida
             }
-            crate::TeclaPulsada::Intro => {
+            T::Intro => {
                 if let Some(Entrada::Item { accion, .. }) =
                     self.señalada.actual().and_then(|i| self.entradas.get(i))
                 {
@@ -312,6 +510,8 @@ impl MenuDock {
         }
     }
 
+    // 0.1.0
+    // modified 0.1.1 -- pinta la fila de muestras de color
     pub fn view(&self) -> PanelElement<'_> {
         let mut col = column![Space::new().height(Length::Fixed(BORDE_SUP))];
         for (i, entrada) in self.entradas.iter().enumerate() {
@@ -339,86 +539,48 @@ impl MenuDock {
                         })
                         .into()
                     } else {
-                        fila(etiqueta, None, icono, self.señalada.intensidad(i))
+                        fila(etiqueta, None, Some(icono), self.señalada.intensidad(i))
                     }
                 }
                 Entrada::Divisor => divisor(),
-                Entrada::Colores(actual) => muestras(actual.as_deref()),
+                Entrada::Submenu {
+                    etiqueta, icono, ..
+                } => fila(
+                    etiqueta,
+                    Some("›"),
+                    Some(icono),
+                    self.señalada.intensidad(i),
+                ),
             });
         }
         col = col.push(Space::new().height(Length::Fixed(BORDE_INF)));
 
-        container(col)
-            .width(Length::Fixed(self.ancho()))
-            .style(|_theme| container::Style {
-                background: Some(tema::card().into()),
-                border: Border {
-                    radius: tema::R_POPOVER.into(),
-                    width: 1.0,
-                    color: tema::borde(),
-                },
-                ..Default::default()
-            })
-            .into()
-    }
-}
-
-/// Qué muestra hay en `x`, relativo al menú. Se cuenta la casilla entera y
-/// no solo el círculo: con 14 px de diana se fallaba más que se acertaba.
-fn muestra_en(x: f32) -> Option<usize> {
-    let dentro = x - X_MUESTRAS;
-    if dentro < 0.0 {
-        return None;
-    }
-    let k = (dentro / (MUESTRA + HUECO_MUESTRA)) as usize;
-    let en_casilla = dentro - k as f32 * (MUESTRA + HUECO_MUESTRA) < MUESTRA;
-    (en_casilla && k < crate::escritorio::MUESTRAS.len()).then_some(k)
-}
-
-/// La fila de círculos. La elegida lleva un anillo del color del texto
-/// alrededor, con aire de por medio, como las muestras de Ajustes.
-fn muestras(actual: Option<&str>) -> PanelElement<'static> {
-    let mut fila = iced_widget::row![].spacing(HUECO_MUESTRA);
-    for muestra in crate::escritorio::MUESTRAS {
-        let color = u32::from_str_radix(&muestra[1..], 16)
-            .map(tema::hex)
-            .expect("las muestras son #RRGGBB escritas a mano");
-        let elegida = actual == Some(muestra);
-        let circulo = container(Space::new())
-            .width(Length::Fixed(CIRCULO))
-            .height(Length::Fixed(CIRCULO))
-            .style(move |_| container::Style {
-                background: Some(color.into()),
-                border: Border {
-                    radius: (CIRCULO / 2.0).into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
-        fila = fila.push(
-            container(circulo)
-                .width(Length::Fixed(MUESTRA))
-                .height(Length::Fixed(MUESTRA))
-                .center_x(Length::Fixed(MUESTRA))
-                .center_y(Length::Fixed(MUESTRA))
-                .style(move |_| container::Style {
-                    border: Border {
-                        radius: (MUESTRA / 2.0).into(),
-                        width: if elegida { 1.5 } else { 0.0 },
-                        color: tema::texto(),
-                    },
-                    ..Default::default()
-                }),
-        );
-    }
-    container(fila)
-        .padding(iced_core::Padding {
-            left: X_MUESTRAS,
-            ..Default::default()
-        })
-        .height(Length::Fixed(FILA))
-        .center_y(Length::Fixed(FILA))
+        let principal = caja(col.into(), self.ancho());
+        let (Some((i, hijos)), Some(_)) = (self.submenu(), self.abierto) else {
+            return principal;
+        };
+        let mut filas = column![Space::new().height(Length::Fixed(BORDE_SUP))];
+        for (j, (etiqueta, icono, _)) in hijos.iter().enumerate() {
+            filas = filas.push(fila(
+                etiqueta,
+                None,
+                Some(icono),
+                self.señalada_sub.intensidad(j),
+            ));
+        }
+        filas = filas.push(Space::new().height(Length::Fixed(BORDE_INF)));
+        // Alineado con su fila madre: la primera del submenú queda a su altura.
+        let lateral = column![
+            Space::new().height(Length::Fixed(self.y_de(i) - BORDE_SUP)),
+            caja(filas.into(), self.ancho_sub)
+        ];
+        row![
+            column![principal].width(Length::Fixed(self.ancho())),
+            Space::new().width(Length::Fixed(HUECO_SUBMENU)),
+            lateral
+        ]
         .into()
+    }
 }
 
 #[cfg(test)]
@@ -472,28 +634,80 @@ mod tests {
         let Entrada::Item { etiqueta, .. } = &m.entradas[1] else {
             panic!("la segunda entrada no es un item");
         };
-        assert_eq!(etiqueta, "Quitar del dock");
+        assert_eq!(etiqueta, "Desanclar del dock");
         let m = MenuDock::new(objetivo(false, false));
         let Entrada::Item { etiqueta, .. } = &m.entradas[1] else {
             panic!("la segunda entrada no es un item");
         };
-        assert_eq!(etiqueta, "Fijar en el dock");
+        assert_eq!(etiqueta, "Anclar al dock");
     }
 
-    /// Cada círculo elige su color, y el que ya está puesto vuelve al
-    /// automático.
+    fn con_crear() -> MenuDock {
+        MenuDock::escritorio(
+            vec![
+                Some((
+                    "Crear".into(),
+                    "vista-anadir",
+                    Accion::EscritorioNuevo(NuevoElemento::Carpeta),
+                )),
+                None,
+                Some(("Cambiar fondo…".into(), "fondo", Accion::AbrirCaptura)),
+            ],
+            (0.0, 0.0),
+        )
+    }
+
+    /// Pasar sobre «Crear» abre su lista a la derecha; sobre otra fila, la
+    /// cierra; y cruzar el hueco entre las dos no la cierra.
     #[test]
-    fn las_muestras_eligen_y_la_puesta_se_quita() {
-        let mut m = MenuDock::escritorio(vec![], Some(Some("#FF3B30")), (0.0, 0.0));
-        let y = BORDE_SUP + DIVISOR + FILA / 2.0;
-        let x = |k: usize| X_MUESTRAS + k as f32 * (MUESTRA + HUECO_MUESTRA) + MUESTRA / 2.0;
+    fn el_submenu_se_abre_al_pasar_y_se_cierra_al_salir() {
+        let mut m = con_crear();
+        let y = BORDE_SUP + FILA / 2.0;
+        let ancho = m.ancho();
+        assert!(m.size().0 > ancho, "reserva el sitio del submenú");
+        m.puntero(Some((20.0, y)));
+        assert_eq!(m.abierto, Some(0));
+        m.puntero(Some((ancho + 1.0, y)));
+        assert_eq!(m.abierto, Some(0), "el hueco no lo cierra");
+        m.puntero(Some((20.0, BORDE_SUP + FILA + DIVISOR + FILA / 2.0)));
+        assert_eq!(m.abierto, None);
+    }
+
+    /// Cada fila del submenú crea lo suyo, a su altura.
+    #[test]
+    fn las_filas_del_submenu_crean_cada_tipo() {
+        let mut m = con_crear();
+        m.puntero(Some((20.0, BORDE_SUP + FILA / 2.0)));
+        let x = m.ancho() + HUECO_SUBMENU + 20.0;
+        let y = |j: f32| BORDE_SUP + BORDE_SUP + FILA * j + FILA / 2.0;
         assert_eq!(
-            m.pulsar(x(0), y),
-            Some(Accion::EscritorioColor(Some("#FFCC00".into())))
+            m.pulsar(x, y(0.0)),
+            Some(Accion::EscritorioNuevo(NuevoElemento::Carpeta))
         );
-        assert_eq!(m.pulsar(x(1), y), Some(Accion::EscritorioColor(None)));
-        // El hueco entre dos casillas no es de ninguna.
-        assert_eq!(m.pulsar(X_MUESTRAS + MUESTRA + 1.0, y), None);
+        assert_eq!(
+            m.pulsar(x, y(1.0)),
+            Some(Accion::EscritorioNuevo(NuevoElemento::Texto))
+        );
+        assert_eq!(
+            m.pulsar(x, y(3.0)),
+            Some(Accion::EscritorioNuevo(NuevoElemento::Vacio))
+        );
+    }
+
+    /// Con teclado: Abajo hasta «Crear», Derecha entra, Intro elige.
+    #[test]
+    fn el_submenu_se_maneja_con_teclado() {
+        use crate::TeclaPulsada as T;
+        let mut m = con_crear();
+        m.tecla(T::Abajo);
+        m.tecla(T::Derecha);
+        m.tecla(T::Abajo);
+        assert!(matches!(
+            m.tecla(T::Intro),
+            Tecla::Hacer(Accion::EscritorioNuevo(NuevoElemento::Texto))
+        ));
+        assert!(matches!(m.tecla(T::Izquierda), Tecla::Consumida));
+        assert!(matches!(m.tecla(T::Escape), Tecla::Cerrar));
     }
 
     /// El hueco del divisor no activa nada.

@@ -57,11 +57,14 @@
 //! # Uno para cada tema: el cambio de claro a oscuro se lleva el fondo con él.
 //! fondo_claro = /usr/share/wallpapers/BookOS/Light/blue.png
 //! fondo_oscuro = /usr/share/wallpapers/BookOS/Dark/blue_dark.png
+//! # rellenar, ajustar, ancho, estirar o centrar.
+//! fondo_encaje = rellenar
 //! cursor = 24
 //! velocidad_touchpad = 0.3
 //! toque_para_clic = si
 //! scroll_natural = si
 //! pantalla_tactil = si
+//! teclado_pantalla = si
 //! ```
 //!
 //! **Por qué no TOML.** Leer dos listas de nombres no justifica meter `toml`,
@@ -80,9 +83,8 @@ use std::path::PathBuf;
 /// Cuánto adorno se dibuja.
 ///
 /// `Reducidos` quita el desenfoque del panel y del dock y las animaciones de
-/// ventana —abrir, minimizar, encajar, mover—. No quita las del propio shell
-/// (emergentes, launchpad, cambio de escritorio): esas duran menos de 300 ms
-/// sobre buffers pequeños y no son lo que se come los fotogramas.
+/// ventana —abrir, minimizar, encajar, mover—. Desde 0.2.0 los muelles del
+/// shell y los escritorios también saltan al destino al soltar el gesto.
 ///
 /// La batería baja lo enciende sola sin tocar esta clave: el usuario elige lo
 /// que quiere **cuando hay energía para ello**.
@@ -91,6 +93,49 @@ pub enum Efectos {
     #[default]
     Completos,
     Reducidos,
+}
+
+/// Tamaño del panel de arriba. Tres y no un deslizador como el del dock: el
+/// alto final lo decide también la pantalla (ver `Shell::panel_pantalla`), y
+/// un número en píxeles prometería algo que luego no se cumple.
+// añadido en la 0.2.0
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TamanoPanel {
+    Pequeno,
+    #[default]
+    Mediano,
+    Grande,
+}
+
+impl TamanoPanel {
+    /// Alto en lógicos en una pantalla de 900 de alto, la de referencia.
+    // añadido en la 0.2.0
+    pub fn alto_base(self) -> f32 {
+        match self {
+            TamanoPanel::Pequeno => 28.0,
+            TamanoPanel::Mediano => 32.0,
+            TamanoPanel::Grande => 38.0,
+        }
+    }
+
+    // añadido en la 0.2.0
+    pub fn nombre(self) -> &'static str {
+        match self {
+            TamanoPanel::Pequeno => "pequeno",
+            TamanoPanel::Mediano => "mediano",
+            TamanoPanel::Grande => "grande",
+        }
+    }
+
+    // añadido en la 0.2.0
+    pub fn desde_nombre(nombre: &str) -> Option<Self> {
+        match nombre {
+            "pequeno" => Some(TamanoPanel::Pequeno),
+            "mediano" => Some(TamanoPanel::Mediano),
+            "grande" => Some(TamanoPanel::Grande),
+            _ => None,
+        }
+    }
 }
 
 /// Qué luces siguen al sensor de luz ambiente.
@@ -139,6 +184,7 @@ impl LuzNocturna {
     pub const MAXIMA: u32 = 8000;
 
     /// ¿Toca teñir ahora, según el modo y el reloj?
+    // 0.1.0
     pub fn toca(&self, ahora: crate::tema::HoraDelDia) -> bool {
         match self.modo {
             ModoLuzNocturna::Apagada => false,
@@ -149,6 +195,7 @@ impl LuzNocturna {
 
     /// Cuántos minutos faltan para que el horario la encienda o la apague.
     /// `None` fuera del modo programado: no hay nada que esperar.
+    // 0.1.0
     pub fn minutos_al_cambio(&self, ahora: crate::tema::HoraDelDia) -> Option<u32> {
         match self.modo {
             ModoLuzNocturna::Programada => {
@@ -160,6 +207,7 @@ impl LuzNocturna {
 }
 
 impl Default for LuzNocturna {
+    // 0.1.0
     fn default() -> Self {
         Self {
             modo: ModoLuzNocturna::Apagada,
@@ -178,10 +226,12 @@ impl Default for LuzNocturna {
 /// fichero y lo que se ve no tienen por qué coincidir.
 static LUZ_NOCTURNA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// 0.1.0
 pub fn luz_nocturna_encendida() -> bool {
     LUZ_NOCTURNA.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// 0.1.0
 pub fn marcar_luz_nocturna(encendida: bool) {
     LUZ_NOCTURNA.store(encendida, std::sync::atomic::Ordering::Relaxed);
 }
@@ -209,6 +259,7 @@ impl Pasos {
     pub const MAXIMO_MANTENER: u8 = 30;
 
     /// El techo de una clave de `panel.conf`; `None` si no es un paso.
+    // 0.1.0
     pub fn maximo_de(clave: &str) -> Option<u8> {
         match clave {
             "volumen_paso" | "brillo_paso" => Some(Self::MAXIMO_PULSAR),
@@ -221,6 +272,7 @@ impl Pasos {
 impl Default for Pasos {
     /// 5 % al pulsar es el paso de KDE: con 10 se pasa de largo y con 2 hay
     /// que machacar la tecla.
+    // 0.1.0
     fn default() -> Self {
         Self {
             volumen: 5,
@@ -233,6 +285,7 @@ impl Default for Pasos {
 
 pub struct Config {
     pub dock_tamano: u32,
+    pub panel_tamano: TamanoPanel,
     pub bloqueo_huella: bool,
     pub centro: Option<String>,
     pub derecha: Vec<String>,
@@ -269,6 +322,9 @@ pub struct Config {
     pub fondo_claro: Option<String>,
     /// El fondo con el tema oscuro. Si está, manda sobre `fondo`.
     pub fondo_oscuro: Option<String>,
+    /// Cómo se encaja el fondo en la pantalla. Uno solo para los dos temas: una
+    /// pareja son dos versiones de la misma imagen y deben caer igual.
+    pub fondo_encaje: EncajeFondo,
     /// Distribución de teclado (`es`, `us`, `fr`…). `None` = la del sistema.
     pub teclado: Option<String>,
     /// Milisegundos con la tecla pulsada antes de que empiece a repetirse.
@@ -283,6 +339,13 @@ pub struct Config {
     /// Dos de serie y un máximo de cinco, que es lo que cabe en la vista
     /// general sin convertir las previsualizaciones en sellos.
     pub escritorios: usize,
+    /// Si la captura de pantalla lleva el cursor. Fuera por defecto: casi
+    /// siempre es un estorbo en la foto.
+    // añadido en la 0.2.0
+    pub captura_cursor: bool,
+    /// Segundos de espera antes de capturar; uno de [`RETARDOS_CAPTURA`].
+    // añadido en la 0.2.0
+    pub captura_retardo: u8,
     /// Nombres editables de los escritorios, en el mismo orden.
     pub nombres_escritorios: Vec<String>,
     /// Claro u oscuro. Lo aplica quien crea el shell, porque el tema es del
@@ -360,6 +423,7 @@ pub struct Actividades {
 }
 
 impl Default for Actividades {
+    // 0.1.0
     fn default() -> Self {
         Self {
             habilitadas: true,
@@ -399,6 +463,49 @@ pub struct Bloqueo {
 /// Los estilos de reloj que se ofrecen, como los de la pantalla de bloqueo de
 /// macOS. Lista cerrada y no «cualquier fuente del sistema»: casi todas las
 /// instaladas traen dos o tres grosores y el control de grosor no haría nada, y
+/// Cómo cabe el fondo en una pantalla de otra proporción.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EncajeFondo {
+    /// Cubre la pantalla sin deformar y recorta lo que sobra. Es el de serie
+    /// porque es el único que nunca deforma ni deja bandas.
+    #[default]
+    Rellenar,
+    /// La imagen entera, sin deformar, con bandas donde no llegue.
+    Ajustar,
+    /// Ocupa todo el ancho; lo que sobre o falte de alto se reparte arriba y abajo.
+    Ancho,
+    /// Ocupa toda la pantalla aunque se deforme.
+    Estirar,
+    /// A su tamaño real, un píxel de imagen por píxel de pantalla, centrada.
+    Centrar,
+}
+
+impl EncajeFondo {
+    // añadido en la 0.2.0
+    pub fn nombre(self) -> &'static str {
+        match self {
+            Self::Rellenar => "rellenar",
+            Self::Ajustar => "ajustar",
+            Self::Ancho => "ancho",
+            Self::Estirar => "estirar",
+            Self::Centrar => "centrar",
+        }
+    }
+
+    // añadido en la 0.2.0
+    pub fn desde_nombre(nombre: &str) -> Option<Self> {
+        [
+            Self::Rellenar,
+            Self::Ajustar,
+            Self::Ancho,
+            Self::Estirar,
+            Self::Centrar,
+        ]
+        .into_iter()
+        .find(|e| e.nombre() == nombre)
+    }
+}
+
 /// Qué pinta el salvapantallas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EstiloSalvapantallas {
@@ -411,6 +518,7 @@ pub enum EstiloSalvapantallas {
 }
 
 impl EstiloSalvapantallas {
+    // 0.1.1
     pub fn nombre(self) -> &'static str {
         match self {
             Self::Estela => "estela",
@@ -418,12 +526,14 @@ impl EstiloSalvapantallas {
         }
     }
 
+    // 0.1.1
     pub fn desde_nombre(nombre: &str) -> Option<Self> {
         [Self::Estela, Self::Rebote]
             .into_iter()
             .find(|e| e.nombre() == nombre)
     }
 
+    // 0.1.1
     pub fn otro(self) -> Self {
         match self {
             Self::Estela => Self::Rebote,
@@ -458,6 +568,7 @@ impl FuenteReloj {
     ];
 
     /// Cómo se escribe en `panel.conf` y en `GetConfig`.
+    // 0.1.0
     pub fn nombre(self) -> &'static str {
         match self {
             Self::Moderna => "moderna",
@@ -469,12 +580,14 @@ impl FuenteReloj {
         }
     }
 
+    // 0.1.0
     pub fn desde_nombre(nombre: &str) -> Option<Self> {
         Self::TODAS.into_iter().find(|f| f.nombre() == nombre)
     }
 
     /// La familia tal como la conoce fontdb. Sin alias de fontconfig: fontdb
     /// no los lee, así que tiene que ser el nombre exacto de la fuente.
+    // 0.1.0
     pub fn familia(self) -> &'static str {
         match self {
             Self::Moderna => "Noto Sans",
@@ -489,6 +602,7 @@ impl FuenteReloj {
 }
 
 impl Default for Bloqueo {
+    // 0.1.0
     fn default() -> Self {
         Self {
             animaciones: true,
@@ -524,9 +638,16 @@ pub struct Entrada {
     /// La pantalla táctil. Apagada, libinput no manda ni un toque: la palma
     /// sobre la pantalla de un convertible deja de pulsar cosas.
     pub pantalla_tactil: bool,
+    /// El teclado que sale al tocar un campo. Apagado, el táctil sigue
+    /// funcionando: es para quien escribe con un teclado de verdad conectado
+    /// y solo usa el dedo para señalar.
+    // añadido en la 0.2.0
+    pub teclado_pantalla: bool,
 }
 
 impl Default for Entrada {
+    // 0.1.0
+    // modified 0.1.1 -- pantalla táctil activada por defecto
     fn default() -> Self {
         Self {
             // 0,3 y no 0: con la velocidad de serie de libinput hay que dar
@@ -541,6 +662,7 @@ impl Default for Entrada {
             toque_para_clic: true,
             scroll_natural: true,
             pantalla_tactil: true,
+            teclado_pantalla: true,
         }
     }
 }
@@ -570,6 +692,8 @@ pub struct Lanzador {
 }
 
 impl Default for Config {
+    // 0.1.0
+    // modified 0.1.1 -- plazos por defecto de atenuación, salvapantallas y apagado; iconos del escritorio visibles
     fn default() -> Self {
         Self {
             // El centro va vacío y el reloj el último de la derecha, como la
@@ -597,7 +721,7 @@ impl Default for Config {
             dock: [
                 // El primero, como en el dock de macOS: es el cajón de todo lo
                 // demás y conviene que esté donde siempre.
-                (LAUNCHPAD, "Aplicaciones", "launchpad-cohete"),
+                (LAUNCHPAD, "Aplicaciones", crate::icono::LAUNCHPAD),
                 // El mismo por defecto que Meta+Return (`keybinds::TERMINAL`):
                 // `bookos-shell` —lo que había aquí antes— es la biblioteca del
                 // propio panel, no un programa que lanzar. No se lee
@@ -627,18 +751,22 @@ impl Default for Config {
             // tema tiene dibujados de verdad, sin inventar píxeles.
             cursor: 24,
             dock_tamano: 50,
+            panel_tamano: TamanoPanel::default(),
             bloqueo_huella: false,
             launchpad_dock: true,
             entrada: Entrada::default(),
             fondo: None,
             fondo_claro: None,
             fondo_oscuro: None,
+            fondo_encaje: EncajeFondo::Rellenar,
             teclado: None,
             // Los valores de KDE, que eran los fijos antes de poder elegirlos.
             teclado_retardo: 600,
             teclado_velocidad: 25,
             pasos: Pasos::default(),
             escritorios: 2,
+            captura_cursor: false,
+            captura_retardo: 0,
             nombres_escritorios: vec!["Escritorio 1".into(), "Escritorio 2".into()],
             tema: crate::tema::Tema::Oscuro,
             modo_tema: crate::tema::ModoTema::Oscuro,
@@ -672,6 +800,7 @@ impl Default for Config {
 }
 
 impl Config {
+    // 0.1.0
     pub fn cargar() -> Self {
         let Some(ruta) = ruta() else {
             return Self::default();
@@ -684,6 +813,8 @@ impl Config {
 
     /// El análisis, separado de la lectura para poder probarlo sin tocar el
     /// disco: es donde están todas las decisiones que pueden salir mal.
+    // 0.1.0
+    // modified 0.1.1 -- lee iconos del escritorio, salvapantallas, atenuación, apagado y pantalla táctil
     pub fn desde_texto(texto: &str, ruta: &std::path::Path) -> Self {
         let mut config = Self::default();
         for (n, linea) in texto.lines().enumerate() {
@@ -898,6 +1029,13 @@ impl Config {
                 },
                 // Un nombre que no está en la tabla se ignora en vez de
                 // dejar el escritorio con un acento a medias.
+                "panel_tamano" => match TamanoPanel::desde_nombre(valor.trim()) {
+                    Some(t) => config.panel_tamano = t,
+                    None => tracing::warn!(
+                        valor,
+                        "«panel_tamano» solo entiende pequeno, mediano o grande"
+                    ),
+                },
                 "efectos" => match valor.trim() {
                     "completos" => config.efectos = Efectos::Completos,
                     "reducidos" => config.efectos = Efectos::Reducidos,
@@ -908,6 +1046,15 @@ impl Config {
                         config.alto_contraste = v;
                     }
                 }
+                "captura_cursor" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.captura_cursor = v;
+                    }
+                }
+                "captura_retardo" => match valor.trim().parse::<u8>() {
+                    Ok(v) if RETARDOS_CAPTURA.contains(&v) => config.captura_retardo = v,
+                    _ => tracing::warn!(valor, "«captura_retardo» solo admite 0, 3, 5 o 10"),
+                },
                 "brillo_automatico_pantalla" => {
                     if let Some(v) = booleano(valor, ruta, n + 1) {
                         config.brillo_automatico.pantalla = v;
@@ -989,6 +1136,13 @@ impl Config {
                 "fondo" => config.fondo = no_vacio(valor),
                 "fondo_claro" => config.fondo_claro = no_vacio(valor),
                 "fondo_oscuro" => config.fondo_oscuro = no_vacio(valor),
+                "fondo_encaje" => match EncajeFondo::desde_nombre(valor.trim()) {
+                    Some(e) => config.fondo_encaje = e,
+                    None => tracing::warn!(
+                        valor = valor.trim(),
+                        "«fondo_encaje» debe ser rellenar, ajustar, ancho, estirar o centrar"
+                    ),
+                },
                 "teclado" => config.teclado = Some(valor.trim().to_string()),
                 "teclado_retardo" => {
                     if let Ok(n) = valor.trim().parse::<u32>() {
@@ -1042,6 +1196,11 @@ impl Config {
                         config.entrada.pantalla_tactil = v;
                     }
                 }
+                "teclado_pantalla" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.entrada.teclado_pantalla = v;
+                    }
+                }
                 otro => tracing::warn!(?ruta, linea = n + 1, clave = otro, "clave desconocida"),
             }
         }
@@ -1064,6 +1223,7 @@ impl Config {
     /// Se vuelve a llamar cuando el temporizador del compositor despierta en la
     /// hora del cambio, que es lo que hace que el escritorio se ponga oscuro
     /// solo al anochecer.
+    // 0.1.0
     pub fn tema_ahora(&self) -> crate::tema::Tema {
         self.modo_tema.resolver(
             self.tema_claro_desde,
@@ -1073,6 +1233,7 @@ impl Config {
     }
 
     /// Cuánto falta para el próximo cambio automático de tema, si va a haberlo.
+    // 0.1.0
     pub fn hasta_el_cambio_de_tema(&self) -> Option<std::time::Duration> {
         self.modo_tema
             .minutos_al_cambio(
@@ -1088,6 +1249,7 @@ impl Config {
 /// libinput rechaza el valor y el dispositivo se queda como estaba, así que
 /// más vale avisar aquí que dejar que falle en silencio al aplicarlo.
 /// Una hora del reloj en `HH:MM`. También vale `7` a secas, que es `07:00`.
+// 0.1.0
 fn hora_del_dia(
     valor: &str,
     ruta: &std::path::Path,
@@ -1109,6 +1271,7 @@ fn hora_del_dia(
     }
 }
 
+// 0.1.0
 fn velocidad(valor: &str, ruta: &std::path::Path, linea: usize) -> Option<f64> {
     match valor.trim().replace(',', ".").parse::<f64>() {
         Ok(v) if (-1.0..=1.0).contains(&v) => Some(v),
@@ -1124,6 +1287,7 @@ fn velocidad(valor: &str, ruta: &std::path::Path, linea: usize) -> Option<f64> {
     }
 }
 
+// 0.1.0
 fn decimal(
     valor: &str,
     rango: std::ops::RangeInclusive<f64>,
@@ -1147,11 +1311,13 @@ fn decimal(
 }
 
 /// El valor, o `None` si está en blanco.
+// 0.1.0
 fn no_vacio(valor: &str) -> Option<String> {
     let v = valor.trim();
     (!v.is_empty()).then(|| v.to_string())
 }
 
+// 0.1.0
 fn booleano(valor: &str, ruta: &std::path::Path, linea: usize) -> Option<bool> {
     match valor.trim() {
         "si" | "sí" | "true" | "1" => Some(true),
@@ -1167,24 +1333,36 @@ fn booleano(valor: &str, ruta: &std::path::Path, linea: usize) -> Option<bool> {
 ///
 /// Lo que falta se deduce del ejecutable, que es lo que acierta la mayoría de
 /// las veces: `firefox` a secas ya da el icono y el `app_id` correctos.
+// 0.1.0
+// modificado en la 0.2.0 -- el cohete de serie pasa a ser el icono del tema
 fn lanzador(spec: &str) -> Option<Lanzador> {
     let mut campos = spec.split(':').map(str::trim);
     let exec = campos.next().filter(|s| !s.is_empty())?;
     let o_exec = |c: Option<&str>| c.filter(|s| !s.is_empty()).unwrap_or(exec).to_string();
+    let etiqueta = o_exec(campos.next());
+    let mut icono = o_exec(campos.next());
+    // El cohete era el de serie hasta la 0.2.0 y quedó escrito en los
+    // `panel.conf` de entonces: sin esto, el launchpad seguiría siendo el único
+    // icono del dock que no cambia con el tema de iconos.
+    if exec == LAUNCHPAD && icono == "launchpad-cohete" {
+        icono = crate::icono::LAUNCHPAD.into();
+    }
     Some(Lanzador {
-        etiqueta: o_exec(campos.next()),
-        icono: o_exec(campos.next()),
+        etiqueta,
+        icono,
         app_id: o_exec(campos.next()),
         exec: exec.to_string(),
     })
 }
 
 /// Reescribe la clave `dock` del fichero, dejando lo demás como está.
+// 0.1.0
 pub fn guardar_dock(anclados: &[String]) -> std::io::Result<()> {
     escribir_claves(&[("dock", anclados.join(", "))])
 }
 
 /// Persiste la cantidad y los nombres sin reescribir el resto del fichero.
+// 0.1.0
 pub fn guardar_escritorios(nombres: &[String]) -> std::io::Result<()> {
     // La coma separa los nombres en el fichero, así que un nombre con coma
     // partiría la lista en dos escritorios al releerla.
@@ -1204,6 +1382,7 @@ pub fn guardar_escritorios(nombres: &[String]) -> std::io::Result<()> {
 /// Con el modo automático son cosas distintas: a las once de la noche lo
 /// pintado es oscuro y lo elegido es «automático», y escribir `oscuro` en el
 /// fichero convertiría el automático en fijo al reiniciar la sesión.
+// 0.1.0
 pub fn guardar_apariencia(
     modo: crate::tema::ModoTema,
     acento: crate::tema::Acento,
@@ -1224,6 +1403,7 @@ pub fn guardar_apariencia(
 /// Escribe `fondo_claro` y `fondo_oscuro` y **vacía** `fondo`: si se quedara, el
 /// común mandaría sobre la pareja al volver a cargar y el cambio de tema dejaría
 /// de llevarse la imagen con él, que es justo lo que se acaba de elegir.
+// 0.1.0
 pub fn guardar_fondo(claro: &std::path::Path, oscuro: &std::path::Path) -> std::io::Result<()> {
     escribir_claves(&[
         ("fondo", String::new()),
@@ -1234,6 +1414,7 @@ pub fn guardar_fondo(claro: &std::path::Path, oscuro: &std::path::Path) -> std::
 
 /// Quita las tres claves del fondo, dejando el fichero como si nunca se hubiera
 /// elegido ninguno. La usa el autotest para devolver lo que encontró.
+// 0.1.0
 pub fn olvidar_fondo() -> std::io::Result<()> {
     escribir_claves(&[
         ("fondo", String::new()),
@@ -1243,6 +1424,7 @@ pub fn olvidar_fondo() -> std::io::Result<()> {
 }
 
 /// Persiste el modo de efectos elegido.
+// 0.1.0
 pub fn guardar_efectos(efectos: Efectos) -> std::io::Result<()> {
     let valor = match efectos {
         Efectos::Completos => "completos",
@@ -1251,7 +1433,24 @@ pub fn guardar_efectos(efectos: Efectos) -> std::io::Result<()> {
     escribir_claves(&[("efectos", valor.to_string())])
 }
 
+/// Los segundos de espera que ofrece la captura: sin espera, 3, 5 o 10.
+// añadido en la 0.2.0
+pub const RETARDOS_CAPTURA: [u8; 4] = [0, 3, 5, 10];
+
+/// Persiste las opciones de la captura de pantalla.
+// añadido en la 0.2.0
+pub fn guardar_captura(cursor: bool, retardo: u8) -> std::io::Result<()> {
+    escribir_claves(&[
+        (
+            "captura_cursor",
+            if cursor { "si" } else { "no" }.to_string(),
+        ),
+        ("captura_retardo", retardo.to_string()),
+    ])
+}
+
 /// Persiste qué luces siguen al sensor.
+// 0.1.0
 pub fn guardar_brillo_automatico(elegido: BrilloAutomatico) -> std::io::Result<()> {
     let si_no = |v: bool| if v { "si" } else { "no" }.to_string();
     escribir_claves(&[
@@ -1262,6 +1461,7 @@ pub fn guardar_brillo_automatico(elegido: BrilloAutomatico) -> std::io::Result<(
 
 /// Persiste el modo de la luz nocturna, que es lo único que cambia desde la
 /// baldosa y la tarjeta de brillo: la temperatura y el horario son de Ajustes.
+// 0.1.0
 pub fn guardar_luz_nocturna(modo: ModoLuzNocturna) -> std::io::Result<()> {
     let valor = match modo {
         ModoLuzNocturna::Apagada => "no",
@@ -1273,11 +1473,13 @@ pub fn guardar_luz_nocturna(modo: ModoLuzNocturna) -> std::io::Result<()> {
 
 /// Persiste si una barra se aparta de las ventanas. `clave` es
 /// `panel_esquiva` o `dock_esquiva`.
+// 0.1.0
 pub fn guardar_esquiva(clave: &str, esquiva: bool) -> std::io::Result<()> {
     escribir_claves(&[(clave, if esquiva { "si" } else { "no" }.to_string())])
 }
 
 /// Persiste si se ven los iconos del escritorio.
+// 0.1.1
 pub fn guardar_iconos_escritorio(visibles: bool) -> std::io::Result<()> {
     escribir_claves(&[(
         "iconos_escritorio",
@@ -1288,6 +1490,7 @@ pub fn guardar_iconos_escritorio(visibles: bool) -> std::io::Result<()> {
 /// Punto único de persistencia para la API estructurada del compositor.
 /// Las claves ya llegan validadas por `org.bookos.Desktop`; esta función
 /// conserva comentarios, orden y claves que una versión nueva aún no conozca.
+// 0.1.0
 pub fn guardar_configuracion(valores: &[(String, String)]) -> std::io::Result<()> {
     let prestados: Vec<_> = valores
         .iter()
@@ -1307,6 +1510,7 @@ pub fn guardar_configuracion(valores: &[(String, String)]) -> std::io::Result<()
 /// hace falta para desdecirse: al elegir una pareja de fondos hay que quitar el
 /// `fondo` común, y dejarlo con el valor en blanco no lo quita —se relee como
 /// una ruta vacía y manda igual sobre la pareja.
+// 0.1.0
 fn escribir_claves(valores: &[(&str, String)]) -> std::io::Result<()> {
     let Some(ruta) = ruta() else {
         return Ok(());
@@ -1387,6 +1591,7 @@ pub struct Launchpad {
     pub orden: Vec<String>,
 }
 
+// 0.1.0
 pub fn cargar_launchpad() -> Launchpad {
     let Some(ruta) = ruta_launchpad() else {
         return Launchpad::default();
@@ -1397,6 +1602,7 @@ pub fn cargar_launchpad() -> Launchpad {
     interpretar_launchpad(&texto)
 }
 
+// 0.1.0
 fn interpretar_launchpad(texto: &str) -> Launchpad {
     let mut salida = Launchpad::default();
     for linea in texto
@@ -1437,6 +1643,7 @@ fn interpretar_launchpad(texto: &str) -> Launchpad {
 }
 
 /// Reescribe el fichero entero. Lo llama el launchpad al cambiar algo.
+// 0.1.0
 pub fn guardar_launchpad(datos: &Launchpad) -> std::io::Result<()> {
     let Some(ruta) = ruta_launchpad() else {
         return Ok(());
@@ -1475,6 +1682,7 @@ pub fn guardar_launchpad(datos: &Launchpad) -> std::io::Result<()> {
 ///
 /// Una línea por aplicación, `n = exec`: el número a la izquierda porque un
 /// `exec` puede llevar un igual dentro.
+// 0.1.1
 pub fn cargar_usos() -> HashMap<String, u32> {
     ruta_usos()
         .and_then(|ruta| std::fs::read_to_string(ruta).ok())
@@ -1482,6 +1690,7 @@ pub fn cargar_usos() -> HashMap<String, u32> {
         .unwrap_or_default()
 }
 
+// 0.1.1
 fn interpretar_usos(texto: &str) -> HashMap<String, u32> {
     texto
         .lines()
@@ -1491,6 +1700,7 @@ fn interpretar_usos(texto: &str) -> HashMap<String, u32> {
         .collect()
 }
 
+// 0.1.1
 pub fn sumar_uso(exec: &str) -> std::io::Result<()> {
     let Some(ruta) = ruta_usos() else {
         return Ok(());
@@ -1510,6 +1720,7 @@ pub fn sumar_uso(exec: &str) -> std::io::Result<()> {
 /// Las aplicaciones que el usuario quiere siempre encima, en
 /// `~/.config/bookos/encima.conf`, un `app_id` por línea. Se lee al abrir cada
 /// ventana —pasa pocas veces y así no hay copia en memoria que desincronizar—.
+// 0.1.1
 pub fn apps_encima() -> Vec<String> {
     ruta_encima()
         .and_then(|ruta| std::fs::read_to_string(ruta).ok())
@@ -1525,6 +1736,7 @@ pub fn apps_encima() -> Vec<String> {
 }
 
 /// Añade o quita `app_id` de [`apps_encima`].
+// 0.1.1
 pub fn marcar_app_encima(app_id: &str, encima: bool) -> std::io::Result<()> {
     let Some(ruta) = ruta_encima() else {
         return Ok(());
@@ -1543,14 +1755,17 @@ pub fn marcar_app_encima(app_id: &str, encima: bool) -> std::io::Result<()> {
     )
 }
 
+// 0.1.1
 fn ruta_encima() -> Option<PathBuf> {
     Some(ruta()?.with_file_name("encima.conf"))
 }
 
+// 0.1.1
 fn ruta_usos() -> Option<PathBuf> {
     Some(ruta()?.with_file_name("usos.conf"))
 }
 
+// 0.1.0
 fn ruta_launchpad() -> Option<PathBuf> {
     Some(ruta()?.with_file_name("launchpad.conf"))
 }
@@ -1561,6 +1776,7 @@ fn ruta_launchpad() -> Option<PathBuf> {
 /// `columna,fila = nombre`. Las coordenadas van a la **izquierda** del `=` a
 /// propósito: un nombre de fichero puede llevar un igual dentro, y al revés la
 /// línea se partiría por donde no toca.
+// 0.1.0
 pub fn cargar_escritorio() -> Vec<(String, (i32, i32))> {
     let Some(ruta) = ruta_escritorio() else {
         return Vec::new();
@@ -1584,6 +1800,7 @@ pub fn cargar_escritorio() -> Vec<(String, (i32, i32))> {
 }
 
 /// Reescribe las posiciones enteras. Lo llama el escritorio al soltar un icono.
+// 0.1.0
 pub fn guardar_escritorio(posiciones: &[(&str, (i32, i32))]) -> std::io::Result<()> {
     let Some(ruta) = ruta_escritorio() else {
         return Ok(());
@@ -1600,10 +1817,13 @@ pub fn guardar_escritorio(posiciones: &[(&str, (i32, i32))]) -> std::io::Result<
     std::fs::write(ruta, salida)
 }
 
+// 0.1.0
 fn ruta_escritorio() -> Option<PathBuf> {
     Some(ruta()?.with_file_name("escritorio.conf"))
 }
 
+// 0.1.0
+// modified 0.1.1 -- pública para otros módulos
 pub fn ruta() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
         return Some(PathBuf::from(dir).join("bookos/panel.conf"));
@@ -1636,6 +1856,15 @@ mod tests {
         assert_eq!(parsear("dock_tamano = 12").dock_tamano, 32);
         assert_eq!(parsear("dock_tamano = 120").dock_tamano, 80);
         assert_eq!(parsear("dock_tamano = absurdo").dock_tamano, 50);
+        assert_eq!(parsear("").panel_tamano, TamanoPanel::Mediano);
+        assert_eq!(
+            parsear("panel_tamano = grande").panel_tamano,
+            TamanoPanel::Grande
+        );
+        assert_eq!(
+            parsear("panel_tamano = enorme").panel_tamano,
+            TamanoPanel::Mediano
+        );
         assert!(parsear("bloqueo_huella = si").bloqueo_huella);
         assert!(!parsear("bloqueo_huella = quizá").bloqueo_huella);
     }
@@ -1697,13 +1926,15 @@ mod tests {
              velocidad_raton = -0.2\n\
              toque_para_clic = no\n\
              scroll_natural = no\n\
-             pantalla_tactil = no\n",
+             pantalla_tactil = no\n\
+             teclado_pantalla = no\n",
         );
         assert_eq!(c.entrada.velocidad_touchpad, 0.8);
         assert_eq!(c.entrada.velocidad_raton, -0.2);
         assert!(!c.entrada.toque_para_clic);
         assert!(!c.entrada.scroll_natural);
         assert!(!c.entrada.pantalla_tactil);
+        assert!(!c.entrada.teclado_pantalla);
     }
 
     /// Escribir la coma decimal es lo natural en castellano y no debería

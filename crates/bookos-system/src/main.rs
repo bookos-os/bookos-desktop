@@ -1,5 +1,6 @@
 mod audio;
 mod bluetooth;
+mod mantenimiento;
 mod montaje;
 mod network;
 mod pairing;
@@ -11,12 +12,19 @@ struct Change {
     done: Option<oneshot::Sender<()>>,
 }
 impl From<&'static str> for Change {
+    // 0.1.0
     fn from(domain: &'static str) -> Self {
         Self { domain, done: None }
     }
 }
 use futures_util::StreamExt;
 use zbus::Connection;
+
+fn respuesta(resultado: Result<serde_json::Value, String>) -> zbus::fdo::Result<String> {
+    resultado
+        .map(|v| v.to_string())
+        .map_err(zbus::fdo::Error::Failed)
+}
 
 #[derive(Clone)]
 struct Service {
@@ -28,23 +36,28 @@ struct Service {
 }
 #[zbus::interface(name = "org.bookos.System1")]
 impl Service {
+    // 0.1.0
     async fn get_state(&self) -> String {
         serde_json::to_string(&*self.state.read().await).unwrap_or_default()
     }
+    // 0.1.0
     async fn network_details(&self, kind: &str) -> zbus::fdo::Result<String> {
         network::details(&self.system, kind)
             .await
             .map(|v| v.to_string())
             .map_err(zbus::fdo::Error::Failed)
     }
+    // 0.1.0
     async fn wifi_secret(&self, ssid: &str) -> zbus::fdo::Result<String> {
         network::secret(&self.system, ssid)
             .await
             .map_err(zbus::fdo::Error::Failed)
     }
+    // 0.1.0
     async fn get_pairing(&self) -> String {
         self.pairing.current().await
     }
+    // 0.1.0
     async fn answer_pairing(
         &self,
         id: u64,
@@ -53,6 +66,22 @@ impl Service {
     ) -> zbus::fdo::Result<()> {
         self.pairing.answer(id, accepted.then_some(value)).await
     }
+    async fn maintenance_overview(&self) -> zbus::fdo::Result<String> {
+        respuesta(mantenimiento::resumen().await)
+    }
+    async fn maintenance_sizes(&self) -> zbus::fdo::Result<String> {
+        respuesta(mantenimiento::tamanos().await)
+    }
+    async fn maintenance_scan(&self) -> zbus::fdo::Result<String> {
+        respuesta(mantenimiento::escanear().await)
+    }
+    async fn maintenance_clean(&self, payload: &str) -> zbus::fdo::Result<String> {
+        respuesta(mantenimiento::limpiar(payload).await)
+    }
+    async fn maintenance_trash(&self, payload: &str) -> zbus::fdo::Result<String> {
+        respuesta(mantenimiento::a_papelera(payload).await)
+    }
+    // 0.1.0
     async fn perform(&self, payload: &str) -> zbus::fdo::Result<()> {
         if payload.len() > 65536 {
             return Err(zbus::fdo::Error::InvalidArgs(
@@ -138,11 +167,13 @@ impl Service {
         result.map_err(zbus::fdo::Error::Failed)
     }
     #[zbus(signal)]
+    // 0.1.0
     async fn state_changed(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         state: &str,
     ) -> zbus::Result<()>;
     #[zbus(signal)]
+    // 0.1.0
     async fn pairing_requested(
         emitter: &zbus::object_server::SignalEmitter<'_>,
         request: &str,
@@ -150,6 +181,7 @@ impl Service {
 }
 
 #[tokio::main]
+// 0.1.0
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system = Connection::system().await?;
     let (changes, mut events) = mpsc::channel(32);
@@ -254,6 +286,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+// 0.1.0
 async fn watch_bus(
     c: Connection,
     name: &'static str,
@@ -275,6 +308,7 @@ async fn watch_bus(
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
+// 0.1.0
 async fn watch_audio(tx: mpsc::Sender<Change>) {
     use tokio::io::{AsyncBufReadExt, BufReader};
     loop {
@@ -304,6 +338,7 @@ async fn watch_audio(tx: mpsc::Sender<Change>) {
     }
 }
 
+// 0.1.0
 async fn watch_owner(
     c: Connection,
     name: &'static str,
@@ -329,6 +364,7 @@ async fn watch_owner(
     }
 }
 
+// 0.1.0
 fn audio_event(line: &str) -> bool {
     [
         " on sink #",

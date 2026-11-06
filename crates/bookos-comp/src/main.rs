@@ -9,10 +9,12 @@ mod atenuacion;
 mod autenticar;
 mod backend;
 mod banda;
+mod brillo;
 mod brillo_auto;
 mod captura;
 mod cierre;
 mod conmutador;
+mod cuentagotas;
 mod cursor;
 mod decoracion;
 mod desenfoque;
@@ -23,6 +25,8 @@ mod escritorios;
 mod fondo;
 mod fundido;
 mod genio;
+#[cfg(feature = "udev")]
+mod cinco_dedos;
 mod gestos;
 mod handlers;
 mod input;
@@ -51,6 +55,8 @@ use smithay::reexports::wayland_server::Display;
 
 use crate::state::{BookosComp, Modo};
 
+// 0.1.0
+// modified 0.1.1 -- modo --kiosko, umbral de mmap fijo (70,4 → 52,3 MB anónimos) y ayuda con los atajos nuevos
 fn main() -> anyhow::Result<()> {
     // Los búferes del shell y del fondo son reservas de 1 a 21 MB que van y
     // vienen (abrir el launchpad son 30 MB). glibc sube solo su umbral de mmap
@@ -94,17 +100,31 @@ fn main() -> anyhow::Result<()> {
                        --panel-info       enseña los estados que lee el panel y sale\n\
                        --cursor-info      dice qué fichero resuelve cada cursor y sale\n\
                        programa           cliente que lanzar dentro (p. ej. konsole)\n\n\
-                     Atajos:\n  \
+                     Atajos (mantén Meta un segundo para verlos en pantalla):\n  \
+                       Meta               abrir o cerrar el launchpad\n  \
+                       Meta+Espacio       buscar aplicaciones, comandos y estados\n  \
+                       Meta+Z / Meta+X    menú de BookOS / centro de control\n  \
+                       Meta+E             archivos\n  \
                        Meta+Return        abrir un terminal (BOOKOS_TERMINAL, bookos-shell por defecto)\n  \
                        Ctrl+Alt+T         lo mismo\n  \
-                       Meta+Espacio       buscar aplicaciones, comandos y estados\n  \
-                       Meta               abrir o cerrar el launchpad\n  \
+                       Meta+.             abrir o cerrar el selector de emojis\n  \
+                       Meta+Alt+A         asistente; mantenida, habla hasta soltarla\n  \
                        Alt+Tab            elegir aplicación por icono\n  \
                        Meta+Tab           elegir ventana por previsualización\n  \
-                       Meta+F             maximizar la ventana con foco, o restaurarla\n  \
+                       Meta+Q / F / H     cerrar / maximizar o restaurar / minimizar la ventana\n  \
                        Meta+flechas       encajar en media pantalla; otra flecha, en un cuarto\n  \
-                       Meta+Q             cerrar la ventana con foco\n  \
-                       Meta+.             abrir o cerrar el selector de emojis\n  \
+                       Meta+Alt+T         siempre encima\n  \
+                       Alt+F3             menú de la ventana\n  \
+                       Meta+W             vista de escritorios\n  \
+                       Meta+1..5          ir a ese escritorio\n  \
+                       Meta+Ctrl+←/→      escritorio anterior o siguiente (con Mayús, llevar la ventana)\n  \
+                       Meta+Ctrl+D        ver el escritorio\n  \
+                       Impr, Meta+Mayús+S captura de pantalla\n  \
+                       Meta+Alt+C         cuentagotas: copiar el color de la pantalla\n  \
+                       Meta+P             pantallas y proyección\n  \
+                       Meta+L             bloquear\n  \
+                       Meta+Esc           apagar, reiniciar o suspender\n  \
+                       Ctrl+Alt+Supr      cerrar sesión\n  \
                        Meta+Alt+B         el panel: esquivar ventanas o siempre visible\n  \
                        Meta+Alt+D         lo mismo para el dock\n  \
                        Meta+Alt+O         apagar solo las pantallas, sin suspender\n  \
@@ -166,6 +186,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+// 0.1.0
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     // usvg avisa por cada `marker-start: none` de los SVG de Breeze — decenas de

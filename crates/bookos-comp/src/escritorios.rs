@@ -75,7 +75,11 @@ pub type Apartada = (Window, Point<i32, Logical>);
 /// movido, que es justo lo que se necesita para no perderse entre cuatro.
 #[derive(Debug)]
 struct Deslizamiento {
-    desde: std::time::Instant,
+    // modificado en la 0.2.0 -- el dedo fija la posición y al soltar manda el muelle.
+    muelle: bookos_shell::tema::Muelle,
+    sujeto: bool,
+    anterior: usize,
+    destino: usize,
     /// Hacia dónde va la vista: `1` si vamos a un escritorio de la derecha.
     direccion: f64,
     /// Ancho de la pantalla en lógicos, que es lo que recorren las ventanas.
@@ -86,16 +90,32 @@ struct Deslizamiento {
     entrantes: Vec<Apartada>,
 }
 
-/// Una ventana del despeje: ella, su sitio y el punto fuera de la pantalla.
-type Viaje = (Window, Point<i32, Logical>, Point<i32, Logical>);
+/// Una ventana del despeje: ella, su sitio, el punto fuera de la pantalla y
+/// su salida.
+// modificado en la 0.2.0 -- con la salida: lo apartado se apunta al terminar, no al empezar
+type Viaje = (Window, Point<i32, Logical>, Point<i32, Logical>, String);
 
 /// Las ventanas yéndose a los bordes al despejar, o volviendo de ellos.
+///
+/// No se distingue ida de vuelta: la mano puede dar la vuelta a mitad, así que
+/// lo que importa es dónde acaba. Hasta entonces `escondidas` no se toca.
+// modificado en la 0.2.0 -- muelle en vez de reloj; los dedos pueden sujetarlo y cancelarlo
 #[derive(Debug)]
 struct Despeje {
-    desde: std::time::Instant,
-    /// `true` al irse: al acabar se desmapean. Al volver ya acaban en su sitio.
-    ida: bool,
+    /// 0: cada ventana en su sitio; 1: fuera, asomando por el borde.
+    muelle: bookos_shell::tema::Muelle,
+    /// Con los dedos apoyados manda la mano y no se integra la física.
+    sujeto: bool,
     ventanas: Vec<Viaje>,
+}
+
+/// El gesto de cuatro dedos que lleva un despeje.
+// añadido en la 0.2.0
+#[derive(Debug, Clone, Copy)]
+struct GestoDespeje {
+    agarre: crate::gestos::Agarre,
+    /// Empezó devolviendo ventanas: avanzar el dedo es bajar el muelle.
+    devolviendo: bool,
 }
 
 #[derive(Debug)]
@@ -123,9 +143,15 @@ pub struct Escritorios {
     despeje: Option<Despeje>,
     /// Los cambios que se están viendo ahora mismo, como mucho uno por salida.
     deslizando: HashMap<String, Deslizamiento>,
+    // añadido en la 0.2.0 -- el monitor del gesto no cambia con el puntero.
+    gesto: Option<(String, crate::gestos::Agarre)>,
+    // añadido en la 0.2.0
+    gesto_despeje: Option<GestoDespeje>,
 }
 
 impl Escritorios {
+    // 0.1.0
+    // modified 0.1.1 -- apartadas por escritorio y animación de despeje
     pub fn new(cuantos: usize, mut nombres: Vec<String>) -> Self {
         let cuantos = cuantos.clamp(1, MAXIMO);
         nombres.truncate(cuantos);
@@ -143,11 +169,14 @@ impl Escritorios {
             escondidas: HashMap::new(),
             despeje: None,
             deslizando: HashMap::new(),
+            gesto: None,
+            gesto_despeje: None,
         }
     }
 
     /// El escritorio activo de una salida. Una que nunca se haya movido está en
     /// el primero.
+    // 0.1.0
     pub fn activo_en(&self, salida: &str) -> usize {
         self.activo
             .get(salida)
@@ -157,6 +186,7 @@ impl Escritorios {
     }
 
     /// Las guardadas de una salida, creándole su hueco si es la primera vez.
+    // 0.1.0
     fn guardadas_de(&mut self, salida: &str) -> &mut Vec<Vec<Apartada>> {
         let cuantos = self.cuantos;
         self.guardadas
@@ -165,6 +195,7 @@ impl Escritorios {
     }
 
     /// Las escondidas de una salida, igual que [`Self::guardadas_de`].
+    // 0.1.1
     fn escondidas_de(&mut self, salida: &str) -> &mut Vec<Vec<Apartada>> {
         let cuantos = self.cuantos;
         self.escondidas
@@ -172,29 +203,24 @@ impl Escritorios {
             .or_insert_with(|| (0..cuantos).map(|_| Vec::new()).collect())
     }
 
+    // 0.1.0
     pub fn cuantos(&self) -> usize {
         self.cuantos
     }
 
+    // 0.1.0
     pub fn nombres(&self) -> &[String] {
         &self.nombres
     }
 
-    /// ¿Hay algún cambio de escritorio a la vista ahora mismo, en cualquier
-    /// salida? Es lo que impide que el bucle se duerma a mitad de la
-    /// transición, así que basta con que quede uno.
+    /// Solo pide fotogramas autónomos al soltar: con los dedos apoyados cada
+    /// evento de entrada ya despierta el compositor, y mantenerlos quietos no cuesta CPU.
+    // modificado en la 0.2.0 -- el reposo del dedo también deja dormir al bucle.
     pub fn deslizando(&self) -> bool {
-        !self.deslizando.is_empty() || self.despeje.is_some()
-    }
-
-    /// Cuánto se lleva del cambio de esa salida, de 0 a 1, **sin curva**: es
-    /// tiempo, no recorrido. Quien anime le aplica la suya.
-    fn fraccion(&self, salida: &str) -> Option<f32> {
-        let d = self.deslizando.get(salida)?;
-        Some(bookos_shell::tema::fraccion(
-            d.desde.elapsed(),
-            DESLIZAMIENTO,
-        ))
+        self.deslizando
+            .values()
+            .any(|d| !d.sujeto && !d.muelle.quieto())
+            || self.despeje.as_ref().is_some_and(|d| !d.sujeto)
     }
 
     /// Dónde va cada uno de los dos fondos mientras dura el cambio.
@@ -211,9 +237,10 @@ impl Escritorios {
     /// Por eso son dos y no uno: el que se va deja el borde al descubierto, y
     /// lo que hay detrás es el del escritorio al que se llega, pegado a él.
     /// Devuelve `(x del saliente, x del entrante)` en lógicos.
+    // 0.1.0
     pub fn tira_fondo(&self, salida: &str) -> Option<(i32, i32)> {
         let d = self.deslizando.get(salida)?;
-        let avance = bookos_shell::tema::C_ENTRADA.eval(self.fraccion(salida)?) as f64;
+        let avance = d.muelle.valor() as f64;
         // Las mismas cuentas que mueven las ventanas en `animar`: el fondo no
         // puede ir con su propia velocidad o la tira se rompería por la mitad.
         let recorrido = (d.ancho * d.direccion * avance) as i32;
@@ -222,20 +249,35 @@ impl Escritorios {
     }
 
     /// ¿Se está yendo esta ventana por un «mostrar escritorio» en marcha?
+    // 0.1.1
+    // modified 0.2.0 -- se va si el muelle apunta fuera
     pub fn se_va(&self, window: &Window) -> bool {
-        self.despeje
-            .as_ref()
-            .is_some_and(|d| d.ida && d.ventanas.iter().any(|(w, _, _)| w == window))
+        self.despeje.as_ref().is_some_and(|d| {
+            d.muelle.destino() > 0.5 && d.ventanas.iter().any(|(w, ..)| w == window)
+        })
+    }
+
+    /// Como [`Self::despejado`], pero contando hacia dónde va un despeje en
+    /// marcha. Es lo que decide el sentido del gesto al apoyar los dedos.
+    // añadido en la 0.2.0
+    pub fn apartando(&self) -> bool {
+        match &self.despeje {
+            Some(d) => d.muelle.destino() > 0.5,
+            None => self.despejado(),
+        }
     }
 
     /// ¿Hay algo apartado por «mostrar escritorio» en lo que se ve ahora, en
     /// alguna pantalla?
+    // 0.1.0
+    // modified 0.1.1 -- mira solo lo apartado en el escritorio activo
     pub fn despejado(&self) -> bool {
         self.escondidas_activas().next().is_some()
     }
 
     /// Las apartadas por «mostrar escritorio» del escritorio activo de cada
     /// salida: las que el gesto contrario devolvería.
+    // 0.1.1
     pub fn escondidas_activas(&self) -> impl Iterator<Item = &Window> {
         self.escondidas
             .iter()
@@ -246,6 +288,7 @@ impl Escritorios {
 
     /// Las ventanas que no están en el `Space` pero siguen vivas: las de los
     /// otros escritorios y las que apartó «mostrar escritorio».
+    // 0.1.1
     pub fn apartadas(&self) -> impl Iterator<Item = &Window> {
         self.escondidas
             .values()
@@ -263,6 +306,7 @@ impl Escritorios {
 /// Toma la salida y no el escritorio entero porque los escritorios son por
 /// salida: enseñar los cuatro con las ventanas de los dos monitores mezcladas
 /// no describiría ningún estado que exista.
+// 0.1.0
 pub fn ventanas_para_vista(state: &BookosComp, salida: &str) -> Vec<Vec<Apartada>> {
     let activo = state.escritorios.activo_en(salida);
     let guardadas = state.escritorios.guardadas.get(salida);
@@ -282,6 +326,7 @@ pub fn ventanas_para_vista(state: &BookosComp, salida: &str) -> Vec<Vec<Apartada
 
 /// La salida cuyos escritorios enseña la vista general: la que tiene el puntero
 /// encima, que es sobre la que van a actuar el clic y el gesto.
+// 0.1.0
 pub fn salida_para_vista(state: &BookosComp) -> String {
     state
         .salida_del_puntero()
@@ -290,6 +335,8 @@ pub fn salida_para_vista(state: &BookosComp) -> String {
 }
 
 /// Añade un escritorio al final. La vista actual no cambia.
+// 0.1.0
+// modified 0.1.1 -- añade hueco para apartadas en el escritorio nuevo
 pub fn crear(state: &mut BookosComp) -> bool {
     terminar_todos(state);
     if state.escritorios.cuantos >= MAXIMO {
@@ -315,6 +362,7 @@ pub fn crear(state: &mut BookosComp) -> bool {
 }
 
 /// Cambia el nombre visible, limpiando los separadores del formato de config.
+// 0.1.0
 pub fn renombrar(state: &mut BookosComp, indice: usize, nombre: &str) -> bool {
     let Some(actual) = state.escritorios.nombres.get_mut(indice) else {
         return false;
@@ -342,6 +390,7 @@ pub fn renombrar(state: &mut BookosComp, indice: usize, nombre: &str) -> bool {
 /// escritorios lleva sus ventanas al vecino en vez de cerrarlas. Se quitan
 /// por el final, que es lo que se espera al bajar el número. Devuelve si
 /// cambió algo.
+// 0.1.0
 pub fn ajustar(state: &mut BookosComp, cuantos: usize, nombres: &[String]) -> bool {
     let cuantos = cuantos.clamp(1, MAXIMO);
     let mut cambio = false;
@@ -365,6 +414,8 @@ pub fn ajustar(state: &mut BookosComp, cuantos: usize, nombres: &[String]) -> bo
 /// el reparto de las ventanas y el índice activo, porque cada monitor puede
 /// estar en un escritorio distinto y el borrado le desplaza el suyo de otra
 /// forma.
+// 0.1.0
+// modified 0.1.1 -- suelta las apartadas en vez de devolverlas
 pub fn eliminar(state: &mut BookosComp, indice: usize) -> bool {
     terminar_todos(state);
     soltar_escondidas(state);
@@ -456,17 +507,10 @@ pub fn eliminar(state: &mut BookosComp, indice: usize) -> bool {
 /// primero. Con un gesto de cuatro dedos el envolvimiento es desorientador —te
 /// vas al otro extremo del escritorio sin querer— y no hay forma de saber por
 /// el movimiento que has llegado al final. Quedarse quieto sí la hay.
+// 0.1.0
 pub fn destino(activo: usize, pasos: i32, cuantos: usize) -> usize {
     (activo as i32 + pasos).clamp(0, cuantos as i32 - 1) as usize
 }
-
-/// Cuánto dura el deslizamiento entre escritorios.
-///
-/// Es la duración de «transición de página completa» del sistema de diseño, con
-/// su curva —sin rebote—: cambiar de escritorio **es** una transición de página,
-/// y usar la misma tabla que el launchpad es lo que hace que el escritorio se
-/// mueva siempre igual. Nada de un valor propio aquí.
-const DESLIZAMIENTO: std::time::Duration = bookos_shell::tema::D_PAGINA;
 
 /// A qué salida pertenece una ventana: la que contiene su centro.
 ///
@@ -474,6 +518,7 @@ const DESLIZAMIENTO: std::time::Duration = bookos_shell::tema::D_PAGINA;
 /// entre dos monitores, y en ese caso «está» en el que enseña más de ella. Sin
 /// salida —ventana fuera de todo, que pasa mientras se recoloca— devuelve
 /// `None` y quien llame decide.
+// 0.1.0
 pub fn salida_de(state: &BookosComp, window: &Window) -> Option<String> {
     let geo = state.space.element_geometry(window)?;
     let centro = (
@@ -493,6 +538,7 @@ pub fn salida_de(state: &BookosComp, window: &Window) -> Option<String> {
 }
 
 /// Las ventanas del `Space` que están en esta salida, con su posición.
+// 0.1.0
 fn ventanas_de(state: &BookosComp, salida: &str) -> Vec<Apartada> {
     state
         .space
@@ -509,8 +555,21 @@ fn ventanas_de(state: &BookosComp, salida: &str) -> Vec<Apartada> {
 /// donde están. Y desliza el ancho de **esa** pantalla, no el de la que tenga
 /// el puntero encima: con dos monitores de distinto ancho, usar el ajeno dejaba
 /// las ventanas a medio camino durante la transición.
+// 0.1.0
+// modified 0.1.1 -- lo despejado sigue despejado al cambiar de escritorio
 pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
     let nombre = salida.name();
+    // modificado en la 0.2.0 -- invertir entre los mismos dos escritorios conserva posición e impulso.
+    if let Some(d) = state.escritorios.deslizando.get_mut(&nombre)
+        && (n == d.anterior || n == d.destino)
+    {
+        d.sujeto = false;
+        d.muelle.ir_a(if n == d.destino { 1.0 } else { 0.0 });
+        state.escritorios.activo.insert(nombre, n);
+        avisar_al_panel(state);
+        state.needs_redraw = true;
+        return;
+    }
     let anterior = state.escritorios.activo_en(&nombre);
     if n >= state.escritorios.cuantos || n == anterior {
         tracing::debug!(
@@ -557,7 +616,15 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
     state.escritorios.deslizando.insert(
         nombre.clone(),
         Deslizamiento {
-            desde: std::time::Instant::now(),
+            muelle: {
+                let mut muelle =
+                    bookos_shell::tema::Muelle::nuevo(0.0, bookos_shell::tema::M_SUAVE);
+                muelle.soltar(1.0, 0.0);
+                muelle
+            },
+            sujeto: false,
+            anterior,
+            destino: n,
             direccion,
             ancho,
             salientes,
@@ -567,6 +634,18 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
 
     tracing::debug!(de = anterior, a = n, salida = %nombre, "escritorio");
     avisar_al_panel(state);
+    // Con los dedos apoyados el cambio aún no está hecho: el aviso sale al
+    // soltar, y solo si de verdad se llega al otro escritorio.
+    // modificado en la 0.2.0
+    if state.escritorios.gesto.is_none() {
+        avisar_osd(state, &nombre, n);
+    }
+    state.needs_redraw = true;
+}
+
+// 0.1.0
+// modified 0.2.0 -- aparte, para que el gesto lo pida al soltar
+fn avisar_osd(state: &mut BookosComp, salida: &str, n: usize) {
     // Y el aviso con el nombre, que es lo único que se ve cuando el escritorio
     // al que vas está vacío: sin ventanas no hay nada que deslizar.
     let nombre_escritorio = state
@@ -579,7 +658,7 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
     // dibuja siempre en la principal, así que sin esto un cambio en la
     // secundaria parecería haber ocurrido aquí.
     let texto = if state.space.outputs().count() > 1 {
-        format!("{nombre_escritorio} · {nombre}")
+        format!("{nombre_escritorio} · {salida}")
     } else {
         nombre_escritorio
     };
@@ -587,6 +666,199 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
     if let Some(shell) = state.shell.as_mut() {
         shell.mostrar_osd(&icono, None, Some(texto));
     }
+}
+
+// añadido en la 0.2.0 -- sin escritorio vecino, la tira cede como máximo el 15 % del ancho.
+fn resistencia(progreso: f32) -> f32 {
+    progreso / (1.0 + progreso.abs() / 0.15)
+}
+
+// añadido en la 0.2.0 -- apoyar la mano detiene la tira en lo que ya se ve, incluso antes de reconocer el eje.
+pub fn agarrar_dedos(state: &mut BookosComp) {
+    let Some(nombre) = state.salida_del_puntero().map(|o| o.name()) else {
+        return;
+    };
+    let Some(d) = state.escritorios.deslizando.get_mut(&nombre) else {
+        return;
+    };
+    let valor = d.muelle.valor();
+    let posicion = if d.anterior == d.destino {
+        valor / (1.0 - valor.abs() / 0.15)
+    } else {
+        valor
+    };
+    state.escritorios.gesto = Some((
+        nombre,
+        crate::gestos::Agarre::nuevo(
+            posicion * d.direccion as f32,
+            d.muelle.destino() * d.direccion as f32,
+        ),
+    ));
+    d.sujeto = true;
+    d.muelle.fijar(valor);
+}
+
+// añadido en la 0.2.0
+pub fn seguir_dedos(state: &mut BookosComp, progreso: f32) {
+    if state.escritorios.gesto.is_none() {
+        agarrar_dedos(state);
+        if state.escritorios.gesto.is_none() {
+            let Some(salida) = state.salida_del_puntero() else {
+                return;
+            };
+            state.escritorios.gesto = Some((salida.name(), crate::gestos::Agarre::nuevo(0.0, 0.0)));
+        }
+    }
+    let (nombre, agarre) = state
+        .escritorios
+        .gesto
+        .as_mut()
+        .expect("el gesto acaba de capturar su salida");
+    let progreso = agarre.seguir(progreso, -1.0, 1.0);
+    let nombre = nombre.clone();
+    let direccion = if progreso < 0.0 { -1.0 } else { 1.0 };
+    if state
+        .escritorios
+        .deslizando
+        .get(&nombre)
+        .is_some_and(|d| d.direccion != direccion)
+    {
+        if let Some(d) = state.escritorios.deslizando.get_mut(&nombre) {
+            d.muelle.ir_a(0.0);
+        }
+        terminar_deslizamiento(state, &nombre);
+    }
+    if !state.escritorios.deslizando.contains_key(&nombre) {
+        let Some(salida) = state.space.outputs().find(|o| o.name() == nombre).cloned() else {
+            return;
+        };
+        let anterior = state.escritorios.activo_en(&nombre);
+        let destino = destino(anterior, direccion as i32, state.escritorios.cuantos);
+        if destino != anterior {
+            cambiar_a(state, &salida, destino);
+        } else {
+            terminar_despeje(state);
+            let ancho = state
+                .space
+                .output_geometry(&salida)
+                .expect("salida mapeada en Space")
+                .size
+                .w as f64;
+            let salientes = ventanas_de(state, &nombre);
+            state.escritorios.deslizando.insert(
+                nombre.clone(),
+                Deslizamiento {
+                    muelle: bookos_shell::tema::Muelle::nuevo(0.0, bookos_shell::tema::M_SUAVE),
+                    sujeto: true,
+                    anterior,
+                    destino,
+                    direccion,
+                    ancho,
+                    salientes,
+                    entrantes: Vec::new(),
+                },
+            );
+        }
+    }
+    if let Some(d) = state.escritorios.deslizando.get_mut(&nombre) {
+        d.sujeto = true;
+        let avance = progreso.abs().min(1.0);
+        d.muelle.fijar(if d.anterior == d.destino {
+            resistencia(avance)
+        } else {
+            avance
+        });
+    }
+    state.needs_redraw = true;
+}
+
+// añadido en la 0.2.0
+pub fn soltar_dedos(state: &mut BookosComp, suelta: crate::gestos::Suelta) {
+    let Some((nombre, agarre)) = state.escritorios.gesto.take() else {
+        return;
+    };
+    if let Some(d) = state.escritorios.deslizando.get_mut(&nombre) {
+        let cambia = agarre.destino(suelta) as f64 == d.direccion && d.destino != d.anterior;
+        d.sujeto = false;
+        let velocidad = suelta.velocidad * d.direccion as f32;
+        let velocidad = if d.anterior == d.destino {
+            velocidad / (1.0 + agarre.posicion.abs() / 0.15).powi(2)
+        } else {
+            velocidad
+        };
+        d.muelle.soltar_gesto(
+            if cambia { 1.0 } else { 0.0 },
+            if suelta.cancelada { 0.0 } else { velocidad },
+        );
+        let destino = d.destino;
+        if cambia {
+            avisar_osd(state, &nombre, destino);
+        } else {
+            state.escritorios.activo.insert(nombre, d.anterior);
+        }
+    }
+    avisar_al_panel(state);
+    state.needs_redraw = true;
+}
+
+/// Cuatro dedos en vertical: aparta las ventanas, o las devuelve si ya lo
+/// estaban, siguiendo a la mano. Hasta soltar se puede volver atrás.
+// añadido en la 0.2.0
+pub fn seguir_despeje(state: &mut BookosComp, progreso: f32) {
+    if state.escritorios.gesto_despeje.is_none() || state.escritorios.despeje.is_none() {
+        // Uno a medias se da por acabado hacia donde iba: así `despejado`
+        // dice la verdad y coincide con el sentido que eligió `apartando`.
+        terminar_despeje(state);
+        let devolviendo = state.escritorios.despejado();
+        if devolviendo {
+            recuperar(state);
+        } else {
+            despejar(state);
+        }
+        let Some(d) = state.escritorios.despeje.as_mut() else {
+            return;
+        };
+        d.sujeto = true;
+        state.escritorios.gesto_despeje = Some(GestoDespeje {
+            agarre: crate::gestos::Agarre::nuevo(0.0, 0.0),
+            devolviendo,
+        });
+    }
+    let (Some(g), Some(d)) = (
+        state.escritorios.gesto_despeje.as_mut(),
+        state.escritorios.despeje.as_mut(),
+    ) else {
+        return;
+    };
+    let avance = g.agarre.seguir(progreso, 0.0, 1.0);
+    d.muelle
+        .fijar(if g.devolviendo { 1.0 - avance } else { avance });
+    state.needs_redraw = true;
+}
+
+// añadido en la 0.2.0
+pub fn soltar_despeje(state: &mut BookosComp, suelta: crate::gestos::Suelta) {
+    let (Some(g), Some(d)) = (
+        state.escritorios.gesto_despeje.take(),
+        state.escritorios.despeje.as_mut(),
+    ) else {
+        return;
+    };
+    let llega = g.agarre.destino(suelta) > 0.0;
+    let (destino, sentido) = if g.devolviendo {
+        (if llega { 0.0 } else { 1.0 }, -1.0)
+    } else {
+        (if llega { 1.0 } else { 0.0 }, 1.0)
+    };
+    d.sujeto = false;
+    d.muelle.soltar_gesto(
+        destino,
+        if suelta.cancelada {
+            0.0
+        } else {
+            suelta.velocidad * sentido
+        },
+    );
     state.needs_redraw = true;
 }
 
@@ -596,6 +868,7 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
 /// qué monitor» está aquí y en un solo sitio: donde está el ratón es donde el
 /// usuario está mirando, y es lo mismo que ya deciden `maximizar` y `encajar`
 /// a través de `ventanas::pantalla`.
+// 0.1.0
 pub fn cambiar_aqui(state: &mut BookosComp, n: usize) {
     let Some(salida) = state.salida_del_puntero().cloned() else {
         return;
@@ -604,6 +877,7 @@ pub fn cambiar_aqui(state: &mut BookosComp, n: usize) {
 }
 
 /// El escritorio activo de la salida bajo el puntero.
+// 0.1.0
 pub fn activo_aqui(state: &BookosComp) -> usize {
     state.escritorios.activo_en(&salida_para_vista(state))
 }
@@ -619,6 +893,7 @@ pub fn activo_aqui(state: &BookosComp) -> usize {
 /// uno solo: enseña el de la salida **bajo el puntero**. Es la que el usuario
 /// acaba de mover, así que la respuesta cae donde está mirando; con una sola
 /// pantalla es exactamente lo de siempre.
+// 0.1.0
 pub fn avisar_al_panel(state: &mut BookosComp) {
     let salida = state
         .salida_del_puntero()
@@ -638,6 +913,8 @@ pub fn avisar_al_panel(state: &mut BookosComp) {
 /// Lo llama el compositor antes de componer cada frame, como el resto de
 /// animaciones. Devuelve `true` mientras siga habiendo algo que mover, que es lo
 /// que impide que el bucle se duerma a mitad de la transición.
+// 0.1.0
+// modified 0.1.1 -- anima el despeje del escritorio
 pub fn animar(state: &mut BookosComp) -> bool {
     let despejando = animar_despeje(state);
     if state.escritorios.deslizando.is_empty() {
@@ -648,30 +925,30 @@ pub fn animar(state: &mut BookosComp) -> bool {
     let salidas: Vec<String> = state.escritorios.deslizando.keys().cloned().collect();
     let mut vivo = false;
     for salida in salidas {
-        let Some(d) = state.escritorios.deslizando.get(&salida) else {
+        let Some(d) = state.escritorios.deslizando.get_mut(&salida) else {
             continue;
         };
-        let t = bookos_shell::tema::fraccion(d.desde.elapsed(), DESLIZAMIENTO);
-        if t >= 1.0 {
+        if !d.sujeto {
+            d.muelle.avanzar(std::time::Instant::now());
+        }
+        if !d.sujeto && d.muelle.quieto() {
             terminar_deslizamiento(state, &salida);
             continue;
         }
-        let avance = bookos_shell::tema::C_ENTRADA.eval(t) as f64;
+        let avance = d.muelle.valor() as f64;
         // Lo que se ha recorrido de pantalla en este instante. Las que se van lo
         // restan y las que entran lo suman: se mueven juntas, como una sola tira.
         let recorrido = (d.ancho * d.direccion * avance) as i32;
         let desplazada = (d.ancho * d.direccion) as i32 - recorrido;
-        let salientes: Vec<Apartada> = d.salientes.clone();
-        let entrantes: Vec<Apartada> = d.entrantes.clone();
-        for (window, origen) in salientes {
+        for (window, origen) in &d.salientes {
             state
                 .space
-                .map_element(window, (origen.x - recorrido, origen.y), false);
+                .map_element(window.clone(), (origen.x - recorrido, origen.y), false);
         }
-        for (window, destino) in entrantes {
+        for (window, destino) in &d.entrantes {
             state
                 .space
-                .map_element(window, (destino.x + desplazada, destino.y), false);
+                .map_element(window.clone(), (destino.x + desplazada, destino.y), false);
         }
         vivo = true;
     }
@@ -685,16 +962,31 @@ pub fn animar(state: &mut BookosComp) -> bool {
 /// Es idempotente y se llama tanto al terminar el tiempo como al empezar otro
 /// cambio: el estado final no puede depender de que la animación se haya visto
 /// entera, porque un cambio rápido de dos escritorios la interrumpe siempre.
+// 0.1.0
 fn terminar_deslizamiento(state: &mut BookosComp, salida: &str) {
     let Some(d) = state.escritorios.deslizando.remove(salida) else {
         return;
     };
-    for (window, _) in &d.salientes {
+    // modificado en la 0.2.0 -- cancelar devuelve las salientes y guarda las entrantes en su escritorio.
+    // modificado en la 0.2.0 -- bloquear o reorganizar con los dedos apoyados cancela, también en los extremos.
+    let vuelve = d.sujeto || d.anterior == d.destino || d.muelle.destino() == 0.0;
+    let (ocultar, mostrar, guardado, activo) = if vuelve {
+        (d.entrantes, d.salientes, d.destino, d.anterior)
+    } else {
+        (d.salientes, d.entrantes, d.anterior, d.destino)
+    };
+    for (window, _) in &ocultar {
         state.space.unmap_elem(window);
     }
-    for (window, destino) in &d.entrantes {
-        state.space.map_element(window.clone(), *destino, false);
+    state.escritorios.guardadas_de(salida)[guardado] = ocultar;
+    if guardado != activo {
+        state.escritorios.guardadas_de(salida)[activo].clear();
     }
+    for (window, destino) in mostrar {
+        state.space.map_element(window, destino, false);
+    }
+    state.escritorios.activo.insert(salida.to_owned(), activo);
+    avisar_al_panel(state);
     // El foco va a la última **de esta salida** —la que estaba arriba del todo
     // cuando se salió— y, si no hay ninguna, se retira: dejárselo a una ventana
     // que ya no se ve significa escribir a ciegas en ella. Antes se cogía la
@@ -728,7 +1020,11 @@ fn terminar_deslizamiento(state: &mut BookosComp, salida: &str) {
 /// Termina de golpe los cambios en marcha en **todas** las salidas. Lo usan las
 /// operaciones que reorganizan los escritorios enteros (crear, eliminar): ahí
 /// dejar una transición a medias dejaría ventanas mapeadas fuera de sitio.
+// 0.1.0
+// modified 0.1.1 -- termina también el despeje en curso
 pub fn terminar_todos(state: &mut BookosComp) {
+    // modificado en la 0.2.0 -- reorganizar o bloquear también libera el monitor fijado por el gesto.
+    state.escritorios.gesto = None;
     let salidas: Vec<String> = state.escritorios.deslizando.keys().cloned().collect();
     for salida in salidas {
         terminar_deslizamiento(state, &salida);
@@ -737,6 +1033,8 @@ pub fn terminar_todos(state: &mut BookosComp) {
 }
 
 /// Envía una ventana al escritorio de su monitor sin cambiar la vista.
+// 0.1.0
+// modified 0.1.1 -- mueve la ventana con sus diálogos y su grupo
 pub fn mover_ventana(state: &mut BookosComp, window: &Window, destino: usize) {
     let familia = crate::multitarea::familia(state, window);
     for w in familia {
@@ -744,6 +1042,7 @@ pub fn mover_ventana(state: &mut BookosComp, window: &Window, destino: usize) {
     }
 }
 
+// 0.1.1
 fn mover_ventana_una(state: &mut BookosComp, window: &Window, destino: usize) {
     if state.minimizando.iter().any(|(w, _)| w == window) {
         return;
@@ -802,6 +1101,8 @@ fn mover_ventana_una(state: &mut BookosComp, window: &Window, destino: usize) {
 ///
 /// Con el escritorio ya despejado no se ignora: lo que se haya abierto después
 /// también se aparta, y vuelve junto con lo demás.
+// 0.1.0
+// modified 0.1.1 -- las ventanas salen animadas por el borde, por salida y escritorio, y se quita el foco
 pub fn despejar(state: &mut BookosComp) {
     terminar_despeje(state);
     let salidas: Vec<(String, Rectangle<i32, Logical>)> = state
@@ -811,21 +1112,19 @@ pub fn despejar(state: &mut BookosComp) {
         .collect();
     let mut viaje = Vec::new();
     for (salida, pantalla) in &salidas {
-        let suyas = ventanas_de(state, salida);
-        viaje.extend(
-            suyas
-                .iter()
-                .map(|(w, sitio)| (w.clone(), *sitio, fuera_de_pantalla(w, *sitio, *pantalla))),
-        );
-        let activo = state.escritorios.activo_en(salida);
-        state.escritorios.escondidas_de(salida)[activo].extend(suyas);
+        viaje.extend(ventanas_de(state, salida).into_iter().map(|(w, sitio)| {
+            let fuera = fuera_de_pantalla(&w, sitio, *pantalla);
+            (w, sitio, fuera, salida.clone())
+        }));
     }
     if viaje.is_empty() {
         return;
     }
+    let mut muelle = bookos_shell::tema::Muelle::nuevo(0.0, bookos_shell::tema::M_SUAVE);
+    muelle.ir_a(1.0);
     state.escritorios.despeje = Some(Despeje {
-        desde: std::time::Instant::now(),
-        ida: true,
+        muelle,
+        sujeto: false,
         ventanas: viaje,
     });
     // Las barras que esquivan ventanas no deben esperar a que acabe el viaje
@@ -839,7 +1138,11 @@ pub fn despejar(state: &mut BookosComp) {
 
 /// Alterna entre despejado y no. Lo usa el **atajo de teclado**, que es una sola
 /// tecla y no tiene dos direcciones que ofrecer.
+// 0.1.0
 pub fn alternar_despejado(state: &mut BookosComp) {
+    // añadido en la 0.2.0 -- lo apartado se apunta al terminar: sin esto, a
+    // mitad de despejar no constaba como despejado y la tecla despejaba otra vez.
+    terminar_despeje(state);
     if state.escritorios.despejado() {
         recuperar(state);
     } else {
@@ -850,6 +1153,8 @@ pub fn alternar_despejado(state: &mut BookosComp) {
 /// Devuelve las ventanas apartadas por [`despejar`] en el escritorio que se ve
 /// en cada pantalla. Las de los otros escritorios siguen apartadas: volverán
 /// cuando se pida estando en ellos.
+// 0.1.0
+// modified 0.1.1 -- las ventanas vuelven animadas por donde se fueron
 pub fn recuperar(state: &mut BookosComp) {
     terminar_despeje(state);
     let salidas: Vec<(String, Rectangle<i32, Logical>)> = state
@@ -872,7 +1177,7 @@ pub fn recuperar(state: &mut BookosComp) {
         for (window, sitio) in std::mem::take(lista) {
             let fuera = fuera_de_pantalla(&window, sitio, *pantalla);
             state.space.map_element(window.clone(), fuera, false);
-            viaje.push((window, sitio, fuera));
+            viaje.push((window, sitio, fuera, salida.clone()));
         }
     }
     if viaje.is_empty() {
@@ -881,9 +1186,11 @@ pub fn recuperar(state: &mut BookosComp) {
     if let Some(window) = state.space.elements().last().cloned() {
         state.enfocar(&window);
     }
+    let mut muelle = bookos_shell::tema::Muelle::nuevo(1.0, bookos_shell::tema::M_SUAVE);
+    muelle.ir_a(0.0);
     state.escritorios.despeje = Some(Despeje {
-        desde: std::time::Instant::now(),
-        ida: false,
+        muelle,
+        sujeto: false,
         ventanas: viaje,
     });
     state.revisar_barras();
@@ -894,6 +1201,7 @@ pub fn recuperar(state: &mut BookosComp) {
 /// escritorio» aquí, todo lo apartado, y le da el foco a la suya. Es lo que
 /// espera quien pulsa su icono del dock: sin esto no la encontraba y lanzaba
 /// otra instancia.
+// 0.1.1
 pub fn recuperar_app(state: &mut BookosComp, app_id: &str) -> bool {
     let de_la_app = |w: &Window| {
         crate::handlers::app_id(w).is_some_and(|suyo| bookos_shell::mismo_programa(app_id, &suyo))
@@ -912,12 +1220,6 @@ pub fn recuperar_app(state: &mut BookosComp, app_id: &str) -> bool {
     true
 }
 
-/// Cuánto tardan las ventanas en irse a los bordes o en volver.
-///
-/// El de maximizar y encajar, con su curva: es una ventana moviéndose por la
-/// pantalla, igual que aquellas, y debe sentirse igual de rápida.
-const DESPEJE: std::time::Duration = bookos_shell::tema::D_VENTANA;
-
 /// Lo que queda a la vista de cada ventana apartada, pegado al borde, como en
 /// macOS: dice que las ventanas siguen ahí y es dónde pulsar para traerlas.
 /// 24 px se ven sin quitarle escritorio a nadie y son un blanco cómodo.
@@ -930,6 +1232,7 @@ const ASOMA: i32 = 24;
 /// maximizada —el caso normal— no tiene componente lateral: bajaba entera, que
 /// se leía como un deslizamiento y no como apartar las ventanas. En horizontal
 /// el movimiento es el mismo para todas y deja ver el escritorio de golpe.
+// 0.1.1
 fn fuera_de_pantalla(
     window: &Window,
     sitio: Point<i32, Logical>,
@@ -954,6 +1257,7 @@ fn fuera_de_pantalla(
 /// El desplazamiento horizontal que saca `caja` de `pantalla` por el lado más
 /// cercano a su centro; a la derecha si cae justo en medio. Aparte de
 /// [`fuera_de_pantalla`] para poder probarlo sin una `Window`.
+// 0.1.1
 fn salida_hacia_fuera(
     caja: Rectangle<i32, Logical>,
     pantalla: Rectangle<i32, Logical>,
@@ -974,6 +1278,7 @@ fn salida_hacia_fuera(
 
 /// Las apartadas del escritorio activo de `salida`, en el borde donde asoman.
 /// Vacío mientras viajan: entonces siguen en el `Space` y ya se dibujan.
+// 0.1.1
 pub fn asomadas(state: &BookosComp, salida: &str) -> Vec<(Window, Point<i32, Logical>)> {
     if state.escritorios.despeje.is_some() {
         return Vec::new();
@@ -998,6 +1303,7 @@ pub fn asomadas(state: &BookosComp, salida: &str) -> Vec<(Window, Point<i32, Log
 }
 
 /// ¿Cae el punto en el trozo que asoma de alguna apartada?
+// 0.1.1
 pub fn asomada_en(state: &BookosComp, punto: Point<f64, Logical>) -> bool {
     state.space.outputs().any(|o| {
         let Some(pantalla) = state.space.output_geometry(o) else {
@@ -1012,24 +1318,24 @@ pub fn asomada_en(state: &BookosComp, punto: Point<f64, Logical>) -> bool {
 }
 
 /// Mueve las ventanas del despeje en marcha. `true` mientras le quede.
+// 0.1.1
+// modified 0.2.0 -- avanza el muelle salvo con los dedos apoyados
 fn animar_despeje(state: &mut BookosComp) -> bool {
-    let Some(d) = state.escritorios.despeje.as_ref() else {
+    let Some(d) = state.escritorios.despeje.as_mut() else {
         return false;
     };
-    let t = match bookos_shell::tema::efectos_reducidos() {
-        true => 1.0,
-        false => bookos_shell::tema::fraccion(d.desde.elapsed(), DESPEJE),
-    };
-    if t >= 1.0 {
-        terminar_despeje(state);
-        return false;
+    if !d.sujeto {
+        d.muelle.avanzar(std::time::Instant::now());
+        if d.muelle.quieto() {
+            terminar_despeje(state);
+            return false;
+        }
     }
-    let avance = bookos_shell::tema::C_VENTANA.eval(t) as f64;
-    let peso = if d.ida { avance } else { 1.0 - avance };
+    let peso = d.muelle.valor() as f64;
     let posiciones: Vec<(Window, Point<i32, Logical>)> = d
         .ventanas
         .iter()
-        .map(|(w, sitio, fuera)| {
+        .map(|(w, sitio, fuera, _)| {
             let x = sitio.x as f64 + (fuera.x - sitio.x) as f64 * peso;
             let y = sitio.y as f64 + (fuera.y - sitio.y) as f64 * peso;
             (w.clone(), (x.round() as i32, y.round() as i32).into())
@@ -1043,21 +1349,36 @@ fn animar_despeje(state: &mut BookosComp) -> bool {
 /// Deja el despeje en su estado final: las que se iban, fuera del `Space`; las
 /// que volvían, en su sitio. Idempotente, como `terminar_deslizamiento`, y por
 /// lo mismo: cualquier cosa que reorganice ventanas lo corta antes.
+// 0.1.1
 fn terminar_despeje(state: &mut BookosComp) {
     let Some(d) = state.escritorios.despeje.take() else {
         return;
     };
-    if d.ida {
-        for (window, _, _) in &d.ventanas {
+    // modificado en la 0.2.0 -- decide el destino del muelle, no el sentido en que empezó.
+    let fuera = d.muelle.destino() > 0.5;
+    for (window, sitio, _, salida) in &d.ventanas {
+        let activo = state.escritorios.activo_en(salida);
+        let lista = &mut state.escritorios.escondidas_de(salida)[activo];
+        lista.retain(|(w, _)| w != window);
+        if fuera {
+            lista.push((window.clone(), *sitio));
             state.space.unmap_elem(window);
         }
+    }
+    if fuera {
+        state.desenfocar();
     } else {
         let sitios = d
             .ventanas
             .into_iter()
-            .map(|(w, sitio, _)| (w, sitio))
+            .map(|(w, sitio, ..)| (w, sitio))
             .collect();
         mapear_en_su_orden(state, sitios);
+        // Despejar quitó el foco al empezar; si la mano lo deshizo, vuelve a
+        // la de arriba. Al devolver ya lo tenía y esto no cambia nada.
+        if let Some(window) = state.space.elements().last().cloned() {
+            state.enfocar(&window);
+        }
     }
     state.revisar_barras();
     state.needs_redraw = true;
@@ -1069,6 +1390,7 @@ fn terminar_despeje(state: &mut BookosComp) {
 /// lista, la ventana que el dock acababa de enfocar a mitad de la vuelta se
 /// quedaba otra vez debajo en el fotograma siguiente; en el orden en que ya
 /// están apiladas, cada una vuelve a quedar donde estaba.
+// 0.1.1
 fn mapear_en_su_orden(state: &mut BookosComp, mut ventanas: Vec<(Window, Point<i32, Logical>)>) {
     let pila: Vec<Window> = state.space.elements().cloned().collect();
     ventanas.sort_by_key(|(w, _)| pila.iter().position(|p| p == w));
@@ -1081,6 +1403,7 @@ fn mapear_en_su_orden(state: &mut BookosComp, mut ventanas: Vec<(Window, Point<i
 /// escritorio» en cualquiera de ellos. Lo usa eliminar un escritorio: los
 /// índices se desplazan, y unas escondidas con el índice viejo acabarían en el
 /// escritorio equivocado.
+// 0.1.1
 fn soltar_escondidas(state: &mut BookosComp) {
     terminar_despeje(state);
     let vivas: Vec<String> = state.space.outputs().map(|o| o.name()).collect();
@@ -1114,6 +1437,8 @@ fn soltar_escondidas(state: &mut BookosComp) {
 /// Se guarda **el escritorio activo** de la salida que se fue, sin embargo: si
 /// vuelve a enchufarse aparece donde estaba. Lo que no puede quedarse son las
 /// ventanas, que son trabajo.
+// 0.1.0
+// modified 0.1.1 -- adopta también lo apartado en la pantalla desenchufada
 pub fn adoptar_huerfanas(state: &mut crate::state::BookosComp) {
     let vivas: Vec<String> = state.space.outputs().map(|o| o.name()).collect();
     if vivas.is_empty() {
@@ -1206,6 +1531,8 @@ pub fn adoptar_huerfanas(state: &mut crate::state::BookosComp) {
 /// guardadas para **reaparecer muerta** al volver a ese escritorio. Se purga por
 /// `alive()` y no por identidad porque los dos caminos de cierre —`xdg` y
 /// XWayland— avisan de formas distintas, y este filtro vale para los dos.
+// 0.1.0
+// modified 0.1.1 -- purga apartadas por salida, capturas del genio y el despeje
 pub fn purgar(state: &mut BookosComp) {
     use smithay::utils::IsAlive;
     for lista in state
@@ -1221,13 +1548,32 @@ pub fn purgar(state: &mut BookosComp) {
     }
     state.capturas.retain(|(w, _)| w.alive());
     if let Some(d) = state.escritorios.despeje.as_mut() {
-        d.ventanas.retain(|(w, _, _)| w.alive());
+        d.ventanas.retain(|(w, ..)| w.alive());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La elegida en la vista va delante durante el cierre, no solo al acabar.
+    #[test]
+    fn el_cierre_de_la_vista_respeta_el_apilado_nuevo() {
+        let mut rejilla = vec![("editor", 1), ("elegida", 2), ("terminal", 3)];
+        por_apilado(&mut rejilla, &["editor", "terminal", "elegida"]);
+        assert_eq!(rejilla, [("editor", 1), ("terminal", 3), ("elegida", 2)]);
+        let mut rejilla = vec![("otra", 1), ("ida", 2)];
+        por_apilado(&mut rejilla, &["otra"]);
+        assert_eq!(rejilla, [("ida", 2), ("otra", 1)], "lo no mapeado, detrás");
+    }
+
+    // añadido en la 0.2.0
+    #[test]
+    fn el_primer_escritorio_resiste_sin_salirse() {
+        assert_eq!(resistencia(0.0), 0.0);
+        assert!(resistencia(0.5) > 0.0 && resistencia(0.5) < 0.15);
+        assert!((resistencia(-0.5) + resistencia(0.5)).abs() < f32::EPSILON);
+    }
 
     /// Al despejar, cada ventana sale por el lado en que tiene su centro, dejando
     /// una tira a la vista,
@@ -1295,7 +1641,10 @@ mod tests {
         e.deslizando.insert(
             SALIDA.to_string(),
             Deslizamiento {
-                desde: std::time::Instant::now() - DESLIZAMIENTO.mul_f32(t),
+                muelle: bookos_shell::tema::Muelle::nuevo(t, bookos_shell::tema::M_SUAVE),
+                sujeto: false,
+                anterior: 0,
+                destino: 1,
                 direccion,
                 ancho: 2000.0,
                 salientes: Vec::new(),
@@ -1342,11 +1691,17 @@ mod tests {
     #[test]
     fn dos_salidas_deslizan_cada_una_lo_suyo() {
         let mut e = Escritorios::new(2, Vec::new());
-        let ahora = std::time::Instant::now();
         e.deslizando.insert(
             "ancha".into(),
             Deslizamiento {
-                desde: ahora,
+                muelle: {
+                    let mut m = bookos_shell::tema::Muelle::nuevo(0.0, bookos_shell::tema::M_SUAVE);
+                    m.ir_a(1.0);
+                    m
+                },
+                sujeto: false,
+                anterior: 0,
+                destino: 1,
                 direccion: 1.0,
                 ancho: 1920.0,
                 salientes: Vec::new(),
@@ -1356,7 +1711,14 @@ mod tests {
         e.deslizando.insert(
             "estrecha".into(),
             Deslizamiento {
-                desde: ahora,
+                muelle: {
+                    let mut m = bookos_shell::tema::Muelle::nuevo(0.0, bookos_shell::tema::M_SUAVE);
+                    m.ir_a(1.0);
+                    m
+                },
+                sujeto: false,
+                anterior: 0,
+                destino: 1,
                 direccion: -1.0,
                 ancho: 1280.0,
                 salientes: Vec::new(),
@@ -1449,6 +1811,8 @@ mod tests {
 ///
 /// Es la misma cuenta para pintarlas y para saber qué hay bajo un clic: si
 /// fueran dos cuentas, arrastrar cogería una ventana distinta de la que se ve.
+// 0.1.0
+// modified 0.1.1 -- oculta las pestañas inactivas de un grupo
 pub fn ventanas_en_vista(state: &BookosComp) -> Vec<(usize, Window, Rectangle<i32, Logical>)> {
     let huecos = state
         .shell
@@ -1496,6 +1860,8 @@ pub fn ventanas_en_vista(state: &BookosComp) -> Vec<(usize, Window, Rectangle<i3
 /// **nunca más grande** que en pantalla: agrandar una ventana pequeña la haría
 /// parecer otra cosa. Van en el orden del `Space`, de abajo arriba, para que la
 /// que tenías delante no salte de sitio cada vez que se abre la vista.
+// 0.1.0
+// modified 0.1.1 -- oculta las pestañas inactivas de un grupo
 pub fn exposicion(state: &BookosComp) -> Vec<(Window, Rectangle<i32, Logical>)> {
     // El aire entre ventanas y hasta los bordes, en lógicos.
     const AIRE: i32 = 32;
@@ -1600,6 +1966,7 @@ impl TransicionVista {
     /// asentarse la franja con su muelle.
     const DURACION: std::time::Duration = bookos_shell::tema::D_TARJETA;
 
+    // 0.1.0
     pub fn animando(&self) -> bool {
         match self {
             Self::Cerrada => false,
@@ -1610,8 +1977,16 @@ impl TransicionVista {
     }
 }
 
+/// Ordena de atrás a delante como `apilado`. Lo que ya no está en él (se cerró
+/// la vista cambiando de escritorio) queda detrás: solo se está desvaneciendo.
+// añadido en la 0.2.0
+fn por_apilado<T: PartialEq, R>(lista: &mut [(T, R)], apilado: &[T]) {
+    lista.sort_by_key(|(w, _)| apilado.iter().position(|a| a == w));
+}
+
 /// Las ventanas de la vista general en este fotograma, con el rectángulo por
 /// el que van de camino. Vacío cuando ni está abierta ni se está cerrando.
+// 0.1.0
 pub fn expuestas_ahora(
     state: &mut BookosComp,
     abierta: bool,
@@ -1624,21 +1999,33 @@ pub fn expuestas_ahora(
         (TransicionVista::Abierta { desde, .. }, true) => (true, exposicion(state), true, desde),
         (_, true) => (true, exposicion(state), true, ahora),
         (TransicionVista::Abierta { rejilla, .. }, false) => (false, rejilla, false, ahora),
+        // El doble de plazo: soltar a medias devuelve la vista desde donde
+        // estaba y el muelle puede tardar más que una apertura entera.
         (TransicionVista::Cerrando { desde, rejilla }, false)
-            if desde.elapsed() < TransicionVista::DURACION =>
+            if desde.elapsed() < TransicionVista::DURACION * 2 =>
         {
             (false, rejilla, false, desde)
         }
         (_, false) => return Vec::new(),
     };
-    let t = if tema::efectos_reducidos() {
-        1.0
-    } else {
-        tema::C_SUAVE.eval(tema::avance(desde.elapsed(), TransicionVista::DURACION)) as f64
-    };
     // Cuánto de la rejilla hay en este fotograma: sube al abrir y baja al
-    // cerrar.
-    let peso = if hacia_rejilla { t } else { 1.0 - t };
+    // cerrar. Lo da el muelle de la propia tarjeta, no un reloj aparte: es el
+    // que mueven los dedos con cuatro apoyados, y así las ventanas y la franja
+    // van siempre a la vez.
+    // modificado en la 0.2.0 -- sigue al muelle de la tarjeta, antes una curva por tiempo.
+    let peso = match state.shell.as_ref() {
+        Some(shell) if !tema::efectos_reducidos() => shell.avance_emergente() as f64,
+        _ if hacia_rejilla => 1.0,
+        _ => 0.0,
+    };
+    // modificado en la 0.2.0 -- la rejilla guarda el apilado de antes de elegir:
+    // sin esto la ventana de antes seguía delante todo el cierre y la elegida
+    // aparecía de golpe al volver a pintarse el `Space`.
+    let mut rejilla = rejilla;
+    if !siguiente {
+        let apilado: Vec<Window> = state.space.elements().cloned().collect();
+        por_apilado(&mut rejilla, &apilado);
+    }
     let lista = rejilla
         .iter()
         .filter_map(|(w, casilla)| {
@@ -1675,6 +2062,7 @@ pub fn expuestas_ahora(
 /// Qué ventana de la vista hay bajo un punto: primero las repartidas bajo la
 /// franja, que son las grandes, y luego las de las miniaturas. Devuelve su
 /// escritorio, la ventana y dónde se ve.
+// 0.1.0
 fn ventana_bajo(
     state: &BookosComp,
     punto: Point<f64, Logical>,
@@ -1694,6 +2082,8 @@ pub const LADO_CERRAR: i32 = 28;
 /// El cierre conserva su tamaño al reducir la ventana para que siga siendo
 /// pulsable. Sobresale de la esquina para no solaparse con el cierre de la
 /// barra de título, que también se ve dentro de la miniatura.
+// 0.1.0
+// modified 0.1.1 -- el ✕ va en la esquina derecha de la miniatura
 pub fn boton_cerrar(window: &Window, destino: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
     let arriba = if crate::decoracion::decorada(window) {
         let factor = destino.size.w as f64 / window.geometry().size.w.max(1) as f64;
@@ -1712,6 +2102,7 @@ pub fn boton_cerrar(window: &Window, destino: Rectangle<i32, Logical>) -> Rectan
 /// su ✕. Solo una: con todas a la vez la rejilla se
 /// llenaba de botones de cerrar, que es lo último que se quiere pulsar sin
 /// querer.
+// 0.1.0
 pub fn con_cierre_visible(
     expuestas: &[(Window, Rectangle<i32, Logical>)],
     puntero: Point<f64, Logical>,
@@ -1723,7 +2114,10 @@ pub fn con_cierre_visible(
     })
 }
 
-/// El mismo glifo, tinta y placa de la barra de título (HIG §11.2).
+/// El cierre de una miniatura: un botón redondo con placa propia.
+// 0.1.0
+// modified 0.1.1 -- ✕ con estado señalado y dibujo compartido en pixmap_cerrar
+// modificado en la 0.2.0 -- placa redonda siempre visible; roja al señalarla.
 pub fn imagen_cerrar(
     lado: i32,
     señalado: bool,
@@ -1742,13 +2136,13 @@ pub fn imagen_cerrar(
     )
 }
 
+// 0.1.1
 fn pixmap_cerrar(lado: i32, señalado: bool) -> Option<resvg::tiny_skia::Pixmap> {
     use bookos_shell::tema;
-    let fondo = tema::rojo();
-    let tinta = if señalado {
-        tema::tinta_sobre(fondo)
+    let (fondo, tinta) = if señalado {
+        (tema::rojo(), tema::tinta_sobre(tema::rojo()))
     } else {
-        tema::texto()
+        (tema::card(), tema::texto())
     };
     let rgb = |[r, g, b]: [f32; 3]| {
         format!(
@@ -1758,18 +2152,14 @@ fn pixmap_cerrar(lado: i32, señalado: bool) -> Option<resvg::tiny_skia::Pixmap>
             (b * 255.0).round()
         )
     };
-    let placa = if señalado {
-        format!(
-            r#"<rect width="28" height="28" rx="6" fill="{}" fill-opacity="0.95"/>"#,
-            rgb([fondo.r, fondo.g, fondo.b])
-        )
-    } else {
-        String::new()
-    };
+    // Sin placa, la X gris se perdía sobre la barra de título que tiene debajo,
+    // y cae siempre encima de algo distinto: necesita fondo propio. El aro
+    // oscuro y el filo claro la separan tanto de una ventana blanca como de una
+    // negra, con el tema que sea.
     let svg = format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28">{placa}<path transform="translate(6 6)" d="M4.6 4.6 L11.4 11.4 M11.4 4.6 L4.6 11.4" fill="none" stroke="{}" stroke-opacity="{}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28"><circle cx="14" cy="14" r="13.5" fill="black" fill-opacity="0.28"/><circle cx="14" cy="14" r="12" fill="{}"/><circle cx="14" cy="14" r="11.5" fill="none" stroke="white" stroke-opacity="0.16"/><path d="M10 10 L18 18 M18 10 L10 18" fill="none" stroke="{}" stroke-width="1.8" stroke-linecap="round"/></svg>"#,
+        rgb([fondo.r, fondo.g, fondo.b]),
         rgb([tinta.r, tinta.g, tinta.b]),
-        if señalado { 1.0 } else { 0.55 },
     );
     let arbol = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).ok()?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(lado as u32, lado as u32)?;
@@ -1797,6 +2187,7 @@ pub struct ArrastreVista {
 
 impl ArrastreVista {
     /// El rectángulo de la miniatura que va con el puntero.
+    // 0.1.0
     pub fn rect(&self, puntero: Point<f64, Logical>) -> Rectangle<i32, Logical> {
         Rectangle::new((puntero - self.agarre).to_i32_round(), self.tamano)
     }
@@ -1810,6 +2201,7 @@ impl ArrastreVista {
 /// queda la pulsación hasta saber si es un clic o un arrastre. Al soltar sin
 /// haberla movido es un clic, y hace lo de siempre —ir a ese escritorio— y
 /// además trae delante esa ventana, que es la que se ha señalado.
+// 0.1.0
 pub fn boton_en_vista(state: &mut BookosComp, pulsado: bool) -> bool {
     if !pulsado && std::mem::take(&mut state.cierre_en_vista) {
         return true;
@@ -1912,6 +2304,7 @@ pub fn boton_en_vista(state: &mut BookosComp, pulsado: bool) -> bool {
 
 /// El puntero se mueve con una ventana cogida en la vista. `true` si hay que
 /// repintar.
+// 0.1.0
 pub fn mover_en_vista(state: &mut BookosComp) -> bool {
     let puntero = state.pointer_location;
     let Some(arrastre) = state.arrastre_vista.as_mut() else {
@@ -1931,6 +2324,7 @@ pub fn mover_en_vista(state: &mut BookosComp) -> bool {
 
 /// Lleva una ventana de un escritorio a otro de la salida que enseña la vista,
 /// esté donde esté: en el activo —mapeada en el `Space`— o apartada en otro.
+// 0.1.0
 pub fn trasladar(state: &mut BookosComp, window: &Window, origen: usize, destino: usize) {
     let salida = salida_para_vista(state);
     let activo = state.escritorios.activo_en(&salida);

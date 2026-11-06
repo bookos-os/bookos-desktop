@@ -57,6 +57,7 @@ struct Transicion {
 }
 
 impl Transicion {
+    // 0.1.1
     fn nueva(desde: f64, objetivo: u8, ahora: Instant) -> Self {
         Self {
             desde,
@@ -72,10 +73,12 @@ impl Transicion {
         }
     }
 
+    // 0.1.1
     fn terminada(&self, ahora: Instant) -> bool {
         ahora.duration_since(self.inicio) >= self.duracion
     }
 
+    // 0.1.1
     fn nivel(&self, ahora: Instant) -> f64 {
         if self.terminada(ahora) {
             return f64::from(self.objetivo);
@@ -87,6 +90,7 @@ impl Transicion {
         self.desde + (f64::from(self.objetivo) - self.desde) * avance
     }
 
+    // 0.1.1
     fn dirigir(&mut self, objetivo: u8, ahora: Instant) {
         if self.objetivo != objetivo {
             *self = Self::nueva(self.nivel(ahora), objetivo, ahora);
@@ -130,6 +134,8 @@ pub struct Estado {
 }
 
 impl Estado {
+    // 0.1.0
+    // modified 0.1.1 -- sin la espera al bajar: la sustituye la rampa
     pub fn arrancar(
         loop_handle: &LoopHandle<'static, BookosComp>,
         elegido: bookos_shell::BrilloAutomatico,
@@ -165,6 +171,7 @@ impl Estado {
         Ok(estado)
     }
 
+    // 0.1.0
     fn reclamar_si_hace_falta(&mut self) {
         let quiere = self.elegido.pantalla || self.elegido.teclado;
         if quiere == self.reclamado {
@@ -182,6 +189,7 @@ impl Estado {
 
 /// El hilo del bus: reclama o suelta el sensor según las órdenes y reenvía cada
 /// lectura en lux.
+// 0.1.0
 fn escuchar(
     lux: smithay::reexports::calloop::channel::Sender<f64>,
     ordenes: mpsc::Receiver<Orden>,
@@ -235,6 +243,8 @@ fn escuchar(
 }
 
 /// Lo que eligió el usuario desde la tarjeta o desde Settings.
+// 0.1.0
+// modified 0.1.1 -- la rampa guarda su token junto a su estado
 pub fn elegir(state: &mut BookosComp, elegido: bookos_shell::BrilloAutomatico) {
     let e = &mut state.brillo_auto;
     bookos_shell::retroiluminacion::aplicar_automatico(elegido);
@@ -271,6 +281,7 @@ pub fn elegir(state: &mut BookosComp, elegido: bookos_shell::BrilloAutomatico) {
 /// tarda en verse en sysfs (va por `busctl`): partir de la lectura repetía el
 /// mismo nivel varias veces y luego saltaba, y la pantalla seguía moviéndose
 /// después de soltar.
+// 0.1.0
 pub fn partida_tecla(state: &BookosComp) -> Option<u8> {
     let e = &state.brillo_auto;
     match (e.a_mano, e.escrito) {
@@ -282,6 +293,8 @@ pub fn partida_tecla(state: &BookosComp) -> Option<u8> {
 /// La tecla ha pedido `nivel`. El automático lo aprende como desvío en el acto
 /// y suelta su rampa: si no, la rampa en curso seguía escribiendo su objetivo
 /// encima del de la tecla y el brillo bailaba al soltar.
+// 0.1.0
+// modified 0.1.1 -- la rampa guarda su token junto a su estado
 pub fn tecla(state: &mut BookosComp, nivel: u8) {
     crate::atenuacion::olvidar(state);
     let e = &mut state.brillo_auto;
@@ -296,6 +309,7 @@ pub fn tecla(state: &mut BookosComp, nivel: u8) {
     e.escrito = Some(Instant::now());
 }
 
+// 0.1.0
 pub fn partida_tecla_teclado(state: &BookosComp, dispositivo: &str, actual: u32) -> u32 {
     state
         .brillo_auto
@@ -305,11 +319,14 @@ pub fn partida_tecla_teclado(state: &BookosComp, dispositivo: &str, actual: u32)
         .map_or(actual, |(_, nivel, _)| *nivel)
 }
 
+// 0.1.0
 pub fn tecla_teclado(state: &mut BookosComp, dispositivo: &str, nivel: u32) {
     state.brillo_auto.teclado_a_mano = Some((dispositivo.to_owned(), nivel, Instant::now()));
     state.brillo_auto.escrito = Some(Instant::now());
 }
 
+// 0.1.0
+// modified 0.1.1 -- evalúa en cada lectura (la rampa suaviza) y descarta lecturas no finitas
 fn recibir(state: &mut BookosComp, lux: f64) {
     if !lux.is_finite() {
         return;
@@ -321,6 +338,8 @@ fn recibir(state: &mut BookosComp, lux: f64) {
 /// El compositor ha puesto `nivel` por su cuenta (la atenuación). A diferencia
 /// de [`tecla`] no cuenta como desvío del usuario: el automático tiene que dar
 /// por bueno ese nivel y no «corregirlo» al volver, ni aprender de él.
+// 0.1.0
+// modified 0.1.1 -- la rampa guarda su token junto a su estado
 pub fn fijar(state: &mut BookosComp, nivel: u8) {
     let e = &mut state.brillo_auto;
     if let Some(rampa) = e.rampa.take() {
@@ -337,6 +356,7 @@ pub fn fijar(state: &mut BookosComp, nivel: u8) {
 ///
 /// Se llama también al volver de DPMS: con la pantalla apagada no se ajusta
 /// nada, y la luz pudo cambiar entretanto.
+// 0.1.0
 pub fn evaluar(state: &mut BookosComp) {
     let Some(lux) = state.brillo_auto.lux else {
         return;
@@ -359,14 +379,18 @@ pub fn evaluar(state: &mut BookosComp) {
 /// Logarítmica porque así se percibe la luz: de 1 a 10 lux se nota tanto como
 /// de 100 a 1000. Da 12 % a oscuras, 40 % a 18 lux, 78 % a 1000 y 100 % desde
 /// unos 10 000, que es luz de día cerca de una ventana.
+// 0.1.0
 fn curva(lux: f64) -> i32 {
     (12.0 + 22.0 * (1.0 + lux.max(0.0)).log10()).round() as i32
 }
 
+// 0.1.0
 fn reciente(e: &Estado) -> bool {
     e.rampa.is_some() || e.escrito.is_some_and(|t| t.elapsed() < MARGEN_ESCRITURA)
 }
 
+// 0.1.0
+// modified 0.1.1 -- transición por tiempo que se redirige si llega otra lectura, en vez de pasos de 1/8
 fn pantalla(state: &mut BookosComp, lux: f64) {
     bookos_shell::retroiluminacion::poner_objetivo_sensor(Some(curva(lux).clamp(5, 100) as u8));
     let Some(actual) = bookos_shell::brillo_actual() else {
@@ -441,6 +465,7 @@ fn pantalla(state: &mut BookosComp, lux: f64) {
     }
 }
 
+// 0.1.0
 fn teclado(e: &mut Estado, lux: f64) {
     let Some((dispositivo, actual, maximo)) = bookos_shell::brillo_teclado_actual() else {
         return;

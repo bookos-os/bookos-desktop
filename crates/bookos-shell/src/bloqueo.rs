@@ -31,6 +31,8 @@ use crate::view::PanelElement;
 
 /// De los 100…900 de la configuración a los nueve grosores de iced. Lo que no
 /// es un múltiplo de 100 no llega aquí: lo filtra la lectura de `panel.conf`.
+// 0.1.0
+// modified 0.1.1 -- pública para el greeter
 pub fn grosor(valor: u16) -> iced_core::font::Weight {
     use iced_core::font::Weight;
     match valor {
@@ -52,6 +54,7 @@ pub fn grosor(valor: u16) -> iced_core::font::Weight {
 /// a fontconfig: fontdb no lee sus alias, y lo que importa es si *esto* la
 /// encuentra. Sin la fuente, cosmic-text dibujaría otra cualquiera, y el estilo
 /// elegido en Ajustes no se parecería a lo que sale en pantalla.
+// 0.1.0
 pub fn estilos_instalados() -> Vec<FuenteReloj> {
     // Un candado envenenado solo dice que otro hilo cayó con él cogido; la
     // base de fuentes se carga una vez y no queda a medias por eso.
@@ -87,10 +90,7 @@ pub const ALTO_CAMPO: f32 = 44.0;
 /// Cuerpo de la fecha, bajo el reloj.
 const FECHA: f32 = 22.0;
 /// Diámetro de los puntos de la contraseña.
-const PUNTO: f32 = 10.0;
-/// Entrada escalonada del bloqueo. Solo mantiene despierto el compositor este
-/// instante al echarlo; después vuelve a dormir por eventos como siempre.
-const ENTRADA_TOTAL: Duration = Duration::from_millis(760);
+pub const PUNTO: f32 = 10.0;
 const ESTADO_TOTAL: Duration = Duration::from_millis(520);
 const MEDIOS_ANCHO: f32 = 372.0;
 const MEDIOS_ARTE: f32 = 78.0;
@@ -128,20 +128,25 @@ const MARGEN_MEDIOS: f32 = 24.0;
 pub const FONDO_CAMPO: Color = tema::hexa(0x16191e, 0.82);
 
 /// Separación del botón de apagado respecto al borde de la pantalla.
-pub const MARGEN_ENERGIA: f32 = 28.0;
+pub const MARGEN_ENERGIA: f32 = 22.0;
 /// Lado del botón de apagado.
-pub const LADO_ENERGIA: f32 = 44.0;
+pub const LADO_ENERGIA: f32 = 32.0;
 /// Ancho del menú que despliega. Da para el icono, su hueco y la palabra más
 /// larga de las tres a 15 px.
 pub const ANCHO_MENU: f32 = 196.0;
 /// Alto de cada entrada del menú. Fijo y no derivado del padding porque el
 /// hit-test tiene que dar exactamente lo mismo que el dibujo.
 pub const ALTO_ENTRADA: f32 = 46.0;
+/// Entre el botón y el menú que cuelga de él.
+const HUECO_MENU: f32 = 10.0;
 /// Lado del icono de una entrada.
+// modificado en la 0.2.0 -- glifo blanco suelto, no insignia: las de color
+// son iconos de aplicación y en un menú de acciones sobre el fondo chocaban.
 const ICONO_ENTRADA: f32 = 18.0;
 
 /// Lo que ofrece el menú de apagado, en el orden del diseño. Hibernar solo si
 /// el equipo puede: ver [`crate::confirmacion::hibernar_disponible`].
+// 0.1.0
 pub fn entradas() -> &'static [(&'static str, &'static str, Peticion)] {
     const SIN: &[(&str, &str, Peticion)] = &[
         ("Apagar", "apagar", Peticion::Apagar),
@@ -174,6 +179,7 @@ pub enum Peticion {
 }
 
 impl Peticion {
+    // 0.1.0
     fn energia(self) -> crate::confirmacion::Energia {
         use crate::confirmacion::Energia;
         match self {
@@ -219,6 +225,7 @@ pub struct Medio {
 impl Medio {
     /// `previo` es la tarjeta anterior: si la carátula viene de la misma
     /// fuente se reutiliza con su color.
+    // 0.1.0
     fn desde_sonando(sonando: crate::medios::Sonando, previo: Option<&Medio>) -> Self {
         let progreso = sonando.avance();
         let (caratula, color) = match (sonando.caratula.as_deref(), previo) {
@@ -268,6 +275,7 @@ impl Usuario {
     /// `avatar` es la ruta que diga `panel.conf`, y va **primera**: quien la
     /// escribe está eligiendo a mano, y eso pesa más que lo que haya dejado
     /// puesto una instalación anterior en `~/.face`.
+    // 0.1.0
     pub fn leer(avatar: Option<&str>) -> Self {
         let login = std::env::var("USER").unwrap_or_else(|_| "usuario".into());
         let casa = std::env::var("HOME").unwrap_or_default();
@@ -304,6 +312,8 @@ impl Usuario {
 /// recortarla al cuadrado central —una foto apaisada metida en un círculo se
 /// deforma—, sale más barato hacer las dos cosas de una pasada al cargarla, que
 /// ocurre **una vez** por bloqueo y no por frame.
+// 0.1.0
+// modified 0.1.1 -- pública para el greeter
 pub fn foto_circular(ruta: &str) -> Option<iced_widget::image::Handle> {
     // La configuración admite hasta 220 lógicos. Se guarda al doble para que
     // incluso a escala 2 la GPU reduzca una imagen nítida en vez de ampliar una
@@ -351,6 +361,8 @@ pub fn foto_circular(ruta: &str) -> Option<iced_widget::image::Handle> {
 
 /// El nombre completo de `/etc/passwd`. Sin `libc`: el fichero es de texto y
 /// leerlo entero son cuatro líneas en un equipo de escritorio.
+// 0.1.0
+// modified 0.1.1 -- pública para el greeter
 pub fn nombre_completo(login: &str) -> Option<String> {
     let texto = std::fs::read_to_string("/etc/passwd").ok()?;
     for linea in texto.lines() {
@@ -384,7 +396,23 @@ pub enum Huella {
     Reconocida,
 }
 
+// añadido en la 0.2.0 -- cada capa se rasteriza en su rectángulo y se mueve en la GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capa {
+    Reloj,
+    Acceso,
+    Medios,
+    Energia,
+}
+
+impl Capa {
+    pub const TODAS: [Self; 4] = [Self::Reloj, Self::Acceso, Self::Medios, Self::Energia];
+}
+
 pub struct Bloqueo {
+    // añadido en la 0.2.0 -- el estado visual vive aquí aunque el compositor lo dibuje en la GPU.
+    entrada: [tema::Muelle; 4],
+    entrada_desde: Instant,
     /// La hora, ya formateada. La pone el compositor para no tener dos relojes
     /// distintos en el mismo escritorio.
     pub hora: String,
@@ -412,7 +440,6 @@ pub struct Bloqueo {
     usuario: Usuario,
     config: crate::config::Bloqueo,
     /// Entrada de reloj, identidad y tarjetas, escalonada desde este instante.
-    entrada_desde: Instant,
     /// Último cambio del campo. Da vida a comprobar y al error sin guardar la
     /// contraseña ni ningún dato extra sobre ella.
     estado_desde: Instant,
@@ -421,13 +448,24 @@ pub struct Bloqueo {
     /// obligaría a iced a volver a rasterizar el SVG en cada repintado.
     candado: crate::icono::Icono,
     flecha: crate::icono::Icono,
+    wifi: crate::icono::Icono,
+    encendido: crate::icono::Icono,
+    /// Lo que enseña la fila de arriba. Solo informa: abrir la lista de redes
+    /// sin haber entrado sería dejar la configuración a quien pase por delante.
+    bateria: Option<(crate::icono::Icono, (f32, f32), String, Color)>,
+    red: Option<crate::Network>,
 }
 
 /// Candado y flecha de Heroicons, macizos: el teñido sustituye el relleno.
+/// Compartidos con el greeter: es la misma fila de estado.
+pub const WIFI: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" d="M1.371 8.143c5.858-5.857 15.356-5.857 21.213 0a.75.75 0 0 1 0 1.061l-.53.53a.75.75 0 0 1-1.06 0c-4.98-4.979-13.053-4.979-18.032 0a.75.75 0 0 1-1.06 0l-.53-.53a.75.75 0 0 1 0-1.06Zm3.182 3.182c4.1-4.1 10.749-4.1 14.85 0a.75.75 0 0 1 0 1.061l-.53.53a.75.75 0 0 1-1.062 0 8.25 8.25 0 0 0-11.667 0 .75.75 0 0 1-1.06 0l-.53-.53a.75.75 0 0 1 0-1.06Zm3.204 3.182a6 6 0 0 1 8.486 0 .75.75 0 0 1 0 1.061l-.53.53a.75.75 0 0 1-1.061 0 3.75 3.75 0 0 0-5.304 0 .75.75 0 0 1-1.06 0l-.53-.53a.75.75 0 0 1 0-1.06Zm3.182 3.182a1.5 1.5 0 0 1 2.122 0 .75.75 0 0 1 0 1.061l-.53.53a.75.75 0 0 1-1.061 0l-.53-.53a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd"/></svg>"##;
+pub const ENCENDIDO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" d="M12 2.25a.75.75 0 0 1 .75.75v9a.75.75 0 0 1-1.5 0V3a.75.75 0 0 1 .75-.75ZM6.166 5.106a.75.75 0 0 1 0 1.06 8.25 8.25 0 1 0 11.668 0 .75.75 0 1 1 1.06-1.06c3.808 3.807 3.808 9.98 0 13.788-3.807 3.808-9.98 3.808-13.788 0-3.808-3.807-3.808-9.98 0-13.788a.75.75 0 0 1 1.06 0Z" clip-rule="evenodd"/></svg>"##;
+/// Candado y flecha.
 pub const CANDADO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 1.5a5.25 5.25 0 0 0-5.25 5.25v3a3 3 0 0 0-3 3v6.75a3 3 0 0 0 3 3h10.5a3 3 0 0 0 3-3v-6.75a3 3 0 0 0-3-3v-3c0-2.9-2.35-5.25-5.25-5.25Zm3.75 8.25v-3a3.75 3.75 0 1 0-7.5 0v3h7.5Z"/></svg>"##;
 pub const FLECHA: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" clip-rule="evenodd" d="M12.97 3.97a.75.75 0 0 1 1.06 0l7.5 7.5a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 1 1-1.06-1.06l6.22-6.22H3a.75.75 0 0 1 0-1.5h16.19l-6.22-6.22a.75.75 0 0 1 0-1.06Z"/></svg>"##;
 
 impl Bloqueo {
+    // 0.1.0
     pub fn new(
         hora: String,
         fecha: String,
@@ -436,6 +474,12 @@ impl Bloqueo {
     ) -> Self {
         let ahora = Instant::now();
         Self {
+            entrada: [{
+                let mut m = tema::Muelle::nuevo(0.0, tema::M_SUAVE);
+                m.ir_a(1.0);
+                m
+            }; 4],
+            entrada_desde: ahora,
             hora,
             fecha,
             escritos: 0,
@@ -449,26 +493,160 @@ impl Bloqueo {
             medios: Vec::new(),
             usuario: Usuario::leer(avatar),
             config,
-            entrada_desde: ahora,
             estado_desde: ahora - ESTADO_TOTAL,
             medio_desde: None,
             candado: crate::icono::desde_svg(CANDADO),
             flecha: crate::icono::desde_svg(FLECHA),
+            wifi: crate::icono::desde_svg(WIFI),
+            encendido: crate::icono::desde_svg(ENCENDIDO),
+            bateria: crate::Battery::read(false).map(|b| crate::bateria_sobre_fondo(&b)),
+            red: crate::Network::read(),
         }
     }
 
     /// Aplica una composición nueva manteniendo el estado sensible y los
     /// medios actuales. Cambiar un deslizador no reinicia la contraseña ni la
     /// animación de entrada del bloqueo que ya está puesto.
+    // 0.1.0
     pub fn aplicar_config(&mut self, config: crate::config::Bloqueo) {
         self.config = config;
     }
 
+    // 0.1.0
+    // modificado en la 0.2.0 -- las previsualizaciones conservan la composición final completa.
     pub fn view(&self, pantalla: (f32, f32)) -> PanelElement<'_> {
-        let reloj_avance = self.entrada_avance(0, 440);
-        let acceso_avance = self.entrada_avance(110, 520);
-        let medios_avance = self.medio_avance();
-        let energia_avance = self.entrada_avance(320, 360);
+        self.componer(pantalla, None)
+    }
+
+    // añadido en la 0.2.0
+    pub fn view_capa(&self, pantalla: (f32, f32), capa: Capa) -> PanelElement<'_> {
+        self.componer(pantalla, Some(capa))
+    }
+
+    // añadido en la 0.2.0 -- el margen del acceso deja sitio a la sacudida sin recortar texto ni avatar.
+    pub fn geometria_capa(&self, capa: Capa, pantalla: (f32, f32)) -> Option<(f32, f32, f32, f32)> {
+        let (w, h) = pantalla;
+        let (x, y, ancho, alto) = match capa {
+            Capa::Reloj => (
+                0.0,
+                h * self.config.reloj_y,
+                w,
+                self.config.reloj_tamano * 1.3 + if self.config.fecha { FECHA * 1.3 } else { 0.0 },
+            ),
+            Capa::Acceso => {
+                let ancho = (CAMPO + 100.0).max(self.config.avatar_tamano + 40.0).min(w);
+                let alto = self.config.avatar_tamano
+                    + if self.config.nombre {
+                        12.0 + ALTO_NOMBRE
+                    } else {
+                        0.0
+                    }
+                    + 16.0
+                    + ALTO_CAMPO
+                    + 10.0
+                    + 40.0
+                    + ALTO_HUELLA;
+                ((w - ancho) / 2.0, h * self.config.acceso_y, ancho, alto)
+            }
+            Capa::Medios if self.config.medios && !self.medios.is_empty() => {
+                let ancho = MEDIOS_ANCHO.min(w);
+                (
+                    (w - ancho) / 2.0,
+                    self.medios_y_asentada(h),
+                    ancho,
+                    self.medios.len().min(2) as f32 * (MEDIOS_ALTO + 10.0),
+                )
+            }
+            Capa::Medios => return None,
+            Capa::Energia if self.confirmacion.is_some() => (0.0, 0.0, w, h),
+            // modificado en la 0.2.0 -- arriba a la derecha, como en el greeter.
+            Capa::Energia if self.config.energia => (
+                (w - ANCHO_MENU - 2.0 * MARGEN_ENERGIA).max(0.0),
+                0.0,
+                (ANCHO_MENU + 2.0 * MARGEN_ENERGIA).min(w),
+                320.0_f32.min(h),
+            ),
+            Capa::Energia => return None,
+        };
+        Some((x, y, ancho, alto.min((h - y).max(1.0))))
+    }
+
+    /// La hora, la batería y la red de ahora. `true` si hay que repintar.
+    ///
+    /// Sin esto la hora se quedaba en la del momento de bloquear: se fijaba al
+    /// crear el bloqueo y nadie volvía a tocarla.
+    // añadido en la 0.2.0
+    pub fn refrescar(&mut self, hora: String, fecha: String) -> bool {
+        let bateria = crate::Battery::read(false).map(|b| crate::bateria_sobre_fondo(&b));
+        let red = crate::Network::read();
+        let cifra = |b: &Option<(crate::icono::Icono, (f32, f32), String, Color)>| {
+            b.as_ref().map(|(_, _, c, t)| (c.clone(), *t))
+        };
+        let cambio = self.hora != hora
+            || self.fecha != fecha
+            || cifra(&self.bateria) != cifra(&bateria)
+            || self.red != red;
+        self.hora = hora;
+        self.fecha = fecha;
+        self.bateria = bateria;
+        self.red = red;
+        cambio
+    }
+
+    // añadido en la 0.2.0
+    pub fn entradas(&self) -> [f32; 4] {
+        self.entrada.map(|m| m.valor().clamp(0.0, 1.0))
+    }
+
+    // añadido en la 0.2.0
+    pub fn avanzar_entrada(&mut self, ahora: Instant) -> bool {
+        let animada = self.entrada_animada();
+        let mut cambio = false;
+        for (indice, muelle) in self.entrada.iter_mut().enumerate() {
+            let retraso = Duration::from_millis([0, 90, 180, 240][indice]);
+            if !animada {
+                cambio |= muelle.valor() != 1.0;
+                muelle.fijar(1.0);
+            } else if ahora.duration_since(self.entrada_desde) < retraso {
+                muelle.fijar(0.0);
+                muelle.ir_a(1.0);
+            } else {
+                cambio |= muelle.avanzar(ahora);
+            }
+        }
+        cambio
+    }
+
+    // añadido en la 0.2.0
+    pub fn entrada_animada(&self) -> bool {
+        self.config.animaciones && !tema::efectos_reducidos()
+    }
+
+    fn componer(&self, pantalla: (f32, f32), capa: Option<Capa>) -> PanelElement<'_> {
+        let (origen_y, ancho, alto) = capa
+            .and_then(|c| self.geometria_capa(c, pantalla))
+            .map_or((0.0, pantalla.0, pantalla.1), |(_, y, w, h)| (y, w, h));
+        // modificado en la 0.2.0 -- solo la previsualización completa hornea la entrada en píxeles.
+        let reloj_avance = if capa.is_none() {
+            self.entradas()[0]
+        } else {
+            1.0
+        };
+        let acceso_avance = if capa.is_none() {
+            self.entradas()[1]
+        } else {
+            1.0
+        };
+        let medios_avance = if capa.is_none() {
+            self.medio_avance()
+        } else {
+            1.0
+        };
+        let energia_avance = if capa.is_none() {
+            self.entradas()[3]
+        } else {
+            1.0
+        };
 
         let familia = iced_core::font::Family::Name(self.config.reloj_fuente.familia());
         let mut reloj = column![
@@ -506,13 +684,13 @@ impl Bloqueo {
         }
         let reloj_y = pantalla.1 * self.config.reloj_y + (1.0 - reloj_avance) * 22.0;
         let capa_reloj = column![
-            Space::new().height(Length::Fixed(reloj_y.max(0.0))),
+            Space::new().height(Length::Fixed((reloj_y - origen_y).max(0.0))),
             container(reloj)
-                .width(Length::Fixed(pantalla.0))
+                .width(Length::Fixed(ancho))
                 .center_x(Length::Fill),
         ]
-        .width(Length::Fixed(pantalla.0))
-        .height(Length::Fixed(pantalla.1));
+        .width(Length::Fixed(ancho))
+        .height(Length::Fixed(alto));
 
         let avatar = self.config.avatar_tamano * (0.90 + 0.10 * acceso_avance);
         let mut acceso = column![self.avatar(avatar, acceso_avance)];
@@ -549,19 +727,24 @@ impl Bloqueo {
         .align_y(Vertical::Center);
         let acceso_y = pantalla.1 * self.config.acceso_y + (1.0 - acceso_avance) * 30.0;
         let capa_acceso = column![
-            Space::new().height(Length::Fixed(acceso_y.max(0.0))),
+            Space::new().height(Length::Fixed((acceso_y - origen_y).max(0.0))),
             container(acceso_desplazado)
-                .width(Length::Fixed(pantalla.0))
+                .width(Length::Fixed(ancho))
                 .center_x(Length::Fill),
         ]
-        .width(Length::Fixed(pantalla.0))
-        .height(Length::Fixed(pantalla.1));
+        .width(Length::Fixed(ancho))
+        .height(Length::Fixed(alto));
 
         let mut capas = iced_widget::stack![];
         // El velo de la canción no va aquí: lo pinta el compositor en la GPU.
         // Ver `velo_medios`.
-        capas = capas.push(capa_reloj).push(capa_acceso);
-        if self.config.medios && !self.medios.is_empty() {
+        if capa.is_none_or(|c| c == Capa::Reloj) {
+            capas = capas.push(capa_reloj);
+        }
+        if capa.is_none_or(|c| c == Capa::Acceso) {
+            capas = capas.push(capa_acceso);
+        }
+        if capa.is_none_or(|c| c == Capa::Medios) && self.config.medios && !self.medios.is_empty() {
             let mut tarjetas = column![].align_x(Horizontal::Center);
             for medio in self.medios.iter().take(2) {
                 tarjetas = tarjetas.push(self.tarjeta(medio, medios_avance));
@@ -569,29 +752,31 @@ impl Bloqueo {
             }
             let medios_y = self.medios_y_actual(pantalla.1, medios_avance);
             let capa_medios = column![
-                Space::new().height(Length::Fixed(medios_y.max(0.0))),
+                Space::new().height(Length::Fixed((medios_y - origen_y).max(0.0))),
                 container(tarjetas)
-                    .width(Length::Fixed(pantalla.0))
+                    .width(Length::Fixed(ancho))
                     .center_x(Length::Fill),
             ]
-            .width(Length::Fixed(pantalla.0))
-            .height(Length::Fixed(pantalla.1));
+            .width(Length::Fixed(ancho))
+            .height(Length::Fixed(alto));
             capas = capas.push(capa_medios);
         }
 
-        if self.config.energia {
+        if capa.is_none_or(|c| c == Capa::Energia) && self.config.energia {
             let esquina = container(self.energia(energia_avance))
-                .width(Length::Fixed(pantalla.0))
-                .height(Length::Fixed(pantalla.1))
-                .align_x(Horizontal::Left)
-                .align_y(Vertical::Bottom);
+                .width(Length::Fixed(ancho))
+                .height(Length::Fixed(alto))
+                .align_x(Horizontal::Right)
+                .align_y(Vertical::Top);
             capas = capas.push(esquina);
         }
-        if let Some((_, c)) = &self.confirmacion {
+        if capa.is_none_or(|c| c == Capa::Energia)
+            && let Some((_, c)) = &self.confirmacion
+        {
             capas = capas.push(
                 container(c.view())
-                    .center_x(Length::Fixed(pantalla.0))
-                    .center_y(Length::Fixed(pantalla.1))
+                    .center_x(Length::Fixed(ancho))
+                    .center_y(Length::Fixed(alto))
                     .style(|_| container::Style {
                         background: Some(
                             Color {
@@ -605,21 +790,6 @@ impl Bloqueo {
             );
         }
         capas.into()
-    }
-
-    fn entrada_avance(&self, retraso_ms: u64, duracion_ms: u64) -> f32 {
-        if !self.config.animaciones {
-            return 1.0;
-        }
-        let pasado = self.entrada_desde.elapsed();
-        let retraso = Duration::from_millis(retraso_ms);
-        if pasado <= retraso {
-            return 0.0;
-        }
-        tema::C_ENTRADA.eval(tema::fraccion(
-            pasado - retraso,
-            Duration::from_millis(duracion_ms),
-        ))
     }
 
     /// Dónde empieza la tarjeta de medios en reposo, sin el término de la
@@ -638,6 +808,7 @@ impl Bloqueo {
     /// entrada. Esta existe aparte para poder fijar el piso sin depender de
     /// en qué punto de la animación está, que es lo único que hace falta en
     /// los tests de abajo.
+    // 0.1.0
     fn medios_y_asentada(&self, alto_pantalla: f32) -> f32 {
         let piso = alto_pantalla * self.config.acceso_y
             + self.config.avatar_tamano
@@ -666,6 +837,7 @@ impl Bloqueo {
     /// se dibujaba hasta 28 px más abajo de donde el clic la buscaba: tocar
     /// play nada más pulsar Meta+L no hacía nada hasta que la entrada
     /// terminaba de asentarse.
+    // 0.1.0
     fn medios_y_actual(&self, alto_pantalla: f32, medios_avance: f32) -> f32 {
         self.medios_y_asentada(alto_pantalla) + (1.0 - medios_avance) * 28.0
     }
@@ -678,16 +850,19 @@ impl Bloqueo {
     /// sonando cada tecla de la contraseña costaba **55 ms** en vez de 3–7
     /// (`examples/bloqueo_bench.rs`): el punto de cada carácter nacía a cuatro
     /// fotogramas por segundo y parecía que las letras llegaban con retraso.
+    // 0.1.0
     pub fn velo_medios(&self) -> Option<Color> {
         let m = self.medios.first().filter(|_| self.config.medios)?;
         Some(Color {
-            a: 0.30 * self.medio_avance(),
+            // modificado en la 0.2.0 -- el compositor funde la textura sin volver a rasterizar el degradado.
+            a: 0.30,
             ..m.color
         })
     }
 
-    fn medio_avance(&self) -> f32 {
-        if !self.config.animaciones {
+    // 0.1.0
+    pub fn medio_avance(&self) -> f32 {
+        if !self.entrada_animada() {
             return 1.0;
         }
         self.medio_desde.map_or(0.0, |desde| {
@@ -695,6 +870,7 @@ impl Bloqueo {
         })
     }
 
+    // 0.1.0
     fn sacudida(&self) -> f32 {
         // La misma sacudida para la contraseña mala y para el dedo que no
         // casa: las dos dicen «no eres tú», y decirlo de dos formas haría
@@ -714,6 +890,7 @@ impl Bloqueo {
     }
 
     /// Cambia lo que dice la huella. `true` si hay que repintar.
+    // 0.1.0
     pub fn actualizar_huella(&mut self, huella: Huella) -> bool {
         // Un segundo «no coincide» seguido también sacude: es otro dedo.
         if self.huella == huella && huella != Huella::NoCoincide {
@@ -724,6 +901,7 @@ impl Bloqueo {
         true
     }
 
+    // 0.1.0
     fn aviso_huella<'a>(&self, alfa: f32) -> PanelElement<'a> {
         let (texto, color) = match self.huella {
             Huella::Callada => ("", Color::WHITE),
@@ -743,6 +921,7 @@ impl Bloqueo {
             .into()
     }
 
+    // 0.1.0
     pub fn actualizar_estado(&mut self, escritos: usize, estado: Estado) -> bool {
         if self.escritos == escritos && self.estado == estado {
             return false;
@@ -755,6 +934,7 @@ impl Bloqueo {
         true
     }
 
+    // 0.1.0
     pub fn actualizar_caps_lock(&mut self, activo: bool) -> bool {
         if self.caps_lock == activo {
             return false;
@@ -764,6 +944,7 @@ impl Bloqueo {
     }
 
     /// Actualiza la tarjeta multimedia cuando termina la consulta asíncrona.
+    // 0.1.0
     pub fn poner_medio(&mut self, sonando: Option<crate::medios::Sonando>) -> bool {
         let nuevos = if self.config.medios {
             sonando
@@ -787,6 +968,8 @@ impl Bloqueo {
     ///
     /// Ocupa sitio siempre, aunque no diga nada: si apareciera y desapareciera,
     /// el campo daría un salto de veinte píxeles justo al pulsar Intro.
+    // 0.1.0
+    // modified 0.1.1 -- no repite «introduce tu contraseña» con el aviso de la huella
     fn mensaje<'a>(&self, alfa: f32) -> PanelElement<'a> {
         let (texto_estado, color) = match self.estado {
             Estado::Comprobando => (
@@ -842,21 +1025,24 @@ impl Bloqueo {
     /// Se calcula aquí y no se guarda: el tamaño de la pantalla lo trae quien
     /// dibuja, y dos copias de la misma medida es como se desalinean el dibujo
     /// y el clic.
+    // 0.1.0
+    // modificado en la 0.2.0 -- arriba a la derecha, donde el greeter pone sus opciones.
     pub fn boton_energia(&self, pantalla: (f32, f32)) -> (f32, f32, f32, f32) {
         (
+            pantalla.0 - MARGEN_ENERGIA - LADO_ENERGIA,
             MARGEN_ENERGIA,
-            pantalla.1 - MARGEN_ENERGIA - LADO_ENERGIA,
             LADO_ENERGIA,
             LADO_ENERGIA,
         )
     }
 
     /// Y dónde cae cada entrada del menú desplegado, de arriba abajo.
+    // 0.1.0
     fn entrada_energia(&self, i: usize, pantalla: (f32, f32)) -> (f32, f32, f32, f32) {
-        let (x, y_boton, _, _) = self.boton_energia(pantalla);
-        // El menú va encima del botón, con su hueco: abajo no hay sitio.
-        let alto_menu = entradas().len() as f32 * ALTO_ENTRADA;
-        let y0 = y_boton - 10.0 - alto_menu;
+        let (_, y_boton, _, _) = self.boton_energia(pantalla);
+        // Cuelga del botón con su hueco, alineado a su borde derecho.
+        let x = pantalla.0 - MARGEN_ENERGIA - ANCHO_MENU;
+        let y0 = y_boton + LADO_ENERGIA + HUECO_MENU;
         (x, y0 + i as f32 * ALTO_ENTRADA, ANCHO_MENU, ALTO_ENTRADA)
     }
 
@@ -866,6 +1052,7 @@ impl Bloqueo {
     /// botón lo despliega o lo recoge, y pulsar en cualquier otro sitio lo
     /// cierra: un menú que se queda abierto al pulsar fuera es el que acaba
     /// apagando el equipo sin querer.
+    // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32, pantalla: (f32, f32)) -> (Option<Peticion>, bool) {
         if let Some((peticion, c)) = &self.confirmacion {
             let resultado = c.pulsar(
@@ -915,6 +1102,7 @@ impl Bloqueo {
         (None, estaba_abierto)
     }
 
+    // 0.1.0
     fn medio_en(&self, x: f32, y: f32, pantalla: (f32, f32)) -> Option<crate::medios::Orden> {
         if !self.config.medios || self.medios.is_empty() {
             return None;
@@ -942,6 +1130,7 @@ impl Bloqueo {
         )
     }
 
+    // 0.1.0
     pub fn confirmar_tecla(&mut self, tecla: crate::TeclaPulsada) -> (bool, Option<Peticion>) {
         let Some((p, c)) = self.confirmacion.as_mut() else {
             return (false, None);
@@ -954,6 +1143,7 @@ impl Bloqueo {
         (true, accion)
     }
 
+    // 0.1.0
     fn cerrar_menu(&mut self) {
         if self.menu {
             self.menu = false;
@@ -965,8 +1155,15 @@ impl Bloqueo {
     ///
     /// Mira si la animación **está en marcha**, no si existe: preguntar por
     /// `is_some()` deja al compositor dibujando para siempre.
+    // 0.1.0
     pub fn animando(&self) -> bool {
-        let entrada = self.config.animaciones && self.entrada_desde.elapsed() < ENTRADA_TOTAL;
+        self.contenido_animando()
+            || (self.entrada_animada() && self.entrada.iter().any(|m| !m.quieto()))
+            || (!self.medios.is_empty() && self.medio_avance() < 1.0)
+    }
+
+    // añadido en la 0.2.0 -- las animaciones de contenido necesitan píxeles nuevos; la entrada no.
+    pub fn contenido_animando(&self) -> bool {
         let estado = self.config.animaciones
             && match self.estado {
                 Estado::Fallo => self.estado_desde.elapsed() < ESTADO_TOTAL,
@@ -976,14 +1173,8 @@ impl Bloqueo {
         let huella = self.config.animaciones
             && self.huella == Huella::NoCoincide
             && self.huella_desde.elapsed() < ESTADO_TOTAL;
-        let medio = self.config.animaciones
-            && self
-                .medio_desde
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
-        entrada
-            || estado
+        estado
             || huella
-            || medio
             || self
                 .menu_desde
                 .is_some_and(|(t, _)| t.elapsed() < tema::D_POPOVER)
@@ -995,6 +1186,7 @@ impl Bloqueo {
     /// que separa «aparece» de «se despliega». Al cerrar recorre lo mismo del
     /// revés y sin rebote, porque un menú que rebota al irse se lee como que no
     /// se ha ido.
+    // 0.1.0
     fn menu_avance(&self) -> f32 {
         match self.menu_desde {
             None => {
@@ -1017,36 +1209,80 @@ impl Bloqueo {
 
     /// El botón de apagado y, si está desplegado, su menú.
     ///
-    /// El menú sale **encima** del botón y no debajo: abajo no hay sitio, es el
-    /// borde de la pantalla.
-    fn energia<'a>(&self, alfa_entrada: f32) -> PanelElement<'a> {
-        let boton = container(
-            text("⋮")
-                .size(22.0)
-                .color(Color {
-                    a: alfa_entrada,
-                    ..Color::WHITE
+    /// Arriba a la derecha, con el menú colgando debajo: el mismo sitio que las
+    /// opciones del greeter, para que bloquear y entrar se manejen igual.
+    // 0.1.0
+    // modificado en la 0.2.0 -- arriba a la derecha y con glifos blancos
+    fn energia<'a>(&'a self, alfa_entrada: f32) -> PanelElement<'a> {
+        // Icono blanco sobre el fondo, con la sombra que evita perderlo en un
+        // fondo claro, igual que la fila de estado del greeter.
+        let pictograma = |icono: &crate::icono::Icono, lado: f32, alfa: f32| -> PanelElement<'a> {
+            let capa = |tinta: Color, arriba: f32| {
+                container(crate::icono::ver_teñido_propio(icono, lado, tinta)).padding(
+                    iced_core::Padding {
+                        top: arriba,
+                        bottom: 1.0 - arriba,
+                        ..iced_core::Padding::ZERO
+                    },
+                )
+            };
+            iced_widget::stack![
+                capa(con_alfa(Color::BLACK, 0.35 * alfa), 1.0),
+                capa(con_alfa(Color::WHITE, alfa), 0.0),
+            ]
+            .into()
+        };
+        let caja = |contenido: PanelElement<'a>| {
+            container(contenido)
+                .width(Length::Fixed(LADO_ENERGIA))
+                .height(Length::Fixed(LADO_ENERGIA))
+                .center_x(Length::Fixed(LADO_ENERGIA))
+                .center_y(Length::Fixed(LADO_ENERGIA))
+        };
+        let abierto = self.menu;
+        let mut boton = row![].spacing(6.0).align_y(Vertical::Center);
+        if let Some((icono, (w, h), cifra, tinta)) = &self.bateria {
+            let cifra = text(cifra.clone())
+                .size(13.0)
+                .font(iced_core::Font {
+                    weight: iced_core::font::Weight::Semibold,
+                    ..iced_core::Font::DEFAULT
                 })
-                .align_x(Horizontal::Center)
-                .align_y(Vertical::Center),
-        )
-        .width(Length::Fixed(LADO_ENERGIA))
-        .height(Length::Fixed(LADO_ENERGIA))
-        .center_x(Length::Fixed(LADO_ENERGIA))
-        .center_y(Length::Fixed(LADO_ENERGIA))
-        .style(move |_| container::Style {
-            background: Some(con_alfa(FONDO_CAMPO, alfa_entrada).into()),
-            border: Border {
-                radius: (LADO_ENERGIA / 2.0).into(),
+                .color(con_alfa(*tinta, alfa_entrada));
+            boton = boton.push(
+                container(
+                    row![crate::icono::ver(icono, *w, *h), cifra]
+                        .spacing(5.0)
+                        .align_y(Vertical::Center),
+                )
+                .padding([0.0, 9.0]),
+            );
+        }
+        // Sin red son los mismos arcos apagados, como en el greeter.
+        let con_red = self.red.is_some_and(|r| r.up);
+        boton = boton.push(caja(pictograma(
+            &self.wifi,
+            20.0,
+            alfa_entrada * if con_red { 1.0 } else { 0.35 },
+        )));
+        boton = boton.push(caja(pictograma(&self.encendido, 20.0, alfa_entrada)).style(
+            move |_| container::Style {
+                background: abierto.then(|| con_alfa(Color::WHITE, 0.18).into()),
+                border: Border {
+                    radius: (LADO_ENERGIA / 2.0).into(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-            ..Default::default()
-        });
+        ));
 
-        let mut columna = column![].spacing(0.0);
+        // modificado en la 0.2.0 -- el menú cuelga del botón: el hueco de
+        // arriba deja sitio al botón y el desplazamiento lo baja desde él.
+        let mut columna = column![Space::new().height(Length::Fixed(LADO_ENERGIA))].spacing(0.0);
         // El menú se dibuja mientras el avance no sea cero: al cerrar hay que
         // seguir viéndolo mientras se va, y `self.menu` ya es `false` entonces.
         let avance = self.menu_avance();
+        let mut desplazamiento_menu = 0.0;
         if avance > 0.001 {
             let alfa = avance.clamp(0.0, 1.0);
             let mut filas = column![];
@@ -1055,9 +1291,18 @@ impl Bloqueo {
                     a: alfa,
                     ..Color::WHITE
                 };
+                // El fundido va en la opacidad: el tinte del SVG no respeta el
+                // alfa del color y el glifo salía entero con el menú aún invisible.
                 let dibujo: PanelElement<'a> = match crate::icono::propio(icono) {
-                    Some(ic) => crate::icono::ver_teñido_propio(&ic, ICONO_ENTRADA, tinta),
-                    None => Space::new().width(Length::Fixed(ICONO_ENTRADA)).into(),
+                    Some(crate::icono::Icono::Svg(handle)) => iced_widget::svg(handle)
+                        .width(Length::Fixed(ICONO_ENTRADA))
+                        .height(Length::Fixed(ICONO_ENTRADA))
+                        .style(|_, _| iced_widget::svg::Style {
+                            color: Some(Color::WHITE),
+                        })
+                        .opacity(alfa)
+                        .into(),
+                    _ => Space::new().width(Length::Fixed(ICONO_ENTRADA)).into(),
                 };
                 let fila = row![
                     dibujo,
@@ -1108,17 +1353,18 @@ impl Bloqueo {
                     );
                 }
             }
-            // Sube desde el botón y se desvanece: son las dos cosas que el
+            // Baja desde el botón y se desvanece: son las dos cosas que el
             // sistema de diseño deja animar. El desplazamiento sale del muelle,
             // así que se pasa un poco de su sitio y vuelve.
             // El rebote del muelle se gasta en el desplazamiento, no en la
             // altura: pasarse de alto dejaría un hueco vacío dentro del menú.
-            let desplazamiento = (1.0 - avance) * 18.0;
+            desplazamiento_menu = (1.0 - avance) * 18.0;
             // Entero desde el primer fotograma, sin desplegarse. Antes crecía
             // recortando la altura, y el recorte enseñaba las **primeras**
             // filas en el sitio de las últimas: a medio abrir, «Apagar» estaba
             // dibujado donde el clic encuentra «Suspender». El HIG, además,
             // solo deja animar opacidad y desplazamiento.
+            columna = columna.push(Space::new().height(Length::Fixed(HUECO_MENU)));
             columna = columna.push(
                 container(filas)
                     .style(move |_| container::Style {
@@ -1141,17 +1387,33 @@ impl Bloqueo {
                     .clip(true)
                     .width(Length::Fixed(ANCHO_MENU)),
             );
-            columna = columna.push(Space::new().height(Length::Fixed(10.0 + desplazamiento)));
         }
-        columna = columna.push(boton);
 
-        container(columna)
-            .padding([MARGEN_ENERGIA, MARGEN_ENERGIA])
-            .into()
+        let ancho = ANCHO_MENU + 2.0 * MARGEN_ENERGIA;
+        let esquina = |contenido: PanelElement<'a>, arriba: f32| {
+            container(contenido)
+                .width(Length::Fixed(ancho))
+                .align_x(Horizontal::Right)
+                .padding(iced_core::Padding {
+                    top: arriba,
+                    right: MARGEN_ENERGIA,
+                    bottom: 0.0,
+                    left: MARGEN_ENERGIA,
+                })
+        };
+        iced_widget::stack![
+            esquina(
+                columna.into(),
+                (MARGEN_ENERGIA - desplazamiento_menu).max(0.0)
+            ),
+            esquina(boton.into(), MARGEN_ENERGIA),
+        ]
+        .into()
     }
 
     /// El círculo del usuario. Gris liso mientras no haya foto: una silueta
     /// genérica dice menos que un hueco limpio.
+    // 0.1.0
     fn avatar(&self, lado: f32, alfa: f32) -> PanelElement<'_> {
         let dentro: PanelElement<'_> = match &self.usuario.foto {
             Some(handle) => iced_widget::image(handle.clone())
@@ -1218,6 +1480,7 @@ impl Bloqueo {
     }
 
     /// Cuántos puntos caben en el campo sin salirse.
+    // 0.1.0
     fn caben(&self) -> usize {
         // Quitando el candado con su aire (16 + 22 + 10) y el botón (36 + 6).
         ((CAMPO - 90.0) / (PUNTO + 6.0)) as usize
@@ -1225,6 +1488,7 @@ impl Bloqueo {
 
     /// El campo de contraseña: una sola píldora con el candado, los puntos y
     /// el botón de entrar dentro.
+    // 0.1.0
     fn campo<'a>(&self, alfa: f32) -> PanelElement<'a> {
         let visibles = self.escritos.min(self.caben());
         let animar = self.config.animaciones;
@@ -1391,6 +1655,8 @@ impl Bloqueo {
     /// Los altos van fijos: `medio_en` busca los botones a una distancia
     /// conocida del borde de abajo, y con un alto que dependiera del texto el
     /// clic y el dibujo volverían a separarse.
+    // 0.1.0
+    // modified 0.1.1 -- tarjeta de música en blanco sobre cristal, sin seguir el tema
     fn tarjeta<'a>(&self, medio: &'a Medio, alfa: f32) -> PanelElement<'a> {
         use crate::actividad::{ANTERIOR, PAUSA, PLAY, SIGUIENTE};
         let blanco = move |a: f32| Color {
@@ -1562,6 +1828,7 @@ impl Bloqueo {
 }
 
 /// Conserva el color y modula su opacidad para las entradas escalonadas.
+// 0.1.0
 fn con_alfa(mut color: Color, alfa: f32) -> Color {
     color.a *= alfa.clamp(0.0, 1.0);
     color
@@ -1602,9 +1869,11 @@ mod tests {
         assert_eq!(b.pulsar(bx + bw / 2.0, by + bh / 2.0, pantalla).0, None);
         assert!(b.menu, "el botón no desplegó el menú");
 
-        // La última entrada es Suspender, y el menú cae encima del botón.
+        // La última entrada es Suspender, y el menú cuelga del botón sin
+        // salirse por la derecha.
         let (ex, ey, ew, eh) = b.entrada_energia(entradas().len() - 1, pantalla);
-        assert!(ey + eh < by, "el menú se dibuja sobre el botón, no debajo");
+        assert!(ey > by + bh, "el menú cuelga debajo del botón");
+        assert!(ex + ew <= pantalla.0, "el menú no se sale de la pantalla");
         assert_eq!(b.pulsar(ex + ew / 2.0, ey + eh / 2.0, pantalla).0, None);
         assert!(!b.menu, "elegir una entrada tiene que cerrar el menú");
         assert!(
@@ -1683,7 +1952,7 @@ mod tests {
             ..Default::default()
         };
         let b = Bloqueo::new("12:30".into(), "lunes".into(), None, config);
-        assert_eq!(b.entrada_avance(0, 440), 1.0);
+        assert!(!b.entrada_animada());
         assert!(!b.animando());
     }
 

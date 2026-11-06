@@ -64,6 +64,7 @@ void main() {
 impl Banda {
     /// `None` si el driver no compila el shader: la banda sale entonces con
     /// esquinas rectas, de `ShellHost::banda_elementos`.
+    // 0.1.1
     pub fn new(renderer: &mut GlesRenderer) -> Option<Self> {
         use smithay::backend::renderer::element::Kind;
         use smithay::backend::renderer::gles::{UniformName, UniformType};
@@ -97,6 +98,7 @@ impl Banda {
     }
 
     /// El elemento para la banda `(x, y, ancho, alto)` en lógicos.
+    // 0.1.1
     pub fn elemento(&mut self, banda: (f64, f64, f64, f64), escala: f64) -> PixelShaderElement {
         use smithay::backend::renderer::gles::Uniform;
 
