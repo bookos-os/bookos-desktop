@@ -298,7 +298,10 @@ impl Servicio {
     // 0.1.0
     async fn set_touch_lock(&self, locked: bool) -> zbus::fdo::Result<()> {
         let mac = self.con(|c| {
-            c.enviar(protocolo::MSG_LOCK_TOUCHPAD, &[locked as u8])?;
+            c.enviar(
+                protocolo::MSG_LOCK_TOUCHPAD,
+                &conexion::payload_bloqueo(locked, c.toques_avanzados),
+            )?;
             c.status
                 .lock()
                 .expect("nadie entra en pánico con el estado tomado")
@@ -519,7 +522,12 @@ async fn publicar_isla(svc: &Servicio, sesion: &Connection, s: &BudsStatus) {
     if s.battery_case > 0 {
         metricas.push(fila(if es { "Estuche" } else { "Case" }, s.battery_case));
     }
-    let cuerpo = serde_json::json!({ "activo": true, "titulo": s.model, "metricas": metricas });
+    let cuerpo = serde_json::json!({
+        "activo": true,
+        "titulo": s.model,
+        "metricas": metricas,
+        "anc": s.anc_mode,
+    });
     let n = {
         let mut e = svc.estado();
         e.publicacion += 1;
@@ -540,7 +548,8 @@ async fn publicar_isla(svc: &Servicio, sesion: &Connection, s: &BudsStatus) {
     });
 }
 
-/// Tocar la isla abre Ajustes en la página de los Buds.
+/// Tocar la isla abre Ajustes en la página de los Buds; su segmentado cambia
+/// el control de ruido.
 // 0.1.0
 async fn escuchar_isla(sesion: Connection, svc: Servicio) {
     let regla = zbus::MatchRule::builder()
@@ -557,7 +566,30 @@ async fn escuchar_isla(sesion: Connection, svc: Servicio) {
             return;
         }
     };
-    while let Some(Ok(_)) = flujo.next().await {
+    while let Some(Ok(mensaje)) = flujo.next().await {
+        // El segmentado del control de ruido: se aplica y se vuelve a publicar,
+        // que además alarga lo que la isla se queda a la vista.
+        let cuerpo: Option<(String, String, String)> = mensaje.body().deserialize().ok();
+        if let Some((_, nombre, valor)) = cuerpo.filter(|(_, n, _)| n == "anc") {
+            let Ok(modo) = valor.parse::<u8>() else {
+                eprintln!("budsd: modo de ruido no válido: {valor}");
+                continue;
+            };
+            if let Err(e) = svc.set_anc(modo).await {
+                eprintln!("budsd: {nombre}: {e}");
+                continue;
+            }
+            let estado = svc.con(|c| {
+                Ok(c.status
+                    .lock()
+                    .expect("nadie entra en pánico con el estado tomado")
+                    .clone())
+            });
+            if let Ok(s) = estado {
+                publicar_isla(&svc, &sesion, &s).await;
+            }
+            continue;
+        }
         svc.estado().publicacion += 1;
         llamar_isla(&sesion, "CloseActivity", &(APP_ID,)).await;
         // Si Ajustes ya está abierto, esta segunda copia le pasa la página por

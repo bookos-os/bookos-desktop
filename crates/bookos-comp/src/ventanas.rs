@@ -1503,6 +1503,7 @@ impl BookosComp {
     // 0.1.0
     // modified 0.1.1 -- enfocar una ventana de un grupo enfoca la que toca de la unidad
     // modified 0.2.0 -- cierra el menú contextual abierto
+    // modified 0.2.0 -- el menú abierto de otra ventana ya no se queda con el teclado
     pub fn enfocar(&mut self, window: &Window) {
         // Un menú contextual abierto es de «antes de esto»: si una ventana
         // vuelve del dock o recibe el foco, el usuario ya ha pasado a otra
@@ -1541,6 +1542,26 @@ impl BookosComp {
 
         let surface = window.wl_surface().map(|s| s.into_owned());
         if let Some(kbd) = self.seat.get_keyboard() {
+            // Con un menú (`xdg_popup`) abierto en **otra** ventana, su grab de
+            // teclado descarta cualquier cambio de foco que no sea hacia él: la
+            // ventana subía y se pintaba activa, pero el `set_focus` de abajo
+            // no hacía nada y había que pulsarla para escribir. Reproducido
+            // con el menú contextual de Konsole abierto y KCalc arrancando
+            // detrás: KCalc no recibía ni un `wl_keyboard.enter`. El único
+            // grab de teclado que hay es el de los menús, y su dato de inicio
+            // es la ventana raíz del menú.
+            let raiz_menu = kbd.grab_start_data().and_then(|d| d.focus);
+            if let Some(raiz) = raiz_menu.filter(|r| surface.as_ref() != Some(r)) {
+                let menus: Vec<_> = smithay::desktop::PopupManager::popups_for_surface(&raiz)
+                    .map(|(menu, _)| menu)
+                    .collect();
+                for menu in &menus {
+                    // Falla si el cliente ya lo destruyó, que es lo que se quería.
+                    let _ = smithay::desktop::PopupManager::dismiss_popup(&raiz, menu);
+                }
+                kbd.unset_grab(self);
+                self.menu_sin_foco = None;
+            }
             kbd.set_focus(self, surface, SERIAL_COUNTER.next_serial());
         }
         self.needs_redraw = true;
@@ -2008,11 +2029,20 @@ impl BookosComp {
             }
             pantalla
         } else {
-            // Sin nada guardado se vuelve al área útil: perder el sitio de
-            // antes es malo, pero dejar la ventana tapando el panel es peor.
             let area = crate::decoracion::area_util(self, window);
-            let previa = tomar_restaurar(window).unwrap_or_else(|| Zona::Maxima.rect(area));
-            Rectangle::new(confinar(previa.loc, previa.size, area), previa.size)
+            if let Some(zona) = zona_de(window) {
+                // Seguía encajada (la zona no se toca al entrar): vuelve a su
+                // zona y lo guardado se queda para cuando la desencajen. Antes
+                // se consumía el tamaño flotante y la ventana salía pequeña
+                // pero marcada como maximizada, así que maximize() del cliente
+                // no hacía nada.
+                zona.rect(area)
+            } else {
+                // Sin nada guardado se vuelve al área útil: perder el sitio de
+                // antes es malo, pero dejar la ventana tapando el panel es peor.
+                let previa = tomar_restaurar(window).unwrap_or_else(|| Zona::Maxima.rect(area));
+                Rectangle::new(confinar(previa.loc, previa.size, area), previa.size)
+            }
         };
 
         estado(window).completa.set(activar);

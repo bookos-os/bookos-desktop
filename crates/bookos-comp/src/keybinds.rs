@@ -1036,6 +1036,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
         }
         bookos_shell::Accion::Lanzar(cmd) => lanzar(state, &cmd),
         bookos_shell::Accion::InsertarEmoji(texto) => crate::emojis::insertar(state, &texto),
+        bookos_shell::Accion::CopiarTexto(texto) => crate::emojis::copiar(state, &texto),
         bookos_shell::Accion::Launchpad => {
             if let Some(shell) = state.shell.as_mut() {
                 shell.alternar_launchpad();
@@ -1229,12 +1230,18 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
         ),
         bookos_shell::Accion::MantenerDespierto => {
             state.idle_notifier_state.set_is_inhibited(
-                !state.idle_inhibidores.is_empty() || bookos_shell::mantener_despierto(),
+                state.idle_inhibido() || bookos_shell::mantener_despierto(),
             );
             crate::backend::programar_bloqueo_inactividad(state);
             crate::backend::programar_suspension_inactividad(state);
         }
         bookos_shell::Accion::AbrirCaptura => ejecutar(state, Accion::Captura),
+        bookos_shell::Accion::NoMolestar(activo) => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.no_molestar(Some(activo));
+            }
+            state.needs_redraw = true;
+        }
         bookos_shell::Accion::LuzNocturna(encender) => {
             crate::luz_nocturna::alternar(state, encender);
         }
@@ -1313,6 +1320,22 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
             state.needs_redraw = true;
         }
+        bookos_shell::Accion::CerrarNotificaciones(ids) => {
+            for id in ids {
+                let cerrada = state
+                    .shell
+                    .as_mut()
+                    .is_some_and(|s| s.cerrar_notificacion(id));
+                if cerrada {
+                    crate::notificaciones::cerrada(
+                        state.bus_notificaciones.as_ref(),
+                        id,
+                        crate::notificaciones::CERRADA_POR_EL_USUARIO,
+                    );
+                }
+            }
+            state.needs_redraw = true;
+        }
         // «Responder» no es una acción que la app atienda al pulsarla: pide
         // texto primero. La notificación se queda hasta que se envíe.
         bookos_shell::Accion::NotificacionAccion { id, clave } if clave == "inline-reply" => {
@@ -1366,6 +1389,20 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                     id,
                     crate::notificaciones::CERRADA_POR_EL_USUARIO,
                 );
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::AbrirAppDeActividad { app_id, exec } => {
+            let ventana = state
+                .space
+                .elements()
+                .rev()
+                .filter_map(|w| crate::handlers::app_id(w))
+                .find(|suyo| bookos_shell::es_de_la_app(&app_id, suyo));
+            match ventana {
+                Some(suyo) => hacer(state, bookos_shell::Accion::Mostrar { app_id: suyo, exec }),
+                None if !exec.is_empty() => lanzar(state, &exec),
+                None => tracing::warn!(app_id, "la actividad no tiene ventana ni .desktop que lanzar"),
             }
             state.needs_redraw = true;
         }
@@ -2248,14 +2285,34 @@ fn echar_bloqueo(state: &mut BookosComp) -> bool {
 /// superficie muerta y las ventanas que siguen abiertas no reciben teclas.
 // 0.1.0
 // modified 0.1.1 -- no da el foco a una pestaña oculta de un grupo
+// modified 0.2.0 -- solo actúa si quien tenía el teclado es la que se ha ido
 pub fn refocalizar(state: &mut BookosComp) {
+    // Se llama por **cualquier** ventana que muere o se desmapea, también un
+    // tooltip de X11 o una ventana de fondo. Si el teclado sigue en una
+    // ventana viva del `Space`, no hay nada que heredar: repartirlo de nuevo
+    // se lo daba a la de más arriba, que con una «siempre encima» o con un
+    // menú X11 abierto no es la que se estaba usando.
+    let foco_vivo = state
+        .seat
+        .get_keyboard()
+        .and_then(|kbd| kbd.current_focus())
+        .and_then(|s| state.window_for_surface(&s))
+        .is_some_and(|w| w.alive());
+    if foco_vivo {
+        return;
+    }
     // `alive()` porque la ventana destruida sigue mapeada en el espacio hasta
     // el siguiente `refresh()`: sin filtrarla se le devolvería el foco al
-    // muerto.
+    // muerto. Las override-redirect (menús y tooltips de X11) están en el
+    // `Space` para dibujarse, pero no son ventanas a las que dar el foco.
     let heredera = state
         .space
         .elements()
-        .rfind(|w| w.alive() && crate::multitarea::visible(state, w))
+        .rfind(|w| {
+            w.alive()
+                && crate::multitarea::visible(state, w)
+                && !w.x11_surface().is_some_and(|x| x.is_override_redirect())
+        })
         .cloned();
     match heredera {
         // Por `enfocar` y no por `set_focus` a secas: la ventana que hereda el

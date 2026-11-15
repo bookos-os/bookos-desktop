@@ -37,6 +37,164 @@ pub struct Sonando {
     /// Posición y duración en segundos, si el reproductor las publica.
     pub posicion: Option<u64>,
     pub duracion: Option<u64>,
+    /// Códec, frecuencia y bits del fichero. Solo lo publica BookOS Player, en
+    /// claves `bookos:*`: MPRIS no tiene ninguna para esto.
+    // añadido en la 0.2.0
+    pub calidad: Option<Calidad>,
+}
+
+/// La calidad del fichero que suena, tal como la publica BookOS Player.
+// añadido en la 0.2.0
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Calidad {
+    pub codec: String,
+    /// Hz; 0 si no se sabe.
+    pub frecuencia: u32,
+    /// 0 en los códecs con pérdida, que no tienen profundidad de bits.
+    pub bits: u32,
+    /// kbps.
+    pub tasa: u32,
+}
+
+/// Qué nivel enseña la etiqueta, como Apple Music: «Hi-Res Lossless» desde 24
+/// bits y más de 48 kHz, «Lossless» con un códec sin pérdida, y el nombre del
+/// códec sin más en los demás.
+// añadido en la 0.2.0
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Nivel {
+    HiRes,
+    SinPerdida,
+    ConPerdida,
+}
+
+impl Calidad {
+    // añadido en la 0.2.0
+    pub fn nivel(&self) -> Nivel {
+        let sin_perdida = matches!(
+            self.codec.as_str(),
+            "FLAC" | "ALAC" | "PCM" | "PCM Float" | "WavPack" | "Monkey’s Audio"
+        );
+        match (sin_perdida, self.bits, self.frecuencia) {
+            (true, b, f) if b >= 24 && f > 48_000 => Nivel::HiRes,
+            (true, ..) => Nivel::SinPerdida,
+            (false, ..) => Nivel::ConPerdida,
+        }
+    }
+
+    /// El detalle técnico: «FLAC · 24 bits · 96 kHz» o «AAC · 256 kbps».
+    // añadido en la 0.2.0
+    pub fn detalle(&self) -> String {
+        let mut partes = vec![self.codec.clone()];
+        if self.nivel() == Nivel::ConPerdida {
+            if self.tasa > 0 {
+                partes.push(format!("{} kbps", self.tasa));
+            }
+        } else {
+            if self.bits > 0 {
+                partes.push(format!("{} bits", self.bits));
+            }
+            if self.frecuencia > 0 {
+                partes.push(khz(self.frecuencia));
+            }
+        }
+        partes.join(" · ")
+    }
+}
+
+/// 44100 → «44,1 kHz»; 48000 → «48 kHz».
+// añadido en la 0.2.0
+pub fn khz(hz: u32) -> String {
+    let k = hz as f32 / 1000.0;
+    if (k - k.round()).abs() < 0.05 {
+        format!("{} kHz", k.round() as u32)
+    } else {
+        format!("{:.1} kHz", k).replace('.', ",")
+    }
+}
+
+/// Cómo repite el reproductor, de `LoopStatus`.
+// añadido en la 0.2.0
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Repetir {
+    No,
+    Cancion,
+    Lista,
+}
+
+impl Repetir {
+    /// El siguiente al pulsar: no → lista → canción → no, como Apple Music.
+    // añadido en la 0.2.0
+    pub fn siguiente(self) -> Self {
+        match self {
+            Self::No => Self::Lista,
+            Self::Lista => Self::Cancion,
+            Self::Cancion => Self::No,
+        }
+    }
+    fn mpris(self) -> &'static str {
+        match self {
+            Self::No => "None",
+            Self::Cancion => "Track",
+            Self::Lista => "Playlist",
+        }
+    }
+}
+
+/// Aleatorio y repetición del reproductor, si los publica. Se leen al abrir lo
+/// que suena en grande y no cada segundo: son dos `busctl` más por lectura.
+// añadido en la 0.2.0
+pub fn modos(bus: &str) -> (Option<bool>, Option<Repetir>) {
+    let aleatorio = propiedad(bus, "Shuffle").map(|v| v.contains("true"));
+    let repetir = propiedad(bus, "LoopStatus").and_then(|v| {
+        if v.contains("Playlist") {
+            Some(Repetir::Lista)
+        } else if v.contains("Track") {
+            Some(Repetir::Cancion)
+        } else if v.contains("None") {
+            Some(Repetir::No)
+        } else {
+            None
+        }
+    });
+    (aleatorio, repetir)
+}
+
+/// Pone el aleatorio, sin esperar respuesta.
+// añadido en la 0.2.0
+pub fn poner_aleatorio(bus: &str, si: bool) -> bool {
+    fijar(bus, "Shuffle", "b", if si { "true" } else { "false" })
+}
+
+/// Pone la repetición, sin esperar respuesta.
+// añadido en la 0.2.0
+pub fn poner_repetir(bus: &str, modo: Repetir) -> bool {
+    fijar(bus, "LoopStatus", "s", modo.mpris())
+}
+
+/// Escribe una propiedad de `org.mpris.MediaPlayer2.Player`, como [`llamar`].
+// añadido en la 0.2.0
+fn fijar(bus: &str, nombre: &str, tipo: &str, valor: &str) -> bool {
+    let Ok(mut hijo) = Command::new("busctl")
+        .args([
+            "--user",
+            "set-property",
+            bus,
+            "/org/mpris/MediaPlayer2",
+            "org.mpris.MediaPlayer2.Player",
+            nombre,
+            tipo,
+            valor,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    std::thread::spawn(move || {
+        let _ = hijo.wait();
+    });
+    true
 }
 
 impl Sonando {
@@ -103,6 +261,14 @@ impl Sonando {
         let duracion = campo_numero(metadatos, "mpris:length").map(|us| us / 1_000_000);
         // KDE Connect extrapola la posición; un desfase no prueba que se haya
         // cerrado la sesión ni autoriza a ocultar sus controles.
+        if posicion.is_none() || duracion.is_none() {
+            tracing::debug!(
+                bus,
+                ?posicion,
+                ?duracion,
+                "el reproductor no publica posición o duración"
+            );
+        }
         let posicion = match (posicion, duracion) {
             (Some(p), Some(d)) if d > 0 => Some(p.min(d)),
             (p, _) => p,
@@ -128,6 +294,12 @@ impl Sonando {
             reproduciendo,
             posicion,
             duracion,
+            calidad: campo(metadatos, "bookos:codec").map(|codec| Calidad {
+                codec,
+                frecuencia: campo_numero(metadatos, "bookos:samplerate").unwrap_or(0) as u32,
+                bits: campo_numero(metadatos, "bookos:bitdepth").unwrap_or(0) as u32,
+                tasa: campo_numero(metadatos, "bookos:bitrate").unwrap_or(0) as u32,
+            }),
             titulo,
             bus,
         })
@@ -176,6 +348,78 @@ impl Sonando {
     }
 }
 
+/// El `.desktop` del reproductor (`DesktopEntry` de MPRIS): `bookos-player`,
+/// `firefox`… Con él se busca su icono. Se lee al abrir lo que suena en
+/// grande, no en cada lectura.
+// añadido en la 0.2.2
+pub fn escritorio(bus: &str) -> Option<String> {
+    let nombre = cadena(&propiedad_de(
+        bus,
+        "org.mpris.MediaPlayer2",
+        "DesktopEntry",
+    )?)?;
+    (!nombre.trim().is_empty()).then(|| nombre.trim().to_string())
+}
+
+/// El `mpris:trackid` de lo que suena, que pide el favorito de BookOS Player.
+// añadido en la 0.2.2
+pub fn pista(bus: &str) -> Option<String> {
+    campo(&propiedad(bus, "Metadata")?, "mpris:trackid")
+}
+
+/// Si la canción es favorita, por `org.bookos.MediaExtras1` (solo BookOS
+/// Player). `None` si el reproductor no tiene la interfaz: entonces no se
+/// enseña el corazón.
+// añadido en la 0.2.2
+pub fn favorito(bus: &str, pista: &str) -> Option<bool> {
+    let salida = Command::new("busctl")
+        .args([
+            "--user",
+            "call",
+            bus,
+            "/org/mpris/MediaPlayer2",
+            "org.bookos.MediaExtras1",
+            "IsFavorite",
+            "o",
+            pista,
+        ])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !salida.status.success() {
+        return None;
+    }
+    // `busctl call` contesta `b true` o `b false`.
+    Some(String::from_utf8_lossy(&salida.stdout).contains("true"))
+}
+
+/// Marca o desmarca la favorita, sin esperar respuesta, como [`poner_aleatorio`].
+// añadido en la 0.2.2
+pub fn poner_favorito(bus: &str, pista: &str, si: bool) -> bool {
+    let Ok(mut hijo) = Command::new("busctl")
+        .args([
+            "--user",
+            "call",
+            bus,
+            "/org/mpris/MediaPlayer2",
+            "org.bookos.MediaExtras1",
+            "SetFavorite",
+            "ob",
+            pista,
+            if si { "true" } else { "false" },
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    std::thread::spawn(move || {
+        let _ = hijo.wait();
+    });
+    true
+}
+
 /// La carátula cuadrada, reducida a `lado` píxeles con las esquinas de `radio`,
 /// y el color que la resume. `fuente` es lo que guarda [`Sonando::caratula`].
 ///
@@ -183,6 +427,28 @@ impl Sonando {
 /// cambiar de fuente, no por lectura.
 // 0.1.0
 pub fn cargar_caratula(fuente: &str, lado: u32, radio: f32) -> Option<(Handle, Color)> {
+    let imagen = abrir_caratula(fuente)?;
+    let (handle, rgba) = recortar(&imagen, lado, lado, radio);
+    let color = crate::actividad::color_dominante(&crate::actividad::Portada {
+        rgba,
+        width: lado,
+        height: lado,
+    });
+    Some((handle, color))
+}
+
+/// La versión a lo ancho para un vídeo: `None` si la carátula no es apaisada
+/// (más de 4:3), que es como se distingue la miniatura de un vídeo de una
+/// portada de disco. El hueco de la vista grande es 16:9.
+// añadido en la 0.2.2
+pub fn cargar_caratula_ancha(fuente: &str, ancho: u32, alto: u32, radio: f32) -> Option<Handle> {
+    let imagen = abrir_caratula(fuente)?;
+    (imagen.width() as f32 > imagen.height() as f32 * 1.34)
+        .then(|| recortar(&imagen, ancho, alto, radio).0)
+}
+
+// añadido en la 0.2.2 -- sale de cargar_caratula para servir también a la ancha
+fn abrir_caratula(fuente: &str) -> Option<image::DynamicImage> {
     use base64::Engine;
     let bytes = match fuente.strip_prefix("data:image/") {
         Some(resto) => base64::engine::general_purpose::STANDARD
@@ -193,29 +459,29 @@ pub fn cargar_caratula(fuente: &str, lado: u32, radio: f32) -> Option<(Handle, C
             .inspect_err(|err| tracing::debug!(fuente, "carátula ilegible: {err}"))
             .ok()?,
     };
-    let imagen = image::load_from_memory(&bytes)
+    image::load_from_memory(&bytes)
         .inspect_err(|err| tracing::debug!("carátula ilegible: {err}"))
-        .ok()?;
-    let (ancho, alto) = (imagen.width(), imagen.height());
-    let corte = ancho.min(alto);
-    let cuadrada = image::imageops::crop_imm(
-        &imagen,
-        (ancho - corte) / 2,
-        (alto - corte) / 2,
-        corte,
-        corte,
-    )
-    .to_image();
+        .ok()
+}
+
+/// Recorta al centro con la proporción `ancho`×`alto`, escala y redondea.
+/// Devuelve también los píxeles sin redondear, para sacar el color.
+// añadido en la 0.2.2
+fn recortar(imagen: &image::DynamicImage, ancho: u32, alto: u32, radio: f32) -> (Handle, Vec<u8>) {
+    let (w, h) = (imagen.width(), imagen.height());
+    // El corte más grande con la proporción pedida que cabe en la imagen.
+    let (cw, ch) = if w as u64 * alto as u64 > h as u64 * ancho as u64 {
+        ((h as u64 * ancho as u64 / alto as u64) as u32, h)
+    } else {
+        (w, (w as u64 * alto as u64 / ancho as u64) as u32)
+    };
+    let corte = image::imageops::crop_imm(imagen, (w - cw) / 2, (h - ch) / 2, cw, ch).to_image();
     let escalada =
-        image::imageops::resize(&cuadrada, lado, lado, image::imageops::FilterType::Triangle);
+        image::imageops::resize(&corte, ancho, alto, image::imageops::FilterType::Triangle);
     let mut rgba = escalada.into_raw();
-    let color = crate::actividad::color_dominante(&crate::actividad::Portada {
-        rgba: rgba.clone(),
-        width: lado,
-        height: lado,
-    });
-    crate::redondear_esquinas(&mut rgba, lado, lado, radio, crate::Alfa::Recto);
-    Some((Handle::from_rgba(lado, lado, rgba), color))
+    let sin_esquinas = rgba.clone();
+    crate::redondear_esquinas(&mut rgba, ancho, alto, radio, crate::Alfa::Recto);
+    (Handle::from_rgba(ancho, alto, rgba), sin_esquinas)
 }
 
 /// La variante para una vista que ya guardó solo el nombre del bus.
@@ -267,7 +533,7 @@ fn llamar(bus: &str, metodo: &[&str]) -> bool {
 }
 
 /// Los tres botones de la tarjeta.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Orden {
     Anterior,
     Alternar,
@@ -404,7 +670,8 @@ fn campo(volcado: &str, clave: &str) -> Option<String> {
 /// Copiar el texto tal cual enseñaba los códigos en el bloqueo, y cortar en
 /// cualquier comilla partía los títulos que llevan comillas.
 // 0.1.0
-fn cadena(texto: &str) -> Option<String> {
+// modified 0.2.0 -- pub(crate): la tarjeta de Bluetooth lee el JSON de budsd por busctl
+pub(crate) fn cadena(texto: &str) -> Option<String> {
     let mut bytes = texto.split_once('"')?.1.bytes();
     let mut valor = Vec::new();
     while let Some(b) = bytes.next() {
@@ -487,6 +754,37 @@ mod tests {
     #[test]
     fn saca_la_duracion_en_microsegundos() {
         assert_eq!(campo_numero(VOLCADO, "mpris:length"), Some(253_000_000));
+    }
+
+    #[test]
+    fn lee_la_calidad_de_bookos_player() {
+        let volcado = r#"a{sv} 6 "xesam:title" s "Nocturne" "bookos:codec" s "FLAC" "bookos:samplerate" u 96000 "bookos:bitdepth" u 24 "bookos:bitrate" u 2304"#;
+        let s = Sonando::desde_mpris(
+            "org.mpris.MediaPlayer2.bookosplayer".into(),
+            "s \"Playing\"",
+            volcado,
+            None,
+        )
+        .expect("hay canción");
+        let c = s.calidad.expect("publica calidad");
+        assert_eq!(c.nivel(), Nivel::HiRes);
+        assert_eq!(c.detalle(), "FLAC · 24 bits · 96 kHz");
+        let aac = Calidad {
+            codec: "AAC".into(),
+            frecuencia: 44_100,
+            bits: 0,
+            tasa: 256,
+        };
+        assert_eq!(aac.nivel(), Nivel::ConPerdida);
+        assert_eq!(aac.detalle(), "AAC · 256 kbps");
+        let cd = Calidad {
+            codec: "ALAC".into(),
+            frecuencia: 44_100,
+            bits: 16,
+            tasa: 0,
+        };
+        assert_eq!(cd.nivel(), Nivel::SinPerdida);
+        assert_eq!(cd.detalle(), "ALAC · 16 bits · 44,1 kHz");
     }
 
     /// Un campo que no está no puede devolver el del vecino.

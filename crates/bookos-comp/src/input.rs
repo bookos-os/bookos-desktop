@@ -1052,8 +1052,52 @@ pub fn toque_abajo(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Lo
                 boton(state, BTN_LEFT, ButtonState::Pressed, time);
                 ToqueEmulado::Arrastrando(slot)
             });
+            if del_shell && state.shell.as_ref().is_some_and(|s| s.sobre_actividad(punto.x, punto.y)) {
+                contar_toque_largo_isla(state, slot, punto, time);
+            }
         }
         None => {}
+    }
+}
+
+/// Mantener el dedo en la isla saca su menú, como el clic derecho. El toque
+/// del shell solo se convierte en clic al levantar el dedo; si a los
+/// `MANTENER_ISLA` sigue quieto, se hace ahora el clic (abre la tarjeta si
+/// estaba en píldora), se saca el menú y el levantar ya no hace nada.
+// añadido en la 0.2.2
+fn contar_toque_largo_isla(
+    state: &mut BookosComp,
+    slot: TouchSlot,
+    origen: Point<f64, Logical>,
+    time: u32,
+) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    let programado = state.loop_handle.insert_source(
+        Timer::from_duration(crate::shell::MANTENER_ISLA),
+        move |_, _, state| {
+            let sigue = matches!(
+                state.toque_emulado,
+                Some(ToqueEmulado::Pendiente { slot: s, origen: o, .. }) if s == slot && o == origen
+            );
+            if !sigue {
+                return TimeoutAction::Drop;
+            }
+            state.toque_emulado = Some(ToqueEmulado::Cancelado(slot));
+            if !state.shell.as_ref().is_some_and(|s| s.actividad_abierta()) {
+                let posicion = state.pointer_location;
+                set_pointer(state, origen, time);
+                boton(state, BTN_LEFT, ButtonState::Pressed, time);
+                boton(state, BTN_LEFT, ButtonState::Released, time);
+                set_pointer(state, posicion, time);
+            }
+            if state.shell.as_mut().is_some_and(|s| s.menu_actividad_en(origen.x, origen.y)) {
+                state.needs_redraw = true;
+            }
+            TimeoutAction::Drop
+        },
+    );
+    if let Err(err) = programado {
+        tracing::warn!("no se pudo contar el toque largo de la isla: {err}");
     }
 }
 
@@ -1423,6 +1467,16 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
     // más opciones» que en el dock.
     if pulsado == ButtonState::Pressed
         && button == BTN_RIGHT
+        && state
+            .shell
+            .as_mut()
+            .is_some_and(|s| s.menu_actividad_en(punto.x, punto.y))
+    {
+        state.needs_redraw = true;
+        return;
+    }
+    if pulsado == ButtonState::Pressed
+        && button == BTN_RIGHT
         && !modificadores(state).logo
         && state.shell.as_mut().is_some_and(|s| s.launchpad_menu())
     {
@@ -1494,6 +1548,21 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
                     .and_then(|s| s.pulsar(punto.x, punto.y))
             {
                 crate::keybinds::hacer(state, accion);
+            }
+            if state.shell.as_mut().is_some_and(|s| s.programar_mantener_isla()) {
+                use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+                let programado = state.loop_handle.insert_source(
+                    Timer::from_duration(crate::shell::MANTENER_ISLA),
+                    |_, _, state| {
+                        if state.shell.as_mut().is_some_and(|s| s.menu_si_sigue_mantenida()) {
+                            state.needs_redraw = true;
+                        }
+                        TimeoutAction::Drop
+                    },
+                );
+                if let Err(err) = programado {
+                    tracing::warn!("no se pudo contar la pulsación larga de la isla: {err}");
+                }
             }
         }
         return;
@@ -1756,6 +1825,21 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
     }
     if let Some(shell) = state.shell.as_mut() {
         shell.puntero(location.x, location.y);
+    }
+    if state.shell.as_mut().is_some_and(|s| s.programar_recogida_isla()) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        let programado = state.loop_handle.insert_source(
+            Timer::from_duration(crate::shell::RECOGER_ISLA),
+            |_, _, state| {
+                if state.shell.as_mut().is_some_and(|s| s.recoger_isla_si_sigue_fuera()) {
+                    state.needs_redraw = true;
+                }
+                TimeoutAction::Drop
+            },
+        );
+        if let Err(err) = programado {
+            tracing::warn!("no se pudo programar la recogida de la isla: {err}");
+        }
     }
     // El cursor pegado a un borde trae de vuelta a la barra que se apartó. Va
     // en físicos porque la franja sensible se mide contra la pantalla.

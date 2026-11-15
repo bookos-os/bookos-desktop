@@ -1,5 +1,17 @@
 //! Estado del servicio compartido; abrir la tarjeta nunca espera al sistema.
+//!
+//! La lista lleva la red conectada arriba y, debajo, «Redes conocidas» (con
+//! perfil guardado) y «Otras redes». Como en la tarjeta de Bluetooth, los
+//! rótulos hacen que las filas no midan todas lo mismo y la geometría sale de
+//! [`Red::colocar`].
+//!
+//! La clave de una red nueva **no pasa por el shell**: la pide Ajustes. Con
+//! perfil guardado NetworkManager ya la tiene, y una red abierta no la
+//! necesita.
 
+use std::time::{Duration, Instant};
+
+use bookos_system::Operation;
 use serde_json::Value;
 
 use iced_core::Length;
@@ -14,36 +26,93 @@ use super::control;
 use super::lista::{self, Entrada};
 use super::{Ancla, Tecla};
 
+/// Cuánto dura el «buscando…» junto a «Otras redes»: lo que tarda NetworkManager
+/// en devolver el primer escaneo.
+const BUSCANDO: Duration = Duration::from_secs(8);
+
+/// Cuánto se espera a que una orden de conectar o desconectar se vea reflejada
+/// antes de dejar de decir «Conectando…». Pasado eso la orden ya ha fallado, y
+/// seguir diciéndolo mentiría.
+const PENDIENTE: Duration = Duration::from_secs(30);
+
+/// Lo más alto que se hace la lista: cuatro redes y los dos rótulos.
+const MAX_VENTANA: f32 =
+    4.0 * lista::FILA + 3.0 * lista::HUECO_FILA + 2.0 * (lista::SECCION + lista::HUECO_FILA);
+
 /// Lo que hace falta para actuar sobre una red, en el orden de `entradas`.
-struct Datos {
+struct Ap {
     ssid: String,
     /// El dispositivo Wi-Fi, para desconectar la activa.
     dispositivo: String,
     guardada: bool,
     abierta: bool,
+    señal: u8,
+    activa: bool,
 }
 
+/// Lo que se ha pedido y todavía no se ve.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Orden {
+    Conectar,
+    Desconectar,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seccion {
+    Conocidas,
+    Otras,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fila {
+    Seccion(Seccion),
+    Red(usize),
+}
+
+type Colocada = lista::Colocada<Fila>;
+
 pub struct Red {
+    aps: Vec<Ap>,
     entradas: Vec<Entrada>,
-    datos: Vec<Datos>,
     encendida: bool,
     /// El recorrido de la bolita del interruptor, siguiendo a `encendida`.
     interruptor: tema::Transicion,
     señalada: tema::Realce,
-    /// El botón del pie bajo el puntero: el 0 es el izquierdo y el 1 el otro.
+    /// El botón del pie bajo el puntero (siempre el 0).
     pie: tema::Realce,
     ultimo: Value,
-    /// Lo que se ha subido la lista, en píxeles. Ver `lista::desplazar`.
+    /// Lo que se ha subido la lista, en píxeles.
     desplazamiento: f32,
     estado_carga: Option<String>,
+    abierta: Instant,
+    /// Ya se pidió el escaneo de esta apertura. Una vez: las consultas no lo
+    /// fuerzan, y pedirlo en cada refresco gastaría radio y batería.
+    escaneada: bool,
+    buscando_visto: bool,
+    pendiente: Option<(String, Orden, Instant)>,
+}
+
+/// Las tres intensidades que distingue el icono y el texto.
+// añadido en la 0.2.1
+fn nivel_señal(señal: u8) -> usize {
+    match señal {
+        67.. => 2,
+        34..=66 => 1,
+        _ => 0,
+    }
+}
+
+fn calidad(señal: u8) -> &'static str {
+    ["Débil", "Buena", "Excelente"][nivel_señal(señal)]
 }
 
 impl Red {
     // 0.1.0
+    // modified 0.2.1 -- secciones, icono por intensidad, candado y escaneo
     pub fn new() -> Self {
         let mut r = Self {
+            aps: Vec::new(),
             entradas: Vec::new(),
-            datos: Vec::new(),
             encendida: true,
             interruptor: tema::Transicion::nueva(1.0, tema::M_RAPIDO),
             señalada: tema::Realce::nuevo(),
@@ -51,6 +120,10 @@ impl Red {
             ultimo: Value::Null,
             desplazamiento: 0.0,
             estado_carga: Some("Cargando…".into()),
+            abierta: Instant::now(),
+            escaneada: false,
+            buscando_visto: false,
+            pendiente: None,
         };
         r.refrescar();
         r
@@ -64,44 +137,165 @@ impl Red {
         }
         self.estado_carga = status;
         self.encendida = data["enabled"].as_bool().unwrap_or(false);
-        let redes: Vec<&Value> = data["networks"].as_array().into_iter().flatten().collect();
-        self.datos = redes
-            .iter()
-            .map(|n| Datos {
+        let todas: Vec<Ap> = data["networks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|n| Ap {
                 ssid: n["ssid"].as_str().unwrap_or_default().into(),
                 dispositivo: n["device"].as_str().unwrap_or_default().into(),
                 guardada: n["saved"].as_bool().unwrap_or(false),
                 abierta: n["security"].as_str().unwrap_or_default().is_empty(),
+                señal: u8::try_from(n["signal"].as_u64().unwrap_or(0)).unwrap_or(100),
+                activa: n["active"].as_bool().unwrap_or(false),
             })
             .collect();
-        self.entradas = redes
-            .into_iter()
-            .map(|n| {
-                let signal = n["signal"].as_u64().unwrap_or(0);
-                let active = n["active"].as_bool().unwrap_or(false);
-                Entrada {
-                    nombre: n["ssid"].as_str().unwrap_or_default().into(),
-                    icono: icono::propio(if active || signal >= 40 {
-                        "wifi"
-                    } else {
-                        "sin-red"
-                    }),
-                    estado: if active {
-                        "Conectado".into()
-                    } else {
-                        "No conectado".into()
-                    },
-                    derecha: Some(format!("{signal}%")),
-                    activa: active,
-                }
-            })
-            .collect();
-        self.desplazamiento = self
-            .desplazamiento
-            .min(lista::maximo_desplazamiento(self.visibles().len()));
+        // La conectada, luego las guardadas y al final las demás: los índices
+        // de `entradas` y de `señalada` siguen este orden.
+        let (activas, resto): (Vec<Ap>, Vec<Ap>) = todas.into_iter().partition(|a| a.activa);
+        let (conocidas, otras): (Vec<Ap>, Vec<Ap>) = resto.into_iter().partition(|a| a.guardada);
+        self.aps = activas.into_iter().chain(conocidas).chain(otras).collect();
+        self.pedir_escaneo();
+        self.avanzar_pendiente();
+        self.reconstruir();
+        self.desplazamiento = self.desplazamiento.min(self.maximo());
         self.interruptor.ir_a(self.encendida as u8 as f32);
         self.ultimo = data;
         true
+    }
+
+    /// Pide a NetworkManager que busque redes, una vez por apertura y con el
+    /// Wi-Fi encendido.
+    // añadido en la 0.2.1
+    fn pedir_escaneo(&mut self) {
+        if self.escaneada || !self.encendida || self.estado_carga.is_some() {
+            return;
+        }
+        bookos_system::request(Operation::WifiScan {});
+        self.escaneada = true;
+        self.abierta = Instant::now();
+    }
+
+    /// Cierra lo pendiente cuando el estado real ya lo refleja.
+    // añadido en la 0.2.1
+    fn avanzar_pendiente(&mut self) {
+        let Some((ssid, orden, _)) = self.pendiente.as_ref() else {
+            return;
+        };
+        let hecho = self.aps.iter().any(|a| {
+            &a.ssid == ssid
+                && match orden {
+                    Orden::Conectar => a.activa,
+                    Orden::Desconectar => !a.activa,
+                }
+        });
+        if hecho {
+            self.pendiente = None;
+        }
+    }
+
+    /// Rehace lo que se dibuja de cada red.
+    // añadido en la 0.2.1
+    fn reconstruir(&mut self) {
+        let pendiente = self.pendiente.as_ref().map(|(s, o, _)| (s.as_str(), *o));
+        self.entradas = self
+            .aps
+            .iter()
+            .map(|a| {
+                let nivel = nivel_señal(a.señal);
+                let estado = match pendiente {
+                    Some((s, Orden::Conectar)) if s == a.ssid => "Conectando…".to_string(),
+                    Some((s, Orden::Desconectar)) if s == a.ssid => "Desconectando…".to_string(),
+                    _ if a.activa => format!("Conectado · {}", calidad(a.señal)),
+                    _ => String::new(),
+                };
+                Entrada {
+                    nombre: a.ssid.clone(),
+                    icono: icono::propio_solido(["wifi-1", "wifi-2", "wifi"][nivel]),
+                    estado,
+                    derecha: None,
+                    activa: a.activa,
+                    candado: !a.abierta,
+                }
+            })
+            .collect();
+    }
+
+    fn buscando(&self) -> bool {
+        self.escaneada && self.abierta.elapsed() < BUSCANDO
+    }
+
+    /// Lo que caduca solo y nadie avisa: el «buscando…» y lo pendiente.
+    // añadido en la 0.2.1
+    fn caducar(&mut self) -> bool {
+        let mut cambio = false;
+        if self
+            .pendiente
+            .as_ref()
+            .is_some_and(|(_, _, desde)| desde.elapsed() > PENDIENTE)
+        {
+            self.pendiente = None;
+            self.reconstruir();
+            cambio = true;
+        }
+        let buscando = self.buscando();
+        cambio || std::mem::replace(&mut self.buscando_visto, buscando) != buscando
+    }
+
+    /// Todo lo que hay en la lista, con su altura y su `y` dentro de ella.
+    // añadido en la 0.2.1
+    fn colocar(&self) -> Vec<Colocada> {
+        let mut v = Vec::new();
+        if self.estado_carga.is_some() || !self.encendida {
+            return v;
+        }
+        let mut y = 0.0;
+        let conectadas = self.aps.iter().take_while(|a| a.activa).count();
+        let conocidas = self.aps[conectadas..]
+            .iter()
+            .take_while(|a| a.guardada)
+            .count();
+        for i in 0..conectadas {
+            lista::poner(&mut v, &mut y, Fila::Red(i), lista::FILA);
+        }
+        if conocidas > 0 {
+            lista::poner(
+                &mut v,
+                &mut y,
+                Fila::Seccion(Seccion::Conocidas),
+                lista::SECCION,
+            );
+        }
+        for i in conectadas..conectadas + conocidas {
+            lista::poner(&mut v, &mut y, Fila::Red(i), lista::FILA);
+        }
+        let otras = conectadas + conocidas;
+        if otras < self.aps.len() || self.buscando() {
+            lista::poner(
+                &mut v,
+                &mut y,
+                Fila::Seccion(Seccion::Otras),
+                lista::SECCION,
+            );
+        }
+        for i in otras..self.aps.len() {
+            lista::poner(&mut v, &mut y, Fila::Red(i), lista::FILA);
+        }
+        v
+    }
+
+    fn total(&self) -> f32 {
+        self.colocar().last().map_or(0.0, |c| c.y + c.alto)
+    }
+
+    // 0.1.0
+    // modified 0.2.1 -- las filas ya no miden todas lo mismo
+    fn alto_lista(&self) -> f32 {
+        lista::ventana_de(self.total(), MAX_VENTANA)
+    }
+
+    fn maximo(&self) -> f32 {
+        (self.total() - self.alto_lista()).max(0.0)
     }
 
     /// El alto reservado: la lista y el pie van dentro del grupo, así que al
@@ -112,18 +306,6 @@ impl Red {
             lista::ANCHO,
             self.y_lista() + self.alto_lista() + lista::PIE + control::GRUPO + lista::MARGEN,
         )
-    }
-
-    /// Apagado no se enseña la lista: con todo «No conectado» parecía que
-    /// algo fallaba, cuando lo único que pasa es que está apagado.
-    // añadido en la 0.2.0
-    fn visibles(&self) -> &[Entrada] {
-        if self.encendida { &self.entradas } else { &[] }
-    }
-
-    // 0.1.0
-    fn alto_lista(&self) -> f32 {
-        lista::alto_ventana(self.visibles().len())
     }
 
     /// La `y` de la primera fila: bajo la cabecera y dentro del grupo.
@@ -137,18 +319,28 @@ impl Red {
         Ancla::BajoWidget("red")
     }
 
+    /// Qué red hay bajo un punto de la tarjeta, si hay alguna.
+    // añadido en la 0.2.1
+    fn red_en(&self, x: f32, y: f32) -> Option<usize> {
+        let x0 = lista::MARGEN + control::GRUPO;
+        let y0 = self.y_lista();
+        if x < x0 || x > x0 + lista::BALDOSA || y < y0 || y >= y0 + self.alto_lista() {
+            return None;
+        }
+        let y = y - y0 + self.desplazamiento;
+        self.colocar()
+            .into_iter()
+            .find(|c| (c.y..c.y + c.alto).contains(&y))
+            .and_then(|c| match c.fila {
+                Fila::Red(i) => Some(i),
+                Fila::Seccion(_) => None,
+            })
+    }
+
     // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
-        let señalada = punto.and_then(|(x, y)| {
-            lista::fila_en_ventana(
-                x,
-                y,
-                self.y_lista(),
-                self.visibles().len(),
-                self.desplazamiento,
-            )
-        });
-        let pie = punto.and_then(|(x, y)| self.pie_en(x, y)).map(usize::from);
+        let señalada = punto.and_then(|(x, y)| self.red_en(x, y));
+        let pie = punto.is_some_and(|(x, y)| self.pie_en(x, y)).then_some(0);
         // Los dos `señalar`, sin `||`: con el cortocircuito, salir de una fila
         // hacia un botón del pie apaga la fila y deja el botón sin encender.
         let a = self.señalada.señalar(señalada);
@@ -165,13 +357,27 @@ impl Red {
     /// Rueda o touchpad sobre la lista. `true` si se movió.
     // añadido en la 0.2.0
     pub fn desplazar(&mut self, dy: f32) -> bool {
-        let n = self.visibles().len();
-        lista::desplazar(&mut self.desplazamiento, dy, n)
+        let nuevo = (self.desplazamiento + dy).clamp(0.0, self.maximo());
+        let cambio = (nuevo - self.desplazamiento).abs() > f32::EPSILON;
+        self.desplazamiento = nuevo;
+        cambio
+    }
+
+    /// Desplaza lo justo para que se vea `[y, y + alto)` de la lista.
+    // añadido en la 0.2.1
+    fn mostrar(&mut self, y: f32, alto: f32) {
+        let ventana = self.alto_lista();
+        if y < self.desplazamiento {
+            self.desplazamiento = y;
+        } else if y + alto > self.desplazamiento + ventana {
+            self.desplazamiento = y + alto - ventana;
+        }
+        self.desplazamiento = self.desplazamiento.clamp(0.0, self.maximo());
     }
 
     /// Sobre qué botón del pie cae el punto.
     // 0.1.0
-    fn pie_en(&self, x: f32, y: f32) -> Option<bool> {
+    fn pie_en(&self, x: f32, y: f32) -> bool {
         lista::pie_en(x, y, self.y_lista() + self.alto_lista() + lista::PIE_AIRE)
     }
 
@@ -182,48 +388,47 @@ impl Red {
         if lista::interruptor_en(x, y) {
             self.encendida = !self.encendida;
             self.interruptor.ir_a(self.encendida as u8 as f32);
-            bookos_system::request(bookos_system::Operation::WifiPower {
+            bookos_system::request(Operation::WifiPower {
                 enabled: self.encendida,
             });
+            // Al volver a encenderlo se pedirá otro escaneo.
+            self.escaneada = false;
             self.ultimo = Value::Null;
             return None;
         }
-        if self.pie_en(x, y).is_some() {
+        if self.pie_en(x, y) {
             return Some(Accion::Lanzar("bookos-settings --page wifi".into()));
         }
-        let i = lista::fila_en_ventana(
-            x,
-            y,
-            self.y_lista(),
-            self.visibles().len(),
-            self.desplazamiento,
-        )?;
+        let i = self.red_en(x, y)?;
         self.activar(i)
     }
 
     /// Conecta, desconecta o remite a Ajustes según la red `i`: lo mismo con
     /// el ratón que con Intro.
     // añadido en la 0.2.0
+    // modified 0.2.1 -- «Conectando…» con caducidad en vez de escribir en la entrada
     fn activar(&mut self, i: usize) -> Option<Accion> {
-        let datos = self.datos.get(i)?;
-        if self.entradas[i].activa {
-            bookos_system::request(bookos_system::Operation::NetworkDisconnect {
-                device: datos.dispositivo.clone(),
+        let ap = self.aps.get(i)?;
+        let orden = if ap.activa {
+            bookos_system::request(Operation::NetworkDisconnect {
+                device: ap.dispositivo.clone(),
             });
-            self.entradas[i].estado = "Desconectando…".into();
-        } else if datos.guardada || datos.abierta {
+            Orden::Desconectar
+        } else if ap.guardada || ap.abierta {
             // Con perfil guardado NetworkManager ya tiene la clave; una red
             // abierta no la necesita. Ninguna de las dos pasa contraseña por
             // el shell.
-            bookos_system::request(bookos_system::Operation::WifiConnect {
-                ssid: datos.ssid.clone(),
+            bookos_system::request(Operation::WifiConnect {
+                ssid: ap.ssid.clone(),
                 password: String::new(),
             });
-            self.entradas[i].estado = "Conectando…".into();
+            Orden::Conectar
         } else {
             // Red con clave sin perfil: la contraseña la pide Ajustes, nunca el shell.
             return Some(Accion::Lanzar("bookos-settings --page wifi".into()));
-        }
+        };
+        self.pendiente = Some((ap.ssid.clone(), orden, Instant::now()));
+        self.reconstruir();
         // Se olvida lo último recibido: el próximo refresco restituye el
         // estado real aunque la orden falle.
         self.ultimo = Value::Null;
@@ -234,12 +439,10 @@ impl Red {
     // modified 0.2.0 -- flechas y Intro recorren y activan la lista
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
-        let n = self.visibles().len();
         match tecla {
             T::Escape => Tecla::Cerrar,
             T::Arriba | T::Abajo => {
-                let paso = if tecla == T::Arriba { -1 } else { 1 };
-                lista::mover_seleccion(&mut self.señalada, &mut self.desplazamiento, n, paso);
+                self.mover(if tecla == T::Arriba { -1 } else { 1 });
                 Tecla::Consumida
             }
             T::Intro => match self.señalada.actual() {
@@ -250,10 +453,35 @@ impl Red {
         }
     }
 
+    /// Mueve la fila señalada con el teclado y desplaza la lista para que se
+    /// vea. Sin dar la vuelta: de la última no se salta a la primera.
+    // añadido en la 0.2.1
+    fn mover(&mut self, paso: i32) {
+        let n = self.aps.len();
+        if n == 0 {
+            return;
+        }
+        let nueva = match self.señalada.actual() {
+            None if paso > 0 => 0,
+            None => n - 1,
+            Some(a) => (a as i32 + paso).clamp(0, n as i32 - 1) as usize,
+        };
+        self.señalada.señalar(Some(nueva));
+        if let Some(c) = self
+            .colocar()
+            .into_iter()
+            .find(|c| c.fila == Fila::Red(nueva))
+        {
+            self.mostrar(c.y, c.alto);
+        }
+    }
+
     // 0.1.0
+    // modified 0.2.1 -- también recoge lo que caduca
     pub fn refrescar(&mut self) -> bool {
         let state = bookos_system::snapshot();
-        self.aplicar(state.network, bookos_system::unavailable("network"))
+        let cambio = self.aplicar(state.network, bookos_system::unavailable("network"));
+        cambio | self.caducar()
     }
 
     // 0.1.0
@@ -264,47 +492,67 @@ impl Red {
     /// Lo de dentro de la tarjeta, sin la caja: la Estación de Control lo pone
     /// en la suya. `volver` añade la flecha de volver a la cabecera.
     // 0.1.0
+    // modified 0.2.1 -- secciones y filas de distinto alto
     pub fn contenido(&self, volver: bool) -> PanelElement<'_> {
-        let mut filas = column![];
         let cabecera = lista::cabecera("Wi-Fi", Some(self.interruptor.valor()), volver);
-        if let Some(status) = &self.estado_carga {
-            filas = filas.push(lista::vacia(status));
-        } else if self.visibles().is_empty() {
-            filas = filas.push(lista::vacia(if self.encendida {
-                "No hay redes a la vista"
-            } else {
-                "Wi-Fi apagado"
-            }));
+        let colocadas = self.colocar();
+        let cuerpo: PanelElement<'_> = if let Some(status) = &self.estado_carga {
+            lista::vacia(status)
+        } else if !self.encendida {
+            lista::vacia("Wi-Fi apagado")
+        } else if colocadas.is_empty() {
+            lista::vacia("No hay redes a la vista")
         } else {
             let mut todas = column![];
-            for (i, entrada) in self.visibles().iter().enumerate() {
-                if i > 0 {
-                    todas = todas.push(Space::new().height(Length::Fixed(lista::HUECO_FILA)));
+            let mut fin = 0.0;
+            for c in &colocadas {
+                if c.y > fin {
+                    todas = todas.push(Space::new().height(Length::Fixed(c.y - fin)));
                 }
-                todas = todas.push(lista::fila(entrada, self.señalada.intensidad(i)));
+                let pieza: PanelElement<'_> = match c.fila {
+                    Fila::Seccion(s) => lista::seccion(
+                        match s {
+                            Seccion::Conocidas => "Redes conocidas",
+                            Seccion::Otras => "Otras redes",
+                        },
+                        s == Seccion::Otras && self.buscando(),
+                    ),
+                    Fila::Red(i) => lista::fila(&self.entradas[i], self.señalada.intensidad(i)),
+                };
+                todas = todas.push(pieza);
+                fin = c.y + c.alto;
             }
-            filas = filas.push(lista::ventana(
+            lista::ventana_alto(
                 todas.into(),
-                self.visibles().len(),
+                self.alto_lista(),
+                self.maximo(),
                 self.desplazamiento,
-            ));
-        }
-        let contenido = column![
+            )
+        };
+        column![
             cabecera,
             Space::new().height(Length::Fixed(lista::BAJO_CABECERA)),
-            lista::grupo(
-                filas
-                    .push(lista::pie("Detalles", "Configuración", &self.pie))
-                    .into()
-            ),
-        ];
-        contenido.into()
+            lista::grupo(column![cuerpo, lista::pie("Ajustes de Wi-Fi", &self.pie)].into()),
+        ]
+        .into()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn red(ssid: &str, señal: u64, activa: bool, guardada: bool, seguridad: &str) -> Value {
+        json!({"ssid":ssid,"device":"/dev/wlan0","signal":señal,"active":activa,"saved":guardada,"security":seguridad})
+    }
+
+    fn con(redes: Vec<Value>) -> Red {
+        let mut r = Red::new();
+        r.aplicar(json!({"enabled":true,"networks":redes}), None);
+        r
+    }
+
     #[test]
     fn actualiza_sin_cambiar_el_numero_de_elementos() {
         let mut card = Red::new();
@@ -314,5 +562,144 @@ mod tests {
         let next = serde_json::json!({"enabled":true,"networks":[{"ssid":"B","name":"B","mac":"00","paired":true,"signal":80}]});
         assert!(card.aplicar(next, None));
         assert_eq!(card.entradas[0].nombre, "B");
+    }
+
+    /// La conectada va arriba sin rótulo; luego las guardadas y las demás, cada
+    /// grupo con el suyo.
+    #[test]
+    fn la_conectada_arriba_y_dos_secciones() {
+        let r = con(vec![
+            red("Vecina", 30, false, false, "WPA2"),
+            red("Casa", 55, false, true, "WPA2"),
+            red("Oficina", 90, true, true, "WPA2"),
+        ]);
+        let filas: Vec<Fila> = r.colocar().into_iter().map(|c| c.fila).collect();
+        assert_eq!(
+            filas,
+            [
+                Fila::Red(0),
+                Fila::Seccion(Seccion::Conocidas),
+                Fila::Red(1),
+                Fila::Seccion(Seccion::Otras),
+                Fila::Red(2),
+            ]
+        );
+        assert_eq!(r.aps[0].ssid, "Oficina");
+        assert_eq!(r.entradas[0].estado, "Conectado · Excelente");
+        assert!(r.entradas[2].candado, "las protegidas llevan candado");
+    }
+
+    /// Una abierta no lleva candado y una guardada se conecta sin abrir nada.
+    #[test]
+    fn conectar_pone_conectando_y_no_pasa_clave() {
+        let mut r = con(vec![red("Casa", 55, false, true, "WPA2")]);
+        assert!(r.activar(0).is_none(), "con perfil no hace falta Ajustes");
+        assert_eq!(r.entradas[0].estado, "Conectando…");
+        let abierta = con(vec![red("Bar", 60, false, false, "")]);
+        assert!(!abierta.entradas[0].candado);
+    }
+
+    /// La clave de una red nueva la pide Ajustes: el shell no la maneja.
+    #[test]
+    fn una_red_protegida_sin_perfil_abre_ajustes() {
+        let mut r = con(vec![red("Vecina", 70, false, false, "WPA2")]);
+        assert!(
+            matches!(r.activar(0), Some(Accion::Lanzar(c)) if c.contains("--page wifi")),
+            "la contraseña no pasa por el shell"
+        );
+        assert!(r.pendiente.is_none(), "no se pidió nada al sistema");
+    }
+
+    /// Pulsar donde se dibuja cada cosa: una fila, un rótulo (que no es de
+    /// nadie) y fuera de la lista.
+    #[test]
+    fn se_pulsa_lo_que_se_ve() {
+        let r = con(vec![
+            red("Casa", 55, false, true, "WPA2"),
+            red("Vecina", 30, false, false, "WPA2"),
+        ]);
+        let x = lista::MARGEN + control::GRUPO + 40.0;
+        let y0 = r.y_lista();
+        assert_eq!(r.red_en(x, y0 + 4.0), None, "el rótulo no se pulsa");
+        let c = r
+            .colocar()
+            .into_iter()
+            .find(|c| c.fila == Fila::Red(1))
+            .expect("hay una red no guardada");
+        assert_eq!(r.red_en(x, y0 + c.y + 4.0), Some(1));
+        assert_eq!(
+            r.red_en(2.0, y0 + c.y + 4.0),
+            None,
+            "fuera por la izquierda"
+        );
+    }
+
+    /// Apagado no se enseña la lista: con todo «No conectado» parecía que algo
+    /// fallaba, cuando lo único que pasa es que está apagado.
+    #[test]
+    fn apagado_no_hay_lista() {
+        let mut r = Red::new();
+        r.aplicar(
+            json!({"enabled":false,"networks":[red("Casa", 55, false, true, "WPA2")]}),
+            None,
+        );
+        assert!(r.colocar().is_empty());
+        assert_eq!(r.alto_lista(), lista::FILA);
+    }
+
+    /// La intensidad se reparte en tres, con el mismo corte para el icono y
+    /// para la palabra.
+    #[test]
+    fn tres_intensidades() {
+        assert_eq!(calidad(90), "Excelente");
+        assert_eq!(calidad(50), "Buena");
+        assert_eq!(calidad(10), "Débil");
+        assert_eq!(nivel_señal(67), 2);
+        assert_eq!(nivel_señal(66), 1);
+    }
+
+    /// Vuelca la tarjeta a PNG para mirarla, en oscuro y en claro.
+    /// `BOOKOS_RED_PNG=/tmp/red` escribe `/tmp/red-<tema>.png`.
+    #[test]
+    fn vuelca_la_tarjeta_a_png() {
+        let Ok(prefijo) = std::env::var("BOOKOS_RED_PNG") else {
+            return;
+        };
+        for (tema, nombre) in [
+            (crate::tema::Tema::Oscuro, "oscuro"),
+            (crate::tema::Tema::Claro, "claro"),
+        ] {
+            let mut r = con(vec![
+                red("gencat_ENS_EDU_PORTAL", 54, true, true, "WPA2"),
+                red("Casa", 80, false, true, "WPA2"),
+                red("Redmi Note 13", 100, false, true, "WPA2"),
+                red("Vodafone-7F21", 52, false, false, "WPA2"),
+                red("Cafe_Libre", 30, false, false, ""),
+            ]);
+            r.activar(1);
+            let config = crate::Config {
+                tema,
+                ..crate::Config::default()
+            };
+            // El interruptor se anima desde su estado inicial: sin esperar la
+            // captura lo pilla a mitad de recorrido.
+            std::thread::sleep(Duration::from_millis(400));
+            let mut shell = crate::Shell::con_config(1646, 1.0, config);
+            shell.abrir(super::super::Emergente::Red(r));
+            let (w, h) = shell.emergente_buffer_size().expect("tiene superficie");
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            shell.draw_emergente(&mut buf);
+            for p in buf.as_chunks_mut::<4>().0 {
+                p.swap(0, 2);
+            }
+            image::save_buffer(
+                format!("{prefijo}-{nombre}.png"),
+                &buf,
+                w,
+                h,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("se escribe el PNG");
+        }
     }
 }

@@ -196,7 +196,13 @@ fn bucle(
                 Err(err) => tracing::warn!("no se pudo abrir el descriptor de PipeWire: {err}"),
             },
             Orden::Cerrar { sesion } => {
-                if let Some(nodo) = nodos.borrow_mut().remove(&sesion) {
+                // modified 0.2.0 -- el préstamo se suelta antes de desconectar:
+                // `disconnect` y el drop del stream llaman en el acto a
+                // `param_changed(None)`, que vuelve a pedir `nodos`. Con el
+                // temporal vivo en el `if let` el compositor abortaba al cerrar
+                // la app la captura.
+                let nodo = nodos.borrow_mut().remove(&sesion);
+                if let Some(nodo) = nodo {
                     let _ = nodo.stream.disconnect();
                 }
             }
@@ -268,8 +274,27 @@ fn abrir(
                 {
                     respuesta.entregar(id);
                 }
-                if matches!(nueva, pw::stream::StreamState::Error(_)) {
-                    nodos_estado.borrow_mut().remove(&sesion);
+                match nueva {
+                    pw::stream::StreamState::Error(_) => {
+                        nodos_estado.borrow_mut().remove(&sesion);
+                    }
+                    // modified 0.2.0 -- el primer fotograma llega al aceptar el
+                    // diálogo, antes de que haya consumidor y formato, y se queda
+                    // en `pendiente`. Mientras no se consuma, `Emisiones` no pide
+                    // otro, y `process` solo corre con `trigger_process`, que solo
+                    // llama un `Marco` nuevo: nadie lo despertaba y la pantalla
+                    // compartida no enviaba nada nunca. Se dispara aquí, con el
+                    // préstamo ya suelto porque `process` vuelve a pedirlo.
+                    pw::stream::StreamState::Streaming => {
+                        let hay = nodos_estado
+                            .borrow()
+                            .get(&sesion)
+                            .is_some_and(|n| n.pendiente.is_some());
+                        if hay && stream.is_driving() {
+                            let _ = stream.trigger_process();
+                        }
+                    }
+                    _ => {}
                 }
             })
             .param_changed(move |stream, _, id, param| {

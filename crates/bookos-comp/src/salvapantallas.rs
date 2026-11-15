@@ -793,7 +793,7 @@ pub fn programar(state: &mut BookosComp) {
         || state.modo.kiosko()
         || !state.dpms_encendido
         || state.salvapantallas.activo()
-        || !state.idle_inhibidores.is_empty()
+        || state.idle_inhibido()
         || bookos_shell::mantener_despierto()
     {
         return;
@@ -807,7 +807,7 @@ pub fn programar(state: &mut BookosComp) {
         .loop_handle
         .insert_source(Timer::from_duration(espera), |_, _, state| {
             state.salvapantallas.alarma = None;
-            if state.idle_inhibidores.is_empty()
+            if !state.idle_inhibido()
                 && !bookos_shell::mantener_despierto()
                 && state.last_input.unwrap_or(state.start_time).elapsed()
                     >= state.salvapantallas.inactividad
@@ -837,7 +837,7 @@ fn programar_apagado(state: &mut BookosComp) {
         || state.modo.kiosko()
         || state.aplicar_dpms.is_none()
         || !state.dpms_encendido
-        || !state.idle_inhibidores.is_empty()
+        || state.idle_inhibido()
         || bookos_shell::mantener_despierto()
     {
         return;
@@ -851,7 +851,7 @@ fn programar_apagado(state: &mut BookosComp) {
         .loop_handle
         .insert_source(Timer::from_duration(espera), |_, _, state| {
             state.salvapantallas.alarma_apagado = None;
-            if !state.idle_inhibidores.is_empty() || bookos_shell::mantener_despierto() {
+            if state.idle_inhibido() || bookos_shell::mantener_despierto() {
                 return TimeoutAction::Drop;
             }
             if state.last_input.unwrap_or(state.start_time).elapsed()

@@ -142,7 +142,9 @@ const HUECO_MENU: f32 = 10.0;
 /// Lado del icono de una entrada.
 // modificado en la 0.2.0 -- glifo blanco suelto, no insignia: las de color
 // son iconos de aplicación y en un menú de acciones sobre el fondo chocaban.
-const ICONO_ENTRADA: f32 = 18.0;
+// modified 0.2.0 -- 18 → 20: el mismo lado que los glifos de la fila de
+// estado de la que cuelga el menú (wifi y encendido van a 20).
+const ICONO_ENTRADA: f32 = 20.0;
 
 /// Lo que ofrece el menú de apagado, en el orden del diseño. Hibernar solo si
 /// el equipo puede: ver [`crate::confirmacion::hibernar_disponible`].
@@ -1307,11 +1309,14 @@ impl Bloqueo {
                 let fila = row![
                     dibujo,
                     Space::new().width(Length::Fixed(12.0)),
+                    // Medium y no Bold: los glifos son de trazo fino (1,5
+                    // sobre 24) y al lado de una negrita parecían de otro
+                    // juego; así pesa lo mismo la palabra que su icono.
                     text(*etiqueta)
                         .size(15.0)
                         .color(tinta)
                         .font(iced_core::Font {
-                            weight: iced_core::font::Weight::Bold,
+                            weight: iced_core::font::Weight::Medium,
                             ..iced_core::Font::DEFAULT
                         }),
                 ]
@@ -2018,6 +2023,7 @@ mod tests {
             caratula: None,
             posicion: Some(30),
             duracion: Some(60),
+            calidad: None,
             reproduciendo: true,
         }));
         assert!(

@@ -30,6 +30,10 @@ pub const XF86_FN_ESC: u32 = 0x100811D1;
 pub const XF86_CAMARA_ENABLE: u32 = 0x1008124B;
 pub const XF86_CAMARA_DISABLE: u32 = 0x1008124C;
 pub const XF86_CAMARA_TOGGLE: u32 = 0x1008124D;
+pub const XF86_REPRODUCIR: u32 = 0x1008FF14;
+pub const XF86_ANTERIOR: u32 = 0x1008FF16;
+pub const XF86_SIGUIENTE: u32 = 0x1008FF17;
+pub const XF86_PAUSA: u32 = 0x1008FF31;
 
 /// Lo que hace cada tecla.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +49,14 @@ pub enum Tecla {
     Touchpad,
     Camara(Option<bool>),
     FnLock,
+    /// Reproducir, pausar, siguiente y anterior. También son las de los
+    /// auriculares Bluetooth: BlueZ pasa el doble y el triple toque de los Buds
+    /// (AVRCP FORWARD/BACKWARD) como KEY_NEXTSONG/KEY_PREVIOUSSONG por su
+    /// teclado virtual «(AVRCP)» cuando el reproductor registrado no los
+    /// acepta por D-Bus; visto con btmon el 2026-11-13. Sin esto llegaban a la
+    /// ventana con foco y nadie las atendía.
+    // añadido en la 0.2.0
+    Reproduccion(bookos_shell::medios::Orden),
 }
 
 // 0.1.0
@@ -64,6 +76,11 @@ pub fn resolver(sym: u32) -> Option<Tecla> {
         XF86_TECLADO_MENOS => Tecla::BrilloTeclado(-1),
         XF86_TECLADO_ALTERNAR => Tecla::AlternarBrilloTeclado,
         XF86_TOUCHPAD => Tecla::Touchpad,
+        // Play y pausa a secas también alternan: el compositor no sabe si lo
+        // que suena está en pausa sin preguntar antes por D-Bus.
+        XF86_REPRODUCIR | XF86_PAUSA => Tecla::Reproduccion(bookos_shell::medios::Orden::Alternar),
+        XF86_SIGUIENTE => Tecla::Reproduccion(bookos_shell::medios::Orden::Siguiente),
+        XF86_ANTERIOR => Tecla::Reproduccion(bookos_shell::medios::Orden::Anterior),
         _ => return None,
     })
 }
@@ -89,6 +106,16 @@ pub fn ejecutar(state: &mut BookosComp, tecla: Tecla) {
         Tecla::Touchpad => Some(touchpad(state)),
         Tecla::Camara(estado) => Some(camara(estado)),
         Tecla::FnLock => Some(("teclado", None, Some("Fn lock".into()))),
+        Tecla::Reproduccion(orden) => {
+            // En un hilo: buscar el reproductor son varias llamadas a busctl
+            // y el bucle del compositor no puede esperarlas.
+            std::thread::spawn(move || {
+                if let Some(s) = bookos_shell::medios::Sonando::leer() {
+                    s.ejecutar(orden);
+                }
+            });
+            None
+        }
     };
     if let Some(osd) = osd {
         avisar(state, osd);
@@ -838,5 +865,60 @@ mod pruebas {
             .map(camara_activa)
             .collect();
         assert_eq!(lecturas, [Some(false), None, Some(true), None]);
+    }
+}
+
+/// Repinta la pila del panel en cuanto cambia el perfil de energía.
+///
+/// Cambiar el perfil no genera ningún uevent de `power_supply`, que es lo
+/// que despierta al widget de la batería: el color tardaba hasta el siguiente
+/// cambio de minuto en seguirlo. `platform_profile` sí avisa por `sysfs_notify`
+/// al escribirse, así que basta un hilo dormido en `poll(POLLPRI)`, como el de
+/// la luz del teclado.
+#[cfg(feature = "udev")]
+// añadido en la 0.2.2
+pub fn vigilar_perfil_energia(state: &mut BookosComp) {
+    use smithay::reexports::calloop::channel;
+    const RUTA: &str = "/sys/firmware/acpi/platform_profile";
+    let Ok(fichero) = std::fs::File::open(RUTA) else {
+        return;
+    };
+    let (emisor, receptor) = channel::channel::<()>();
+    let registrado = state
+        .loop_handle
+        .insert_source(receptor, |evento, _, state| {
+            if let channel::Event::Msg(()) = evento {
+                bookos_shell::bateria_perfil_cambiado();
+                crate::backend::refresh_panel(state);
+                state.needs_redraw = true;
+            }
+        });
+    if let Err(err) = registrado {
+        tracing::warn!("sin aviso del perfil de energía: {err}");
+        return;
+    }
+    let lanzado = std::thread::Builder::new()
+        .name("bookos-perfil-energia".into())
+        .spawn(move || {
+            use smithay::reexports::rustix::event::{PollFd, PollFlags, poll};
+            let leer = |fichero: &std::fs::File| {
+                let mut buf = [0u8; 32];
+                let _ = smithay::reexports::rustix::io::pread(fichero, &mut buf, 0);
+            };
+            // sysfs exige una lectura antes de cada `poll`, o vuelve en seguida.
+            leer(&fichero);
+            loop {
+                let mut fds = [PollFd::new(&fichero, PollFlags::PRI | PollFlags::ERR)];
+                if poll(&mut fds, None).is_err() {
+                    return;
+                }
+                leer(&fichero);
+                if emisor.send(()).is_err() {
+                    return;
+                }
+            }
+        });
+    if let Err(err) = lanzado {
+        tracing::warn!("sin aviso del perfil de energía: {err}");
     }
 }

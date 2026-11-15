@@ -119,7 +119,8 @@ pub fn insertar(state: &mut BookosComp, texto: &str) {
 }
 
 // 0.1.1
-fn copiar(state: &mut BookosComp, texto: &str) {
+// modified 0.2.2 -- también lo usa «Copiar la ficha» de Acerca de este equipo
+pub(crate) fn copiar(state: &mut BookosComp, texto: &str) {
     let tipos = vec![
         "text/plain;charset=utf-8".into(),
         "text/plain".into(),

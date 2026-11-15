@@ -67,6 +67,19 @@ mod view;
 mod widget;
 mod widgets;
 
+/// Qué enseña el widget de batería del panel. Lo llama el compositor al
+/// recargar `panel.conf`.
+// añadido en la 0.2.2
+pub fn bateria_mostrar(porcentaje: bool, tiempo: bool, colores: bool) {
+    widgets::bateria_mostrar(porcentaje, tiempo, colores);
+}
+
+/// El perfil de energía cambió: lo avisa el compositor al notificarlo sysfs.
+// añadido en la 0.2.2
+pub fn bateria_perfil_cambiado() {
+    widgets::bateria_perfil_cambiado();
+}
+
 /// Qué hacer con una tecla que llega a una capa del shell. Lo necesita el
 /// compositor para la capa de captura, que gobierna él.
 pub use emergente::Tecla;
@@ -175,6 +188,9 @@ pub enum Accion {
     EnergiaConfirmada(confirmacion::Energia),
     CerrarEmergente,
     InsertarEmoji(String),
+    /// Texto al portapapeles: la ficha de «Acerca de este equipo».
+    // añadido en la 0.2.2
+    CopiarTexto(String),
     VentanaEncima,
     VentanaUnir(bool),
     VentanaDisposicion(bool),
@@ -289,6 +305,9 @@ pub enum Accion {
     /// Retirar esa notificación. La lista vive en el shell, pero avisar a la
     /// aplicación de que se cerró es D-Bus, y eso lo hace el compositor.
     CerrarNotificacion(u32),
+    /// Retirar varias a la vez: la ✕ de una pila o de un grupo de la misma app.
+    // añadido en la 0.2.1
+    CerrarNotificaciones(Vec<u32>),
     /// Activar un botón ofrecido por una notificación.
     NotificacionAccion {
         id: u32,
@@ -325,6 +344,12 @@ pub enum Accion {
     /// Acción de una actividad viva; el compositor la devuelve a la aplicación
     /// propietaria por la señal privada de BookOS.
     Actividad(actividad::Accion),
+    /// Traer al frente la app que publica una actividad, o lanzarla si no
+    /// tiene ventana. Aparte de `Mostrar` porque el `app_id` de la actividad
+    /// (`com.bookos.player`) no es el de su ventana (`bookos-player`): se
+    /// comparan con [`es_de_la_app`].
+    // añadido en la 0.2.2
+    AbrirAppDeActividad { app_id: String, exec: String },
     /// Poner o quitar los efectos reducidos. El compositor la escribe en la
     /// configuración, como el resto de lo que se elige desde el shell.
     AlternarEfectos,
@@ -333,6 +358,11 @@ pub enum Accion {
     /// Encender (`true`) o apagar la luz nocturna. Con horario vale hasta el
     /// próximo borde; ver `bookos-comp/src/luz_nocturna.rs`.
     LuzNocturna(bool),
+    /// Poner (`true`) o quitar «No molestar» sin duración, desde la píldora del
+    /// centro de control. Lo guarda el shell (`poner_no_molestar`), pero el
+    /// compositor es quien lo sabe aplicar a la isla y a los avisos.
+    // añadido en la 0.2.0
+    NoMolestar(bool),
     /// Reprogramar las alarmas de inactividad al cambiar el inhibidor del shell.
     MantenerDespierto,
     PerfilEnergia(&'static str),
@@ -366,6 +396,7 @@ impl Accion {
                 // seguidas, y que desapareciera al despachar la primera
                 // obligaría a volver a abrirla cada vez.
                 | Self::CerrarNotificacion(_)
+                | Self::CerrarNotificaciones(_)
                 | Self::NotificacionAccion { .. }
                 | Self::BorrarNotificaciones
                 // Elegir un color es probar: la tarjeta se queda abierta para
@@ -376,7 +407,12 @@ impl Accion {
                 | Self::BrilloAutomatico(_)
                 // Lo mismo: se enciende para ver cómo queda.
                 | Self::LuzNocturna(_)
+                // Copiar la ficha de «Acerca de» deja la ventana a la vista: la
+                // fila dice «Ficha copiada» y se sigue leyendo.
+                | Self::CopiarTexto(_)
                 | Self::MantenerDespierto
+                // Un conmutador del centro: se mira el estado y se sigue.
+                | Self::NoMolestar(_)
                 | Self::PerfilEnergia(_)
                 | Self::Actividad(_)
                 // Anclar arrastrando **no** cierra el launchpad: la mano está
@@ -594,7 +630,7 @@ fn es_asistente(estado: &actividad::Estado) -> bool {
 }
 
 // 0.1.0
-fn es_de_la_app(actividad: &str, ventana: &str) -> bool {
+pub fn es_de_la_app(actividad: &str, ventana: &str) -> bool {
     let nombre = |id: &str| {
         id.strip_prefix("com.bookos.")
             .or_else(|| id.strip_prefix("bookos-"))
@@ -603,6 +639,28 @@ fn es_de_la_app(actividad: &str, ventana: &str) -> bool {
             .to_ascii_lowercase()
     };
     mismo_programa(actividad, ventana) || nombre(actividad) == nombre(ventana)
+}
+
+/// El binario de una app sin `.desktop` (el Monitor del sistema publica como
+/// `com.bookos.systemmonitor` y se instala como `bookos-system-monitor` sin
+/// fichero de lanzador). Se busca en el `PATH` con la misma comparación que la
+/// ventana. Solo corre al pulsar «Abrir», no al pintar.
+// añadido en la 0.2.2
+fn programa_de_actividad(app_id: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    programa_en(std::env::split_paths(&path), app_id)
+}
+
+// añadido en la 0.2.2
+fn programa_en(
+    dirs: impl Iterator<Item = std::path::PathBuf>,
+    app_id: &str,
+) -> Option<String> {
+    dirs.filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .find(|nombre| nombre.starts_with("bookos-") && es_de_la_app(app_id, nombre))
 }
 
 /// Las teclas que le importan al shell.
@@ -914,6 +972,14 @@ pub struct Shell {
     /// La actividad que el usuario pasó a la píldora pulsando su burbuja. Sin
     /// elección, o si la elegida terminó, manda la prioridad.
     actividad_principal: Option<String>,
+    /// La que se pidió «mostrar primero» desde el menú ⋯: encabeza el orden
+    /// mientras viva.
+    // añadido en la 0.2.2
+    actividad_primera: Option<String>,
+    /// Las que se ocultaron de la isla desde el menú ⋯. Siguen vivas en su app;
+    /// vuelven al publicarse de nuevo tras cerrarse.
+    // añadido en la 0.2.2
+    actividades_ocultas: std::collections::HashSet<String>,
     /// El `app_id` de la ventana con el foco, que pone el compositor: el shell
     /// no ve el foco. Sirve para no enseñar en la isla lo que ya se está viendo.
     app_enfocada: Option<String>,
@@ -969,6 +1035,11 @@ impl Shell {
         tema::aplicar_modo(config.modo_tema);
         tema::aplicar_acento(config.acento);
         tema::aplicar_alto_contraste(config.alto_contraste);
+        widgets::bateria_mostrar(
+            config.bateria_porcentaje,
+            config.bateria_tiempo,
+            config.bateria_colores,
+        );
         // Cuál de las familias instaladas está puesta, para que la tarjeta de
         // Apariencia pueda marcarla. Se mira la del tema que toca y, si esa
         // clave no está, el `fondo` común; sin ninguna no hay nada que marcar y
@@ -1033,6 +1104,8 @@ impl Shell {
             actividad: None,
             actividades: std::collections::HashMap::new(),
             actividad_principal: None,
+            actividad_primera: None,
+            actividades_ocultas: std::collections::HashSet::new(),
             app_enfocada: None,
             barras: std::collections::HashMap::new(),
             // Sin alto todavía: lo sabe el compositor y llega por
@@ -1352,47 +1425,13 @@ impl Shell {
     // 0.1.0
     // modified 0.1.1 -- no clona carátulas ni miniaturas ya preparadas en cada tick
     fn sincronizar_actividad(&mut self) {
-        let prioridad = |e: &actividad::Estado| match e.clase {
-            // Se le está hablando: es lo que se mira ahora. Minimizado cede,
-            // porque se pidió apartarlo.
-            actividad::Clase::Asistente(actividad::Fase::Minimizado) => 8,
-            actividad::Clase::Asistente(_) => 50,
-            actividad::Clase::Recorder => 40,
-            actividad::Clase::Timer if e.restante_ms < 0 => 30,
-            // Un aviso de clase pide atención como un temporizador vencido, pero
-            // la grabadora en marcha manda más: no se puede perder un audio.
-            actividad::Clase::Calendar => 35,
-            actividad::Clase::Timer => 20,
-            actividad::Clase::Transfer => 15,
-            // Dura unos segundos al sacarlos: por encima de la música, que
-            // sigue ahí cuando se cierre.
-            actividad::Clase::Auriculares => 12,
-            actividad::Clase::Player => 10,
-            // Ambiental: nunca le quita la píldora a algo que esté pasando.
-            actividad::Clase::Monitor => 5,
-        };
-        let mut vivas: Vec<&actividad::Estado> = self
-            .actividades
-            .values()
-            .filter(|e| {
-                !self
-                    .app_enfocada
-                    .as_deref()
-                    .is_some_and(|ventana| es_de_la_app(&e.app_id, ventana))
-            })
-            .filter(|e| {
-                e.clase != actividad::Clase::Timer
-                    || self.actividades_config.temporizador_siempre
-                    || e.restante_ms <= 60_000
-            })
-            .collect();
-        // De más a menos prioridad, y por app_id a igualdad para que las
-        // burbujas no bailen entre publicaciones.
-        vivas.sort_by(|a, b| {
-            prioridad(b)
-                .cmp(&prioridad(a))
-                .then(a.app_id.cmp(&b.app_id))
-        });
+        let mut vivas = vivas_ordenadas(
+            &self.actividades,
+            self.app_enfocada.as_deref(),
+            &self.actividades_config,
+            self.actividad_primera.as_deref(),
+            &self.actividades_ocultas,
+        );
         // Al asistente se le está hablando: manda aunque se hubiese elegido
         // otra burbuja como principal, o la respuesta quedaría en un círculo.
         let principal = vivas
@@ -1410,16 +1449,20 @@ impl Shell {
             self.actividad = None;
             return;
         }
-        let elegido = vivas.remove(principal);
+        // Todas, la principal incluida y marcada: la isla las enseña en su
+        // columna en este mismo orden, que es el que recorre la rueda.
         let burbujas = vivas
             .iter()
-            .map(|e| actividad::Burbuja {
+            .enumerate()
+            .map(|(i, e)| actividad::Burbuja {
                 app_id: e.app_id.clone(),
                 clase: e.clase,
                 color: actividad::color_burbuja(e),
                 activa: e.activo && !e.pausado,
+                actual: i == principal,
             })
             .collect();
+        let elegido = vivas.remove(principal);
         let escala = self.escala;
         match self.actividad.as_mut() {
             Some((actual, canvas)) if actual.app_id() == elegido.app_id => {
@@ -1440,6 +1483,7 @@ impl Shell {
                     volumen: elegido.volumen,
                     aleatorio: elegido.aleatorio,
                     repetir: elegido.repetir,
+                    anc: elegido.anc,
                     portada: None,
                     cola: elegido
                         .cola
@@ -1487,6 +1531,12 @@ impl Shell {
 
     // 0.1.0
     pub fn cerrar_actividad(&mut self, app_id: &str) -> bool {
+        // Al terminar se olvida la elección: la próxima vez que publique es
+        // otra actividad y vuelve a verse.
+        self.actividades_ocultas.remove(app_id);
+        if self.actividad_primera.as_deref() == Some(app_id) {
+            self.actividad_primera = None;
+        }
         if self.actividades.remove(app_id).is_none() {
             return false;
         }
@@ -1592,8 +1642,39 @@ impl Shell {
         self.actividad.as_ref().map(|(a, _)| a.zona())
     }
 
+    /// Pasa a la actividad siguiente (`paso` > 0) o anterior en el orden de
+    /// [`vivas_ordenadas`], dando la vuelta. Es lo que hace la rueda sobre la
+    /// isla: una actividad a la vez, y la elegida queda como principal hasta
+    /// que termine o se elija otra. `false` si no hay a cuál pasar.
+    // añadido en la 0.2.0
+    pub fn actividad_pasar(&mut self, paso: i32) -> bool {
+        let orden: Vec<String> =
+            vivas_ordenadas(
+            &self.actividades,
+            self.app_enfocada.as_deref(),
+            &self.actividades_config,
+            self.actividad_primera.as_deref(),
+            &self.actividades_ocultas,
+        )
+                .iter()
+                .map(|e| e.app_id.clone())
+                .collect();
+        if orden.len() < 2 {
+            return false;
+        }
+        let actual = self
+            .actividad_app_id()
+            .and_then(|id| orden.iter().position(|o| o == id))
+            .unwrap_or(0) as i32;
+        let n = orden.len() as i32;
+        let siguiente = (actual + paso).rem_euclid(n) as usize;
+        self.actividad_principal = Some(orden[siguiente].clone());
+        self.sincronizar_actividad();
+        true
+    }
+
     // 0.1.0
-    pub fn actividad_pulsar(&mut self, x: f32, y: f32) -> Option<actividad::Accion> {
+    pub fn actividad_pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let elegida = self
             .actividad
             .as_ref()
@@ -1618,7 +1699,66 @@ impl Shell {
                 canvas.painted_once = false;
             }
         }
-        accion
+        self.accion_de_isla(accion?)
+    }
+
+    /// Las órdenes del menú ⋯ y de la cabecera las resuelve el shell; el resto
+    /// van a la app.
+    // añadido en la 0.2.2
+    fn accion_de_isla(&mut self, a: actividad::Accion) -> Option<Accion> {
+        match a.nombre.as_str() {
+            actividad::ISLA_ABRIR => {
+                // La app pasa al frente: la isla vuelve a píldora para no taparla.
+                self.recoger_actividad();
+                let cola = a.app_id.rsplit('.').next().unwrap_or(&a.app_id);
+                let exec = apps::por_app_id(&a.app_id)
+                    .or_else(|| apps::por_app_id(&format!("bookos-{cola}")))
+                    .map(|app| app.exec)
+                    .or_else(|| programa_de_actividad(&a.app_id))
+                    .unwrap_or_default();
+                Some(Accion::AbrirAppDeActividad {
+                    app_id: a.app_id,
+                    exec,
+                })
+            }
+            actividad::ISLA_PRIMERO => {
+                self.actividad_primera = Some(a.app_id.clone());
+                self.actividad_principal = Some(a.app_id);
+                self.sincronizar_actividad();
+                None
+            }
+            actividad::ISLA_AJUSTES => {
+                self.recoger_actividad();
+                Some(Accion::Lanzar("bookos-settings --page avanzadas".into()))
+            }
+            actividad::ISLA_OCULTAR => {
+                self.actividades_ocultas.insert(a.app_id);
+                self.actividad_principal = None;
+                self.sincronizar_actividad();
+                None
+            }
+            _ => Some(Accion::Actividad(a)),
+        }
+    }
+
+    /// El clic derecho sobre la isla abre su menú ⋯.
+    // añadido en la 0.2.2
+    pub fn actividad_menu(&mut self) -> bool {
+        let Some((actividad, canvas)) = self.actividad.as_mut() else {
+            return false;
+        };
+        if !actividad.desplegada() || !actividad.alternar_menu() {
+            return false;
+        }
+        let (w, h) = actividad.size();
+        *canvas = Canvas::new(Size::new(w, h), self.escala);
+        true
+    }
+
+    /// Si la tarjeta abierta puede recogerse sola al apartar el puntero.
+    // añadido en la 0.2.2
+    pub fn actividad_recogible(&self) -> bool {
+        self.actividad.as_ref().is_some_and(|(a, _)| a.desplegada() && a.recogible())
     }
 
     // 0.1.0
@@ -1671,6 +1811,12 @@ impl Shell {
         let Some((actividad, canvas)) = self.actividad.as_mut() else {
             return Vec::new();
         };
+        // La isla es negra en los dos temas (excepción del HIG, §17): su texto y
+        // sus controles son los del tema oscuro. Los estilos de iced se evalúan
+        // al pintar, así que basta con poner el oscuro mientras dura este pintado
+        // y devolver el elegido; todo ocurre en el hilo del compositor.
+        let elegido = tema::actual();
+        tema::aplicar(tema::Tema::Oscuro);
         let vista = actividad.view();
         let damage = Self::paint(
             canvas,
@@ -1680,6 +1826,7 @@ impl Shell {
             vista,
             buf,
         );
+        tema::aplicar(elegido);
         actividad.marcar_ondas_pintadas();
         damage
     }
@@ -2277,6 +2424,17 @@ impl Shell {
             e.ancla(),
             e.alto_estable().map(|h| h as i32),
         ))
+    }
+
+    /// Rehace el lienzo si la tarjeta ha cambiado de alto sola, a mitad de una
+    /// animación (el bloque de calidad del centro crece con su muelle). Hasta
+    /// ahora solo se ajustaba al pulsar, y lo que crecía fotograma a fotograma
+    /// se pintaba fuera del búfer. Sin cambio de tamaño no hace nada.
+    // añadido en la 0.2.0
+    pub fn ajustar_emergente(&mut self) {
+        if let Some((e, canvas)) = self.emergente.as_mut() {
+            Self::ajustar(e, canvas);
+        }
     }
 
     // añadido en la 0.2.0
@@ -3889,6 +4047,7 @@ impl Shell {
     /// El menú de ventana anclado a un punto lógico de la pantalla: lo que
     /// pide el clic derecho sobre el escritorio, para salir junto al cursor.
     // 0.1.1
+    // modified 0.2.0 -- el color va antes de la papelera, con una sola raya
     pub fn menu_escritorio(
         &mut self,
         mut opciones: Vec<Option<(String, &'static str, Accion)>>,
@@ -3897,12 +4056,22 @@ impl Shell {
         // Lo decide el propio escritorio, que es quien sabe si lo seleccionado
         // son carpetas.
         if self.escritorio.color_seleccion().is_some() {
-            opciones.push(None);
-            opciones.push(Some((
+            // Antes del grupo de la papelera, no detrás con otro separador:
+            // «Abrir / — / Mover a la papelera / — / Color» eran tres entradas
+            // y dos rayas, y lo destructivo quedaba en medio. Así hay una sola
+            // raya y lo que borra va al final.
+            let color = Some((
                 "Color de la carpeta…".to_string(),
                 "apariencia",
                 Accion::EscritorioElegirColor,
-            )));
+            ));
+            match opciones.iter().rposition(Option::is_none) {
+                Some(raya) => opciones.insert(raya, color),
+                None => {
+                    opciones.insert(0, None);
+                    opciones.insert(0, color);
+                }
+            }
         }
         self.abrir(Emergente::menu_escritorio(opciones, punto));
     }
@@ -4221,6 +4390,62 @@ impl Shell {
 /// Cabe cualquier `Length` en el panel; se reexporta para la vista.
 pub(crate) const FILL: iced_core::Length = iced_core::Length::Fill;
 
+/// Las actividades que pueden salir en la isla, de más a menos prioridad y por
+/// `app_id` a igualdad, para que el orden no baile entre publicaciones. La usan
+/// la elección de la principal y el cambio con la rueda, que recorre este orden.
+// añadido en la 0.2.0 -- sacada de sincronizar_actividad para la rueda
+fn vivas_ordenadas<'a>(
+    actividades: &'a std::collections::HashMap<String, actividad::Estado>,
+    enfocada: Option<&str>,
+    config: &config::Actividades,
+    primera: Option<&str>,
+    ocultas: &std::collections::HashSet<String>,
+) -> Vec<&'a actividad::Estado> {
+        let prioridad = |e: &actividad::Estado| match e.clase {
+            // Se le está hablando: es lo que se mira ahora. Minimizado cede,
+            // porque se pidió apartarlo.
+            actividad::Clase::Asistente(actividad::Fase::Minimizado) => 8,
+            actividad::Clase::Asistente(_) => 50,
+            actividad::Clase::Recorder => 40,
+            actividad::Clase::Timer if e.restante_ms < 0 => 30,
+            // Un aviso de clase pide atención como un temporizador vencido, pero
+            // la grabadora en marcha manda más: no se puede perder un audio.
+            actividad::Clase::Calendar => 35,
+            actividad::Clase::Timer => 20,
+            actividad::Clase::Transfer => 15,
+            // Dura unos segundos al sacarlos: por encima de la música, que
+            // sigue ahí cuando se cierre.
+            actividad::Clase::Auriculares => 12,
+            actividad::Clase::Player => 10,
+            // Ambiental: nunca le quita la píldora a algo que esté pasando.
+            actividad::Clase::Monitor => 5,
+        };
+        let mut vivas: Vec<&actividad::Estado> = actividades
+            .values()
+            // Zenith no se oculta: la isla es su única forma de verse.
+            .filter(|e| !ocultas.contains(&e.app_id) || es_asistente(e))
+            .filter(|e| {
+                !enfocada
+                    .is_some_and(|ventana| es_de_la_app(&e.app_id, ventana))
+            })
+            .filter(|e| {
+                e.clase != actividad::Clase::Timer
+                    || config.temporizador_siempre
+                    || e.restante_ms <= 60_000
+            })
+            .collect();
+        // De más a menos prioridad, y por app_id a igualdad para que las
+        // burbujas no bailen entre publicaciones.
+        vivas.sort_by(|a, b| {
+            let fija = |e: &actividad::Estado| primera == Some(e.app_id.as_str());
+            fija(b)
+                .cmp(&fija(a))
+                .then(prioridad(b).cmp(&prioridad(a)))
+                .then(a.app_id.cmp(&b.app_id))
+        });
+        vivas
+}
+
 #[cfg(test)]
 mod pruebas_esquinas {
     use super::*;
@@ -4262,6 +4487,17 @@ mod pruebas_esquinas {
 
 #[cfg(test)]
 mod pruebas_actividades {
+    #[test]
+    fn el_monitor_sin_desktop_se_encuentra_por_su_binario() {
+        let dir = std::env::temp_dir().join(format!("bookos-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("carpeta temporal");
+        std::fs::write(dir.join("bookos-system-monitor"), "").expect("binario falso");
+        std::fs::write(dir.join("otro-monitor"), "").expect("binario falso");
+        let hallado = super::programa_en(std::iter::once(dir.clone()), "com.bookos.systemmonitor");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(hallado.as_deref(), Some("bookos-system-monitor"));
+    }
+
     use super::*;
     use actividad::{Clase, Estado, ItemCola, Portada};
 
@@ -4280,6 +4516,7 @@ mod pruebas_actividades {
             nivel: 0.0,
             aleatorio: false,
             repetir: false,
+            anc: None,
             portada: None,
             cola: vec![ItemCola {
                 id: "/pista.flac".into(),

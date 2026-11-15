@@ -45,6 +45,7 @@ fn main() {
             reproduciendo: true,
             posicion: Some(78),
             duracion: Some(214),
+            calidad: None,
         }));
         shell.draw_bloqueo_capa(Capa::Acceso, &mut buf);
         let t = Instant::now();

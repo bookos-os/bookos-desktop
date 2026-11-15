@@ -225,6 +225,12 @@ const PROPIOS: &[(&str, &[u8])] = &[
     ("teclado", include_bytes!("../assets/iconos/teclado.svg")),
     ("touchpad", include_bytes!("../assets/iconos/touchpad.svg")),
     ("camara", include_bytes!("../assets/iconos/camara.svg")),
+    // La barra de capturas. Antes eran caracteres sin fuente en la ISO.
+    ("seleccion", include_bytes!("../assets/iconos/seleccion.svg")),
+    ("copiar", include_bytes!("../assets/iconos/copiar.svg")),
+    ("guardar", include_bytes!("../assets/iconos/guardar.svg")),
+    ("cursor", include_bytes!("../assets/iconos/cursor.svg")),
+    ("reloj", include_bytes!("../assets/iconos/reloj.svg")),
     // La raya que se pone encima de un icono para decir «apagado». Va aparte y
     // no dibujada dentro de cada uno porque el OSD la tiñe de rojo mientras el
     // icono va del color del texto, y un SVG solo admite un tinte.
@@ -266,6 +272,23 @@ const PROPIOS: &[(&str, &[u8])] = &[
     ),
     ("fondo", include_bytes!("../assets/iconos/fondo.svg")),
     ("pantalla", include_bytes!("../assets/iconos/pantalla.svg")),
+    ("monitor", include_bytes!("../assets/iconos/monitor.svg")),
+    (
+        "brillo-bajo",
+        include_bytes!("../assets/iconos/brillo-bajo.svg"),
+    ),
+    (
+        "brillo-medio",
+        include_bytes!("../assets/iconos/brillo-medio.svg"),
+    ),
+    (
+        "wifi-senal-1",
+        include_bytes!("../assets/iconos/wifi-senal-1.svg"),
+    ),
+    (
+        "wifi-senal-2",
+        include_bytes!("../assets/iconos/wifi-senal-2.svg"),
+    ),
     ("papelera", include_bytes!("../assets/iconos/papelera.svg")),
     ("abrir", include_bytes!("../assets/iconos/abrir.svg")),
     ("acerca", include_bytes!("../assets/iconos/acerca.svg")),
@@ -434,6 +457,72 @@ const SOLIDOS: &[(&str, &str, &[u8])] = &[
         "noche",
         "solido/noche",
         include_bytes!("../assets/iconos/solido/noche.svg"),
+    ),
+    (
+        "oscuro",
+        "solido/oscuro",
+        include_bytes!("../assets/iconos/solido/oscuro.svg"),
+    ),
+    (
+        "aleatorio",
+        "solido/aleatorio",
+        include_bytes!("../assets/iconos/solido/aleatorio.svg"),
+    ),
+    (
+        "repetir",
+        "solido/repetir",
+        include_bytes!("../assets/iconos/solido/repetir.svg"),
+    ),
+    (
+        "destello",
+        "solido/destello",
+        include_bytes!("../assets/iconos/solido/destello.svg"),
+    ),
+    (
+        "auriculares",
+        "solido/auriculares",
+        include_bytes!("../assets/iconos/solido/auriculares.svg"),
+    ),
+    // añadido en la 0.2.2 -- salidas de audio en lo que suena en grande
+    (
+        "buds",
+        "solido/buds",
+        include_bytes!("../assets/iconos/solido/buds.svg"),
+    ),
+    (
+        "casco",
+        "solido/casco",
+        include_bytes!("../assets/iconos/solido/casco.svg"),
+    ),
+    (
+        "corazon",
+        "solido/corazon",
+        include_bytes!("../assets/iconos/solido/corazon.svg"),
+    ),
+    (
+        "corazon-lleno",
+        "solido/corazon-lleno",
+        include_bytes!("../assets/iconos/solido/corazon-lleno.svg"),
+    ),
+    (
+        "movil",
+        "solido/movil",
+        include_bytes!("../assets/iconos/solido/movil.svg"),
+    ),
+    (
+        "raton",
+        "solido/raton",
+        include_bytes!("../assets/iconos/solido/raton.svg"),
+    ),
+    (
+        "wifi-1",
+        "solido/wifi-1",
+        include_bytes!("../assets/iconos/solido/wifi-1.svg"),
+    ),
+    (
+        "wifi-2",
+        "solido/wifi-2",
+        include_bytes!("../assets/iconos/solido/wifi-2.svg"),
     ),
     (
         "notificaciones",

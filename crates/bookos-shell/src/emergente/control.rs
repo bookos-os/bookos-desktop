@@ -1,49 +1,26 @@
 //! Los controles que comparten las superficies emergentes.
 //!
-//! La píldora y el botón redondo salen igual en Sonido, en Brillo y en la
-//! Estación de Control, con las mismas medidas del sistema de diseño. Están
-//! aquí para que una sola sea la buena: tres copias de un deslizador acaban
-//! con tres radios distintos y tres zonas agarrables que no coinciden.
+//! La barra de las tarjetas sale igual en Sonido, en Brillo y en la Estación
+//! de Control, con las mismas medidas del sistema de diseño. Está aquí para
+//! que una sola sea la buena: tres copias de un deslizador acaban con tres
+//! radios distintos y tres zonas agarrables que no coinciden.
 //!
 //! Las medidas son las del lienzo «Widgets de BookOS», que junta la anatomía de
 //! la página `Applets` de Figma con los tokens de `AI-DESIGN-SYSTEM.md`: la
 //! tarjeta blanca o carbón, con grupos grises dentro y baldosas del color de la
 //! tarjeta dentro de los grupos.
 
-use iced_core::alignment::Vertical;
 use iced_core::font::Weight;
 use iced_core::{Border, Color, Font, Length};
-use iced_widget::{Space, container, row, text};
+use iced_widget::{Space, container, text};
 
-use crate::icono::{self, Icono};
 use crate::tema;
 use crate::view::PanelElement;
 
-/// Alto de la píldora. Barra gruesa sin tirador, como en la referencia: se
-/// agarra sin apuntar, que es lo que no da un deslizador de línea fina.
-pub const PILDORA: f32 = 24.0;
-/// Lado del botón redondo que va a su derecha.
-pub const BOTON: f32 = 32.0;
-/// Separación entre el icono, la píldora y el botón.
-pub const HUECO: f32 = 10.0;
-/// Lado del icono que va a la izquierda de la píldora.
-pub const ICONO: f32 = 18.0;
-/// Alto del renglón de etiqueta y valor que va encima de una píldora.
-pub const ETIQUETA: f32 = 18.0;
-/// Aire entre la etiqueta y su píldora.
-pub const BAJO_ETIQUETA: f32 = 8.0;
-/// Alto de la fila de una píldora: la marca el botón, que es lo más alto.
-pub const FILA_PILDORA: f32 = BOTON;
 /// Relleno interior de un grupo gris.
 pub const GRUPO: f32 = 6.0;
 /// Alto de un chip de cabecera como «Config».
 pub const CHIP: f32 = 28.0;
-/// Cuánto se agranda la zona agarrable por arriba y por abajo.
-///
-/// Apuntar a 24 px de alto con el ratón en movimiento falla más de lo que
-/// parece, y fallar aquí significa cerrar la emergente en vez de mover el
-/// deslizador.
-pub const MARGEN_AGARRE: f32 = 6.0;
 
 /// La fuente del sistema con otro peso. El sistema de diseño solo admite
 /// Regular, Medium, Semibold, Bold y Heavy, y por eso se pide el peso y no un
@@ -64,145 +41,6 @@ pub fn titulo<'a>(texto: impl iced_core::text::IntoFragment<'a>) -> PanelElement
         .font(peso(Weight::Bold))
         .color(tema::texto())
         .into()
-}
-
-/// La píldora: el canal lleno hasta `nivel` (de 0 a 100) sobre `surco`.
-///
-/// `surco` lo decide quien la pone: sobre la tarjeta es `--sbg`, y dentro de un
-/// grupo, que ya es `--sbg`, es el color de la tarjeta para que se distinga.
-///
-/// El relleno nunca es más estrecho que alto. Con menos, iced recorta su radio
-/// a la mitad del lado corto y sale una barrita recta asomando por las curvas
-/// del surco; así, a 0 % queda un punto, que es lo que dice que ahí hay un
-/// control y no un hueco. Ver [`lleno`] para cómo se reparte el resto.
-// 0.1.0
-pub fn pildora<'a>(
-    ancho: f32,
-    alto: f32,
-    nivel: u8,
-    apagado: bool,
-    surco: Color,
-) -> PanelElement<'a> {
-    let lleno = lleno(ancho, alto, nivel);
-    // A cero el punto va en el gris de apagado: en acento se leía como «un
-    // poco», que es justo lo que no se distinguía del 0.
-    let color = if apagado || nivel == 0 {
-        tema::alfa(tema::TEXTO2, 0.35)
-    } else {
-        tema::acento()
-    };
-    let barra = container(Space::new())
-        .width(Length::Fixed(lleno))
-        .height(Length::Fixed(alto))
-        .style(move |_| container::Style {
-            background: Some(color.into()),
-            border: Border {
-                radius: (alto / 2.0).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-    container(barra)
-        .width(Length::Fixed(ancho))
-        .height(Length::Fixed(alto))
-        .style(move |_| container::Style {
-            background: Some(surco.into()),
-            border: Border {
-                radius: (alto / 2.0).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
-/// El botón redondo con un icono dentro.
-///
-/// Encendido va en el acento con el icono en la tinta que se lea encima;
-/// apagado, en `fondo_apagado` —el mismo color que el surco de su píldora— con
-/// el icono en texto secundario. `señalado`, de 0 a 1, es el puntero por
-/// encima: oscurece el fondo sin cambiar de estado, que es lo que distingue «se
-/// puede pulsar» de «está pulsado».
-// 0.1.0
-pub fn boton<'a>(
-    icono: Option<&'a Icono>,
-    encendido: bool,
-    fondo_apagado: Color,
-    señalado: f32,
-) -> PanelElement<'a> {
-    let (fondo, tinta) = if encendido {
-        (tema::acento(), tema::sobre_acento())
-    } else {
-        (fondo_apagado, tema::TEXTO2)
-    };
-    let fondo = tema::mezclar(fondo, tema::tinta(), 0.08 * señalado);
-    let dentro = match icono {
-        Some(ic) => icono::ver_teñido(ic, 16.0, Some(tinta)),
-        None => crate::widget::vacio(),
-    };
-    container(dentro)
-        .width(Length::Fixed(BOTON))
-        .height(Length::Fixed(BOTON))
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .style(move |_| container::Style {
-            background: Some(fondo.into()),
-            border: Border {
-                radius: (BOTON / 2.0).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
-/// Una fila de deslizador: icono a la izquierda, píldora y, si lo hay, el botón.
-// 0.1.0
-pub fn fila_pildora<'a>(
-    icono: Option<&'a Icono>,
-    pildora: PanelElement<'a>,
-    boton: Option<PanelElement<'a>>,
-) -> PanelElement<'a> {
-    let dibujo: PanelElement<'a> = match icono {
-        Some(ic) => icono::ver_teñido(ic, ICONO, Some(tema::texto())),
-        None => Space::new().width(Length::Fixed(ICONO)).into(),
-    };
-    let mut fila = row![dibujo, Space::new().width(Length::Fixed(HUECO)), pildora]
-        .align_y(Vertical::Center)
-        .height(Length::Fixed(FILA_PILDORA));
-    if let Some(boton) = boton {
-        fila = fila
-            .push(Space::new().width(Length::Fixed(HUECO)))
-            .push(boton);
-    }
-    fila.into()
-}
-
-/// Lo que mide la píldora de una fila de `ancho`, con o sin botón.
-// 0.1.0
-pub fn ancho_pildora(ancho: f32, con_boton: bool) -> f32 {
-    ancho - ICONO - HUECO - if con_boton { BOTON + HUECO } else { 0.0 }
-}
-
-/// La etiqueta de encima de una píldora: nombre a la izquierda en 13/Semibold y
-/// el valor a la derecha en 12 secundario.
-// 0.1.0
-pub fn etiqueta<'a>(nombre: &'a str, valor: String, ancho: f32) -> PanelElement<'a> {
-    container(
-        row![
-            text(nombre)
-                .size(13.0)
-                .font(peso(Weight::Semibold))
-                .color(tema::texto()),
-            Space::new().width(Length::Fill),
-            text(valor).size(12.0).color(tema::TEXTO2),
-        ]
-        .align_y(Vertical::Center),
-    )
-    .width(Length::Fixed(ancho))
-    .height(Length::Fixed(ETIQUETA))
-    .center_y(Length::Fixed(ETIQUETA))
-    .into()
 }
 
 /// Un chip de cabecera: «Config», «Borrar todo», «Hoy».
@@ -235,23 +73,6 @@ pub fn ancho_chip(etiqueta: &str) -> f32 {
     crate::widget::ancho_de(etiqueta, 13.0) + 24.0
 }
 
-/// Un grupo gris dentro de la tarjeta, con su relleno.
-// 0.1.0
-pub fn grupo<'a>(contenido: PanelElement<'a>, ancho: f32, relleno: f32) -> PanelElement<'a> {
-    container(contenido)
-        .width(Length::Fixed(ancho))
-        .padding(relleno)
-        .style(|_| container::Style {
-            background: Some(tema::superficie_en_tarjeta().into()),
-            border: Border {
-                radius: tema::R_ITEM_POPOVER.into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
 /// La línea de medio píxel que separa bloques dentro de un grupo.
 // 0.1.0
 pub fn divisor<'a>(ancho: f32) -> PanelElement<'a> {
@@ -276,47 +97,106 @@ pub fn baldosa(señalada: f32) -> Color {
     tema::mezclar(tema::elevado(), tema::tinta(), 0.05 * señalada)
 }
 
-/// Lo seleccionado dentro de un grupo: el acento al 10 % sobre la tarjeta.
+/// Grueso de la barra de una tarjeta en reposo y agarrada. Engorda al tocarla
+/// para confirmar el agarre; la misma en Pantalla, Sonido y Brillo.
+// añadido en la 0.2.1
+pub const PISTA: f32 = 10.0;
+pub const PISTA_AGARRADA: f32 = 15.0;
+/// Alto de la fila de una barra, con su icono a cada lado: lo que se agarra.
+pub const FILA_BARRA: f32 = 28.0;
+/// Ancho de la caja de cada icono de los extremos y hueco que los separa de la
+/// barra.
+pub const ICONO_BARRA: f32 = 28.0;
+pub const ENTRE_BARRA: f32 = 8.0;
+
+/// El grueso de la barra con el agarre a `grosor` (de 0 a 1, el muelle).
+// añadido en la 0.2.1
+pub fn grueso_barra(grosor: f32) -> f32 {
+    PISTA + (PISTA_AGARRADA - PISTA) * grosor
+}
+
+/// La barra de una tarjeta: surco, relleno hasta `fraccion` (de 0 a 1) y, si
+/// hace falta, cortes para los niveles de un control por pasos y la marca de
+/// dónde pondría el sensor la barra.
 ///
-/// Es lo que pide el sistema de diseño para una selección en lista, en vez del
-/// relleno sólido de la referencia, que dejaba el texto sin contraste.
+/// Sin tirador: el final del relleno es el agarre. El relleno nunca es más
+/// estrecho que alto —a cero queda un punto—, porque con menos iced recorta su
+/// radio y sale una barrita recta asomando por las curvas del surco.
 ///
-/// En oscuro el 10 % sobre `#1c1c1e` apenas tiñe y la fila se leía gris
-/// sucio; parte de [`tema::elevado`] y con el doble, como el resto de filas.
-// 0.1.0
-// modified 0.1.1 -- en oscuro el acento al 20 % sobre elevado, para que se note
-pub fn seleccionada(señalada: f32) -> Color {
-    let (base, mezcla) = if tema::es_claro() {
-        (tema::card(), 0.10)
-    } else {
-        (tema::elevado(), 0.20)
+/// Mide [`FILA_BARRA`] de alto aunque la barra sea más fina, para que la marca
+/// quepa debajo y la fila no cambie de tamaño cuando engorda.
+// añadido en la 0.2.1
+pub fn barra<'a>(
+    ancho: f32,
+    grueso: f32,
+    fraccion: f32,
+    lleno: Color,
+    surco: Color,
+    cortes: &[f32],
+    marca: Option<f32>,
+) -> PanelElement<'a> {
+    let pieza = |w: f32, h: f32, color: Color, radio: f32| {
+        container(Space::new())
+            .width(Length::Fixed(w))
+            .height(Length::Fixed(h))
+            .style(move |_| container::Style {
+                background: Some(color.into()),
+                border: Border {
+                    radius: radio.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
     };
-    tema::mezclar(base, tema::acento(), mezcla + 0.06 * señalada)
+    let centrada = |dentro: PanelElement<'a>| {
+        container(dentro)
+            .width(Length::Fixed(ancho))
+            .height(Length::Fixed(FILA_BARRA))
+            .center_y(Length::Fixed(FILA_BARRA))
+    };
+    let relleno = (ancho * fraccion.clamp(0.0, 1.0)).max(grueso);
+    let base: PanelElement<'a> = iced_widget::stack![
+        pieza(ancho, grueso, surco, grueso / 2.0),
+        pieza(relleno, grueso, lleno, grueso / 2.0),
+    ]
+    .into();
+    let mut capas = vec![centrada(base).into()];
+    // Los cortes van del color de la placa de detrás, para que se lean como
+    // huecos tanto sobre el relleno como sobre el surco.
+    for c in cortes {
+        let x = (ancho * c.clamp(0.0, 1.0) - 2.0).max(0.0);
+        let corte = container(pieza(4.0, 4.0, tema::superficie_en_tarjeta(), 2.0))
+            .padding(iced_core::Padding::ZERO.left(x))
+            .width(Length::Fixed(ancho))
+            .height(Length::Fixed(FILA_BARRA))
+            .center_y(Length::Fixed(FILA_BARRA));
+        capas.push(corte.into());
+    }
+    if let Some(f) = marca {
+        let x = (ancho * f.clamp(0.0, 1.0) - 2.5).max(0.0);
+        // Debajo de la barra, con el grueso máximo: apuntándole, no cruzándola,
+        // para que no se tome por un tirador.
+        let y = (FILA_BARRA + PISTA_AGARRADA) / 2.0 + 1.0;
+        capas.push(
+            container(pieza(5.0, 5.0, tema::TEXTO2, 2.5))
+                .padding(iced_core::Padding::ZERO.left(x).top(y))
+                .width(Length::Fixed(ancho))
+                .height(Length::Fixed(FILA_BARRA))
+                .into(),
+        );
+    }
+    iced_widget::Stack::with_children(capas)
+        .width(Length::Fixed(ancho))
+        .height(Length::Fixed(FILA_BARRA))
+        .into()
 }
 
-/// Hasta dónde llega el relleno de una píldora al `nivel` (de 0 a 100).
-///
-/// El punto del 0 % ocupa `alto` y los niveles se reparten en lo que queda.
-/// Antes el relleno era `ancho × nivel` con ese punto como mínimo, y en la
-/// píldora de la Estación de Control (24 de alto) todo lo que había entre 0 y
-/// un 12 % se dibujaba igual: no había forma de saber si el volumen estaba a
-/// cero o al diez.
-// 0.1.0
-pub fn lleno(ancho: f32, alto: f32, nivel: u8) -> f32 {
-    alto + (ancho - alto) * (nivel.min(100) as f32 / 100.0)
-}
-
-/// De una `x` dentro de una píldora de [`PILDORA`] de alto a su nivel,
-/// recortado a [0, 100].
-///
-/// Es la inversa de [`lleno`]: el final del relleno queda bajo el puntero
-/// mientras se arrastra, y el 0 y el 100 caen en el centro de los extremos
-/// redondos y no en el borde, que con el ratón no se alcanza sin pasarse.
-/// Arrastrar más allá deja el nivel en el tope y no en un número imposible.
-// 0.1.0
-pub fn nivel_en(x: f32, x0: f32, ancho: f32) -> u8 {
-    let recorrido = ancho - PILDORA;
-    (((x - x0 - PILDORA / 2.0) / recorrido).clamp(0.0, 1.0) * 100.0).round() as u8
+/// De una `x` sobre una barra (`x0` es su borde izquierdo) a su nivel de 0 a
+/// 100, recortado. El final del relleno queda bajo el puntero mientras se
+/// arrastra; pasarse de los extremos deja el tope y no un número imposible.
+// añadido en la 0.2.1
+pub fn nivel_barra(x: f32, x0: f32, ancho: f32) -> u8 {
+    (((x - x0) / ancho).clamp(0.0, 1.0) * 100.0).round() as u8
 }
 
 /// La caja de una tarjeta emergente: fondo, borde, radio y margen del sistema.
@@ -341,41 +221,15 @@ pub fn tarjeta<'a>(contenido: PanelElement<'a>, ancho: f32, margen: f32) -> Pane
         .into()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{PILDORA, lleno, nivel_en};
-
-    #[test]
-    fn los_extremos_dan_cero_y_cien() {
-        assert_eq!(nivel_en(20.0, 20.0, 200.0), 0);
-        assert_eq!(nivel_en(220.0, 20.0, 200.0), 100);
-        assert_eq!(nivel_en(120.0, 20.0, 200.0), 50);
-    }
-
-    /// El 0 y el 10 % tienen que verse distintos. Con el relleno a
-    /// `ancho × nivel` y el punto del 0 como mínimo, en una píldora de 200 los
-    /// dos medían 24.
-    #[test]
-    fn el_cero_y_el_diez_no_se_confunden() {
-        let ancho = 200.0;
-        assert_eq!(lleno(ancho, PILDORA, 0), PILDORA);
-        assert!(lleno(ancho, PILDORA, 10) - lleno(ancho, PILDORA, 0) > 15.0);
-        assert_eq!(lleno(ancho, PILDORA, 100), ancho);
-    }
-
-    /// Pulsar donde acaba el relleno devuelve el mismo nivel: si no, coger la
-    /// píldora la haría saltar.
-    #[test]
-    fn el_final_del_relleno_queda_bajo_el_puntero() {
-        for nivel in [0, 7, 10, 50, 93, 100] {
-            let x = 20.0 + lleno(200.0, PILDORA, nivel) - PILDORA / 2.0;
-            assert_eq!(nivel_en(x, 20.0, 200.0), nivel);
-        }
-    }
-
-    #[test]
-    fn pasarse_de_largo_no_desborda() {
-        assert_eq!(nivel_en(-9000.0, 20.0, 200.0), 0);
-        assert_eq!(nivel_en(9000.0, 20.0, 200.0), 100);
+/// El encendido: disco blanco con glifo en acento en oscuro; en claro, al revés.
+/// Lo comparten los conmutadores de la estación y las filas activas de Wi-Fi y
+/// Bluetooth, que tienen que leerse como el mismo «encendido».
+// añadido en la 0.2.0
+// modified 0.2.1 -- pasa de centro.rs aquí
+pub fn encendido() -> (Color, Color) {
+    if tema::es_claro() {
+        (tema::acento(), tema::sobre_acento())
+    } else {
+        (Color::WHITE, tema::acento())
     }
 }

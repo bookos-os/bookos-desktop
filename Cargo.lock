@@ -430,6 +430,7 @@ dependencies = [
  "iced_tiny_skia",
  "iced_widget",
  "image",
+ "libc",
  "resvg",
  "serde_json",
  "tiny-skia",

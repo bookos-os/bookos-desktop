@@ -88,7 +88,7 @@ pub fn programar(state: &mut BookosComp) {
     let plazo = state.atenuacion.inactividad;
     tracing::debug!(?plazo, "programando la atenuación");
     if plazo.is_zero()
-        || !state.idle_inhibidores.is_empty()
+        || state.idle_inhibido()
         || bookos_shell::mantener_despierto()
         || state.atenuacion.atenuada.is_some()
         || state.shell.as_ref().is_none_or(|s| s.esta_bloqueado())
@@ -109,7 +109,7 @@ pub fn programar(state: &mut BookosComp) {
                     ?plazo,
                     "alarma de atenuación vencida"
                 );
-                if !state.idle_inhibidores.is_empty()
+                if state.idle_inhibido()
                     || bookos_shell::mantener_despierto()
                     || state.shell.as_ref().is_none_or(|s| s.esta_bloqueado())
                 {

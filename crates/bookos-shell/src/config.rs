@@ -32,6 +32,9 @@
 //! actividades = si
 //! actividades_animaciones = si
 //! alto_contraste = no
+//! bateria_porcentaje = si
+//! bateria_tiempo = si
+//! bateria_colores = si
 //! brillo_automatico_pantalla = no
 //! brillo_automatico_teclado = no
 //! luz_nocturna = programada
@@ -374,6 +377,16 @@ pub struct Config {
     pub efectos: Efectos,
     /// Paleta con bordes y separadores reforzados para mejorar la lectura.
     pub alto_contraste: bool,
+    /// Si la píldora de la batería lleva el número dentro.
+    // añadido en la 0.2.2
+    pub bateria_porcentaje: bool,
+    /// Si junto a la píldora se escribe el tiempo que queda (`1:25`).
+    // añadido en la 0.2.2
+    pub bateria_tiempo: bool,
+    /// Si el relleno de la pila sigue el perfil de energía (verde, azul,
+    /// amarillo) o es sólido y solo se colorea para avisar.
+    // añadido en la 0.2.2
+    pub bateria_colores: bool,
     pub acento: crate::tema::Acento,
     /// Foto de perfil para el bloqueo. `None` = la del sistema (`~/.face` o
     /// AccountsService), y si tampoco hay, las iniciales.
@@ -777,6 +790,9 @@ impl Default for Config {
             tema_oscuro_desde: (20, 0),
             efectos: Efectos::default(),
             alto_contraste: false,
+            bateria_porcentaje: true,
+            bateria_tiempo: true,
+            bateria_colores: true,
             acento: crate::tema::Acento::Azul,
             avatar: None,
             bloqueo: Bloqueo::default(),
@@ -1049,6 +1065,21 @@ impl Config {
                 "captura_cursor" => {
                     if let Some(v) = booleano(valor, ruta, n + 1) {
                         config.captura_cursor = v;
+                    }
+                }
+                "bateria_porcentaje" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.bateria_porcentaje = v;
+                    }
+                }
+                "bateria_tiempo" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.bateria_tiempo = v;
+                    }
+                }
+                "bateria_colores" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.bateria_colores = v;
                     }
                 }
                 "captura_retardo" => match valor.trim().parse::<u8>() {

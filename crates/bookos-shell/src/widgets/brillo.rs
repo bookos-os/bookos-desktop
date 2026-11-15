@@ -14,6 +14,8 @@ use crate::widget::{Cruce, Widget};
 pub struct Brillo {
     /// Si se puede leer el brillo. El nivel en sí no se guarda: no se dibuja.
     legible: bool,
+    /// Tercio del nivel (0, 1 o 2): lo único del nivel que cambia el dibujo.
+    tercio: u8,
     automatico: bool,
     /// Se mira una vez: un sensor de luz no aparece ni desaparece con la
     /// sesión abierta, y mirarlo es recorrer `/sys/bus/iio/devices`.
@@ -27,11 +29,13 @@ impl Brillo {
     pub fn new() -> Self {
         let sensor = crate::retroiluminacion::hay_sensor_luz();
         let automatico = sensor && crate::retroiluminacion::automatico().pantalla;
+        let tercio = tercio(read_brightness());
         Self {
             legible: read_brightness().is_some(),
+            tercio,
             automatico,
             sensor,
-            icono: icono::propio(nombre_icono(automatico)),
+            icono: icono::propio(nombre_icono(automatico, tercio)),
             cruce: Cruce::default(),
         }
     }
@@ -42,12 +46,24 @@ impl Brillo {
     }
 }
 
-// 0.1.0
-fn nombre_icono(automatico: bool) -> &'static str {
-    if automatico {
-        "brillo-automatico"
-    } else {
-        "brillo"
+/// Los rayos que sobran quedan atenuados, no ausentes: el sol mide siempre lo
+/// mismo. Con el automático, la «A» manda: dice más que el nivel, que ya cambia
+/// solo.
+// modified 0.2.0 -- rayos según el nivel
+fn nombre_icono(automatico: bool, tercio: u8) -> &'static str {
+    match (automatico, tercio) {
+        (true, _) => "brillo-automatico",
+        (_, 0) => "brillo-bajo",
+        (_, 1) => "brillo-medio",
+        _ => "brillo",
+    }
+}
+
+fn tercio(nivel: Option<u8>) -> u8 {
+    match nivel {
+        Some(0..=33) => 0,
+        Some(34..=66) => 1,
+        _ => 2,
     }
 }
 
@@ -62,22 +78,28 @@ impl Widget for Brillo {
         &["backlight"]
     }
 
-    /// `true` solo si cambia el dibujo. Antes bastaba con que cambiara el nivel,
-    /// y con el automático eso es cada paso de su rampa: un repintado del panel
-    /// entero por un sol que se ve igual.
+    /// `true` solo si cambia el dibujo: cambiar de tercio sí, cada paso de la
+    /// rampa del automático no (un repintado del panel entero por un sol que se
+    /// ve igual).
     // 0.1.0
     fn refrescar(&mut self) -> bool {
-        let legible = read_brightness().is_some();
+        let nivel = read_brightness();
+        let legible = nivel.is_some();
         let automatico = self.sensor && crate::retroiluminacion::automatico().pantalla;
-        if (legible, automatico) == (self.legible, self.automatico) {
+        let tercio = tercio(nivel);
+        if (legible, automatico, tercio) == (self.legible, self.automatico, self.tercio) {
             return false;
         }
         let color_previo = self.color();
+        let antes = nombre_icono(self.automatico, self.tercio);
         self.legible = legible;
-        if automatico != self.automatico {
-            self.automatico = automatico;
-            let previo =
-                std::mem::replace(&mut self.icono, icono::propio(nombre_icono(automatico)));
+        self.automatico = automatico;
+        self.tercio = tercio;
+        if nombre_icono(automatico, tercio) != antes {
+            let previo = std::mem::replace(
+                &mut self.icono,
+                icono::propio(nombre_icono(automatico, tercio)),
+            );
             self.cruce.empezar(previo, color_previo);
         }
         true

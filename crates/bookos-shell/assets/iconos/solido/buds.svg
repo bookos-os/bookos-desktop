@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ffffff">
+  <!-- Dos auriculares de botón con la patilla hacia dentro y la rejilla calada.
+       Dibujado para BookOS: el set de heroicons solo trae el casco. -->
+  <path fill-rule="evenodd" d="M3.4 7.2a4 4 0 1 0 8 0a4 4 0 1 0-8 0ZM5.6 6.4a1 1 0 1 0 2 0a1 1 0 1 0-2 0Z"/>
+  <rect x="8.4" y="9.6" width="2.4" height="10.9" rx="1.2"/>
+  <path fill-rule="evenodd" d="M12.6 7.2a4 4 0 1 0 8 0a4 4 0 1 0-8 0ZM16.4 6.4a1 1 0 1 0 2 0a1 1 0 1 0-2 0Z"/>
+  <rect x="13.2" y="9.6" width="2.4" height="10.9" rx="1.2"/>
+</svg>

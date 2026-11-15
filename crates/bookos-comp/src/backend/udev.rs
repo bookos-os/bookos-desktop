@@ -423,6 +423,7 @@ pub fn run(
 
     // Solo en la sesión real: anidado, la luz del teclado es del anfitrión.
     crate::multimedia::vigilar_luz_teclado(state);
+    crate::multimedia::vigilar_perfil_energia(state);
     crate::multimedia::vigilar_tapa_camara(state);
 
     // Los teclados, por lo mismo: sus luces las tiene que mandar el

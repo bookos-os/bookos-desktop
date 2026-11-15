@@ -25,3 +25,11 @@ Before=graphical-session.target
 # Arranca ya con el entorno de la sesión importado (LANG para sus textos).
 # `Wants` tolera que no esté instalado.
 Wants=bookos-budsd.service
+# Los toques de los Galaxy Buds (uno: reproducir/pausa; dos: siguiente; tres:
+# anterior) los decide su firmware y llegan por AVRCP a BlueZ, que solo sabe
+# mandarlos a un reproductor registrado en `org.bluez.Media1`. `mpris-proxy`
+# (viene con bluez) registra ahí los reproductores MPRIS de la sesión; sin él
+# los toques no llegaban a ninguna parte. Medido el 2026-11-12: con los Buds
+# conectados no había dispositivo AVRCP en /proc/bus/input/devices ni player
+# en el árbol de org.bluez.
+Wants=mpris-proxy.service

@@ -226,6 +226,18 @@ struct ArrastreDock {
     estado: EstadoArrastreDock,
 }
 
+/// Lo que espera la isla abierta con el puntero fuera antes de recogerse. Con
+/// el puntero encima no se recoge nunca.
+// añadido en la 0.2.2
+pub const RECOGER_ISLA: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Lo que hay que mantener apretada la isla para sacar su menú, el mismo
+/// umbral de pulsación larga que usa la maqueta.
+// añadido en la 0.2.2
+pub const MANTENER_ISLA: std::time::Duration = std::time::Duration::from_millis(450);
+/// Lo que puede moverse el dedo sin que deje de contar como mantener.
+const MANTENER_ISLA_HOLGURA: f64 = 8.0;
+
 pub struct ShellHost {
     shell: Shell,
     panel: Surface,
@@ -302,12 +314,30 @@ pub struct ShellHost {
     /// arrastre la vuelve a abrir.
     // añadido en la 0.2.0
     arrastre_burbuja: Option<ArrastreBurbuja>,
+    /// Desde cuándo está el puntero fuera de la isla abierta. A los
+    /// [`RECOGER_ISLA`] sin volver, se recoge sola.
+    // añadido en la 0.2.2
+    isla_fuera: Option<std::time::Instant>,
+    /// Acaba de salir: el compositor tiene que programar la comprobación.
+    isla_recogida_pendiente: bool,
+    /// Cuándo y dónde se apretó la isla, mientras siga apretada y quieta. A
+    /// los [`MANTENER_ISLA`] abre el menú ⋯: en la pantalla táctil no hay clic
+    /// derecho.
+    // añadido en la 0.2.2
+    isla_mantenida: Option<(std::time::Instant, (f64, f64))>,
+    isla_mantener_pendiente: bool,
     /// Un arrastre dentro de la emergente ha dejado un repintado pendiente.
     emergente_por_pintar: bool,
     arrastre_pintado_en: std::time::Instant,
     /// Dónde está el puntero, en lógicos. `soltar()` no lo recibe y hace falta
     /// para saber si el icono se sacó del dock o se soltó dentro.
     puntero_en: (f64, f64),
+    /// La rueda sobre la isla: lo acumulado del gesto en curso, si ya dio su
+    /// paso y cuándo llegó el último evento. Un paso por gesto: la inercia del
+    /// touchpad sigue mandando eventos después de levantar los dedos y, sin
+    /// esto, un solo gesto se saltaba tres actividades.
+    // añadido en la 0.2.0
+    rueda_isla: (f64, bool, std::time::Instant),
     /// Si el panel está a la vista o esquivando ventanas, y por dónde va su
     /// animación.
     panel_barra: EstadoBarra,
@@ -493,9 +523,14 @@ impl ShellHost {
             arrastre_dock: None,
             burbuja_asistente: None,
             arrastre_burbuja: None,
+            isla_fuera: None,
+            isla_recogida_pendiente: false,
+            isla_mantenida: None,
+            isla_mantener_pendiente: false,
             emergente_por_pintar: false,
             arrastre_pintado_en: std::time::Instant::now(),
             puntero_en: (0.0, 0.0),
+            rueda_isla: (0.0, false, std::time::Instant::now()),
             panel_barra: EstadoBarra::new(modo_panel),
             dock_barra: EstadoBarra::new(modo_dock),
             bloqueo: None,
@@ -1513,6 +1548,22 @@ impl ShellHost {
             return;
         }
         self.puntero_en = (x, y);
+        let fuera =
+            self.shell.actividad_recogible() && Self::dentro(self.actividad_rect(), x, y).is_none();
+        match (fuera, self.isla_fuera) {
+            (true, None) => {
+                self.isla_fuera = Some(std::time::Instant::now());
+                self.isla_recogida_pendiente = true;
+            }
+            (false, Some(_)) => self.isla_fuera = None,
+            _ => {}
+        }
+        if self
+            .isla_mantenida
+            .is_some_and(|(_, (x0, y0))| (x - x0).hypot(y - y0) > MANTENER_ISLA_HOLGURA)
+        {
+            self.isla_mantenida = None;
+        }
         if self.arrastre_dock.is_some() {
             self.mover_icono_dock(x, y);
             return;
@@ -1688,6 +1739,12 @@ impl ShellHost {
                 "transición de la emergente: se guarda la vista de antes"
             );
             self.vista_anterior = Some((anterior, Self::avance_transicion(t), t));
+        }
+        // Antes de leer la geometría: una tarjeta que crece con un muelle
+        // cambia de alto en cada fotograma, no solo al pulsar.
+        // modificado en la 0.2.0 -- el lienzo sigue al alto animado
+        if self.shell.emergente_animando() {
+            self.shell.ajustar_emergente();
         }
         let Some(((w, h), ancla, alto_colocacion)) = self.shell.emergente_geometria() else {
             // Cerrándose: las superficies se quedan hasta que acabe la salida.
@@ -2751,7 +2808,16 @@ impl ShellHost {
     /// ventana que hay debajo.
     // 0.1.0
     pub fn desplazar(&mut self, dx: f64, dy: f64) -> bool {
-        if self.dead || !self.shell.hay_emergente() {
+        if self.dead {
+            return false;
+        }
+        let (px, py) = self.puntero_en;
+        if Self::dentro(self.actividad_rect(), px, py).is_some() {
+            self.rueda_en_isla(dy);
+            // Siempre consumida: encima de la isla la rueda no es de la ventana de debajo.
+            return true;
+        }
+        if !self.shell.hay_emergente() {
             return false;
         }
         let repintar = self
@@ -2834,6 +2900,8 @@ impl ShellHost {
             return None;
         }
         if let Some((ax, ay)) = Self::dentro(self.actividad_rect(), x, y) {
+            self.isla_mantenida = Some((std::time::Instant::now(), (x, y)));
+            self.isla_mantener_pendiente = true;
             let margen = bookos_shell::actividad::MARGEN_SOMBRA;
             // `dentro` mide desde la zona visible; la isla, desde su buffer.
             let x0 = self.shell.actividad_zona().map_or(0.0, |(x0, _)| x0);
@@ -2841,8 +2909,7 @@ impl ShellHost {
                 .guard("pulsar actividad", |host| {
                     host.shell.actividad_pulsar(ax + margen + x0, ay + margen)
                 })
-                .flatten()
-                .map(Accion::Actividad);
+                .flatten();
             self.pintar_actividad();
             self.reclamar_bajo_el_puntero();
             return accion;
@@ -3083,6 +3150,35 @@ impl ShellHost {
 
     // --- Actividades vivas -------------------------------------------------
 
+    /// Un paso de rueda o de dos dedos sobre la isla. Se acumula hasta 40 px y
+    /// da **un** paso; el resto del gesto se ignora hasta que pasen 180 ms sin
+    /// eventos, que es cuando el gesto (o su inercia) ha terminado. Los dos
+    /// números son los de la maqueta, donde se probaron con touchpad.
+    // añadido en la 0.2.0
+    fn rueda_en_isla(&mut self, dy: f64) {
+        const UMBRAL: f64 = 40.0;
+        const QUIETO: std::time::Duration = std::time::Duration::from_millis(180);
+        let (acumulado, gastado, ultimo) = &mut self.rueda_isla;
+        if ultimo.elapsed() > QUIETO {
+            *acumulado = 0.0;
+            *gastado = false;
+        }
+        *ultimo = std::time::Instant::now();
+        if *gastado {
+            return;
+        }
+        *acumulado += dy;
+        if acumulado.abs() < UMBRAL {
+            return;
+        }
+        let paso = if *acumulado > 0.0 { 1 } else { -1 };
+        *gastado = true;
+        if self.guard("pasar actividad", |host| host.shell.actividad_pasar(paso)) == Some(true) {
+            self.pintar_actividad();
+            self.reclamar_bajo_el_puntero();
+        }
+    }
+
     // 0.1.0
     pub fn publicar_actividad(&mut self, estado: bookos_shell::actividad::Estado) {
         self.guard("publicar actividad", |host| {
@@ -3310,6 +3406,69 @@ impl ShellHost {
         recogida
     }
 
+    /// Si el puntero acaba de salir de la isla abierta y hay que mirar dentro
+    /// de [`RECOGER_ISLA`] si sigue fuera.
+    // añadido en la 0.2.2
+    pub fn programar_recogida_isla(&mut self) -> bool {
+        std::mem::take(&mut self.isla_recogida_pendiente)
+    }
+
+    /// Recoge la isla si el puntero lleva [`RECOGER_ISLA`] fuera. Una salida
+    /// anterior que ya volvió no cuenta: el instante se reinicia al entrar.
+    // añadido en la 0.2.2
+    pub fn recoger_isla_si_sigue_fuera(&mut self) -> bool {
+        if self.dead
+            || !self.isla_fuera.is_some_and(|t| t.elapsed() >= RECOGER_ISLA)
+            || !self.shell.actividad_recogible()
+        {
+            return false;
+        }
+        self.isla_fuera = None;
+        let recogida =
+            self.guard("recoger actividad", |host| host.shell.recoger_actividad()) == Some(true);
+        if recogida {
+            self.pintar_actividad();
+            self.reclamar_bajo_el_puntero();
+        }
+        recogida
+    }
+
+    /// Si se acaba de apretar la isla y hay que mirar a los [`MANTENER_ISLA`]
+    /// si sigue apretada.
+    // añadido en la 0.2.2
+    pub fn programar_mantener_isla(&mut self) -> bool {
+        std::mem::take(&mut self.isla_mantener_pendiente)
+    }
+
+    /// Abre el menú si la isla sigue apretada y quieta desde hace
+    /// [`MANTENER_ISLA`]. Lo que se apretó ya actuó al bajar: el menú sale
+    /// encima, como el clic derecho.
+    // añadido en la 0.2.2
+    pub fn menu_si_sigue_mantenida(&mut self) -> bool {
+        let Some((t, (x, y))) = self.isla_mantenida else {
+            return false;
+        };
+        if t.elapsed() < MANTENER_ISLA {
+            return false;
+        }
+        self.isla_mantenida = None;
+        self.menu_actividad_en(x, y)
+    }
+
+    /// Clic derecho sobre la isla abierta: su menú ⋯.
+    // añadido en la 0.2.2
+    pub fn menu_actividad_en(&mut self, x: f64, y: f64) -> bool {
+        if self.dead || Self::dentro(self.actividad_rect(), x, y).is_none() {
+            return false;
+        }
+        let abierto =
+            self.guard("menú de la isla", |host| host.shell.actividad_menu()) == Some(true);
+        if abierto {
+            self.pintar_actividad();
+        }
+        abierto
+    }
+
     // 0.1.0
     pub fn animar_actividad(&mut self) {
         if !self.dead
@@ -3325,6 +3484,12 @@ impl ShellHost {
             return;
         }
         self.pintar_actividad();
+    }
+
+    /// Si la isla está desplegada.
+    // añadido en la 0.2.2
+    pub fn actividad_abierta(&self) -> bool {
+        self.shell.actividad_abierta()
     }
 
     /// ¿Cae el punto sobre la isla? La vista de escritorios lo pregunta antes
@@ -4972,6 +5137,7 @@ impl ShellHost {
         if self.dead {
             return None;
         }
+        self.isla_mantenida = None;
         if let Some(arrastre) = self.arrastre_burbuja.take() {
             return self.soltar_burbuja(arrastre);
         }
@@ -6476,6 +6642,7 @@ mod tests {
                 nivel: 0.0,
                 aleatorio: false,
                 repetir: false,
+                anc: None,
                 portada: None,
                 cola: Vec::new(),
                 metricas: Vec::new(),
@@ -6510,6 +6677,7 @@ mod tests {
             nivel: 0.0,
             aleatorio: false,
             repetir: false,
+            anc: None,
             portada: None,
             cola: Vec::new(),
             metricas: Vec::new(),

@@ -87,6 +87,7 @@ fn cancion(caratula: Option<&str>) -> bookos_shell::medios::Sonando {
         reproduciendo: true,
         posicion: Some(78),
         duracion: Some(214),
+        calidad: None,
     }
 }
 

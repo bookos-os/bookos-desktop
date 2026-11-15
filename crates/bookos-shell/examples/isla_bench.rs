@@ -37,6 +37,7 @@ fn estado(clase: Clase, con_portada: bool, cola: usize) -> Estado {
         nivel: 0.8,
         aleatorio: true,
         repetir: false,
+        anc: None,
         portada: con_portada.then(portada),
         metricas: Vec::new(),
         cola: (0..cola)

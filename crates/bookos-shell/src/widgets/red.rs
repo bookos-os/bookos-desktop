@@ -8,6 +8,9 @@ use crate::widget::{AvisoDesconexion, Cruce, Widget};
 
 pub struct Red {
     dato: Option<Network>,
+    /// Intensidad de la red activa, de 0 a 100. Aparte de `Network` porque ese
+    /// tipo también lo construye el greeter y no tiene por qué cargar con ella.
+    senal: Option<u8>,
     icono: Option<Icono>,
     cruce: Cruce,
     desconexion: AvisoDesconexion,
@@ -18,9 +21,11 @@ impl Red {
     // modified 0.1.1 -- nace sin aviso de desconexión
     pub fn new() -> Self {
         let dato = estado_red();
-        let icono = icono::propio(nombre_icono(dato));
+        let senal = senal_activa();
+        let icono = icono::propio(nombre_icono(dato, senal));
         Self {
             dato,
+            senal,
             icono,
             cruce: Cruce::default(),
             desconexion: AvisoDesconexion::default(),
@@ -41,13 +46,21 @@ impl Red {
 
 /// El icono de BookOS que toca. Wi-Fi caído sale con el icono de
 /// desconectado en vez de con el de señal, que sería mentir.
-// 0.1.0
-fn nombre_icono(dato: Option<Network>) -> &'static str {
+///
+/// Los arcos que sobran quedan atenuados en vez de desaparecer, así el icono
+/// no cambia de tamaño con la señal. Tercios: NetworkManager da 0–100 y no hay
+/// una escala mejor que repartirlo en tres. Sin dato de señal, completo.
+// modified 0.2.0 -- por intensidad
+fn nombre_icono(dato: Option<Network>, senal: Option<u8>) -> &'static str {
     match dato {
         Some(Network {
             kind: Link::Wifi,
             up: true,
-        }) => "wifi",
+        }) => match senal {
+            Some(0..=33) => "wifi-senal-1",
+            Some(34..=66) => "wifi-senal-2",
+            _ => "wifi",
+        },
         Some(Network {
             kind: Link::Cable,
             up: true,
@@ -83,7 +96,10 @@ impl Widget for Red {
     fn refrescar(&mut self) -> bool {
         let caducado = self.desconexion.caducar();
         let fresco = estado_red();
-        if fresco == self.dato {
+        let senal = senal_activa();
+        if fresco == self.dato && nombre_icono(fresco, senal) == nombre_icono(self.dato, self.senal)
+        {
+            self.senal = senal;
             return caducado;
         }
         let estaba = self.dato.is_some_and(|red| red.up);
@@ -92,7 +108,11 @@ impl Widget for Red {
         }
         let color_previo = self.color();
         self.dato = fresco;
-        let previo = std::mem::replace(&mut self.icono, icono::propio(nombre_icono(self.dato)));
+        self.senal = senal;
+        let previo = std::mem::replace(
+            &mut self.icono,
+            icono::propio(nombre_icono(self.dato, self.senal)),
+        );
         self.cruce.empezar(previo, color_previo);
         true
     }
@@ -140,4 +160,16 @@ fn estado_red() -> Option<Network> {
         kind: Link::Wifi,
         up: s["ssid"].as_str().is_some_and(|s| !s.is_empty()),
     })
+}
+
+/// La señal de la red a la que se está conectado, si la lista la trae.
+// añadido en la 0.2.0
+fn senal_activa() -> Option<u8> {
+    let s = bookos_system::snapshot().network;
+    s["networks"]
+        .as_array()?
+        .iter()
+        .find(|n| n["active"] == true)
+        .and_then(|n| n["signal"].as_u64())
+        .map(|v| v.min(100) as u8)
 }

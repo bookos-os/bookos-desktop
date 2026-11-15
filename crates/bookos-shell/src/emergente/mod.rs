@@ -25,6 +25,7 @@ mod apariencia;
 mod atajos;
 mod bluetooth;
 mod brillo;
+mod buds;
 mod buscador;
 mod calendario;
 mod centro;
@@ -520,7 +521,9 @@ impl Emergente {
             // lo de debajo la convertiría en un diálogo.
             Self::Buscador(b) => Some(b.velo()),
             Self::Respuesta(r) => Some(r.velo()),
-            Self::Acerca(a) => Some(a.velo()),
+            // Sin velo: el diálogo va sobre el escritorio con su sombra, y
+            // BookOS no usa superficies translúcidas.
+            Self::Acerca(_) => None,
             Self::Atajos(a) => Some(a.velo()),
             // Es un diálogo: hay que contestarle antes de seguir, y el velo es
             // lo que lo dice sin escribirlo.
@@ -667,6 +670,7 @@ impl Emergente {
             Self::Red(r) => r.desplazar(dy),
             Self::Bluetooth(b) => b.desplazar(dy),
             Self::Centro(c) => c.desplazar(dy),
+            Self::Notificaciones(n) => n.desplazar(dy),
             // El menú y el calendario caben enteros; no hay nada que desplazar.
             _ => false,
         }

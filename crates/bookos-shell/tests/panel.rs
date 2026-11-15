@@ -135,12 +135,13 @@ fn el_sonido_se_abre_y_su_deslizador_arrastra() {
     volcar("BOOKOS_SONIDO_PNG", &buf, w, h);
     assert!(tinta(&buf, w, h, 0, w) > 0, "el emergente sale en blanco");
 
-    // Agarrar la píldora por la izquierda y arrastrarla hasta pasarse del
-    // borde derecho: el nivel tiene que acabar al máximo, no a medias. La de
-    // los altavoces empieza en x = 16 + 4 + 18 + 10 y ocupa de y = 90 a 114.
-    shell.emergente_pulsar(60.0, 100.0);
-    assert!(shell.emergente_agarrada(), "la píldora no quedó agarrada");
-    shell.emergente_puntero(Some((10_000.0, 100.0)));
+    // Agarrar la barra por la izquierda y arrastrarla hasta pasarse del borde
+    // derecho: el nivel tiene que acabar al máximo, no a medias. La de los
+    // altavoces empieza en x = 16 + 16 + 28 + 8 y su fila ocupa de y = 108
+    // (16 + 32 + 12 de cabecera, 14 + 26 + 8 dentro de la tarjeta) a 136.
+    shell.emergente_pulsar(80.0, 122.0);
+    assert!(shell.emergente_agarrada(), "la barra no quedó agarrada");
+    shell.emergente_puntero(Some((10_000.0, 122.0)));
     assert!(
         shell.soltar().0,
         "soltar no devolvió que había algo agarrado"
@@ -729,6 +730,28 @@ fn el_centro_de_control_se_pinta() {
     assert!(tinta(&buf, w, h, 0, w) > 0, "el centro sale en blanco");
 }
 
+/// Lo que suena en grande, al pulsar su tarjeta. Sin nada sonando la tarjeta
+/// abre el reproductor y no hay vista que pintar.
+// añadido en la 0.2.0
+#[test]
+fn lo_que_suena_en_grande_se_pinta() {
+    let mut shell = shell(1.0);
+    shell.abrir(bookos_shell::Emergente::centro());
+    // Centro de la celda de 2×2 de la música.
+    assert_eq!(shell.emergente_pulsar(259.0, 70.0), None);
+    if shell.soltar().1.is_some() {
+        return;
+    }
+    let (w, h) = shell.emergente_buffer_size().expect("tiene superficie");
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    shell.draw_emergente(&mut buf);
+    volcar("BOOKOS_CENTRO_MUSICA_PNG", &buf, w, h);
+    assert!(
+        tinta(&buf, w, h, 0, w) > 0,
+        "la vista grande sale en blanco"
+    );
+}
+
 /// La separación entre widgets del panel, que es la tolerancia con la que se
 /// reparten los clics.
 fn view_hueco() -> f32 {
@@ -832,8 +855,8 @@ fn elegir_del_menu_lo_cierra() {
     shell.panel_pulsado(20.0, 16.0);
 
     // La primera entrada, "Acerca de este PC": empieza tras el margen de 5 px
-    // y mide 24 de alto.
-    let accion = shell.emergente_pulsar(100.0, 5.0 + 12.0);
+    // y mide 30 de alto.
+    let accion = shell.emergente_pulsar(100.0, 5.0 + 15.0);
     assert!(accion.is_some(), "el centro de la primera fila no responde");
     assert!(
         !shell.hay_emergente(),
@@ -842,7 +865,7 @@ fn elegir_del_menu_lo_cierra() {
 
     // Y en un separador no hay nada que elegir, así que el menú sigue abierto.
     shell.panel_pulsado(20.0, 16.0);
-    assert_eq!(shell.emergente_pulsar(100.0, 5.0 + 24.0 + 4.0), None);
+    assert_eq!(shell.emergente_pulsar(100.0, 5.0 + 30.0 + 5.0), None);
     assert!(
         shell.hay_emergente(),
         "fallar la puntería no cierra el menú"
@@ -1167,22 +1190,26 @@ fn el_no_molestar_enseña_sus_duraciones() {
     let mut shell = shell(1.0);
     shell.abrir(bookos_shell::Emergente::notificaciones());
     let (_, alto_antes) = shell.emergente_buffer_size().expect("tiene superficie");
-    // El interruptor vive en la fila de «No molestar», a la derecha: tarjeta,
-    // margen, relleno del grupo y aire hasta la mitad del interruptor; y en
-    // alto, cabecera, grupo, la fila vacía de la lista, el divisor y media
-    // fila del bloque.
+    // La fila de «No molestar» entera es el interruptor: en alto, margen,
+    // cabecera, aire, el aviso de «vacío» (120), el aire con el divisor (14) y
+    // media fila del bloque (30).
     shell.emergente_pulsar(
-        336.0 - 16.0 - 6.0 - 8.0 - 23.0,
-        16.0 + 32.0 + 12.0 + 6.0 + 52.0 + 16.5 + 26.0,
+        336.0 - 16.0 - 4.0 - 23.0,
+        16.0 + 32.0 + 12.0 + 120.0 + 14.0 + 30.0,
     );
     let (w, h) = shell.emergente_buffer_size().expect("tiene superficie");
     assert!(h > alto_antes, "con el silencio puesto la tarjeta crece");
     let mut buf = vec![0u8; (w * h * 4) as usize];
     shell.draw_emergente(&mut buf);
     volcar("BOOKOS_NOTIF_DND_PNG", &buf, w, h);
-    // La franja de abajo es la de los chips: si el hueco reservado sobrara,
-    // saldría en negro.
-    assert!(tinta(&buf, w, h, h - 30, w) > 0, "los chips no se pintan");
+    // La franja de abajo, sobre el margen, es la nota de las urgentes: si el
+    // hueco reservado sobrara, saldría vacía. Se mira por filas: `tinta` mide
+    // columnas, y con `h - 30` de inicio dejaba de ver nada en cuanto la
+    // tarjeta pasaba de su ancho.
+    let fondo = comun::fondo_luma(&buf, w, h);
+    let hay = (h - 34..h - 16)
+        .any(|y| (0..w).any(|x| comun::distinto_del_fondo(comun::luma(&buf, w, x, y), fondo)));
+    assert!(hay, "la nota de las duraciones no se pinta");
 }
 
 /// Las zonas de clic del panel caen donde está el dibujo.
@@ -1264,7 +1291,7 @@ fn el_indicador_de_escritorios_se_pinta_y_responde() {
         .expect("ya tiene zona");
     assert!(
         x1 - x0 > 20.0,
-        "cuatro puntos ocupan más de 20 px: {}",
+        "monitor y número ocupan más de 20 px: {}",
         x1 - x0
     );
 
@@ -1277,15 +1304,11 @@ fn el_indicador_de_escritorios_se_pinta_y_responde() {
         "el indicador no se ve en su zona"
     );
 
-    // Pulsar el primer punto lleva al primer escritorio, no abre ninguna
-    // tarjeta: es el único widget del panel que responde por su cuenta.
+    // Ya no hay un punto por escritorio: pulsar en cualquier sitio del widget
+    // abre la vista, donde se elige.
     let accion = shell.panel_pulsado(x0 + 2.0, 8.0);
-    assert_eq!(accion, Some(bookos_shell::Accion::Escritorio(0)));
-    assert!(!shell.hay_emergente(), "no debe abrir ninguna tarjeta");
-
-    let paso = (x1 - x0) / 4.0;
-    let accion = shell.panel_pulsado(x0 + paso * 2.0 + 1.0, 8.0);
     assert_eq!(accion, Some(bookos_shell::Accion::VistaEscritorios));
+    assert!(!shell.hay_emergente(), "no debe abrir ninguna tarjeta");
 }
 
 #[test]
@@ -1536,12 +1559,14 @@ fn las_notificaciones_se_listan_y_se_cierran() {
     assert!(tinta(&buf, w, h, 0, w) > 0, "la tarjeta sale en blanco");
 
     // Pulsar la primera fila pide cerrar **esa**, y la tarjeta se queda abierta.
-    // La lista empieza bajo la cabecera: margen (21) + cabecera (40).
+    // La lista empieza bajo la cabecera: margen (16) + cabecera (32) + aire (12).
     let accion = shell.emergente_pulsar(60.0, 75.0);
     let Some(Accion::CerrarNotificacion(id)) = accion else {
         panic!("pulsar una notificación tiene que cerrarla: {accion:?}");
     };
-    assert_eq!(id, 3, "la más nueva va arriba");
+    // La crítica (2) va arriba aunque no sea la más nueva: las urgentes salen
+    // de las pilas y de la cola por antigüedad, que es lo que no se puede perder.
+    assert_eq!(id, 2, "las urgentes van arriba");
     assert!(shell.hay_emergente(), "cerrar una no cierra la tarjeta");
 
     // El shell la retira y el contador baja.
@@ -1742,9 +1767,10 @@ fn el_silencio_sobrevive_y_deja_pasar_lo_critico() {
 
     let mut shell = shell(1.0);
     shell.abrir_de_widget("notificaciones");
-    // El interruptor de «No molestar», en la fila de su bloque.
+    // El interruptor de «No molestar», en la fila de su bloque: bajo la lista
+    // vacía (16 + 32 + 12 + 120 + 14) y a media fila de alto.
     let (w, _) = shell.emergente_geometria().unwrap().0;
-    shell.emergente_pulsar(w as f32 - 40.0, 160.0);
+    shell.emergente_pulsar(w as f32 - 40.0, 16.0 + 32.0 + 12.0 + 120.0 + 14.0 + 30.0);
     assert!(
         shell.notificaciones_silenciadas(),
         "pulsar el interruptor tiene que silenciar"
@@ -2201,20 +2227,25 @@ fn el_bloqueo_no_se_solapa_a_1280x800() {
 }
 
 #[test]
-fn ahorro_cambia_el_perfil_sin_cerrar_el_centro() {
+fn no_molestar_cambia_sin_cerrar_el_centro() {
     let mut shell = shell(1.0);
     shell.abrir(bookos_shell::Emergente::centro());
-    // modificado en la 0.2.0 -- la baldosa actúa al soltar, no al apretar.
-    let mut clic = |shell: &mut bookos_shell::Shell| {
-        assert_eq!(shell.emergente_pulsar(212.5, 182.0), None);
+    // modificado en la 0.2.0 -- Ahorro salió del centro; la píldora de «No
+    // molestar» (columnas 3 y 4, fila 3) actúa al soltar y no cierra la tarjeta.
+    let clic = |shell: &mut bookos_shell::Shell| {
+        assert_eq!(shell.emergente_pulsar(259.0, 213.0), None);
         shell.soltar().1
     };
-    let accion = clic(&mut shell);
-    assert!(matches!(
-        accion,
-        Some(bookos_shell::Accion::PerfilEnergia(_))
-    ));
-    assert!(shell.hay_emergente(), "ahorro cerró el centro de control");
-    let siguiente = clic(&mut shell);
-    assert_ne!(accion, siguiente, "el segundo clic repitió el mismo perfil");
+    assert_eq!(
+        clic(&mut shell),
+        Some(bookos_shell::Accion::NoMolestar(true))
+    );
+    assert!(
+        shell.hay_emergente(),
+        "no molestar cerró el centro de control"
+    );
+    assert_eq!(
+        clic(&mut shell),
+        Some(bookos_shell::Accion::NoMolestar(false))
+    );
 }

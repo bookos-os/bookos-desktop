@@ -2035,7 +2035,7 @@ pub fn programar_bloqueo_inactividad(state: &mut BookosComp) {
     crate::salvapantallas::programar(state);
     crate::atenuacion::programar(state);
     if state.bloqueo_inactividad.is_zero()
-        || !state.idle_inhibidores.is_empty()
+        || state.idle_inhibido()
         || bookos_shell::mantener_despierto()
         || state
             .shell
@@ -2065,7 +2065,7 @@ pub fn programar_bloqueo_inactividad(state: &mut BookosComp) {
             {
                 return TimeoutAction::Drop;
             }
-            if !state.idle_inhibidores.is_empty() || bookos_shell::mantener_despierto() {
+            if state.idle_inhibido() || bookos_shell::mantener_despierto() {
                 return TimeoutAction::Drop;
             }
             let inactivo = state
@@ -2117,7 +2117,7 @@ pub fn programar_suspension_inactividad(state: &mut BookosComp) {
     state.idle_inhibidores.retain(|s| s.alive());
     if state.suspension_inactividad.is_zero()
         || state.salvapantallas.pantalla_apagada()
-        || !state.idle_inhibidores.is_empty()
+        || state.idle_inhibido()
         || bookos_shell::mantener_despierto()
         || state
             .shell
@@ -2139,7 +2139,7 @@ pub fn programar_suspension_inactividad(state: &mut BookosComp) {
                 .is_some_and(|shell| shell.esta_bloqueado());
             if bloqueado
                 && !state.salvapantallas.pantalla_apagada()
-                && state.idle_inhibidores.is_empty()
+                && !state.idle_inhibido()
                 && !bookos_shell::mantener_despierto()
             {
                 tracing::info!(

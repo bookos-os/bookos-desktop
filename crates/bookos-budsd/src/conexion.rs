@@ -105,6 +105,9 @@ pub struct Aparato {
     pub mac: String,
     pub nombre: String,
     pub legacy: bool,
+    /// Si `LOCK_TOUCHPAD` lleva un byte por gesto (ver `payload_bloqueo`).
+    // 0.2.0
+    pub toques_avanzados: bool,
     /// Si es de la familia Galaxy Buds. Por el UUID de Samsung y, para los
     /// originales que no lo anuncian, por el nombre, como hacía Ajustes.
     pub buds: bool,
@@ -127,11 +130,16 @@ pub async fn aparato(sistema: &Connection, ruta: OwnedObjectPath) -> Result<Apar
     let legacy = uuids.iter().any(|u| u.eq_ignore_ascii_case(LEGACY_UUID));
     let buds = uuids.iter().any(|u| u.eq_ignore_ascii_case(SAMSUNG_UUID))
         || nombre.to_lowercase().contains("buds");
+    // Por el nombre porque el protocolo no dice el modelo antes de abrir el
+    // canal. Solo los Buds3: son los únicos con los que se ha comprobado; los
+    // Buds2 Pro probablemente también lo usan, pero sin verificar.
+    let toques_avanzados = nombre.contains("Buds3");
     Ok(Aparato {
         ruta,
         mac,
         nombre,
         legacy,
+        toques_avanzados,
         buds,
     })
 }
@@ -284,6 +292,7 @@ pub enum Aviso {
 pub struct Conexion {
     fd: OwnedFd,
     pub legacy: bool,
+    pub toques_avanzados: bool,
     pub mac: String,
     pub status: Arc<Mutex<BudsStatus>>,
     stop: Arc<AtomicBool>,
@@ -304,6 +313,13 @@ impl Drop for Conexion {
         }
     }
 }
+
+/// MANAGER_INFO tal como lo manda un Galaxy S22 Ultra (Android 16), capturado
+/// por HCI el 12-11-2026: [1, 1 (ClientDeviceTypes::Samsung), 36 (SDK)].
+/// Antes se mandaba [1, 2 (Other), 34]. Se cambia para que los Buds traten al
+/// PC como a un móvil Samsung, por si el firmware ajusta algo según el
+/// cliente; sin comprobar todavía que cambie el sonido (basc/docs/research.md).
+const MANAGER_INFO: [u8; 3] = [1, 1, 36];
 
 // 0.1.0
 fn enviar_fd(fd: &OwnedFd, msg_id: u8, payload: &[u8], legacy: bool) -> std::io::Result<()> {
@@ -338,9 +354,8 @@ impl Conexion {
         let lector = fd.try_clone().map_err(|e| e.to_string())?;
         let vivo = fd.try_clone().map_err(|e| e.to_string())?;
 
-        // MANAGER_INFO: [1, 2 (ClientDeviceTypes::Other), 34 (SDK de Android)].
-        // Sin él el firmware no contesta.
-        enviar_fd(&fd, protocolo::MSG_MANAGER_INFO, &[1, 2, 34], legacy)
+        // Sin MANAGER_INFO el firmware no contesta.
+        enviar_fd(&fd, protocolo::MSG_MANAGER_INFO, &MANAGER_INFO, legacy)
             .map_err(|e| e.to_string())?;
         enviar_fd(&fd, protocolo::MSG_EXTENDED_STATUS, &[], legacy).map_err(|e| e.to_string())?;
 
@@ -363,7 +378,7 @@ impl Conexion {
         enviar_fd(
             &fd,
             protocolo::MSG_LOCK_TOUCHPAD,
-            &[prefs.touchpad_locked as u8],
+            &payload_bloqueo(prefs.touchpad_locked, aparato.toques_avanzados),
             legacy,
         )
         .map_err(|e| e.to_string())?;
@@ -395,7 +410,7 @@ impl Conexion {
             while !stop_ka.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_secs(5));
                 if stop_ka.load(Ordering::SeqCst)
-                    || enviar_fd(&vivo, protocolo::MSG_MANAGER_INFO, &[1, 2, 34], legacy).is_err()
+                    || enviar_fd(&vivo, protocolo::MSG_MANAGER_INFO, &MANAGER_INFO, legacy).is_err()
                     || enviar_fd(&vivo, protocolo::MSG_EXTENDED_STATUS, &[], legacy).is_err()
                 {
                     break;
@@ -406,6 +421,7 @@ impl Conexion {
         Ok(Self {
             fd,
             legacy,
+            toques_avanzados: aparato.toques_avanzados,
             mac: aparato.mac.clone(),
             status,
             stop,
@@ -436,6 +452,20 @@ pub fn payload_eq(preset: u8, enabled: bool, legacy: bool) -> Vec<u8> {
         vec![enabled as u8, preset.saturating_add(5)]
     } else {
         vec![if enabled { preset.saturating_add(1) } else { 0 }]
+    }
+}
+
+/// Los modelos antiguos llevan un byte, `1` = bloqueado. Los Buds3 llevan
+/// siete: `[!bloquear_todo, toque, doble, triple, mantener, doble en llamada,
+/// mantener en llamada]` (LockTouchpadEncoder de GalaxyBudsClient). Mandarles
+/// el byte suelto `[0]` los dejaba con todo bloqueado salvo el toque simple:
+/// el doble y el triple toque no hacían nada.
+// 0.2.0
+pub fn payload_bloqueo(bloqueado: bool, avanzado: bool) -> Vec<u8> {
+    if avanzado {
+        vec![!bloqueado as u8, 1, 1, 1, 1, 1, 1]
+    } else {
+        vec![bloqueado as u8]
     }
 }
 

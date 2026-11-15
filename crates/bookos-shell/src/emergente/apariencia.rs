@@ -13,58 +13,58 @@
 //! anterior hasta reiniciar la sesión. Cuando `bookos-settings` tenga por dónde
 //! decírselo, esta tarjeta sigue valiendo: es el mismo control, más a mano.
 
-use iced_core::alignment::Vertical;
-use iced_core::{Border, Color, Length};
-use iced_widget::{Space, column, container, row, text};
+use iced_core::{Border, Color, Length, Padding, Point, Rectangle};
+use iced_widget::{Space, column, container, row, stack, text};
 
 use crate::Accion;
 use crate::tema::{self, Acento, ModoTema, Realce};
 use crate::view::PanelElement;
 
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 
-/// El ancho de las demás tarjetas del shell.
-const ANCHO: f32 = 335.0;
-const MARGEN: f32 = 21.0;
-const CABECERA: f32 = 40.0;
-/// Alto de la muestra de un tema, con su rótulo debajo.
-const MUESTRA: f32 = 78.0;
-const MUESTRA_HUECO: f32 = 11.0;
-/// Alto del renglón «Color de acento».
-const ROTULO: f32 = 30.0;
-/// Lado de la casilla de un color: el círculo de 30 más su anillo.
-const CASILLA: f32 = 42.0;
+// Medidas de la mesa «Apariencia» del lienzo: las piezas de las demás
+// tarjetas (Batería, Wi‑Fi): 336 de ancho, relleno 16, título 15/600,
+// secciones en gris con separadores.
+const ANCHO: f32 = 336.0;
+const MARGEN: f32 = 16.0;
+/// El contenido entra 4 px más por los lados, como los rótulos de Batería.
+const SANGRIA: f32 = 4.0;
+const TITULO: f32 = 20.0;
+/// El selector de modo: el mismo que «Modo de energía». Cápsula de 40 con
+/// un pulgar de 34 que se desliza.
+const SELECTOR: f32 = 40.0;
+const SELECTOR_RELLENO: f32 = 3.0;
+/// Hueco antes de un separador y después de él hasta el rótulo.
+const AIRE: f32 = 16.0;
+const ROTULO: f32 = 15.0;
+const ROTULO_BAJO: f32 = 10.0;
+/// El grupo de acentos: relleno 14×10, círculos de 24, filas cada 38.
+const GRUPO_V: f32 = 14.0;
+const GRUPO_H: f32 = 10.0;
+const CIRCULO: f32 = 24.0;
+const FILA_ACENTO: f32 = CIRCULO + 14.0;
 const COLUMNAS: usize = 6;
-const CIRCULO: f32 = 30.0;
-/// El divisor y el aire que lo rodea.
-const SEPARACION: f32 = 17.0;
-/// Las miniaturas de fondo van en rejilla de tres columnas, del mismo ancho que
-/// las muestras de tema de arriba, y no repartiendo la fila entre las familias
-/// que haya: con cinco salían miniaturas de 51 px casi cuadradas, con más aún
-/// menores, y no casaban con nada de lo que tienen encima. Con más familias la
-/// rejilla gana filas en vez de encoger.
+/// El aro de lo elegido: 2 px de aire del color de detrás y 2 del anillo.
+const ARO: f32 = 4.0;
+/// Fondos: tres columnas con 8 de calle; la última casilla libre es «+».
 const FONDO_COLUMNAS: usize = 3;
-/// Hueco entre dos miniaturas de fondo, el mismo que entre las muestras.
-const FONDO_HUECO: f32 = MUESTRA_HUECO;
-/// Lo que se separa el anillo de elegida de la imagen. Sin este aire el anillo
-/// cae encima de la foto y con el acento azul sobre la miniatura azul no se ve.
-const HUECO_ANILLO: f32 = 4.0;
+const FONDO_HUECO: f32 = 8.0;
+const FONDO_RADIO: f32 = tema::R_BOTON_PEQUENO;
 
-/// Los tres modos, en el orden en que se enseñan.
-const MODOS: [ModoTema; 3] = [ModoTema::Claro, ModoTema::Oscuro, ModoTema::Automatico];
+/// Los tres modos, en el orden de macOS e iOS: el automático, que es el de
+/// serie, primero.
+const MODOS: [ModoTema; 3] = [ModoTema::Automatico, ModoTema::Claro, ModoTema::Oscuro];
 
-/// Ancho de una muestra de tema. Tres, con un hueco entre cada dos.
-// 0.1.0
-fn ancho_muestra() -> f32 {
-    (ANCHO - MARGEN * 2.0 - MUESTRA_HUECO * (MODOS.len() - 1) as f32) / MODOS.len() as f32
+// añadido en la 0.2.2
+fn ancho_util() -> f32 {
+    ANCHO - 2.0 * MARGEN
 }
 
-/// Paso horizontal de la rejilla de colores: lo que sobra se reparte entre las
-/// cuatro calles, no se acumula a la derecha.
-// 0.1.0
-fn paso() -> f32 {
-    let libre = ANCHO - MARGEN * 2.0 - CASILLA * COLUMNAS as f32;
-    CASILLA + libre / (COLUMNAS - 1) as f32
+/// Una casilla de la rejilla de fondos, con el aro incluido.
+// añadido en la 0.2.2
+fn celda_fondo() -> (f32, f32) {
+    let w = (ancho_util() - FONDO_HUECO * (FONDO_COLUMNAS - 1) as f32) / FONDO_COLUMNAS as f32;
+    (w, ((w - 2.0 * ARO) * 5.0 / 8.0).round() + 2.0 * ARO)
 }
 
 // 0.1.0
@@ -72,95 +72,79 @@ fn filas() -> usize {
     Acento::TODOS.len().div_ceil(COLUMNAS)
 }
 
-/// Ancho de una miniatura de fondo: el de una muestra de tema.
-// 0.1.0
-fn ancho_fondo() -> f32 {
-    ancho_muestra()
-}
-
-/// Alto de una miniatura: la proporción 16:10 de los fondos que trae BookOS.
-// 0.1.0
-fn alto_fondo() -> f32 {
-    (ancho_fondo() * 10.0 / 16.0).round()
-}
-
-/// Lo que ocupa la rejilla de `n` familias, con el hueco entre filas.
-// 0.1.0
-fn alto_fondos(n: usize) -> f32 {
-    let filas = n.div_ceil(FONDO_COLUMNAS) as f32;
-    filas * alto_fondo() + (filas - 1.0).max(0.0) * FONDO_HUECO
+/// Qué tiene el foco del teclado. Tab pasa de sección en sección; las flechas
+/// eligen dentro de la sección (patrón de grupo de opciones: moverse es
+/// elegir, como en Batería).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Foco {
+    Modo,
+    Acento,
+    Fondo,
+    /// La casilla «+», que abre Ajustes › Fondo de pantalla.
+    Mas,
 }
 
 pub struct Apariencia {
-    /// Lo elegido. No se lee de `tema::actual()` en cada `view` porque el
-    /// cambio lo aplica el compositor y puede tardar un frame en volver: la
-    /// tarjeta se marca a sí misma en cuanto se pulsa.
-    ///
-    /// Es el **modo**, no el tema pintado: con «Automático» puesto, `actual()`
-    /// dice claro u oscuro según la hora y marcar esa muestra convertiría el
-    /// automático en fijo con solo abrir la tarjeta.
+    /// Lo elegido. Es el **modo**, no el tema pintado: con «Automático»
+    /// puesto, `actual()` dice claro u oscuro según la hora.
     modo: ModoTema,
     acento: Acento,
-    /// Lo señalado por el puntero: las dos muestras de tema y la rejilla.
-    hover_tema: Realce,
+    /// El pulgar del selector de modo, de 0 a 2.
+    pulgar: tema::Transicion,
+    hover_modo: Realce,
     hover_color: Realce,
-    /// Lo elegido, animado: el anillo crece en el nuevo y se apaga en el
-    /// anterior en vez de saltar de un sitio a otro.
-    marca_tema: Realce,
     marca_color: Realce,
-    /// Las parejas de fondos instaladas, leídas **al abrir** y no en cada
-    /// `view`: recorrer tres directorios sesenta veces por segundo para una
-    /// lista que no cambia mientras la tarjeta está abierta es trabajo por nada.
+    /// Las parejas de fondos instaladas, leídas al abrir y al cambiar de tema.
     fondos: Vec<crate::fondos::Familia>,
-    /// La miniatura de cada familia ya en píxeles y con las esquinas
-    /// recortadas, en el mismo orden que `fondos`. Ver [`vistas_de`].
+    /// Si `fondos` y sus miniaturas son de la variante clara. Con «Automático»
+    /// la tarjeta no sabe qué toca sin la hora y la configuración; el
+    /// compositor aplica el tema un fotograma después y aquí se nota en el
+    /// siguiente evento, que rehace las miniaturas de la otra variante.
+    fondos_claro: bool,
     vistas: Vec<Option<iced_core::image::Handle>>,
     hover_fondo: Realce,
     marca_fondo: Realce,
     /// La casilla del acento automático ya rasterizada, con la paleta de la
-    /// que salió. Es interior porque la paleta cambia con la tarjeta abierta
-    /// —al elegir fondo o tema, y lo aplica el compositor un frame después— y
+    /// que salió. Interior porque la paleta cambia con la tarjeta abierta y
     /// quien se entera es `view`, que solo tiene `&self`.
     franjas: std::cell::RefCell<Option<([Color; 3], iced_core::image::Handle)>>,
+    foco: Option<Foco>,
 }
 
 impl Apariencia {
     /// `modo` es lo que dice la configuración, que la tarjeta no puede deducir:
     /// `tema::actual()` solo sabe qué se está pintando.
     // 0.1.0
-    // modified 0.1.1 -- franjas para la muestra del acento automático
+    // modified 0.2.2 -- selector de modo, aros opacos y teclado
     pub fn new(modo: ModoTema) -> Self {
         let acento = tema::acento_actual();
-        let mut marca_tema = Realce::nuevo();
         let mut marca_color = Realce::nuevo();
-        // Al abrirse ya está elegido: sin esto la tarjeta aparece con todo
-        // apagado y las marcas entrando, como si nadie hubiera elegido nada.
-        marca_tema.señalar(MODOS.iter().position(|m| *m == modo));
         marca_color.señalar(indice(acento));
-        let (fondos, elegido) = Self::fondos_para(tema::es_claro(), acento);
+        marca_color.terminar();
+        let claro = tema::es_claro();
+        let (fondos, elegido) = Self::fondos_para(claro, acento);
         let mut marca_fondo = Realce::nuevo();
         marca_fondo.señalar(elegido);
-        marca_tema.terminar();
-        marca_color.terminar();
         marca_fondo.terminar();
+        let posicion = MODOS.iter().position(|m| *m == modo).unwrap_or(0) as f32;
         Self {
             modo,
             acento,
-            hover_tema: Realce::nuevo(),
+            pulgar: tema::Transicion::nueva(posicion, tema::M_RAPIDO),
+            hover_modo: Realce::nuevo(),
             hover_color: Realce::nuevo(),
-            marca_tema,
             marca_color,
             vistas: vistas_de(&fondos),
             fondos,
+            fondos_claro: claro,
             hover_fondo: Realce::nuevo(),
             marca_fondo,
             franjas: Default::default(),
+            foco: None,
         }
     }
 
-    /// La imagen de la casilla automática, rehecha solo si cambió la paleta:
-    /// un `Handle` nuevo en cada `view` obligaría a iced a subirla otra vez
-    /// en cada fotograma.
+    /// La imagen de la casilla automática, rehecha solo si cambió la paleta.
     // 0.1.1
     fn franjas(&self) -> iced_core::image::Handle {
         let paleta = tema::paleta_automatica();
@@ -176,11 +160,8 @@ impl Apariencia {
     }
 
     /// Los fondos instalados para ese tema, ordenados por afinidad con el
-    /// acento, y el índice del que ya está puesto.
-    ///
-    /// Se compara por **nombre de familia** y no por ruta: con el tema oscuro
-    /// puesto, el fichero cargado es el `_dark` de la pareja, y comparar rutas
-    /// no encontraría la miniatura de su propia familia.
+    /// acento, y el índice del que ya está puesto (por nombre de familia: con
+    /// el tema oscuro el fichero cargado es el `_dark` de la pareja).
     // 0.1.0
     fn fondos_para(es_claro: bool, acento: Acento) -> (Vec<crate::fondos::Familia>, Option<usize>) {
         let mut fondos = crate::fondos::instaladas(es_claro);
@@ -192,15 +173,55 @@ impl Apariencia {
         (fondos, elegido)
     }
 
+    /// Rehace los fondos si el tema pintado ya no es el de sus miniaturas.
+    // añadido en la 0.2.2
+    fn al_dia(&mut self) -> bool {
+        let claro = tema::es_claro();
+        if claro == self.fondos_claro {
+            return false;
+        }
+        let (fondos, elegido) = Self::fondos_para(claro, self.acento);
+        self.vistas = vistas_de(&fondos);
+        self.fondos = fondos;
+        self.fondos_claro = claro;
+        self.marca_fondo.señalar(elegido);
+        self.marca_fondo.terminar();
+        true
+    }
+
+    // --- Geometría -------------------------------------------------------------
+
+    // añadido en la 0.2.2
+    fn y_selector(&self) -> f32 {
+        MARGEN + 2.0 + TITULO + 14.0
+    }
+
+    // añadido en la 0.2.2
+    fn y_grupo_acento(&self) -> f32 {
+        self.y_selector() + SELECTOR + AIRE + 0.5 + AIRE + ROTULO + ROTULO_BAJO
+    }
+
+    // añadido en la 0.2.2
+    fn alto_grupo_acento(&self) -> f32 {
+        2.0 * GRUPO_V + CIRCULO + FILA_ACENTO * (filas() - 1) as f32
+    }
+
+    // añadido en la 0.2.2
+    fn y_fondos(&self) -> f32 {
+        self.y_grupo_acento() + self.alto_grupo_acento() + AIRE + 0.5 + AIRE + ROTULO + ROTULO_BAJO
+    }
+
+    /// Casillas de la rejilla de fondos: las familias y el «+».
+    // añadido en la 0.2.2
+    fn celdas_fondo(&self) -> usize {
+        self.fondos.len() + 1
+    }
+
     // 0.1.0
     pub fn size(&self) -> (f32, f32) {
-        let mut alto =
-            CABECERA + MUESTRA + SEPARACION + ROTULO + CASILLA * filas() as f32 + MARGEN * 2.0;
-        // Sin fondos instalados la sección no se dibuja: un rótulo con una fila
-        // vacía debajo no es «no hay ninguno», es «esto está roto».
-        if !self.fondos.is_empty() {
-            alto += SEPARACION + ROTULO + alto_fondos(self.fondos.len());
-        }
+        let (_, h) = celda_fondo();
+        let filas = self.celdas_fondo().div_ceil(FONDO_COLUMNAS) as f32;
+        let alto = self.y_fondos() + filas * h + (filas - 1.0) * FONDO_HUECO + MARGEN + 2.0;
         (ANCHO, alto)
     }
 
@@ -210,94 +231,78 @@ impl Apariencia {
         Ancla::BajoElPanel { x: 8.0 }
     }
 
+    // añadido en la 0.2.2
+    fn rect_modo(&self, i: usize) -> Rectangle {
+        let w = (ancho_util() - 2.0 * SANGRIA - 2.0 * SELECTOR_RELLENO) / MODOS.len() as f32;
+        Rectangle {
+            x: MARGEN + SANGRIA + SELECTOR_RELLENO + i as f32 * w,
+            y: self.y_selector() + SELECTOR_RELLENO,
+            width: w,
+            height: SELECTOR - 2.0 * SELECTOR_RELLENO,
+        }
+    }
+
+    /// Cada color ocupa su sexta parte del grupo y una fila entera: zonas de
+    /// 47×38, mayores que el círculo de 24 y sin calles muertas (HIG §11).
+    // añadido en la 0.2.2
+    fn rect_color(&self, i: usize) -> Rectangle {
+        let w = (ancho_util() - 2.0 * GRUPO_H) / COLUMNAS as f32;
+        let (f, c) = (i / COLUMNAS, i % COLUMNAS);
+        Rectangle {
+            x: MARGEN + GRUPO_H + c as f32 * w,
+            y: self.y_grupo_acento() + GRUPO_V - 7.0 + f as f32 * FILA_ACENTO,
+            width: w,
+            height: FILA_ACENTO,
+        }
+    }
+
+    // añadido en la 0.2.2
+    fn rect_fondo(&self, i: usize) -> Rectangle {
+        let (w, h) = celda_fondo();
+        let (f, c) = (i / FONDO_COLUMNAS, i % FONDO_COLUMNAS);
+        Rectangle {
+            x: MARGEN + c as f32 * (w + FONDO_HUECO),
+            y: self.y_fondos() + f as f32 * (h + FONDO_HUECO),
+            width: w,
+            height: h,
+        }
+    }
+
+    // 0.1.0
+    fn muestra_en(&self, x: f32, y: f32) -> Option<usize> {
+        let p = Point::new(x, y);
+        (0..MODOS.len()).find(|i| self.rect_modo(*i).contains(p))
+    }
+
+    // 0.1.0
+    fn color_en(&self, x: f32, y: f32) -> Option<usize> {
+        let p = Point::new(x, y);
+        (0..Acento::TODOS.len()).find(|i| self.rect_color(*i).contains(p))
+    }
+
+    /// Una familia de fondo o, con `Some(len)`, la casilla «+».
+    // 0.1.0
+    fn fondo_en(&self, x: f32, y: f32) -> Option<usize> {
+        let p = Point::new(x, y);
+        (0..self.celdas_fondo()).find(|i| self.rect_fondo(*i).contains(p))
+    }
+
+    // --- Entrada ---------------------------------------------------------------
+
     /// ¿Se está moviendo algo dentro de la tarjeta?
     // 0.1.0
     pub fn animando(&self) -> bool {
-        self.hover_tema.animando()
+        self.pulgar.animando()
+            || self.hover_modo.animando()
             || self.hover_color.animando()
-            || self.marca_tema.animando()
             || self.marca_color.animando()
             || self.hover_fondo.animando()
             || self.marca_fondo.animando()
     }
 
-    /// `y` donde empieza la fila de muestras de tema.
-    // 0.1.0
-    fn y_muestras(&self) -> f32 {
-        MARGEN + CABECERA
-    }
-
-    // 0.1.0
-    fn y_rejilla(&self) -> f32 {
-        self.y_muestras() + MUESTRA + SEPARACION + ROTULO
-    }
-
-    // 0.1.0
-    fn muestra_en(&self, x: f32, y: f32) -> Option<usize> {
-        let y0 = self.y_muestras();
-        if y < y0 || y > y0 + MUESTRA || x < MARGEN || x > ANCHO - MARGEN {
-            return None;
-        }
-        let rel = x - MARGEN;
-        let paso = ancho_muestra() + MUESTRA_HUECO;
-        let i = (rel / paso) as usize;
-        // El hueco entre dos muestras no es de nadie: pulsar en la calle no
-        // puede elegir la de la izquierda.
-        if rel - i as f32 * paso > ancho_muestra() {
-            return None;
-        }
-        (i < MODOS.len()).then_some(i)
-    }
-
-    /// `y` donde empieza la fila de miniaturas de fondo.
-    // 0.1.0
-    fn y_fondos(&self) -> f32 {
-        self.y_rejilla() + CASILLA * filas() as f32 + SEPARACION + ROTULO
-    }
-
-    // 0.1.0
-    fn fondo_en(&self, x: f32, y: f32) -> Option<usize> {
-        if self.fondos.is_empty() {
-            return None;
-        }
-        let y0 = self.y_fondos();
-        if y < y0 || y > y0 + alto_fondos(self.fondos.len()) || x < MARGEN || x > ANCHO - MARGEN {
-            return None;
-        }
-        let (paso_x, paso_y) = (ancho_fondo() + FONDO_HUECO, alto_fondo() + FONDO_HUECO);
-        let (rel_x, rel_y) = (x - MARGEN, y - y0);
-        let (col, fila) = ((rel_x / paso_x) as usize, (rel_y / paso_y) as usize);
-        // Las calles entre miniaturas no son de nadie.
-        if rel_x - col as f32 * paso_x > ancho_fondo()
-            || rel_y - fila as f32 * paso_y > alto_fondo()
-        {
-            return None;
-        }
-        let i = fila * FONDO_COLUMNAS + col;
-        (col < FONDO_COLUMNAS && i < self.fondos.len()).then_some(i)
-    }
-
-    // 0.1.0
-    fn color_en(&self, x: f32, y: f32) -> Option<usize> {
-        let y0 = self.y_rejilla();
-        if y < y0 || x < MARGEN {
-            return None;
-        }
-        let (col, fila) = (
-            ((x - MARGEN) / paso()) as usize,
-            ((y - y0) / CASILLA) as usize,
-        );
-        // Fuera de la casilla, en la calle que la separa de la siguiente: no
-        // cuenta, o pulsar entre dos colores elegiría el de la izquierda.
-        if x - MARGEN - col as f32 * paso() > CASILLA || col >= COLUMNAS {
-            return None;
-        }
-        let i = fila * COLUMNAS + col;
-        (i < Acento::TODOS.len()).then_some(i)
-    }
-
     // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
+        let refrescado = self.al_dia();
         let (m, c, f) = match punto {
             Some((x, y)) => (
                 self.muestra_en(x, y),
@@ -306,49 +311,71 @@ impl Apariencia {
             ),
             None => (None, None, None),
         };
-        // Los tres `señalar` **siempre**, sin cortocircuito: con `||` los de
-        // después no se evalúan cuando el primero cambia y la rejilla se queda
-        // con un color encendido al salir el ratón por arriba.
-        let a = self.hover_tema.señalar(m);
+        // Los tres `señalar` siempre, sin cortocircuito: con `||` los de
+        // después no se evalúan y un realce se quedaría encendido.
+        let a = self.hover_modo.señalar(m);
         let b = self.hover_color.señalar(c);
         let d = self.hover_fondo.señalar(f);
-        a || b || d
+        refrescado || a || b || d
     }
 
-    // 0.1.0
-    pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
-        if let Some(i) = self.muestra_en(x, y) {
-            self.modo = MODOS[i];
-            self.marca_tema.señalar(Some(i));
-            // Con «Automático» no se sabe aquí qué toca sin la hora y la
-            // configuración de horas, que esta tarjeta no lleva: se deja tal
-            // cual hasta que el compositor la reabra. Con Claro u Oscuro sí
-            // se sabe sin ambigüedad, y las miniaturas de fondo son la
-            // pareja del tema anterior si no se refrescan aquí.
-            if let ModoTema::Claro | ModoTema::Oscuro = self.modo {
-                let es_claro = self.modo == ModoTema::Claro;
-                let (fondos, elegido) = Self::fondos_para(es_claro, self.acento);
+    // añadido en la 0.2.2
+    fn elegir_modo(&mut self, i: usize) -> Accion {
+        self.modo = MODOS[i];
+        self.pulgar.ir_a(i as f32);
+        if tema::efectos_reducidos() {
+            self.pulgar.fijar(i as f32);
+        }
+        // Con Claro u Oscuro se sabe ya qué variante de fondos toca; con
+        // Automático lo resuelve el compositor y lo recoge `al_dia`.
+        if let ModoTema::Claro | ModoTema::Oscuro = self.modo {
+            let claro = self.modo == ModoTema::Claro;
+            if claro != self.fondos_claro {
+                let (fondos, elegido) = Self::fondos_para(claro, self.acento);
                 self.vistas = vistas_de(&fondos);
                 self.fondos = fondos;
+                self.fondos_claro = claro;
                 self.marca_fondo.señalar(elegido);
                 self.marca_fondo.terminar();
             }
-            return Some(self.accion());
         }
-        if let Some(i) = self.fondo_en(x, y) {
-            self.marca_fondo.señalar(Some(i));
-            let familia = &self.fondos[i];
-            // El fondo va en su propia acción y no en `Apariencia`: son dos
-            // claves distintas del fichero y elegir un fondo no toca el tema.
-            return Some(Accion::Fondo {
-                claro: familia.claro.clone(),
-                oscuro: familia.oscuro.clone(),
-            });
-        }
-        let i = self.color_en(x, y)?;
+        self.accion()
+    }
+
+    // añadido en la 0.2.2
+    fn elegir_color(&mut self, i: usize) -> Accion {
         self.acento = Acento::TODOS[i];
         self.marca_color.señalar(Some(i));
-        Some(self.accion())
+        self.accion()
+    }
+
+    // añadido en la 0.2.2
+    fn elegir_fondo(&mut self, i: usize) -> Accion {
+        if i == self.fondos.len() {
+            return Accion::Lanzar("bookos-settings --page fondos".into());
+        }
+        self.marca_fondo.señalar(Some(i));
+        let familia = &self.fondos[i];
+        // El fondo va en su propia acción y no en `Apariencia`: son dos claves
+        // distintas del fichero y elegir un fondo no toca el tema.
+        Accion::Fondo {
+            claro: familia.claro.clone(),
+            oscuro: familia.oscuro.clone(),
+        }
+    }
+
+    // 0.1.0
+    // modified 0.2.2 -- selector de modo y casilla «+»
+    pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
+        self.al_dia();
+        if let Some(i) = self.muestra_en(x, y) {
+            return Some(self.elegir_modo(i));
+        }
+        if let Some(i) = self.fondo_en(x, y) {
+            return Some(self.elegir_fondo(i));
+        }
+        let i = self.color_en(x, y)?;
+        Some(self.elegir_color(i))
     }
 
     // 0.1.0
@@ -359,18 +386,166 @@ impl Apariencia {
         }
     }
 
+    /// Tab pasa de sección; las flechas eligen dentro (izquierda y derecha en
+    /// fila, arriba y abajo de fila en fila); Intro abre «+».
     // 0.1.0
+    // modified 0.2.2 -- teclado (HIG §11)
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
-        match tecla {
-            crate::TeclaPulsada::Escape => Tecla::Cerrar,
+        use crate::TeclaPulsada as T;
+        self.al_dia();
+        let mover = |actual: usize, n: usize, columnas: usize, tecla: &T| -> Option<usize> {
+            let paso: isize = match tecla {
+                T::Izquierda => -1,
+                T::Derecha => 1,
+                T::Arriba => -(columnas as isize),
+                T::Abajo => columnas as isize,
+                _ => return None,
+            };
+            let nuevo = actual as isize + paso;
+            (0..n as isize).contains(&nuevo).then_some(nuevo as usize)
+        };
+        match (tecla, self.foco) {
+            (T::Escape, _) => Tecla::Cerrar,
+            (T::Tabulador, foco) => {
+                self.foco = Some(match foco {
+                    None => Foco::Modo,
+                    Some(Foco::Modo) => Foco::Acento,
+                    Some(Foco::Acento) if self.fondos.is_empty() => Foco::Mas,
+                    Some(Foco::Acento) => Foco::Fondo,
+                    Some(Foco::Fondo) => Foco::Mas,
+                    Some(Foco::Mas) => Foco::Modo,
+                });
+                Tecla::Consumida
+            }
+            (T::Intro, Some(Foco::Mas)) => Tecla::Hacer(self.elegir_fondo(self.fondos.len())),
+            (tecla, Some(Foco::Modo)) => {
+                let i = MODOS.iter().position(|m| *m == self.modo).unwrap_or(0);
+                match mover(i, MODOS.len(), MODOS.len(), &tecla) {
+                    Some(j) => Tecla::Hacer(self.elegir_modo(j)),
+                    None => Tecla::Ignorada,
+                }
+            }
+            (tecla, Some(Foco::Acento)) => {
+                let i = indice(self.acento).unwrap_or(0);
+                match mover(i, Acento::TODOS.len(), COLUMNAS, &tecla) {
+                    Some(j) => Tecla::Hacer(self.elegir_color(j)),
+                    None => Tecla::Ignorada,
+                }
+            }
+            (tecla, Some(Foco::Fondo)) => {
+                let i = self.marca_fondo.actual().unwrap_or(0);
+                match mover(i, self.fondos.len(), FONDO_COLUMNAS, &tecla) {
+                    Some(j) => Tecla::Hacer(self.elegir_fondo(j)),
+                    None => Tecla::Ignorada,
+                }
+            }
             _ => Tecla::Ignorada,
         }
     }
 
-    // 0.1.0
-    // modified 0.1.1 -- muestra el acento automático con franjas
-    pub fn view(&self) -> PanelElement<'_> {
-        let mut rejilla = column![];
+    // --- Dibujo ----------------------------------------------------------------
+
+    /// Los colores, todos opacos: la tarjeta, sus grupos un escalón por
+    /// encima, la tinta y la gris (#6C6C70 en claro, HIG §2), el separador.
+    // añadido en la 0.2.2
+    fn paleta(&self) -> Paleta {
+        let claro = tema::es_claro();
+        let card = tema::card();
+        let tx = tema::texto();
+        let grupo = tema::superficie_en_tarjeta();
+        Paleta {
+            card,
+            grupo,
+            realce: tema::mezclar(grupo, tx, 0.06),
+            tx,
+            tx2: if claro {
+                Color::from_rgb8(0x6c, 0x6c, 0x70)
+            } else {
+                tema::TEXTO2
+            },
+            sep: tema::mezclar(card, tx, 0.1),
+        }
+    }
+
+    /// El selector de modo, el de «Modo de energía»: cápsula del grupo con un
+    /// pulgar en la tinta que se desliza; la opción elegida en el color de la
+    /// tarjeta y semibold, las demás en gris. La marca no es solo de color: es
+    /// la píldora y el peso.
+    // añadido en la 0.2.2
+    fn selector(&self, p: &Paleta) -> PanelElement<'_> {
+        let ancho = ancho_util() - 2.0 * SANGRIA;
+        let w = (ancho - 2.0 * SELECTOR_RELLENO) / MODOS.len() as f32;
+        let alto = SELECTOR - 2.0 * SELECTOR_RELLENO;
+        let elegido = MODOS.iter().position(|m| *m == self.modo).unwrap_or(0);
+        let foco = self.foco == Some(Foco::Modo);
+        let (tx, tx2, card) = (p.tx, p.tx2, p.card);
+        let pulgar = row![
+            Space::new().width(Length::Fixed(w * self.pulgar.valor())),
+            caja(
+                Space::new().into(),
+                w,
+                alto,
+                tx,
+                alto / 2.0,
+                foco.then_some(tema::acento())
+            ),
+        ]
+        // A todo el ancho: la pila toma el tamaño de su primera capa, y con el
+        // pulgar en la primera opción medía un tercio y recortaba las otras.
+        .width(Length::Fixed(ancho - 2.0 * SELECTOR_RELLENO));
+        let opciones = MODOS.iter().enumerate().fold(row![], |fila, (i, modo)| {
+            let on = i == elegido;
+            let señalada = self.hover_modo.intensidad(i);
+            let nombre = match modo {
+                ModoTema::Automatico => t("Automático", "Auto"),
+                ModoTema::Claro => t("Claro", "Light"),
+                ModoTema::Oscuro => t("Oscuro", "Dark"),
+            };
+            fila.push(
+                container(
+                    text(nombre)
+                        .size(13.0)
+                        .font(super::control::peso(if on {
+                            iced_core::font::Weight::Semibold
+                        } else {
+                            iced_core::font::Weight::Medium
+                        }))
+                        .color(if on {
+                            card
+                        } else {
+                            tema::mezclar(tx2, tx, señalada)
+                        })
+                        .wrapping(iced_core::text::Wrapping::None),
+                )
+                .center_x(Length::Fixed(w))
+                .center_y(Length::Fixed(alto)),
+            )
+        });
+        container(caja(
+            container(stack![pulgar, opciones])
+                .padding(SELECTOR_RELLENO)
+                .into(),
+            ancho,
+            SELECTOR,
+            p.grupo,
+            SELECTOR / 2.0,
+            None,
+        ))
+        .padding(Padding {
+            left: SANGRIA,
+            right: SANGRIA,
+            ..Padding::ZERO
+        })
+        .into()
+    }
+
+    /// Doce círculos de 24 en su grupo. Elegido como iOS: un aro de su propio
+    /// color separado por el grupo y una ✓ en la tinta que se lee encima.
+    // añadido en la 0.2.2
+    fn acentos(&self, p: &Paleta) -> PanelElement<'_> {
+        let w = (ancho_util() - 2.0 * GRUPO_H) / COLUMNAS as f32;
+        let foco = self.foco == Some(Foco::Acento);
+        let mut col = column![];
         for f in 0..filas() {
             let mut fila = row![];
             for c in 0..COLUMNAS {
@@ -378,87 +553,302 @@ impl Apariencia {
                 let Some(acento) = Acento::TODOS.get(i).copied() else {
                     break;
                 };
-                if c > 0 {
-                    fila = fila.push(Space::new().width(Length::Fixed(paso() - CASILLA)));
+                let franjas = (acento == Acento::Automatico).then(|| self.franjas());
+                let color = match acento {
+                    Acento::Automatico => tema::paleta_automatica()[0],
+                    a => a.color(),
+                };
+                let marca = self.marca_color.intensidad(i);
+                let señalada = self.hover_color.intensidad(i);
+                let circulo: PanelElement<'_> = match franjas {
+                    Some(imagen) => iced_widget::image(imagen)
+                        .width(Length::Fixed(CIRCULO))
+                        .height(Length::Fixed(CIRCULO))
+                        .into(),
+                    // Un color casi igual que el grupo (Arena en claro) lleva un
+                    // borde fino de la tinta: si no, el círculo no se ve (HIG §2,
+                    // indicadores a 3:1 respecto a lo de al lado).
+                    None if (luz(color) - luz(p.grupo)).abs() < 0.12 => caja(
+                        caja(
+                            Space::new().into(),
+                            CIRCULO - 2.0,
+                            CIRCULO - 2.0,
+                            color,
+                            CIRCULO / 2.0 - 1.0,
+                            None,
+                        ),
+                        CIRCULO,
+                        CIRCULO,
+                        tema::mezclar(p.grupo, p.tx, 0.25),
+                        CIRCULO / 2.0,
+                        None,
+                    ),
+                    None => caja(
+                        Space::new().into(),
+                        CIRCULO,
+                        CIRCULO,
+                        color,
+                        CIRCULO / 2.0,
+                        None,
+                    ),
+                };
+                let check = crate::icono::propio("comprobado").map(|ic| {
+                    let tinta = if acento == Acento::Automatico {
+                        Color::WHITE
+                    } else {
+                        tema::tinta_sobre(color)
+                    };
+                    crate::icono::ver_teñido_propio(&ic, 12.0 * marca, tinta)
+                });
+                let mut dentro = stack![circulo];
+                if let Some(check) = check
+                    && marca > 0.01
+                {
+                    dentro = dentro.push(
+                        container(check)
+                            .center_x(Length::Fixed(CIRCULO))
+                            .center_y(Length::Fixed(CIRCULO)),
+                    );
                 }
-                fila = fila.push(casilla(
-                    acento,
-                    (acento == Acento::Automatico).then(|| self.franjas()),
-                    self.marca_color.intensidad(i),
-                    self.hover_color.intensidad(i),
+                // El aro: el color del acento por fuera y el del grupo como aire.
+                // Con el foco del teclado sobre el elegido, el aro es la tinta.
+                let anillo = if foco && marca > 0.5 {
+                    p.tx
+                } else {
+                    tema::mezclar(tema::mezclar(p.grupo, p.realce, señalada), color, marca)
+                };
+                let lado = CIRCULO + 2.0 * ARO;
+                let anillado = caja(
+                    caja(
+                        dentro.into(),
+                        CIRCULO + ARO,
+                        CIRCULO + ARO,
+                        p.grupo,
+                        (CIRCULO + ARO) / 2.0,
+                        None,
+                    ),
+                    lado,
+                    lado,
+                    anillo,
+                    lado / 2.0,
+                    None,
+                );
+                fila = fila.push(container(anillado).center_x(Length::Fixed(w)).height(
+                    Length::Fixed(if f + 1 < filas() {
+                        FILA_ACENTO
+                    } else {
+                        CIRCULO + ARO * 2.0
+                    }),
                 ));
             }
-            rejilla = rejilla.push(fila);
+            col = col.push(fila);
         }
+        caja(
+            container(col)
+                .padding(Padding {
+                    top: GRUPO_V - ARO,
+                    bottom: GRUPO_V - ARO,
+                    left: GRUPO_H,
+                    right: GRUPO_H,
+                })
+                .into(),
+            ancho_util(),
+            self.alto_grupo_acento(),
+            p.grupo,
+            tema::R_CONTROL,
+            None,
+        )
+    }
 
-        let contenido = column![
-            container(text("Apariencia").size(tema::T_TITULO).color(tema::texto()))
-                .height(Length::Fixed(CABECERA))
-                .center_y(Length::Fixed(CABECERA)),
-            MODOS.iter().enumerate().fold(row![], |fila, (i, modo)| {
-                let fila = if i > 0 {
-                    fila.push(Space::new().width(Length::Fixed(MUESTRA_HUECO)))
+    /// La rejilla de fondos y la casilla «+». Elegido: aro del acento con aire
+    /// de la tarjeta; señalado: aro del grupo.
+    // añadido en la 0.2.2
+    fn fondos(&self, p: &Paleta) -> PanelElement<'_> {
+        let (w, h) = celda_fondo();
+        let (iw, ih) = (w - 2.0 * ARO, h - 2.0 * ARO);
+        let foco = self.foco;
+        let mut col = column![].spacing(FONDO_HUECO);
+        let mut fila = row![].spacing(FONDO_HUECO);
+        for i in 0..self.celdas_fondo() {
+            let señalada = self.hover_fondo.intensidad(i);
+            let celda: PanelElement<'_> = if i == self.fondos.len() {
+                let mas = crate::icono::propio("vista-anadir")
+                    .map(|ic| {
+                        crate::icono::ver_teñido_propio(
+                            &ic,
+                            16.0,
+                            tema::mezclar(p.tx2, p.tx, señalada),
+                        )
+                    })
+                    .unwrap_or_else(|| text("+").size(18.0).color(p.tx2).into());
+                let anillo = if foco == Some(Foco::Mas) {
+                    tema::acento()
                 } else {
-                    fila
+                    p.card
                 };
-                fila.push(muestra(
-                    *modo,
-                    self.marca_tema.intensidad(i),
-                    self.hover_tema.intensidad(i),
-                ))
-            }),
-            separador(),
-            container(
-                text("Color de acento")
-                    .size(tema::T_CUERPO)
-                    .color(tema::TEXTO2)
-            )
-            .height(Length::Fixed(ROTULO))
-            .center_y(Length::Fixed(ROTULO)),
-            rejilla,
-        ];
-
-        // La sección de fondos solo si hay alguno: un rótulo con una fila vacía
-        // debajo no dice «no hay ninguno», dice «esto está roto».
-        let contenido = if self.fondos.is_empty() {
-            contenido
-        } else {
-            let rejilla = self.vistas.chunks(FONDO_COLUMNAS).enumerate().fold(
-                column![],
-                |rejilla, (f, trozo)| {
-                    let rejilla = if f > 0 {
-                        rejilla.push(Space::new().height(Length::Fixed(FONDO_HUECO)))
-                    } else {
-                        rejilla
-                    };
-                    rejilla.push(trozo.iter().enumerate().fold(row![], |fila, (c, vista)| {
-                        let i = f * FONDO_COLUMNAS + c;
-                        let fila = if c > 0 {
-                            fila.push(Space::new().width(Length::Fixed(FONDO_HUECO)))
-                        } else {
-                            fila
-                        };
-                        fila.push(miniatura(
-                            vista.as_ref(),
-                            ancho_fondo(),
-                            self.marca_fondo.intensidad(i),
-                            self.hover_fondo.intensidad(i),
-                        ))
-                    }))
-                },
-            );
-            contenido
-                .push(separador())
-                .push(
-                    container(text("Fondo").size(tema::T_CUERPO).color(tema::TEXTO2))
-                        .height(Length::Fixed(ROTULO))
-                        .center_y(Length::Fixed(ROTULO)),
+                caja(
+                    caja(
+                        mas,
+                        iw,
+                        ih,
+                        tema::mezclar(p.grupo, p.realce, señalada),
+                        FONDO_RADIO,
+                        None,
+                    ),
+                    w,
+                    h,
+                    anillo,
+                    FONDO_RADIO + ARO,
+                    None,
                 )
-                .push(rejilla)
-        };
+            } else {
+                let marca = self.marca_fondo.intensidad(i);
+                let imagen: PanelElement<'_> = match &self.vistas[i] {
+                    Some(v) => iced_widget::image(v.clone())
+                        .width(Length::Fixed(iw))
+                        .height(Length::Fixed(ih))
+                        .content_fit(iced_core::ContentFit::Fill)
+                        .into(),
+                    None => caja(Space::new().into(), iw, ih, p.grupo, FONDO_RADIO, None),
+                };
+                let mut anillo = tema::mezclar(
+                    tema::mezclar(p.card, p.realce, señalada),
+                    tema::acento(),
+                    marca,
+                );
+                if foco == Some(Foco::Fondo) && marca > 0.5 {
+                    anillo = p.tx;
+                }
+                // El aire entre el aro y la imagen es la tarjeta: con el acento
+                // azul sobre un fondo azul, sin él no se vería el aro.
+                caja(
+                    caja(imagen, iw + 2.0, ih + 2.0, p.card, FONDO_RADIO + 1.0, None),
+                    w,
+                    h,
+                    anillo,
+                    FONDO_RADIO + ARO,
+                    None,
+                )
+            };
+            fila = fila.push(celda);
+            if (i + 1) % FONDO_COLUMNAS == 0 || i + 1 == self.celdas_fondo() {
+                col = col.push(std::mem::replace(&mut fila, row![].spacing(FONDO_HUECO)));
+            }
+        }
+        col.into()
+    }
 
+    // 0.1.0
+    // modified 0.2.2 -- la mesa del lienzo: selector, grupo de acentos, aros opacos, «+»
+    pub fn view(&self) -> PanelElement<'_> {
+        let p = self.paleta();
+        let rotulo = |texto: &str| -> PanelElement<'static> {
+            container(
+                text(texto.to_owned())
+                    .size(12.0)
+                    .font(super::control::peso(iced_core::font::Weight::Medium))
+                    .color(p.tx2),
+            )
+            .padding(Padding {
+                left: SANGRIA,
+                ..Padding::ZERO
+            })
+            .height(Length::Fixed(ROTULO))
+            .into()
+        };
+        let sep = |p: &Paleta| -> PanelElement<'static> {
+            let c = p.sep;
+            container(
+                container(Space::new())
+                    .width(Length::Fill)
+                    .height(Length::Fixed(0.5))
+                    .style(move |_: &iced_widget::Theme| container::Style {
+                        background: Some(c.into()),
+                        ..Default::default()
+                    }),
+            )
+            .padding(Padding {
+                left: SANGRIA,
+                right: SANGRIA,
+                ..Padding::ZERO
+            })
+            .into()
+        };
+        let contenido = column![
+            Space::new().height(Length::Fixed(2.0)),
+            container(
+                text(t("Apariencia", "Appearance"))
+                    .size(15.0)
+                    .font(super::control::peso(iced_core::font::Weight::Semibold))
+                    .color(p.tx)
+            )
+            .padding(Padding {
+                left: SANGRIA,
+                ..Padding::ZERO
+            })
+            .height(Length::Fixed(TITULO)),
+            Space::new().height(Length::Fixed(14.0)),
+            self.selector(&p),
+            Space::new().height(Length::Fixed(AIRE)),
+            sep(&p),
+            Space::new().height(Length::Fixed(AIRE)),
+            rotulo(t("Color de acento", "Accent color")),
+            Space::new().height(Length::Fixed(ROTULO_BAJO)),
+            self.acentos(&p),
+            Space::new().height(Length::Fixed(AIRE)),
+            sep(&p),
+            Space::new().height(Length::Fixed(AIRE)),
+            rotulo(t("Fondo de pantalla", "Wallpaper")),
+            Space::new().height(Length::Fixed(ROTULO_BAJO)),
+            self.fondos(&p),
+        ];
         super::control::tarjeta(contenido.into(), ANCHO, MARGEN)
     }
+}
+
+/// Los colores de la tarjeta; ver [`Apariencia::paleta`].
+// añadido en la 0.2.2
+#[derive(Clone, Copy)]
+struct Paleta {
+    card: Color,
+    grupo: Color,
+    realce: Color,
+    tx: Color,
+    tx2: Color,
+    sep: Color,
+}
+
+/// Luminancia aproximada, de 0 a 1, para ver si dos colores se confunden.
+// añadido en la 0.2.2
+fn luz(c: Color) -> f32 {
+    0.299 * c.r + 0.587 * c.g + 0.114 * c.b
+}
+
+/// Una caja de color opaco con su radio y, si se da, un borde de foco.
+// añadido en la 0.2.2
+fn caja<'a>(
+    contenido: PanelElement<'a>,
+    w: f32,
+    h: f32,
+    fondo: Color,
+    radio: f32,
+    foco: Option<Color>,
+) -> PanelElement<'a> {
+    container(contenido)
+        .width(Length::Fixed(w))
+        .height(Length::Fixed(h))
+        .center_x(Length::Fixed(w))
+        .center_y(Length::Fixed(h))
+        .style(move |_: &iced_widget::Theme| container::Style {
+            background: Some(fondo.into()),
+            border: Border {
+                radius: radio.into(),
+                width: if foco.is_some() { 2.0 } else { 0.0 },
+                color: foco.unwrap_or(Color::TRANSPARENT),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 /// Pone delante el fondo que acompaña al acento elegido.
@@ -521,161 +911,6 @@ fn indice(acento: Acento) -> Option<usize> {
     Acento::TODOS.iter().position(|a| *a == acento)
 }
 
-/// Los dos colores de un tema, escritos aquí a mano.
-///
-/// Son los mismos `bg` y `card` de la tabla de tokens, pero no se le pueden
-/// preguntar a `tema::bg()`: la muestra enseña el tema que **no** está puesto.
-// 0.1.0
-fn colores(claro: bool) -> (Color, Color) {
-    if claro {
-        (Color::from_rgb(0.949, 0.949, 0.969), Color::WHITE)
-    } else {
-        (Color::BLACK, Color::from_rgb(0.110, 0.110, 0.118))
-    }
-}
-
-/// Un trozo de escritorio en miniatura: la barra del panel arriba y una tarjeta
-/// debajo, que es lo que distingue de un vistazo un tema del otro.
-// 0.1.0
-fn mini<'a>(
-    claro: bool,
-    ancho: f32,
-    alto: f32,
-    radio: iced_core::border::Radius,
-) -> PanelElement<'a> {
-    let (fondo, tarjeta) = colores(claro);
-    // La barra tiene su propio gris y no el de la tarjeta: era `tarjeta`, que
-    // en oscuro es el `#1c1c1e` de la emergente donde va la muestra, y en
-    // claro el blanco de la tarjeta clara. Se fundía con el fondo, y como ella
-    // es la que lleva las esquinas de arriba, la muestra se veía cortada en
-    // recto por arriba.
-    let barra = if claro {
-        Color::from_rgb(0.820, 0.820, 0.839)
-    } else {
-        Color::from_rgb(0.227, 0.227, 0.235)
-    };
-    // La barra del panel no se dibuja como una pieza de 8 px con las esquinas
-    // de arriba redondeadas: tiny-skia limita el radio a la mitad del lado más
-    // corto, así que un radio de 6 en 8 px de alto se quedaría en 4 y la
-    // barra asomaba en pico por encima de la curva. Se hace al revés: el
-    // contenedor de fuera pinta el color de la barra con el radio entero, y el
-    // cuerpo de debajo tapa el resto redondeando solo por abajo.
-    let abajo = iced_core::border::Radius {
-        top_left: 0.0,
-        top_right: 0.0,
-        ..radio
-    };
-    let cuerpo = container(
-        container(Space::new())
-            .width(Length::Fixed(ancho * 0.5))
-            .height(Length::Fixed(14.0))
-            .style(move |_| container::Style {
-                background: Some(tarjeta.into()),
-                border: Border {
-                    radius: tema::R_CHIP.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-    )
-    .padding(8)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(move |_| container::Style {
-        background: Some(fondo.into()),
-        border: Border {
-            radius: abajo,
-            ..Default::default()
-        },
-        ..Default::default()
-    });
-    container(column![Space::new().height(Length::Fixed(8.0)), cuerpo])
-        .width(Length::Fixed(ancho))
-        .height(Length::Fixed(alto))
-        .style(move |_| container::Style {
-            background: Some(barra.into()),
-            border: Border {
-                radius: radio,
-                ..Default::default()
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
-/// La muestra de un modo.
-///
-/// «Automático» se dibuja partido: la mitad clara a la izquierda y la oscura a
-/// la derecha. Es lo mismo que enseña macOS, y dice lo que hace sin necesitar
-/// el rótulo. El corte es vertical y no en diagonal porque una diagonal pide un
-/// lienzo con su propio dibujado y aquí basta con dos contenedores.
-// 0.1.0
-fn muestra<'a>(cual: ModoTema, elegida: f32, señalada: f32) -> PanelElement<'a> {
-    let ancho = ancho_muestra();
-    let alto_lienzo = MUESTRA - 22.0;
-
-    use iced_core::border::Radius;
-    // El radio no puede pasar del alto de la barra (8): el cuerpo va recto por
-    // arriba, y con R_BOTON (12) sus esquinas asomaban por fuera de la curva,
-    // que seguía bajando 4 px por debajo de la barra.
-    let entero = Radius::from(tema::R_CHIP);
-    let izquierda = Radius::default()
-        .top_left(tema::R_CHIP)
-        .bottom_left(tema::R_CHIP);
-    let derecha = Radius::default()
-        .top_right(tema::R_CHIP)
-        .bottom_right(tema::R_CHIP);
-
-    let dentro: PanelElement<'a> = match cual {
-        ModoTema::Claro => mini(true, ancho, alto_lienzo, entero),
-        ModoTema::Oscuro => mini(false, ancho, alto_lienzo, entero),
-        // Cada mitad lleva su propio fondo, así que el lienzo de fuera no pinta
-        // ninguno: si lo hiciera, asomaría por la junta al redondear.
-        ModoTema::Automatico => row![
-            mini(true, ancho / 2.0, alto_lienzo, izquierda),
-            mini(false, ancho / 2.0, alto_lienzo, derecha),
-        ]
-        .into(),
-    };
-
-    let lienzo = container(dentro)
-        .width(Length::Fixed(ancho))
-        .height(Length::Fixed(alto_lienzo))
-        .clip(true)
-        .style(move |_| container::Style {
-            border: Border {
-                radius: tema::R_CHIP.into(),
-                // El marco de elegido crece con la animación en vez de
-                // aparecer: 2 px que salen de golpe se leen como un parpadeo.
-                width: 2.0 * elegida,
-                color: tema::alfa(tema::acento(), elegida),
-            },
-            ..Default::default()
-        });
-
-    let rotulo = text(match cual {
-        ModoTema::Claro => "Claro",
-        ModoTema::Oscuro => "Oscuro",
-        ModoTema::Automatico => "Automático",
-    })
-    .size(tema::T_PEQUENO)
-    // El rótulo es de la tarjeta, no de la muestra: va con la tinta del tema
-    // que está puesto. Señalado sube de secundario a normal; elegido, al acento.
-    .color(tema::mezclar(
-        tema::mezclar(tema::TEXTO2, tema::texto(), señalada),
-        tema::acento(),
-        elegida,
-    ));
-
-    container(
-        column![lienzo, Space::new().height(Length::Fixed(4.0)), rotulo]
-            .align_x(iced_core::alignment::Horizontal::Center),
-    )
-    .width(Length::Fixed(ancho))
-    .height(Length::Fixed(MUESTRA))
-    .into()
-}
-
 /// Las miniaturas de las familias, rasterizadas **una vez** al abrir la
 /// tarjeta y con las esquinas ya recortadas.
 ///
@@ -688,10 +923,8 @@ fn muestra<'a>(cual: ModoTema, elegida: f32, señalada: f32) -> PanelElement<'a>
 /// empezaba en (100, 320) y la capa en (101, 321)— y quedaba una raya.
 // 0.1.0
 fn vistas_de(fondos: &[crate::fondos::Familia]) -> Vec<Option<iced_core::image::Handle>> {
-    let (iw, ih) = (
-        ancho_fondo() - HUECO_ANILLO * 2.0,
-        alto_fondo() - HUECO_ANILLO * 2.0,
-    );
+    let (w, h) = celda_fondo();
+    let (iw, ih) = (w - 2.0 * ARO, h - 2.0 * ARO);
     fondos
         .iter()
         .map(|f| {
@@ -737,69 +970,10 @@ fn vista_redondeada(
         &mut rgba,
         pw,
         ph,
-        tema::R_BOTON * RESOLUCION,
+        FONDO_RADIO * RESOLUCION,
         crate::Alfa::Recto,
     );
     Some(iced_core::image::Handle::from_rgba(pw, ph, rgba))
-}
-
-/// La miniatura de una familia de fondos. Una familia sin vectorial se queda
-/// con un rectángulo liso: se puede elegir igual, que es lo que importa.
-// 0.1.0
-fn miniatura<'a>(
-    vista: Option<&iced_core::image::Handle>,
-    ancho: f32,
-    elegida: f32,
-    señalada: f32,
-) -> PanelElement<'a> {
-    // La imagen va **dentro** de un margen y el anillo por fuera, igual que los
-    // círculos de acento. Pegado a la imagen no se vería: el anillo es del color
-    // de acento y con el acento azul sobre la miniatura azul son el mismo color.
-    let (iw, ih) = (
-        ancho - HUECO_ANILLO * 2.0,
-        alto_fondo() - HUECO_ANILLO * 2.0,
-    );
-    let imagen: PanelElement<'a> = match vista {
-        Some(vista) => iced_widget::image(vista.clone())
-            .width(Length::Fixed(iw))
-            .height(Length::Fixed(ih))
-            .content_fit(iced_core::ContentFit::Fill)
-            .into(),
-        None => container(Space::new())
-            .width(Length::Fixed(iw))
-            .height(Length::Fixed(ih))
-            .style(move |_| container::Style {
-                background: Some(tema::hover().into()),
-                border: Border {
-                    radius: tema::R_BOTON.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .into(),
-    };
-
-    container(imagen)
-        .width(Length::Fixed(ancho))
-        .height(Length::Fixed(alto_fondo()))
-        .center_x(Length::Fixed(ancho))
-        .center_y(Length::Fixed(alto_fondo()))
-        .style(move |_| container::Style {
-            border: Border {
-                radius: (tema::R_BOTON + HUECO_ANILLO).into(),
-                // El anillo de elegida crece con la animación, igual que en las
-                // muestras de tema; el de señalada es más flojo y no es acento,
-                // que se reserva para lo que está puesto.
-                width: 2.0 * elegida.max(señalada),
-                color: tema::mezclar(
-                    tema::alfa(tema::texto(), 0.35 * señalada),
-                    tema::acento(),
-                    elegida,
-                ),
-            },
-            ..Default::default()
-        })
-        .into()
 }
 
 /// El círculo del acento automático: los colores del fondo en tres franjas, el
@@ -823,118 +997,40 @@ fn imagen_de_franjas(paleta: [Color; 3]) -> iced_core::image::Handle {
     iced_core::image::Handle::from_rgba(LADO, LADO, rgba)
 }
 
-/// Una casilla de la rejilla: el círculo del color, con su anillo si está
-/// elegido y su halo si está señalado. `franjas` es la imagen del automático.
-// 0.1.0
-// modified 0.1.1 -- la casilla puede llevar las franjas del acento automático
-fn casilla<'a>(
-    acento: Acento,
-    franjas: Option<iced_core::image::Handle>,
-    elegido: f32,
-    señalado: f32,
-) -> PanelElement<'a> {
-    // El color de la casilla es el del acento **en el tema que está puesto**,
-    // que es como se va a ver si se elige.
-    let color = acento.color();
-    // Señalado, el círculo crece 3 px sin mover a los vecinos: la casilla mide
-    // 42 y el círculo 30, así que hay sitio de sobra dentro.
-    let lado = CIRCULO + 3.0 * señalado;
-    let punto: PanelElement<'a> = match franjas {
-        Some(franjas) => iced_widget::image(franjas)
-            .width(Length::Fixed(lado))
-            .height(Length::Fixed(lado))
-            .into(),
-        None => container(Space::new())
-            .width(Length::Fixed(lado))
-            .height(Length::Fixed(lado))
-            .style(move |_| container::Style {
-                background: Some(color.into()),
-                border: Border {
-                    radius: tema::R_PILL.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .into(),
-    };
-    container(punto)
-        .width(Length::Fixed(CASILLA))
-        .height(Length::Fixed(CASILLA))
-        .center_x(Length::Fixed(CASILLA))
-        .center_y(Length::Fixed(CASILLA))
-        .style(move |_| container::Style {
-            border: Border {
-                radius: tema::R_PILL.into(),
-                // El anillo va del color del propio acento y no del acento
-                // puesto: el que se está eligiendo todavía no lo es.
-                width: 2.0 * elegido,
-                color: tema::alfa(color, elegido),
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
-// 0.1.0
-fn separador<'a>() -> PanelElement<'a> {
-    container(
-        container(Space::new().height(Length::Fixed(1.0)))
-            .width(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(tema::divisor().into()),
-                ..Default::default()
-            }),
-    )
-    .height(Length::Fixed(SEPARACION))
-    .center_y(Length::Fixed(SEPARACION))
-    .align_y(Vertical::Center)
-    .into()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Las diez casillas tienen que caber en la rejilla y responder cada una
-    /// en su sitio: pulsar entre dos colores no elige ninguno.
+    /// Los doce colores responden cada uno en su sitio, sus zonas no se
+    /// pisan y la rejilla cabe en la tarjeta.
     #[test]
-    fn la_rejilla_reparte_los_diez_colores() {
+    fn los_colores_responden_en_su_sitio() {
         let a = Apariencia::new(ModoTema::Oscuro);
-        let y0 = a.y_rejilla();
-        assert_eq!(a.color_en(MARGEN + 1.0, y0 + 1.0), Some(0));
-        assert_eq!(a.color_en(MARGEN + paso() + 1.0, y0 + 1.0), Some(1));
-        assert_eq!(
-            a.color_en(MARGEN + 1.0, y0 + CASILLA + 1.0),
-            Some(COLUMNAS),
-            "la segunda fila empieza en el sexto color"
-        );
-        assert_eq!(
-            a.color_en(MARGEN + CASILLA + 3.0, y0 + 1.0),
-            None,
-            "la calle entre casillas no elige nada"
-        );
-        assert_eq!(a.color_en(MARGEN - 5.0, y0 + 1.0), None);
-        // Y la última casilla existe: con COLUMNAS mal puesto, el décimo color
-        // quedaría fuera de la tarjeta y sería imposible de elegir.
-        let ultimo = Acento::TODOS.len() - 1;
-        let (f, c) = (ultimo / COLUMNAS, ultimo % COLUMNAS);
-        assert_eq!(
-            a.color_en(
-                MARGEN + c as f32 * paso() + 1.0,
-                y0 + f as f32 * CASILLA + 1.0
-            ),
-            Some(ultimo)
-        );
-        assert!(a.y_rejilla() + CASILLA * filas() as f32 <= a.size().1);
+        for i in 0..Acento::TODOS.len() {
+            let r = a.rect_color(i);
+            let c = r.center();
+            assert_eq!(a.color_en(c.x, c.y), Some(i), "el color {i}");
+            assert!(
+                r.width >= 28.0 && r.height >= 28.0,
+                "zona de {i} menor que 28 (HIG §11)"
+            );
+            for j in i + 1..Acento::TODOS.len() {
+                assert!(
+                    r.intersection(&a.rect_color(j))
+                        .is_none_or(|x| x.width * x.height < 0.5),
+                    "{i} pisa {j}"
+                );
+            }
+        }
+        assert!(a.y_grupo_acento() + a.alto_grupo_acento() <= a.size().1);
     }
 
     #[test]
     fn elegir_un_color_lo_pide_y_lo_marca() {
         let mut a = Apariencia::new(ModoTema::Oscuro);
-        let y0 = a.y_rejilla();
-        let accion = a.pulsar(MARGEN + paso() * 2.0 + 1.0, y0 + 1.0);
+        let c = a.rect_color(2).center();
         assert_eq!(
-            accion,
+            a.pulsar(c.x, c.y),
             Some(Accion::Apariencia {
                 modo: ModoTema::Oscuro,
                 acento: Acento::TODOS[2],
@@ -988,24 +1084,15 @@ mod tests {
         assert_eq!(alfabetico, despues, "el gris no debería reordenar nada");
     }
 
+    /// Cada fondo pide su pareja entera y la casilla «+» abre Ajustes.
     #[test]
-    fn la_fila_de_fondos_elige_familia() {
+    fn la_rejilla_de_fondos_y_el_mas() {
         let mut a = Apariencia::new(ModoTema::Oscuro);
-        if a.fondos.is_empty() {
-            assert_eq!(a.fondo_en(MARGEN + 1.0, a.y_fondos() + 1.0), None);
-            return;
-        }
-        let (paso_x, paso_y) = (ancho_fondo() + FONDO_HUECO, alto_fondo() + FONDO_HUECO);
         for i in 0..a.fondos.len() {
-            let (col, fila) = (i % FONDO_COLUMNAS, i / FONDO_COLUMNAS);
-            let x = MARGEN + col as f32 * paso_x + 1.0;
-            let y = a.y_fondos() + fila as f32 * paso_y + 1.0;
-            assert_eq!(a.fondo_en(x, y), Some(i), "la miniatura {i} no responde");
-            // Pulsar pide la pareja **entera**, que es lo que permite que el
-            // cambio de tema se lleve el fondo con él.
+            let c = a.rect_fondo(i).center();
             let esperada = a.fondos[i].clone();
             assert_eq!(
-                a.pulsar(x, y),
+                a.pulsar(c.x, c.y),
                 Some(Accion::Fondo {
                     claro: esperada.claro,
                     oscuro: esperada.oscuro,
@@ -1013,46 +1100,98 @@ mod tests {
             );
             assert_eq!(a.marca_fondo.actual(), Some(i));
         }
-        // Las calles entre dos no son de nadie, ni la zona de debajo de la
-        // última fila.
-        let y = a.y_fondos() + 1.0;
-        if a.fondos.len() > 1 {
-            let calle = MARGEN + ancho_fondo() + FONDO_HUECO / 2.0;
-            assert_eq!(a.fondo_en(calle, y), None);
-        }
-        let fin = a.y_fondos() + alto_fondos(a.fondos.len());
-        assert_eq!(a.fondo_en(MARGEN + 1.0, fin + 5.0), None);
-        // Y la rejilla entra en la tarjeta: con el alto mal contado, la última
-        // fila quedaría cortada por abajo.
-        assert!(fin <= a.size().1 - MARGEN + 0.01);
+        let mas = a.rect_fondo(a.fondos.len()).center();
+        assert_eq!(
+            a.pulsar(mas.x, mas.y),
+            Some(Accion::Lanzar("bookos-settings --page fondos".into()))
+        );
+        let ultima = a.rect_fondo(a.fondos.len());
+        assert!(
+            ultima.y + ultima.height <= a.size().1 - MARGEN + 0.01,
+            "la rejilla se sale"
+        );
     }
 
-    /// Las tres muestras eligen su modo, cada una en su sitio, y las calles
-    /// que las separan no eligen nada.
+    /// El selector elige cada modo en su tercio y el pulgar va hacia él.
     #[test]
-    fn las_tres_muestras_eligen_modo() {
+    fn el_selector_elige_el_modo() {
         let mut a = Apariencia::new(ModoTema::Oscuro);
-        let y = a.y_muestras() + 4.0;
-        let paso = ancho_muestra() + MUESTRA_HUECO;
         for (i, esperado) in MODOS.iter().enumerate() {
-            let x = MARGEN + i as f32 * paso + 4.0;
+            let c = a.rect_modo(i).center();
             assert_eq!(
-                a.pulsar(x, y),
+                a.pulsar(c.x, c.y),
                 Some(Accion::Apariencia {
                     modo: *esperado,
                     acento: tema::acento_actual(),
-                }),
-                "la muestra {i} no eligió {esperado:?}"
+                })
             );
-            // Y la calle que hay a su derecha no es de nadie: pulsar entre dos
-            // muestras no puede elegir la de la izquierda.
-            if i + 1 < MODOS.len() {
-                let calle = MARGEN + i as f32 * paso + ancho_muestra() + MUESTRA_HUECO / 2.0;
-                assert_eq!(a.muestra_en(calle, y), None, "la calle {i} eligió algo");
-            }
         }
-        // Y la última muestra llega hasta el borde del margen, sin sobrar ni
-        // faltar: con el ancho mal repartido, la de la derecha quedaría cortada.
-        assert_eq!(a.muestra_en(ANCHO - MARGEN - 1.0, y), Some(MODOS.len() - 1));
+        assert_eq!(a.modo, ModoTema::Oscuro);
+    }
+
+    /// Tab recorre las secciones y las flechas eligen dentro (HIG §11).
+    #[test]
+    fn el_teclado_recorre_y_elige() {
+        use crate::TeclaPulsada as T;
+        let mut a = Apariencia::new(ModoTema::Claro);
+        assert!(matches!(a.tecla(T::Tabulador), Tecla::Consumida));
+        assert!(matches!(
+            a.tecla(T::Derecha),
+            Tecla::Hacer(Accion::Apariencia {
+                modo: ModoTema::Oscuro,
+                ..
+            })
+        ));
+        assert!(
+            matches!(a.tecla(T::Derecha), Tecla::Ignorada),
+            "no da la vuelta"
+        );
+        a.tecla(T::Tabulador);
+        let antes = indice(a.acento).unwrap_or(0);
+        if antes + COLUMNAS < Acento::TODOS.len() {
+            a.tecla(T::Abajo);
+            assert_eq!(indice(a.acento), Some(antes + COLUMNAS));
+        }
+        a.tecla(T::Tabulador);
+        a.tecla(T::Tabulador);
+        if !a.fondos.is_empty() {
+            assert_eq!(a.foco, Some(Foco::Mas));
+        }
+        assert!(matches!(a.tecla(T::Intro), Tecla::Hacer(Accion::Lanzar(_))));
+        assert!(matches!(a.tecla(T::Escape), Tecla::Cerrar));
+    }
+
+    /// `BOOKOS_APARIENCIA_PNG=/tmp/a.png` vuelca la tarjeta en oscuro y claro.
+    #[test]
+    fn volcar_png() {
+        let Ok(ruta) = std::env::var("BOOKOS_APARIENCIA_PNG") else {
+            return;
+        };
+        for (sufijo, tema_, modo) in [
+            ("oscuro", tema::Tema::Oscuro, ModoTema::Oscuro),
+            ("claro", tema::Tema::Claro, ModoTema::Automatico),
+        ] {
+            tema::aplicar(tema_);
+            let config = crate::Config {
+                tema: tema_,
+                ..Default::default()
+            };
+            let mut shell = crate::Shell::con_config(1646, 1.0, config);
+            shell.abrir(super::super::Emergente::Apariencia(Apariencia::new(modo)));
+            let (w, h) = shell.emergente_buffer_size().expect("tiene superficie");
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            shell.draw_emergente(&mut buf);
+            for p in buf.as_chunks_mut::<4>().0 {
+                p.swap(0, 2);
+            }
+            image::save_buffer(
+                ruta.replace(".png", &format!("-{sufijo}.png")),
+                &buf,
+                w,
+                h,
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("se escribe el PNG");
+        }
     }
 }

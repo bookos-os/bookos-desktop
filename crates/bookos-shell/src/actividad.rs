@@ -24,6 +24,16 @@
 //! - **El acento manda en los controles, no la portada.** Teñirlos con el
 //!   color del disco hacía que el botón de reproducir cambiase de color con
 //!   cada canción y dejase de leerse como el control del sistema.
+//!
+//! ## Pendiente: inglés
+//!
+//! Los textos propios de la isla están **solo en español**: este fichero no
+//! pasa ninguno por [`crate::t`], al contrario que el resto de emergentes, así
+//! que con `LANG` en inglés sale igual. Son unos 25: grabadora, temporizador,
+//! calendario (incluidos los `format!` de `cuenta_atras` y `formato_corto`,
+//! que necesitan su rama por idioma), Zenith, «A continuación» de la música y
+//! los botones. El título y el subtítulo no entran: los manda la aplicación
+//! que publica la actividad, en su idioma.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -31,7 +41,7 @@ use std::time::Instant;
 use iced_core::alignment::{Horizontal, Vertical};
 use iced_core::font::{Font, Weight};
 use iced_core::{Border, Color, Length, Shadow, Vector};
-use iced_widget::{Space, column, container, image, row, stack, text};
+use iced_widget::{Row, Space, column, container, image, row, stack, text};
 
 use crate::icono;
 use crate::tema;
@@ -56,8 +66,6 @@ pub const ARRIBA: f32 = 3.0;
 /// y una píldora más estrecha dentro de un buffer ancho se vería descentrada.
 const TIMER_COMPACTO_W: f32 = 132.0;
 const RECORDER_COMPACTO_W: f32 = 172.0;
-/// Las otras actividades vivas, como círculos a la derecha de la píldora.
-const BURBUJA: f32 = PLAYER_COMPACTO_H;
 /// Transferencia, calendario y monitor: mismas píldoras bajas que la música,
 /// con el ancho justo para «nombre + dato».
 const TRANSFER_COMPACTO_W: f32 = 236.0;
@@ -65,7 +73,6 @@ const CALENDARIO_COMPACTO_W: f32 = 290.0;
 const MONITOR_COMPACTO_W: f32 = 276.0;
 /// Auriculares: icono, nombre y la batería más baja, como la transferencia.
 const AURICULARES_COMPACTO_W: f32 = TRANSFER_COMPACTO_W;
-const BURBUJA_SEP: f32 = 6.0;
 /// El asistente cuelga de la barra como un notch. Eran 440×52 con dos líneas:
 /// la segunda repetía «Zenith · Te escucho…» junto a un orbe y una onda que ya
 /// lo dicen, y tapaba un tercio de la barra. Con una línea, 300 de ancho dejan
@@ -110,14 +117,56 @@ const ASIS_CUERPO_MAX: usize = 6;
 /// tarjeta de 380×72 del temporizador, que tapaba las pestañas de la ventana
 /// de debajo. Una línea de título y el ecualizador bastan para reconocerla; el
 /// resto está a un clic.
-const PLAYER_COMPACTO_W: f32 = 280.0;
+/// La música compacta no lleva título: carátula a la izquierda y ondas a la
+/// derecha, como la isla de la referencia (Figma «Spotify Dynamic Island»).
+/// El título está a un clic, en la abierta.
+// modified 0.2.0 -- 280 → 150, sin título
+const PLAYER_COMPACTO_W: f32 = 150.0;
 /// Lo que cabe en la barra superior dejando `ARRIBA` por encima y por debajo.
 const PLAYER_COMPACTO_H: f32 = crate::PANEL_HEIGHT as f32 - ARRIBA * 2.0;
 /// La isla cerrada es un squircle, no una píldora: con la mitad del alto de
 /// radio se leía como un botón de cápsula. 10 es el radio de «botón pequeño» de
 /// la tabla del HIG, y a estos 26 px de alto deja esquinas claramente cuadradas.
 const RADIO_COMPACTO: f32 = 10.0;
+/// La superficie de la isla: negra en los dos temas, como un notch. Excepción
+/// registrada en el HIG (§17, «Isla dinámica»); su texto es el del tema oscuro,
+/// que el shell fuerza mientras la pinta (`Shell::draw_actividad`).
+// añadido en la 0.2.0
+const ISLA: Color = Color::BLACK;
+/// Radio de la tarjeta abierta con su columna: el de diálogo, el mayor de la
+/// tabla del HIG (§4).
+const RADIO_ABIERTO_ISLA: f32 = tema::R_DIALOGO;
+/// La columna de actividades a la derecha de la tarjeta abierta: la actual a 30
+/// y las demás a 18, con 6 entre ellas. Va en su propio hueco, que ensancha la
+/// tarjeta, para que nunca pise el contenido.
+// añadido en la 0.2.0
+const COLUMNA: f32 = 48.0;
+const COLUMNA_ACTUAL: f32 = 30.0;
+const COLUMNA_OTRA: f32 = 18.0;
+const COLUMNA_SEP: f32 = 6.0;
+/// Hueco del «+N» de la compacta: cabe «+9» a 11 px en negrita con su
+/// separación; más de nueve vivas no se dan.
+// añadido en la 0.2.0
+const CONTADOR_W: f32 = 24.0;
 const ABIERTO_W: f32 = 440.0;
+/// Cabecera de las tarjetas abiertas: «App ›» a la izquierda, que es el único
+/// sitio que abre la aplicación, y ⋯ a la derecha. Va en una franja propia
+/// encima del contenido; el fondo de la tarjeta no abre nada, para que un toque
+/// suelto del touchpad al acabar de deslizar no saque la app sin querer.
+// añadido en la 0.2.2
+const CAB_APP_Y: f32 = 10.0;
+const CAB_APP_H: f32 = 26.0;
+const CAB_APP_X: f32 = 14.0;
+/// Lo que crece la tarjeta por la cabecera: el contenido empieza a 46 del
+/// canto, como en la maqueta.
+const CAB_EXTRA: f32 = 24.0;
+const CAB_ICONO: f32 = 18.0;
+const MAS_W: f32 = 30.0;
+const MAS_H: f32 = 24.0;
+const MAS_DER: f32 = 12.0;
+/// Filas del menú ⋯: el popover del HIG, 14,5/500 con 11 de relleno vertical.
+const MENU_FILA_H: f32 = 40.0;
+const MENU_FILAS: usize = 4;
 /// Margen interior de las vistas abiertas.
 const PAD: f32 = 22.0;
 
@@ -343,6 +392,10 @@ pub struct Estado {
     /// dos botones. Son estado de la aplicación: el compositor no los decide.
     pub aleatorio: bool,
     pub repetir: bool,
+    /// Control de ruido de unos auriculares: 0 apagado, 1 cancelación,
+    /// 2 ambiente (los modos de `bookos-budsd`). `None` si no lo publican.
+    // añadido en la 0.2.2
+    pub anc: Option<u8>,
     pub portada: Option<Portada>,
     pub cola: Vec<ItemCola>,
     pub metricas: Vec<Metrica>,
@@ -363,6 +416,9 @@ pub struct Burbuja {
     pub clase: Clase,
     pub color: Color,
     pub activa: bool,
+    /// Es la que se ve: en la columna va grande y a todo color.
+    // añadido en la 0.2.0
+    pub actual: bool,
 }
 
 /// Cómo empieza la animación que arranca en `desde`.
@@ -383,6 +439,9 @@ enum Vista {
     Compacta,
     Abierta,
     Cola,
+    /// El menú ⋯ de la actividad, en lugar del contenido.
+    // añadido en la 0.2.2
+    Menu,
 }
 
 pub struct Actividad {
@@ -427,6 +486,10 @@ pub struct Actividad {
     nivel_desde: (f32, Instant),
     // añadido en la 0.2.0
     entrada: Entrada,
+    /// El nombre de la aplicación para la cabecera, sacado de su `.desktop`
+    /// una vez al nacer: leerlo en cada pintado son `stat` por fotograma.
+    // añadido en la 0.2.2
+    app_nombre: String,
 }
 
 impl Actividad {
@@ -451,7 +514,9 @@ impl Actividad {
             sacudida: None,
             nivel_desde: (0.0, Instant::now()),
             entrada: Entrada::Nueva,
+            app_nombre: String::new(),
         };
+        a.app_nombre = nombre_app(&a.estado);
         a.guardar_miniaturas();
         a.seguir_fase(true);
         a
@@ -654,7 +719,7 @@ impl Actividad {
     pub fn alternar_vista(&mut self) -> bool {
         match self.vista {
             Vista::Compacta => self.abrir_previsualizacion(),
-            Vista::Abierta | Vista::Cola => {
+            Vista::Abierta | Vista::Cola | Vista::Menu => {
                 self.colapsar();
                 true
             }
@@ -684,9 +749,20 @@ impl Actividad {
         self.burbujas = burbujas;
     }
 
+    /// Cuántas vivas hay además de la que se ve. Zenith no lleva contador:
+    /// su píldora es su propia conversación.
+    // añadido en la 0.2.0
+    fn otras(&self) -> usize {
+        if matches!(self.estado.clase, Clase::Asistente(_)) {
+            return 0;
+        }
+        self.burbujas.len().saturating_sub(1)
+    }
+
     // 0.1.0
+    // modified 0.2.0 -- crece lo del «+N» si hay más vivas
     fn ancho_pildora(&self) -> f32 {
-        match self.estado.clase {
+        let base = match self.estado.clase {
             Clase::Player => PLAYER_COMPACTO_W,
             Clase::Timer => TIMER_COMPACTO_W,
             Clase::Recorder => RECORDER_COMPACTO_W,
@@ -696,7 +772,8 @@ impl Actividad {
             Clase::Auriculares => AURICULARES_COMPACTO_W,
             Clase::Asistente(Fase::Minimizado) => ASIS_MINI,
             Clase::Asistente(_) => ASIS_COMPACTO_W,
-        }
+        };
+        base + if self.otras() > 0 { CONTADOR_W } else { 0.0 }
     }
 
     // añadido en la 0.2.0
@@ -708,15 +785,43 @@ impl Actividad {
         }
     }
 
-    /// Lo que ocupan las burbujas, con su separación. Se reserva **a los dos
-    /// lados** de la píldora: el compositor centra el buffer, y así la
-    /// píldora sigue en el centro de la barra aunque haya burbujas.
-    // 0.1.0
-    fn ancho_burbujas(&self) -> f32 {
-        if self.vista != Vista::Compacta {
-            return 0.0;
-        }
-        self.burbujas.len() as f32 * (BURBUJA + BURBUJA_SEP)
+    /// Si la tarjeta abierta lleva la columna de actividades: con más de una
+    /// viva. Zenith no, que tiene su propia tarjeta y se despide solo.
+    // añadido en la 0.2.0
+    fn con_columna(&self) -> bool {
+        self.vista != Vista::Compacta
+            && self.burbujas.len() > 1
+            && !matches!(self.estado.clase, Clase::Asistente(_))
+    }
+
+    /// Centro vertical y lado de cada icono de la columna, en coordenadas de la
+    /// tarjeta. Centrada en el alto de la tarjeta.
+    // añadido en la 0.2.0
+    fn columna(&self) -> Vec<(f32, f32)> {
+        let (_, h) = self.size();
+        let h = h - MARGEN_SOMBRA * 2.0;
+        let lados: Vec<f32> = self
+            .burbujas
+            .iter()
+            .map(|b| {
+                if b.actual {
+                    COLUMNA_ACTUAL
+                } else {
+                    COLUMNA_OTRA
+                }
+            })
+            .collect();
+        let total: f32 =
+            lados.iter().sum::<f32>() + COLUMNA_SEP * (lados.len().saturating_sub(1)) as f32;
+        let mut y = (h - total) / 2.0;
+        lados
+            .into_iter()
+            .map(|l| {
+                let c = (y + l / 2.0, l);
+                y += l + COLUMNA_SEP;
+                c
+            })
+            .collect()
     }
 
     /// La parte del buffer que se ve y recibe clics, como `(x, ancho)` en
@@ -725,34 +830,45 @@ impl Actividad {
     // 0.1.0
     pub fn zona(&self) -> (f32, f32) {
         let (w, _) = self.size();
-        let b = self.ancho_burbujas();
-        (b, w - MARGEN_SOMBRA * 2.0 - b)
+        (0.0, w - MARGEN_SOMBRA * 2.0)
     }
 
-    /// El `app_id` de la burbuja bajo el punto, en coordenadas del buffer.
+    /// El `app_id` del icono de la columna bajo el punto, en coordenadas del
+    /// buffer. Toda la anchura de la columna cuenta, no solo el círculo: los de
+    /// 18 px son pequeños para acertarles.
     // 0.1.0
+    // modified 0.2.0 -- de las burbujas junto a la píldora a la columna de la abierta
     pub fn burbuja_en(&self, x: f32, y: f32) -> Option<&str> {
-        if self.vista != Vista::Compacta || y < MARGEN_SOMBRA {
+        if !self.con_columna() {
             return None;
         }
-        let x0 = MARGEN_SOMBRA + self.ancho_burbujas() + self.ancho_pildora() + BURBUJA_SEP;
-        let i = ((x - x0) / (BURBUJA + BURBUJA_SEP)).floor();
-        (x >= x0 && y <= MARGEN_SOMBRA + BURBUJA)
-            .then(|| self.burbujas.get(i as usize))
-            .flatten()
-            .map(|b| b.app_id.as_str())
+        let (x, y) = (x - MARGEN_SOMBRA, y - MARGEN_SOMBRA);
+        if x < ABIERTO_W || x > ABIERTO_W + COLUMNA {
+            return None;
+        }
+        self.columna()
+            .iter()
+            .zip(&self.burbujas)
+            .find(|((c, l), _)| (y - c).abs() <= l / 2.0 + COLUMNA_SEP / 2.0)
+            .map(|(_, b)| b.app_id.as_str())
     }
 
     // 0.1.0
     pub fn size(&self) -> (f32, f32) {
         let (w, h) = match self.vista {
-            Vista::Compacta => (
-                self.ancho_pildora() + self.ancho_burbujas() * 2.0,
-                self.alto_pildora(),
+            Vista::Compacta => (self.ancho_pildora(), self.alto_pildora()),
+            Vista::Menu => (
+                ABIERTO_W + if self.con_columna() { COLUMNA } else { 0.0 },
+                PAD + CAB_EXTRA + MENU_FILA_H * MENU_FILAS as f32 + PAD,
             ),
             Vista::Abierta | Vista::Cola => (
-                ABIERTO_W,
-                match self.estado.clase {
+                ABIERTO_W + if self.con_columna() { COLUMNA } else { 0.0 },
+                // Zenith no lleva cabecera: su tarjeta es la conversación.
+                if matches!(self.estado.clase, Clase::Asistente(_)) {
+                    0.0
+                } else {
+                    CAB_EXTRA
+                } + match self.estado.clase {
                     Clase::Player if self.vista == Vista::Cola => PLAYER_H + self.alto_cola(),
                     Clase::Player => PLAYER_H,
                     Clase::Timer => TIMER_H,
@@ -776,12 +892,12 @@ impl Actividad {
     // 0.1.0
     pub fn animando(&self) -> bool {
         self.animaciones
-            && (self.desde.elapsed() < tema::D_TARJETA
+            && (self.desde.elapsed() < tema::D_ISLA
                 || self.saliendo.is_some()
-                || self.cambio.is_some_and(|t| t.elapsed() < tema::D_TARJETA)
+                || self.cambio.is_some_and(|t| t.elapsed() < tema::D_ISLA)
                 || self
                     .sacudida
-                    .is_some_and(|t| t.elapsed() < tema::D_TARJETA + D_SACUDIDA)
+                    .is_some_and(|t| t.elapsed() < tema::D_ISLA + D_SACUDIDA)
                 || (self.vista == Vista::Compacta && self.sonando() && self.con_ondas()))
     }
 
@@ -841,7 +957,7 @@ impl Actividad {
         if !self.animaciones {
             return (1.0, 1.0, 0.0, 0.0);
         }
-        let p = tema::C_MUELLE_POPOVER.eval(tema::fraccion(self.desde.elapsed(), tema::D_TARJETA));
+        let p = tema::C_MUELLE_ISLA.eval(tema::fraccion(self.desde.elapsed(), tema::D_ISLA));
         let a = tema::C_ENTRADA.eval(tema::fraccion(self.desde.elapsed(), tema::D_TARJETA));
         // Crece desde la barra: el compositor escala desde el centro de la
         // superficie, así que se sube lo que el zoom baja el canto superior de
@@ -855,7 +971,7 @@ impl Actividad {
         let mut zoom = zoom0 + (1.0 - zoom0) * p;
         let mut alfa = alfa0 + (1.0 - alfa0) * a;
         if let Some(t) = self.cambio {
-            let c = tema::C_MUELLE_POPOVER.eval(tema::fraccion(t.elapsed(), tema::D_TARJETA));
+            let c = tema::C_MUELLE_ISLA.eval(tema::fraccion(t.elapsed(), tema::D_ISLA));
             zoom *= 0.94 + 0.06 * c;
         }
         // Se va hacia la barra de la que salió, más deprisa de lo que entra.
@@ -875,7 +991,7 @@ impl Actividad {
         // Tras aterrizar la tarjeta, no a la vez: crecer y sacudirse en el
         // mismo gesto se leía como un tirón, no como un «no».
         let dx = self.sacudida.map_or(0.0, |t| {
-            let f = tema::fraccion(t.elapsed().saturating_sub(tema::D_TARJETA), D_SACUDIDA);
+            let f = tema::fraccion(t.elapsed().saturating_sub(tema::D_ISLA), D_SACUDIDA);
             SACUDIDA_PX * (1.0 - f) * (f * 2.5 * std::f32::consts::TAU).sin()
         });
         let (_, h) = self.size();
@@ -890,13 +1006,41 @@ impl Actividad {
             return None;
         }
         if let Clase::Asistente(fase) = self.estado.clase {
-            return self.pulsar_asistente(fase, x - self.ancho_burbujas(), y);
+            return self.pulsar_asistente(fase, x, y);
         }
         if self.vista == Vista::Compacta {
             self.vista = Vista::Abierta;
             self.desde = Instant::now();
             return None;
         }
+        if x >= ABIERTO_W {
+            return None;
+        }
+        if y < PAD + CAB_EXTRA - 4.0 {
+            if x < CAB_APP_X + self.ancho_cab_app() {
+                return Some(self.accion(ISLA_ABRIR, String::new()));
+            }
+            if x > ABIERTO_W - MAS_DER - MAS_W - 6.0 {
+                self.alternar_menu();
+                return None;
+            }
+            self.colapsar();
+            return None;
+        }
+        if self.vista == Vista::Menu {
+            let fila = ((y - PAD - CAB_EXTRA) / MENU_FILA_H).floor();
+            let nombre = match fila as i32 {
+                0 => ISLA_ABRIR,
+                1 if !self.es_la_primera() => ISLA_PRIMERO,
+                2 => ISLA_OCULTAR,
+                3 => ISLA_AJUSTES,
+                _ => return None,
+            };
+            self.vista = Vista::Abierta;
+            self.desde = Instant::now();
+            return Some(self.accion(nombre, String::new()));
+        }
+        let y = y - CAB_EXTRA;
         match self.estado.clase {
             Clase::Player => self.pulsar_player(x, y),
             Clase::Timer => {
@@ -938,7 +1082,18 @@ impl Actividad {
                     self.colapsar();
                     return None;
                 }
-                Some(self.accion("open", String::new()))
+                let Some(actual) = self.estado.anc else {
+                    return Some(self.accion("open", String::new()));
+                };
+                let tercio = ((x - PAD) / ((ABIERTO_W - PAD * 2.0) / 3.0)).floor();
+                let modo = *MODOS_RUIDO.get(tercio.clamp(0.0, 2.0) as usize)?;
+                if modo == actual {
+                    return None;
+                }
+                // Se marca ya: los Buds tardan en confirmar y el segmentado
+                // tiene que responder al dedo.
+                self.estado.anc = Some(modo);
+                Some(self.accion("anc", modo.to_string()))
             }
             // Solo informa: cualquier clic lo vuelve a la píldora.
             Clase::Monitor => {
@@ -984,7 +1139,7 @@ impl Actividad {
 
     fn pulsar_asistente(&mut self, fase: Fase, x: f32, y: f32) -> Option<Accion> {
         let (w, h) = self.size();
-        if !(0.0..w - MARGEN_SOMBRA * 2.0 - self.ancho_burbujas() * 2.0).contains(&x)
+        if !(0.0..w - MARGEN_SOMBRA * 2.0).contains(&x)
             || !(0.0..h - MARGEN_SOMBRA * 2.0).contains(&y)
         {
             return None;
@@ -1036,6 +1191,46 @@ impl Actividad {
     }
 
     // 0.1.0
+    /// Abre o cierra el menú ⋯. Es lo que hacen el botón y el clic derecho.
+    // añadido en la 0.2.2
+    pub fn alternar_menu(&mut self) -> bool {
+        if matches!(self.estado.clase, Clase::Asistente(_)) || self.saliendo.is_some() {
+            return false;
+        }
+        self.vista = if self.vista == Vista::Menu {
+            Vista::Abierta
+        } else {
+            Vista::Menu
+        };
+        self.desde = Instant::now();
+        true
+    }
+
+    /// Si se puede recoger sola al apartar el puntero: con el menú abierto se
+    /// está eligiendo algo, y Zenith se despide por su cuenta.
+    // añadido en la 0.2.2
+    pub fn recogible(&self) -> bool {
+        matches!(self.vista, Vista::Abierta | Vista::Cola)
+            && !matches!(self.estado.clase, Clase::Asistente(_))
+    }
+
+    /// La que se ve ya es la primera del orden de la isla.
+    // añadido en la 0.2.2
+    fn es_la_primera(&self) -> bool {
+        self.burbujas.first().is_none_or(|b| b.actual)
+    }
+
+    /// Ancho de «icono + nombre + ›» con su relleno, el mismo que se pinta.
+    // añadido en la 0.2.2
+    fn ancho_cab_app(&self) -> f32 {
+        4.0 + CAB_ICONO
+            + 7.0
+            + crate::widget::ancho_con_fuente(&self.app_nombre, 12.0, negrita())
+            + 7.0
+            + 12.0
+            + 10.0
+    }
+
     fn colapsar(&mut self) {
         self.vista = Vista::Compacta;
         self.desde = Instant::now();
@@ -1060,7 +1255,16 @@ impl Actividad {
             } else if d <= fin_lado {
                 if x < centro { "previous" } else { "next" }
             } else if d <= fin_plano {
-                if x < centro { "shuffle" } else { "repeat" }
+                if x < centro {
+                    "shuffle"
+                } else {
+                    // Favorita la que suena, como la maqueta. Repetir sigue en
+                    // la app y en el centro de control.
+                    let actual = self.estado.cola.iter_mut().find(|i| i.actual)?;
+                    actual.favorita = !actual.favorita;
+                    let id = actual.id.clone();
+                    return Some(self.accion("favorite", id));
+                }
             } else {
                 return None;
             };
@@ -1125,6 +1329,13 @@ impl Actividad {
 
     // 0.1.0
     fn accion(&self, raw: &str, fallback: String) -> Accion {
+        // Los auriculares no son una app con ventana: «abrir» es pedirle a
+        // bookos-budsd que abra su página de Ajustes, que es lo que ya atiende.
+        let raw = if raw == ISLA_ABRIR && self.estado.clase == Clase::Auriculares {
+            "open"
+        } else {
+            raw
+        };
         let (nombre, valor) = raw
             .split_once('\u{1f}')
             .map(|(a, b)| (a.to_string(), b.to_string()))
@@ -1143,6 +1354,7 @@ impl Actividad {
         let (w, h) = self.size();
         let tarjeta = match self.vista {
             Vista::Compacta => self.compacta(),
+            _ if self.con_columna() => self.con_su_columna(),
             _ => self.abierta(),
         };
         container(tarjeta)
@@ -1150,6 +1362,40 @@ impl Actividad {
             .height(Length::Fixed(h))
             .padding(MARGEN_SOMBRA)
             .into()
+    }
+
+    /// La tarjeta abierta y, a su derecha, la columna con un icono por actividad
+    /// viva: la actual grande y a todo color, las demás pequeñas y apagadas.
+    /// Las dos sobre el mismo negro: la junta no se ve.
+    // añadido en la 0.2.0
+    fn con_su_columna(&self) -> PanelElement<'_> {
+        let (_, h) = self.size();
+        let h = h - MARGEN_SOMBRA * 2.0;
+        let mut col = column![];
+        let mut y = 0.0;
+        for ((c, lado), b) in self.columna().into_iter().zip(&self.burbujas) {
+            col = col
+                .push(Space::new().height(Length::Fixed(c - lado / 2.0 - y)))
+                .push(icono_columna(b, lado));
+            y = c + lado / 2.0;
+        }
+        container(row![
+            self.abierta(),
+            container(col)
+                .width(Length::Fixed(COLUMNA))
+                .height(Length::Fixed(h))
+                .align_x(Horizontal::Center),
+        ])
+        .style(|_| container::Style {
+            background: Some(ISLA.into()),
+            border: Border {
+                radius: RADIO_ABIERTO_ISLA.into(),
+                ..Default::default()
+            },
+            shadow: tema::sombra_popover(),
+            ..Default::default()
+        })
+        .into()
     }
 
     /// El color de lo que se pulsa: el acento del sistema, también en la
@@ -1171,20 +1417,9 @@ impl Actividad {
     }
 
     // 0.1.0
+    // modified 0.2.0 -- una actividad a la vez: sin burbujas al lado
     fn compacta(&self) -> PanelElement<'_> {
-        let b = self.ancho_burbujas();
-        let mut fila = row![
-            Space::new().width(Length::Fixed(b)),
-            self.pildora(),
-            Space::new().width(Length::Fixed(BURBUJA_SEP)),
-        ]
-        .spacing(0);
-        for burbuja in &self.burbujas {
-            fila = fila
-                .push(ver_burbuja(burbuja))
-                .push(Space::new().width(Length::Fixed(BURBUJA_SEP)));
-        }
-        fila.into()
+        self.pildora()
     }
 
     /// Las píldoras van todas igual: icono o portada, una identificación breve
@@ -1200,15 +1435,7 @@ impl Actividad {
             Clase::Player => (
                 row![
                     caratula(self.arte.as_ref(), 18.0),
-                    text(crate::emergente::recortar_texto(
-                        &self.estado.titulo,
-                        PLAYER_COMPACTO_W - 18.0 - 22.0 - 8.0 * 3.0 - 16.0,
-                        12.0
-                    ))
-                    .size(12)
-                    .font(negrita())
-                    .wrapping(iced_core::text::Wrapping::None)
-                    .width(Length::Fill),
+                    Space::new().width(Length::Fill),
                     ondas(self.estado.nivel, self.sonando(), color, 14.0, 4, 2.5),
                 ]
                 .spacing(8)
@@ -1327,6 +1554,26 @@ impl Actividad {
                 12,
             ),
         };
+        // Se ve una, pero las demás siguen ahí: el «+N» lo dice sin quitarle
+        // sitio a la principal, que conserva su ancho fijo.
+        let (contenido, ancho) = match self.otras() {
+            0 => (contenido, ancho),
+            n => (
+                row![
+                    container(contenido).width(Length::Fill),
+                    text(format!("+{n}"))
+                        .size(11)
+                        .font(negrita())
+                        .color(tema::TEXTO2)
+                        .width(Length::Fixed(CONTADOR_W - 8.0))
+                        .align_x(Horizontal::Right),
+                ]
+                .spacing(8)
+                .align_y(Vertical::Center)
+                .into(),
+                ancho + CONTADOR_W,
+            ),
+        };
         tarjeta(
             contenido,
             ancho,
@@ -1343,8 +1590,13 @@ impl Actividad {
         }
         let color = self.color();
         let (w, h) = self.size();
-        let (w, h) = (w - MARGEN_SOMBRA * 2.0, h - MARGEN_SOMBRA * 2.0);
+        // La tarjeta en sí no incluye la columna: va al lado, en `view`.
+        let columna = if self.con_columna() { COLUMNA } else { 0.0 };
+        let (w, h) = (w - MARGEN_SOMBRA * 2.0 - columna, h - MARGEN_SOMBRA * 2.0);
         let ancho_util = ABIERTO_W - PAD * 2.0;
+        if self.vista == Vista::Menu {
+            return self.con_cabecera(self.menu(), w, h);
+        }
         let cuerpo: PanelElement<'_> = match self.estado.clase {
             Clase::Player => {
                 let con_cola = self.vista == Vista::Cola && self.filas_cola() > 0;
@@ -1364,7 +1616,7 @@ impl Actividad {
                         .push(Space::new().height(Length::Fixed(COLA_SEP + PAD)))
                         .push(self.panel_cola(color));
                 }
-                return tarjeta(cuerpo.into(), w, h, RADIO, [PAD as u16, PAD as u16]);
+                return self.con_cabecera(cuerpo.into(), w, h);
             }
             Clase::Timer => {
                 let vencido = self.estado.restante_ms < 0;
@@ -1573,7 +1825,10 @@ impl Actividad {
                     // Sin estuche quedan dos filas: el botón no se mueve,
                     // que es donde `pulsar` lo busca.
                     Space::new().height(Length::Fixed(MON_FILA_H * (3 - n) as f32 + 16.0)),
-                    boton("Abrir en Ajustes", Boton::Principal),
+                    match self.estado.anc {
+                        Some(modo) => segmentado_ruido(modo),
+                        None => boton("Abrir en Ajustes", Boton::Principal),
+                    },
                 ]
                 .into()
             }
@@ -1641,7 +1896,111 @@ impl Actividad {
             ]
             .into(),
         };
-        tarjeta(cuerpo, w, h, RADIO, [PAD as u16, PAD as u16])
+        self.con_cabecera(cuerpo, w, h)
+    }
+
+    /// La tarjeta con su franja de cabecera encima del contenido.
+    // añadido en la 0.2.2
+    fn con_cabecera<'a>(&'a self, cuerpo: PanelElement<'a>, w: f32, h: f32) -> PanelElement<'a> {
+        stack![
+            tarjeta_v(cuerpo, w, h, RADIO, [PAD + CAB_EXTRA, PAD, PAD, PAD]),
+            self.cabecera_app(w),
+        ]
+        .into()
+    }
+
+    /// «App ›» y ⋯. Sin placa: en la isla no hay puntero que la encienda, y
+    /// una placa fija competiría con el contenido.
+    // añadido en la 0.2.2
+    fn cabecera_app(&self, w: f32) -> PanelElement<'_> {
+        let mas_activo = self.vista == Vista::Menu;
+        let mas = container(icono_teñido(
+            icono_inline(MAS),
+            18.0,
+            if mas_activo {
+                tema::texto()
+            } else {
+                tema::TEXTO2
+            },
+        ))
+        .width(Length::Fixed(MAS_W))
+        .height(Length::Fixed(MAS_H))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(move |_| container::Style {
+            background: mas_activo.then(|| Color::from_rgb8(0x1c, 0x1c, 0x1e).into()),
+            border: Border {
+                radius: (MAS_H / 2.0).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let yo = Burbuja {
+            app_id: String::new(),
+            clase: self.estado.clase,
+            color: color_burbuja(&self.estado),
+            activa: true,
+            actual: true,
+        };
+        container(
+            row![
+                Space::new().width(Length::Fixed(4.0)),
+                icono_columna(&yo, CAB_ICONO),
+                Space::new().width(Length::Fixed(7.0)),
+                text(self.app_nombre.clone())
+                    .size(12)
+                    .font(negrita())
+                    .color(tema::TEXTO2)
+                    .wrapping(iced_core::text::Wrapping::None),
+                Space::new().width(Length::Fixed(7.0)),
+                icono_teñido(icono_propio("chevron-derecha"), 12.0, apagado(0.6)),
+                Space::new().width(Length::Fill),
+                mas,
+            ]
+            .align_y(Vertical::Center)
+            .height(Length::Fixed(CAB_APP_H)),
+        )
+        .width(Length::Fixed(w))
+        .padding(iced_core::Padding {
+            top: CAB_APP_Y,
+            right: MAS_DER,
+            bottom: 0.0,
+            left: CAB_APP_X,
+        })
+        .into()
+    }
+
+    /// El menú de la actividad: abrir la app, ponerla primera y ocultarla.
+    // añadido en la 0.2.2
+    fn menu(&self) -> PanelElement<'_> {
+        let primera = self.es_la_primera();
+        let fila = |svg: &str, etiqueta: String, apagada: bool| -> PanelElement<'static> {
+            let tinta = if apagada { tema::TEXTO2 } else { tema::texto() };
+            container(
+                row![
+                    icono_teñido(icono_inline(svg), 18.0, tema::TEXTO2),
+                    text(etiqueta).size(14.5).font(medio()).color(tinta),
+                ]
+                .spacing(10)
+                .align_y(Vertical::Center),
+            )
+            .height(Length::Fixed(MENU_FILA_H))
+            .align_y(Vertical::Center)
+            .into()
+        };
+        column![
+            fila(ABRIR, format!("Abrir {}", self.app_nombre), false),
+            if primera {
+                fila(FIJAR, "Ya se muestra primero".into(), true)
+            } else {
+                fila(FIJAR, "Mostrar primero".into(), false)
+            },
+            fila(OCULTAR, "Ocultar de la isla".into(), false),
+            // No hay permisos por app que ajustar: lleva a la página que
+            // enciende las actividades y decide el temporizador.
+            fila(CAMPANA, "Ajustes de actividades…".into(), false),
+        ]
+        .into()
     }
 
     fn onda_asistente(&self, alto: f32) -> PanelElement<'static> {
@@ -1995,10 +2354,16 @@ impl Actividad {
         container(
             row![
                 icono_teñido(icono_inline(ALEATORIO), 20.0, plano(self.estado.aleatorio)),
-                redondo(icono_inline(ANTERIOR), CTRL_LADO, Fondo::Tenue),
-                redondo(icono_inline(central), CTRL_PLAY, Fondo::Solido(color)),
-                redondo(icono_inline(SIGUIENTE), CTRL_LADO, Fondo::Tenue),
-                icono_teñido(icono_inline(REPETIR), 20.0, plano(self.estado.repetir)),
+                // Como la referencia: solo el play lleva placa, y es blanca con
+                // el glifo negro (la isla siempre es negra). Los saltos, sueltos.
+                redondo(icono_inline(ANTERIOR), CTRL_LADO, Fondo::Sin),
+                redondo(
+                    icono_inline(central),
+                    CTRL_PLAY,
+                    Fondo::Solido(Color::WHITE)
+                ),
+                redondo(icono_inline(SIGUIENTE), CTRL_LADO, Fondo::Sin),
+                self.favorita_actual(plano),
             ]
             .spacing(CTRL_SEP)
             .align_y(Vertical::Center),
@@ -2007,6 +2372,23 @@ impl Actividad {
         .height(Length::Fixed(CTRL_H))
         .align_x(Horizontal::Center)
         .into()
+    }
+
+    /// El corazón de la que suena. Sin cola publicada no se sabe cuál es, y el
+    /// hueco queda vacío en vez de un botón que no hace nada.
+    // añadido en la 0.2.2
+    fn favorita_actual(&self, plano: impl Fn(bool) -> Color) -> PanelElement<'_> {
+        match self.estado.cola.iter().find(|i| i.actual) {
+            Some(i) => icono_teñido(
+                icono_inline(if i.favorita { CORAZON_LLENO } else { CORAZON }),
+                20.0,
+                plano(i.favorita),
+            ),
+            None => Space::new()
+                .width(Length::Fixed(20.0))
+                .height(Length::Fixed(20.0))
+                .into(),
+        }
     }
 
     // 0.1.0
@@ -2022,9 +2404,14 @@ impl Actividad {
             row![
                 container(tiempo(pos)).width(Length::Fixed(TIEMPO_W)),
                 barra(f, color),
-                container(tiempo(total))
-                    .width(Length::Fixed(TIEMPO_W))
-                    .align_x(Horizontal::Right),
+                // Lo que queda, como la maqueta: es lo que se mira de reojo.
+                container(
+                    text(format!("-{}", formato_corto((total - pos).max(0))))
+                        .size(12)
+                        .color(tema::TEXTO2)
+                )
+                .width(Length::Fixed(TIEMPO_W))
+                .align_x(Horizontal::Right),
             ]
             .spacing(10)
             .align_y(Vertical::Center),
@@ -2228,7 +2615,7 @@ fn tarjeta_v<'a>(
             left: padding[3],
         })
         .style(move |_| container::Style {
-            background: Some(tema::card().into()),
+            background: Some(ISLA.into()),
             border: Border {
                 radius: radio.into(),
                 ..Default::default()
@@ -2412,6 +2799,10 @@ enum Fondo {
     Solido(Color),
     /// Superficie neutra con el icono en el color del texto: los de alrededor.
     Tenue,
+    /// Sin placa: solo el glifo. Anterior y siguiente de la música, como la
+    /// referencia; la placa queda para la acción principal.
+    // añadido en la 0.2.0
+    Sin,
 }
 
 // 0.1.0
@@ -2419,8 +2810,15 @@ fn redondo(ic: Option<icono::Icono>, lado: f32, fondo: Fondo) -> PanelElement<'s
     let (relleno, tinta) = match fondo {
         Fondo::Solido(c) => (c, tema::tinta_sobre(c)),
         Fondo::Tenue => (tema::superficie_en_tarjeta(), tema::texto()),
+        Fondo::Sin => (Color::TRANSPARENT, tema::texto()),
     };
-    container(icono_teñido(ic, lado * 0.4, tinta))
+    // Sin placa el glifo es lo único que se ve: algo más grande.
+    let px = if matches!(fondo, Fondo::Sin) {
+        lado * 0.5
+    } else {
+        lado * 0.4
+    };
+    container(icono_teñido(ic, px, tinta))
         .width(Length::Fixed(lado))
         .height(Length::Fixed(lado))
         .align_x(Horizontal::Center)
@@ -2597,31 +2995,135 @@ fn deslizador(volumen: u8, color: Color) -> PanelElement<'static> {
     .into()
 }
 
-// 0.1.0
-fn ver_burbuja(b: &Burbuja) -> PanelElement<'static> {
-    let color = b.color;
-    let dentro = match b.clase {
-        Clase::Player => icono_teñido(icono_propio("musica"), 13.0, color),
-        Clase::Timer => icono_teñido(icono_inline(RELOJ), 14.0, color),
-        Clase::Recorder => punto(b.activa, tema::rojo(), 8.0),
-        Clase::Transfer => icono_teñido(icono_inline(DOCUMENTO), 14.0, color),
-        Clase::Calendar => icono_teñido(icono_inline(CALENDARIO), 14.0, color),
-        Clase::Monitor => icono_teñido(icono_inline(CHIP), 14.0, color),
-        Clase::Auriculares => image(FOTOS_BUDS[4].clone()).width(18.0).height(18.0).into(),
-        Clase::Asistente(_) => punto(true, color, 10.0),
-    };
-    container(dentro)
-        .width(Length::Fixed(BURBUJA))
-        .height(Length::Fixed(BURBUJA))
+/// Un icono de la columna: círculo del color de su actividad con el glifo en
+/// blanco. Las que no son la actual se apagan hacia el negro de la isla (32 %
+/// de su color): se adivinan sin competir con la que se mira.
+// añadido en la 0.2.0
+/// Órdenes de la isla misma, no de la app: las intercepta el shell.
+// añadido en la 0.2.2
+pub const ISLA_ABRIR: &str = "isla:abrir";
+pub const ISLA_PRIMERO: &str = "isla:primero";
+pub const ISLA_OCULTAR: &str = "isla:ocultar";
+pub const ISLA_AJUSTES: &str = "isla:ajustes";
+
+/// El nombre de la app para la cabecera: el de su `.desktop`, que es como la
+/// llama el resto del escritorio. Las apps de BookOS publican con el
+/// identificador de Tauri (`com.bookos.player`) y su fichero se llama como el
+/// binario (`bookos-player.desktop`), así que se prueban los dos.
+// añadido en la 0.2.2
+fn nombre_app(estado: &Estado) -> String {
+    if estado.clase == Clase::Auriculares {
+        return "Ajustes".into();
+    }
+    let cola = estado.app_id.rsplit('.').next().unwrap_or(&estado.app_id);
+    crate::apps::por_app_id(&estado.app_id)
+        .or_else(|| crate::apps::por_app_id(&format!("bookos-{cola}")))
+        .map(|a| a.nombre)
+        .unwrap_or_else(|| {
+            match estado.clase {
+                Clase::Player => "Música",
+                Clase::Timer => "Reloj",
+                Clase::Recorder => "Grabadora",
+                Clase::Transfer => "Archivos",
+                Clase::Calendar => "Calendario",
+                Clase::Monitor => "Monitor",
+                Clase::Auriculares => "Auriculares",
+                Clase::Asistente(_) => "Zenith",
+            }
+            .to_string()
+        })
+}
+
+const CAMPANA: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" d="M5.25 9a6.75 6.75 0 0 1 13.5 0v.75c0 2.123.8 4.057 2.118 5.52a.75.75 0 0 1-.297 1.206c-1.544.57-3.16.99-4.831 1.243a3.75 3.75 0 1 1-7.48 0 24.585 24.585 0 0 1-4.831-1.244.75.75 0 0 1-.298-1.205A8.217 8.217 0 0 0 5.25 9.75V9Zm4.502 8.9a2.25 2.25 0 1 0 4.496 0 25.057 25.057 0 0 1-4.496 0Z"/></svg>"##;
+const MAS: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" d="M4.5 12a1.5 1.5 0 1 1 3 0 1.5 1.5 0 0 1-3 0Zm6 0a1.5 1.5 0 1 1 3 0 1.5 1.5 0 0 1-3 0Zm6 0a1.5 1.5 0 1 1 3 0 1.5 1.5 0 0 1-3 0Z"/></svg>"##;
+const ABRIR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" d="M15.75 2.25H21a.75.75 0 0 1 .75.75v5.25a.75.75 0 0 1-1.5 0V4.81L8.03 17.03a.75.75 0 0 1-1.06-1.06L19.19 3.75h-3.440a.75.75 0 0 1 0-1.5Zm-10.5 4.5a1.5 1.5 0 0 0-1.5 1.5v10.5a1.5 1.5 0 0 0 1.5 1.5h10.5a1.5 1.5 0 0 0 1.5-1.5V10.5a.75.75 0 0 1 1.5 0v8.25a3 3 0 0 1-3 3H5.25a3 3 0 0 1-3-3V8.25a3 3 0 0 1 3-3h8.25a.75.75 0 0 1 0 1.5H5.25Z"/></svg>"##;
+const FIJAR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" d="M6.32 2.577a49.255 49.255 0 0 1 11.36 0c1.497.174 2.57 1.46 2.57 2.93V21a.75.75 0 0 1-1.085.67L12 18.089l-7.165 3.583A.75.75 0 0 1 3.75 21V5.507c0-1.47 1.073-2.756 2.57-2.930Z"/></svg>"##;
+const OCULTAR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path d="M3.53 2.47a.75.75 0 0 0-1.06 1.06l18 18a.75.75 0 1 0 1.06-1.06l-18-18ZM22.676 12.553a11.249 11.249 0 0 1-2.631 4.31l-3.099-3.099a5.25 5.25 0 0 0-6.71-6.71L7.759 4.577a11.217 11.217 0 0 1 4.242-.827c4.97 0 9.185 3.223 10.675 7.69.12.362.12.752 0 1.113Z"/><path d="M15.75 12c0 .18-.013.357-.037.53l-4.244-4.243A3.75 3.75 0 0 1 15.75 12ZM12.53 15.713l-4.243-4.244a3.75 3.75 0 0 0 4.244 4.243Z"/><path d="M6.75 12c0-.619.107-1.213.304-1.764l-3.1-3.1a11.25 11.25 0 0 0-2.63 4.31c-.12.362-.12.752 0 1.114 1.489 4.467 5.704 7.69 10.675 7.69 1.5 0 2.933-.294 4.242-.827l-2.477-2.477A5.25 5.25 0 0 1 6.75 12Z"/></svg>"##;
+
+/// Los modos del control de ruido en el orden del segmentado: de menos a más
+/// aislamiento, como la maqueta.
+// añadido en la 0.2.2
+const MODOS_RUIDO: [u8; 3] = [0, 2, 1];
+
+/// El segmentado del HIG (§9): fondo r12 con 3 de relleno, pestañas r10 de
+/// 13/600; la activa con la pareja blanca/negra de la isla.
+// añadido en la 0.2.2
+fn segmentado_ruido(modo: u8) -> PanelElement<'static> {
+    let pestana = |m: u8, etiqueta: &'static str| -> PanelElement<'static> {
+        let activa = m == modo;
+        container(text(etiqueta).size(13).font(negrita()).color(if activa {
+            Color::BLACK
+        } else {
+            tema::TEXTO2
+        }))
+        .width(Length::Fill)
+        .height(Length::Fill)
         .align_x(Horizontal::Center)
         .align_y(Vertical::Center)
         .style(move |_| container::Style {
-            background: Some(tema::card().into()),
+            background: activa.then(|| Color::WHITE.into()),
             border: Border {
-                radius: RADIO_COMPACTO.into(),
+                radius: 10.0.into(),
                 ..Default::default()
             },
-            shadow: tema::sombra_popover(),
+            ..Default::default()
+        })
+        .into()
+    };
+    let etiquetas = ["Desactivada", "Ambiente", "Cancelación"];
+    container(Row::with_children(
+        MODOS_RUIDO
+            .iter()
+            .zip(etiquetas)
+            .map(|(m, e)| pestana(*m, e)),
+    ))
+    .width(Length::Fill)
+    .height(Length::Fixed(BOTON_H))
+    .padding(3)
+    .style(|_| container::Style {
+        background: Some(Color::from_rgb8(0x1c, 0x1c, 0x1e).into()),
+        border: Border {
+            radius: 12.0.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+fn icono_columna(b: &Burbuja, lado: f32) -> PanelElement<'static> {
+    let fondo = if b.actual {
+        b.color
+    } else {
+        tema::mezclar(ISLA, b.color, 0.32)
+    };
+    let tinta = if b.actual {
+        Color::WHITE
+    } else {
+        tema::mezclar(ISLA, Color::WHITE, 0.45)
+    };
+    let px = lado * 0.55;
+    let dentro: PanelElement<'static> = match b.clase {
+        Clase::Player => icono_teñido(icono_propio("musica"), px, tinta),
+        Clase::Timer => icono_teñido(icono_inline(RELOJ), px, tinta),
+        Clase::Recorder => punto(true, tinta, lado * 0.3),
+        Clase::Transfer => icono_teñido(icono_inline(DOCUMENTO), px, tinta),
+        Clase::Calendar => icono_teñido(icono_inline(CALENDARIO), px, tinta),
+        Clase::Monitor => icono_teñido(icono_inline(CHIP), px, tinta),
+        Clase::Auriculares => image(FOTOS_BUDS[4].clone()).width(px).height(px).into(),
+        Clase::Asistente(_) => punto(true, tinta, lado * 0.3),
+    };
+    container(dentro)
+        .width(Length::Fixed(lado))
+        .height(Length::Fixed(lado))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(move |_| container::Style {
+            background: Some(fondo.into()),
+            border: Border {
+                radius: (lado / 2.0).into(),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .into()
@@ -2825,7 +3327,6 @@ const VISTO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 
 const AVISO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.5v5.2M8 12h0"/></svg>"##;
 const STOP: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><rect width="10" height="10" x="3" y="3" rx="1.5"/></svg>"##;
 const ALEATORIO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><path d="M10.6 2.5a.8.8 0 0 1 1.1 0l1.8 1.8a.8.8 0 0 1 0 1.1l-1.8 1.8a.8.8 0 1 1-1.1-1.1l.4-.4h-.7c-.6 0-1 .2-1.4.7L8 7.2 7.1 6l.3-.4c.7-.9 1.6-1.4 2.7-1.4h.7l-.4-.5a.8.8 0 0 1 0-1.1zM2.3 4.2h1.9c1.1 0 2 .5 2.7 1.4l3 3.9c.4.5.8.7 1.4.7h.7l-.4-.4a.8.8 0 1 1 1.1-1.1l1.8 1.8a.8.8 0 0 1 0 1.1l-1.8 1.8a.8.8 0 1 1-1.1-1.1l.4-.4h-.7c-1.1 0-2-.5-2.7-1.4l-3-3.9c-.4-.5-.8-.7-1.4-.7H2.3a.8.8 0 0 1 0-1.6zm0 6.1h1.9c.5 0 1-.2 1.3-.6l.9 1.2c-.6.7-1.4 1-2.2 1H2.3a.8.8 0 1 1 0-1.6z"/></svg>"##;
-const REPETIR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#fff"><path d="M4.8 2.6a.8.8 0 0 1 0 1.2l-.3.3h6a3 3 0 0 1 3 3v1a.8.8 0 1 1-1.6 0v-1c0-.8-.6-1.4-1.4-1.4h-6l.3.3a.8.8 0 1 1-1.2 1.1L1.9 5.4a.8.8 0 0 1 0-1.1l1.7-1.7a.8.8 0 0 1 1.2 0zm6.4 10.8a.8.8 0 0 1 0-1.2l.3-.3h-6a3 3 0 0 1-3-3v-1a.8.8 0 1 1 1.6 0v1c0 .8.6 1.4 1.4 1.4h6l-.3-.3a.8.8 0 1 1 1.2-1.1l1.7 1.7a.8.8 0 0 1 0 1.1l-1.7 1.7a.8.8 0 0 1-1.2 0z"/></svg>"##;
 
 // ── Portada ──────────────────────────────────────────────────────────────
 
@@ -3039,6 +3540,7 @@ mod tests {
             nivel: 0.5,
             aleatorio: false,
             repetir: false,
+            anc: None,
             portada: None,
             cola: Vec::new(),
             metricas: Vec::new(),
@@ -3196,7 +3698,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(a.vista, Vista::Abierta);
-        assert_eq!(a.size().1, PLAYER_H + MARGEN_SOMBRA * 2.0);
+        assert_eq!(a.size().1, PLAYER_H + CAB_EXTRA + MARGEN_SOMBRA * 2.0);
     }
 
     #[test]
@@ -3219,7 +3721,7 @@ mod tests {
         // Mientras crece, quieta en horizontal.
         assert_eq!(a.entrada().2, 0.0);
         // f ≈ 0,1: el primer pico. A 0,2 cruza por cero.
-        std::thread::sleep(tema::D_TARJETA + D_SACUDIDA / 10);
+        std::thread::sleep(tema::D_ISLA + D_SACUDIDA / 10);
         assert!(a.entrada().2.abs() > 1.0);
         assert!(a.animando());
         std::thread::sleep(D_SACUDIDA);
@@ -3233,12 +3735,12 @@ mod tests {
     #[test]
     fn zenith_se_despliega_sin_parpadear_y_minimizado_nace_en_su_sitio() {
         let mut a = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), true);
-        std::thread::sleep(tema::D_TARJETA);
+        std::thread::sleep(tema::D_ISLA);
         a.actualizar(estado(Clase::Asistente(Fase::Respuesta)));
         let (alfa, zoom, _, _) = a.entrada();
         // Llega la respuesta: la tarjeta parte casi entera, no de la nada.
         assert!(alfa >= 0.5 && zoom >= 0.9, "alfa {alfa}, zoom {zoom}");
-        std::thread::sleep(tema::D_TARJETA);
+        std::thread::sleep(tema::D_ISLA);
         a.actualizar(estado(Clase::Asistente(Fase::Minimizado)));
         // La burbuja está en otro sitio: entra desde cero, sin el pulso.
         let (alfa, zoom, _, _) = a.entrada();
@@ -3278,7 +3780,7 @@ mod tests {
     #[test]
     fn zenith_pensando_mueve_la_onda() {
         let a = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), true);
-        std::thread::sleep(tema::D_TARJETA);
+        std::thread::sleep(tema::D_ISLA);
         assert!(a.animando());
         assert!(a.ondas_pendientes());
     }
@@ -3293,7 +3795,7 @@ mod tests {
     #[test]
     fn la_vista_abierta_no_repinta_el_bitmap_por_las_ondas() {
         let mut a = Actividad::nueva(estado(Clase::Player), true);
-        a.desde = Instant::now() - tema::D_TARJETA;
+        a.desde = Instant::now() - tema::D_ISLA;
         a.ultimo_frame_ondas = Instant::now() - FRAME_ONDAS;
         assert!(a.animando());
         assert!(a.ondas_pendientes());
@@ -3334,12 +3836,18 @@ mod tests {
     /// constantes de geometría.
     #[test]
     fn los_cinco_controles_caen_donde_se_ven() {
-        let mut a = Actividad::nueva(estado(Clase::Player), false);
+        let mut e = estado(Clase::Player);
+        e.cola = cola(2);
+        e.cola[0].actual = true;
+        let mut a = Actividad::nueva(e, false);
         a.vista = Vista::Abierta;
         let centro = ABIERTO_W / 2.0;
         let mut en = |x: f32| {
-            a.pulsar(MARGEN_SOMBRA + x, MARGEN_SOMBRA + CTRL_Y + CTRL_H / 2.0)
-                .map(|ac| ac.nombre)
+            a.pulsar(
+                MARGEN_SOMBRA + x,
+                MARGEN_SOMBRA + CAB_EXTRA + CTRL_Y + CTRL_H / 2.0,
+            )
+            .map(|ac| ac.nombre)
         };
         assert_eq!(en(centro), Some("play-pause".into()));
         assert_eq!(
@@ -3356,8 +3864,50 @@ mod tests {
         );
         assert_eq!(
             en(centro + CTRL_PLAY / 2.0 + CTRL_SEP * 2.0 + CTRL_LADO + CTRL_PLANO / 2.0),
-            Some("repeat".into())
+            Some("favorite".into())
         );
+    }
+
+    /// Sin cola no se sabe cuál suena: el corazón no está y su hueco no hace
+    /// nada.
+    #[test]
+    fn sin_cola_no_hay_favorita() {
+        let mut e = estado(Clase::Player);
+        e.cola.clear();
+        let mut a = Actividad::nueva(e, false);
+        a.vista = Vista::Abierta;
+        let x = ABIERTO_W / 2.0 + CTRL_PLAY / 2.0 + CTRL_SEP * 2.0 + CTRL_LADO + CTRL_PLANO / 2.0;
+        assert!(
+            a.pulsar(
+                MARGEN_SOMBRA + x,
+                MARGEN_SOMBRA + CAB_EXTRA + CTRL_Y + CTRL_H / 2.0
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn el_segmentado_cambia_el_ruido() {
+        let mut e = estado(Clase::Auriculares);
+        e.anc = Some(0);
+        let mut a = Actividad::nueva(e, false);
+        a.vista = Vista::Abierta;
+        let y = MARGEN_SOMBRA + CAB_EXTRA + AUR_BOTON_Y + BOTON_H / 2.0;
+        let tercio = (ABIERTO_W - PAD * 2.0) / 3.0;
+        // La activa no manda nada; la del centro es ambiente (2), la última
+        // cancelación (1).
+        assert!(a.pulsar(MARGEN_SOMBRA + PAD + tercio / 2.0, y).is_none());
+        let accion = a
+            .pulsar(MARGEN_SOMBRA + PAD + tercio * 2.5, y)
+            .expect("cancelación");
+        assert_eq!(
+            (accion.nombre.as_str(), accion.valor.as_str()),
+            ("anc", "1")
+        );
+        assert_eq!(a.estado.anc, Some(1));
+        // La cabecera de los auriculares le pide a budsd que abra Ajustes.
+        let accion = a.pulsar(MARGEN_SOMBRA + CAB_APP_X + 10.0, MARGEN_SOMBRA + 20.0);
+        assert_eq!(accion.map(|a| a.nombre), Some("open".to_string()));
     }
 
     #[test]
@@ -3464,11 +4014,65 @@ mod tests {
             let mut a = Actividad::nueva(estado(clase), false);
             a.vista = Vista::Abierta;
             assert!(
-                a.pulsar(MARGEN_SOMBRA + 40.0, MARGEN_SOMBRA + PAD + 10.0)
+                a.pulsar(MARGEN_SOMBRA + 40.0, MARGEN_SOMBRA + PAD + CAB_EXTRA + 10.0)
+                    .is_none()
+            );
+            assert_eq!(a.vista, Vista::Compacta, "{clase:?}");
+            // Entre «App ›» y ⋯ la franja de arriba también recoge.
+            a.vista = Vista::Abierta;
+            assert!(
+                a.pulsar(MARGEN_SOMBRA + ABIERTO_W - 80.0, MARGEN_SOMBRA + 20.0)
                     .is_none()
             );
             assert_eq!(a.vista, Vista::Compacta, "{clase:?}");
         }
+    }
+
+    #[test]
+    fn la_cabecera_abre_la_app_y_los_puntos_el_menu() {
+        let mut a = Actividad::nueva(estado(Clase::Player), false);
+        a.vista = Vista::Abierta;
+        let accion = a.pulsar(MARGEN_SOMBRA + CAB_APP_X + 10.0, MARGEN_SOMBRA + 20.0);
+        assert_eq!(accion.map(|a| a.nombre), Some(ISLA_ABRIR.to_string()));
+
+        let mas = MARGEN_SOMBRA + ABIERTO_W - MAS_DER - MAS_W / 2.0;
+        assert!(a.pulsar(mas, MARGEN_SOMBRA + 20.0).is_none());
+        assert_eq!(a.vista, Vista::Menu);
+        assert!(!a.recogible(), "con el menú abierto no se recoge sola");
+
+        // Fila del medio: mostrar primero. Sin más vivas ya es la primera y
+        // la fila no hace nada.
+        let fila = |n: f32| MARGEN_SOMBRA + PAD + CAB_EXTRA + MENU_FILA_H * n + 5.0;
+        assert!(a.pulsar(MARGEN_SOMBRA + 60.0, fila(1.0)).is_none());
+        assert_eq!(a.vista, Vista::Menu);
+        let accion = a.pulsar(MARGEN_SOMBRA + 60.0, fila(2.0));
+        assert_eq!(accion.map(|a| a.nombre), Some(ISLA_OCULTAR.to_string()));
+        assert_eq!(a.vista, Vista::Abierta);
+    }
+
+    #[test]
+    fn mostrar_primero_solo_si_no_lo_es() {
+        let mut a = Actividad::nueva(estado(Clase::Timer), false);
+        a.poner_burbujas(vec![
+            Burbuja {
+                app_id: "otra".into(),
+                clase: Clase::Player,
+                color: Color::WHITE,
+                activa: true,
+                actual: false,
+            },
+            Burbuja {
+                app_id: "yo".into(),
+                clase: Clase::Timer,
+                color: Color::WHITE,
+                activa: true,
+                actual: true,
+            },
+        ]);
+        a.vista = Vista::Menu;
+        let y = MARGEN_SOMBRA + PAD + CAB_EXTRA + MENU_FILA_H + 5.0;
+        let accion = a.pulsar(MARGEN_SOMBRA + 60.0, y);
+        assert_eq!(accion.map(|a| a.nombre), Some(ISLA_PRIMERO.to_string()));
     }
 
     #[test]
@@ -3627,46 +4231,71 @@ mod tests {
             clase,
             color: tema::acento(),
             activa: true,
+            actual: false,
         }
     }
 
-    /// La píldora sigue centrada en el buffer: el hueco de la izquierda mide
-    /// lo mismo que las burbujas de la derecha, y ese hueco no es zona de clic.
+    /// Una actividad a la vez: con otras vivas la píldora solo crece lo del
+    /// «+N», y en la compacta no hay nada más que pulsar.
     #[test]
-    fn las_burbujas_no_descentran_la_pildora() {
+    fn la_compacta_es_una_sola_actividad() {
         let mut a = Actividad::nueva(estado(Clase::Player), false);
         let (sin, _) = a.size();
-        a.poner_burbujas(vec![burbuja("com.bookos.clock", Clase::Timer)]);
-        let (con, _) = a.size();
-        assert_eq!(con - sin, (BURBUJA + BURBUJA_SEP) * 2.0);
-        let (x0, ancho) = a.zona();
-        assert_eq!(x0, BURBUJA + BURBUJA_SEP);
-        assert_eq!(ancho, PLAYER_COMPACTO_W + BURBUJA + BURBUJA_SEP);
+        a.poner_burbujas(vec![
+            Burbuja {
+                actual: true,
+                ..burbuja("com.bookos.player", Clase::Player)
+            },
+            burbuja("com.bookos.clock", Clase::Timer),
+        ]);
+        assert_eq!(a.size().0, sin + CONTADOR_W);
+        assert_eq!(a.zona(), (0.0, PLAYER_COMPACTO_W + CONTADOR_W));
+        assert_eq!(
+            a.burbuja_en(MARGEN_SOMBRA + 10.0, MARGEN_SOMBRA + 10.0),
+            None
+        );
     }
 
+    /// Abierta, la columna va en su propio hueco (la tarjeta crece lo que mide)
+    /// y cada icono lleva a su actividad.
     #[test]
-    fn la_burbuja_pulsada_es_la_que_se_ve() {
+    fn cada_icono_de_la_columna_es_su_actividad() {
         let mut a = Actividad::nueva(estado(Clase::Player), false);
+        a.vista = Vista::Abierta;
+        let (sin, _) = a.size();
         a.poner_burbujas(vec![
+            Burbuja {
+                actual: true,
+                ..burbuja("com.bookos.player", Clase::Player)
+            },
             burbuja("com.bookos.voicerecorder", Clase::Recorder),
             burbuja("com.bookos.clock", Clase::Timer),
         ]);
-        let x0 = MARGEN_SOMBRA + a.zona().0 + PLAYER_COMPACTO_W + BURBUJA_SEP;
-        let y = MARGEN_SOMBRA + BURBUJA / 2.0;
+        assert_eq!(a.size().0, sin + COLUMNA, "la columna no pisa la tarjeta");
+        let x = MARGEN_SOMBRA + ABIERTO_W + COLUMNA / 2.0;
+        let ids: Vec<_> = a
+            .columna()
+            .iter()
+            .map(|(c, _)| a.burbuja_en(x, MARGEN_SOMBRA + c).map(str::to_owned))
+            .collect();
         assert_eq!(
-            a.burbuja_en(x0 + BURBUJA / 2.0, y),
-            Some("com.bookos.voicerecorder")
+            ids,
+            [
+                Some("com.bookos.player".into()),
+                Some("com.bookos.voicerecorder".into()),
+                Some("com.bookos.clock".into())
+            ]
         );
         assert_eq!(
-            a.burbuja_en(x0 + BURBUJA + BURBUJA_SEP + BURBUJA / 2.0, y),
-            Some("com.bookos.clock")
-        );
-        assert_eq!(a.burbuja_en(x0 - 20.0, y), None, "la píldora no es burbuja");
-        a.vista = Vista::Abierta;
-        assert_eq!(
-            a.burbuja_en(x0 + BURBUJA / 2.0, y),
+            a.burbuja_en(MARGEN_SOMBRA + 20.0, MARGEN_SOMBRA + 20.0),
             None,
-            "abierta no hay burbujas"
+            "la tarjeta no es columna"
+        );
+        let lados: Vec<_> = a.columna().iter().map(|c| c.1).collect();
+        assert_eq!(
+            lados,
+            [COLUMNA_ACTUAL, COLUMNA_OTRA, COLUMNA_OTRA],
+            "la actual va grande"
         );
     }
 }

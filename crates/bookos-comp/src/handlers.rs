@@ -1087,16 +1087,24 @@ impl IdleInhibitHandler for BookosComp {
         use smithay::reexports::wayland_server::Resource as _;
         self.idle_inhibidores
             .retain(|actual| actual.is_alive() && actual != &surface);
-        self.idle_notifier_state.set_is_inhibited(
-            !self.idle_inhibidores.is_empty() || bookos_shell::mantener_despierto(),
-        );
-        if self.idle_inhibidores.is_empty() {
-            self.last_input = Some(std::time::Instant::now());
-        }
-        crate::backend::programar_bloqueo_inactividad(self);
-        crate::backend::programar_suspension_inactividad(self);
+        inhibicion_cambiada(self);
         tracing::debug!("una aplicación ha liberado el idle de pantalla");
     }
+}
+
+/// Algo pidió o soltó que no se apague la pantalla, por Wayland o por el bus.
+/// Al soltarse la última, la inactividad empieza a contar desde ahora: si no,
+/// tras un vídeo de una hora la pantalla se apagaría en el acto.
+// añadido en la 0.2.2 -- sacado de `uninhibit` para las del bus
+pub fn inhibicion_cambiada(state: &mut BookosComp) {
+    state
+        .idle_notifier_state
+        .set_is_inhibited(state.idle_inhibido() || bookos_shell::mantener_despierto());
+    if !state.idle_inhibido() {
+        state.last_input = Some(std::time::Instant::now());
+    }
+    crate::backend::programar_bloqueo_inactividad(state);
+    crate::backend::programar_suspension_inactividad(state);
 }
 
 delegate_idle_inhibit!(BookosComp);

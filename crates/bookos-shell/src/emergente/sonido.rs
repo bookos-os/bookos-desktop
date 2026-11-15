@@ -1,9 +1,9 @@
 //! El emergente de Sonido, colgado del icono del volumen.
 //!
-//! Dos secciones, Altavoces y Micrófono, cada una con su etiqueta y su valor
-//! encima, y debajo el icono, la píldora gruesa de la referencia de Figma y el
-//! botón redondo que silencia. Las medidas son las de las demás tarjetas del
-//! panel: 336 de ancho y 16 de margen.
+//! Dos tarjetas, Altavoces y Micrófono, con la forma de las de Brillo: título y
+//! valor arriba; debajo, el icono que silencia, la barra y el icono de lo que
+//! es. Comparten medidas con Brillo porque cuelgan del panel una al lado de la
+//! otra.
 //!
 //! **El deslizador es lo primero del shell que se arrastra.** Hasta ahora las
 //! emergentes solo respondían a pulsaciones sueltas: el menú y el calendario se
@@ -14,29 +14,27 @@
 //! El servicio compartido recibe los cambios de volumen y publica el estado.
 //! El hilo de dibujo solo consulta la caché y encola operaciones.
 
-use iced_core::Length;
 use iced_core::alignment::Vertical;
+use iced_core::font::Weight;
+use iced_core::{Border, Length, Padding, Point, Rectangle};
 use iced_widget::{Space, column, container, row, text};
 
 use crate::Accion;
 use crate::tema;
 use crate::view::PanelElement;
 
-use super::control::{
-    self, BAJO_ETIQUETA, BOTON, ETIQUETA, FILA_PILDORA, HUECO, ICONO, MARGEN_AGARRE, PILDORA,
+// Las medidas de la tarjeta de Brillo: las dos cuelgan del panel una al lado
+// de la otra y tienen que leerse como la misma familia.
+use super::brillo::{
+    AJUSTES, ANCHO_BARRA, ANCHO_TARJETA, ENTRE, ENTRE_TARJETAS, PAD_ABAJO, PAD_ARRIBA, PAD_H,
+    SANGRIA, TITULO, VALOR,
 };
+use super::control::{self, ENTRE_BARRA, FILA_BARRA, ICONO_BARRA, PISTA};
 use super::lista::{ANCHO, BAJO_CABECERA, CABECERA, MARGEN};
 use super::{Ancla, Tecla};
 
-/// Cuánto más se meten las secciones que la tarjeta: las deja a 20 del borde,
-/// alineadas con el título.
-const SANGRIA: f32 = 4.0;
-/// Ancho del bloque de las secciones.
-const BLOQUE: f32 = ANCHO - (MARGEN + SANGRIA) * 2.0;
-/// Separación entre las dos secciones.
-const ENTRE_SECCIONES: f32 = 14.0;
-/// Lo que ocupa una sección: etiqueta, su aire y la fila de la píldora.
-const SECCION: f32 = ETIQUETA + BAJO_ETIQUETA + FILA_PILDORA;
+/// Alto de la tarjeta de un canal: título y valor, y la barra.
+const ALTO_CANAL: f32 = PAD_ARRIBA + TITULO + ENTRE + FILA_BARRA + PAD_ABAJO;
 
 /// Cuánto sube o baja el volumen una muesca de rueda.
 const PASO_RUEDA: i32 = 5;
@@ -53,14 +51,19 @@ pub struct Sonido {
     entrada: Canal,
     /// Qué píldora está agarrada ahora mismo, si alguna.
     agarrada: Option<(Fila, u8, bool)>,
-    /// El botón de silencio bajo el puntero: 0 la salida, 1 la entrada.
+    /// Lo pulsable bajo el puntero: 0 y 1 los silencios de salida y
+    /// entrada, 2 los ajustes.
     boton: tema::Realce,
+    /// Cuánto engorda la barra agarrada, con muelle, como en Brillo.
+    grosor: tema::Transicion,
+    icono_ajustes: Option<crate::icono::Icono>,
 }
 
 /// Un destino de PipeWire tal y como lo enseña el emergente.
 struct Canal {
-    /// El icono de la izquierda, que dice qué es y no cómo está: el altavoz con
-    /// ondas o el micrófono. El estado lo lleva el botón.
+    /// El icono grande de la derecha de la barra, que dice qué es y no cómo
+    /// está: el altavoz con ondas o el micrófono. El estado lo lleva el de la
+    /// izquierda, que es el botón de silencio.
     icono_fijo: Option<crate::icono::Icono>,
     disponible: bool,
     nivel: u8,
@@ -197,14 +200,17 @@ impl Sonido {
             entrada: Canal::nuevo("@DEFAULT_AUDIO_SOURCE@", true),
             agarrada: None,
             boton: tema::Realce::nuevo(),
+            grosor: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
+            icono_ajustes: crate::icono::propio("preferencias"),
         }
     }
 
     // 0.1.0
+    // modified 0.2.2 -- tarjetas por canal, como Brillo
     pub fn size(&self) -> (f32, f32) {
         (
             ANCHO,
-            MARGEN * 2.0 + CABECERA + BAJO_CABECERA + SECCION * 2.0 + ENTRE_SECCIONES,
+            MARGEN * 2.0 + CABECERA + BAJO_CABECERA + ALTO_CANAL * 2.0 + ENTRE_TARJETAS,
         )
     }
 
@@ -214,48 +220,64 @@ impl Sonido {
         Ancla::BajoWidget("volumen")
     }
 
-    /// El rectángulo de la píldora de una fila, relativo a la emergente.
-    // 0.1.0
-    fn rect_pildora(&self, fila: Fila) -> iced_core::Rectangle {
-        let y0 = MARGEN + CABECERA + BAJO_CABECERA;
-        let y = match fila {
-            Fila::Salida => y0,
-            Fila::Entrada => y0 + SECCION + ENTRE_SECCIONES,
-        } + ETIQUETA
-            + BAJO_ETIQUETA;
-        debug_assert!(
-            y + FILA_PILDORA <= self.size().1,
-            "la fila se sale de la tarjeta"
-        );
-        iced_core::Rectangle {
-            x: MARGEN + SANGRIA + ICONO + HUECO,
-            y: y + (FILA_PILDORA - PILDORA) / 2.0,
-            width: control::ancho_pildora(BLOQUE, true),
-            height: PILDORA,
+    /// Dónde empieza la tarjeta de una fila, relativo a la emergente.
+    // añadido en la 0.2.2
+    fn y_tarjeta(fila: Fila) -> f32 {
+        let y = MARGEN + CABECERA + BAJO_CABECERA;
+        match fila {
+            Fila::Salida => y,
+            Fila::Entrada => y + ALTO_CANAL + ENTRE_TARJETAS,
         }
     }
 
-    /// El rectángulo del botón de silencio de una fila.
+    /// La fila de la barra con sus iconos: lo que se agarra.
+    // añadido en la 0.2.2
+    fn y_fila(fila: Fila) -> f32 {
+        Self::y_tarjeta(fila) + PAD_ARRIBA + TITULO + ENTRE
+    }
+
+    /// La barra de verdad, de [`PISTA`] de alto: de ahí sale el nivel.
     // 0.1.0
-    fn rect_boton(&self, fila: Fila) -> iced_core::Rectangle {
-        let p = self.rect_pildora(fila);
-        iced_core::Rectangle {
-            x: p.x + p.width + HUECO,
-            y: p.y - (FILA_PILDORA - PILDORA) / 2.0,
-            width: BOTON,
-            height: BOTON,
+    // modified 0.2.2 -- la barra de Brillo
+    fn rect_pildora(&self, fila: Fila) -> Rectangle {
+        Rectangle {
+            x: MARGEN + PAD_H + ICONO_BARRA + ENTRE_BARRA,
+            y: Self::y_fila(fila) + (FILA_BARRA - PISTA) / 2.0,
+            width: ANCHO_BARRA,
+            height: PISTA,
         }
     }
 
-    /// El chip «Config» de la cabecera, pegado a la derecha.
+    /// Lo que se puede agarrar: la fila entera de la barra, no solo el surco.
+    // añadido en la 0.2.2
+    fn zona_barra(&self, fila: Fila) -> Rectangle {
+        let mut r = self.rect_pildora(fila);
+        r.y = Self::y_fila(fila);
+        r.height = FILA_BARRA;
+        r
+    }
+
+    /// El botón de silencio: el icono pequeño de la izquierda de la barra.
     // 0.1.0
-    fn rect_config(&self) -> iced_core::Rectangle {
-        let ancho = control::ancho_chip("Config");
-        iced_core::Rectangle {
-            x: ANCHO - MARGEN - SANGRIA - ancho,
-            y: MARGEN + (CABECERA - control::CHIP) / 2.0,
-            width: ancho,
-            height: control::CHIP,
+    // modified 0.2.2 -- del botón redondo de la derecha al icono de la izquierda
+    fn rect_boton(&self, fila: Fila) -> Rectangle {
+        Rectangle {
+            x: MARGEN + PAD_H,
+            y: Self::y_fila(fila),
+            width: ICONO_BARRA,
+            height: FILA_BARRA,
+        }
+    }
+
+    /// El botón de ajustes de la cabecera, el mismo que el de Brillo.
+    // 0.1.0
+    // modified 0.2.2 -- de un chip «Config» a un botón redondo con su icono
+    fn rect_config(&self) -> Rectangle {
+        Rectangle {
+            x: ANCHO - MARGEN - SANGRIA - AJUSTES,
+            y: MARGEN + (CABECERA - AJUSTES) / 2.0,
+            width: AJUSTES,
+            height: AJUSTES,
         }
     }
 
@@ -271,7 +293,7 @@ impl Sonido {
     // 0.1.0
     fn nivel_en(&self, fila: Fila, x: f32) -> u8 {
         let r = self.rect_pildora(fila);
-        control::nivel_en(x, r.x, r.width)
+        control::nivel_barra(x, r.x, r.width)
     }
 
     /// ¿Hay una píldora agarrada? Mientras la haya, el puntero le llega aunque
@@ -295,10 +317,14 @@ impl Sonido {
             return true;
         }
         let sobre = punto.and_then(|(x, y)| {
-            let p = iced_core::Point::new(x, y);
-            [Fila::Salida, Fila::Entrada]
-                .into_iter()
-                .position(|f| self.rect_boton(f).contains(p))
+            let p = Point::new(x, y);
+            [
+                self.rect_boton(Fila::Salida),
+                self.rect_boton(Fila::Entrada),
+                self.rect_config(),
+            ]
+            .into_iter()
+            .position(|r| r.contains(p))
         });
         self.boton.señalar(sobre)
     }
@@ -306,22 +332,19 @@ impl Sonido {
     /// ¿Se mueve algo dentro de la tarjeta?
     // 0.1.0
     pub fn animando(&self) -> bool {
-        self.boton.animando()
+        self.boton.animando() || self.grosor.animando()
     }
 
     // añadido en la 0.2.0 -- distinguir el deslizador evita confirmar un botón al convertir el toque en arrastre.
     pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
-        [Fila::Salida, Fila::Entrada].into_iter().any(|fila| {
-            let mut zona = self.rect_pildora(fila);
-            zona.y -= MARGEN_AGARRE;
-            zona.height += MARGEN_AGARRE * 2.0;
-            zona.contains(iced_core::Point::new(x, y))
-        })
+        [Fila::Salida, Fila::Entrada]
+            .into_iter()
+            .any(|fila| self.zona_barra(fila).contains(Point::new(x, y)))
     }
 
     // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
-        let punto = iced_core::Point::new(x, y);
+        let punto = Point::new(x, y);
         if self.rect_config().contains(punto) {
             return Some(Accion::Lanzar("bookos-settings --page sonido".into()));
         }
@@ -330,14 +353,12 @@ impl Sonido {
                 self.canal(fila).alternar_silencio();
                 return None;
             }
-            // La zona agarrable es más alta que la píldora: apuntar a 24 px de
-            // alto con el ratón en movimiento falla más de lo que parece.
-            let mut zona = self.rect_pildora(fila);
-            zona.y -= MARGEN_AGARRE;
-            zona.height += MARGEN_AGARRE * 2.0;
-            if zona.contains(punto) {
+            // La zona agarrable es la fila entera: apuntar a 10 px de alto con
+            // el ratón en movimiento falla más de lo que parece.
+            if self.zona_barra(fila).contains(punto) {
                 let canal = self.canal(fila);
                 self.agarrada = Some((fila, canal.nivel, canal.silenciado));
+                self.grosor.ir_a(1.0);
                 let nivel = self.nivel_en(fila, x);
                 self.canal(fila).poner(nivel, false);
                 return None;
@@ -349,6 +370,7 @@ impl Sonido {
     /// Soltar el botón deja de arrastrar. Devuelve si hay que repintar.
     // 0.1.0
     pub fn soltar(&mut self) -> bool {
+        self.grosor.ir_a(0.0);
         let Some((fila, nivel_inicial, silencio_inicial)) = self.agarrada.take() else {
             return false;
         };
@@ -394,12 +416,37 @@ impl Sonido {
     }
 
     // 0.1.0
+    // modified 0.2.2 -- cabecera y tarjetas de Brillo
     pub fn view(&self) -> PanelElement<'_> {
+        let ajustes = {
+            let fondo = tema::mezclar(
+                tema::superficie_en_tarjeta(),
+                tema::elevado(),
+                self.boton.intensidad(2),
+            );
+            let dentro: PanelElement<'_> = match &self.icono_ajustes {
+                Some(ic) => crate::icono::ver_teñido(ic, 17.0, Some(tema::texto())),
+                None => Space::new().into(),
+            };
+            container(dentro)
+                .width(Length::Fixed(AJUSTES))
+                .height(Length::Fixed(AJUSTES))
+                .center_x(Length::Fixed(AJUSTES))
+                .center_y(Length::Fixed(AJUSTES))
+                .style(move |_: &iced_widget::Theme| container::Style {
+                    background: Some(fondo.into()),
+                    border: Border {
+                        radius: (AJUSTES / 2.0).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+        };
         let cabecera = container(
             row![
                 control::titulo("Sonido"),
                 Space::new().width(Length::Fill),
-                control::chip("Config", tema::superficie(), tema::texto()),
+                ajustes
             ]
             .align_y(Vertical::Center),
         )
@@ -410,58 +457,132 @@ impl Sonido {
         let contenido = column![
             cabecera,
             Space::new().height(Length::Fixed(BAJO_CABECERA)),
-            container(column![
-                self.seccion("Altavoces", &self.salida, self.boton.intensidad(0)),
-                Space::new().height(Length::Fixed(ENTRE_SECCIONES)),
-                self.seccion("Micrófono", &self.entrada, self.boton.intensidad(1)),
-            ])
-            .padding([0, SANGRIA as u16]),
+            self.tarjeta("Altavoces", Fila::Salida, &self.salida, 0),
+            Space::new().height(Length::Fixed(ENTRE_TARJETAS)),
+            self.tarjeta("Micrófono", Fila::Entrada, &self.entrada, 1),
         ];
         control::tarjeta(contenido.into(), ANCHO, MARGEN)
     }
 
-    /// Una sección: etiqueta y valor arriba; icono, píldora y botón abajo.
-    // 0.1.0
-    fn seccion<'a>(
-        &'a self, titulo: &'a str, canal: &'a Canal, señalado: f32
+    /// La tarjeta de un canal: título y valor; debajo, el silencio, la barra y
+    /// el icono de lo que es.
+    // añadido en la 0.2.2
+    fn tarjeta<'a>(
+        &'a self,
+        titulo: &'a str,
+        fila: Fila,
+        canal: &'a Canal,
+        realce: usize,
     ) -> PanelElement<'a> {
-        let cabecera = control::etiqueta(titulo, canal.etiqueta(), BLOQUE);
-        if !canal.disponible {
+        let cabecera = row![
+            text(titulo)
+                .size(14.0)
+                .font(control::peso(Weight::Medium))
+                .color(tema::texto()),
+            Space::new().width(Length::Fill),
+            container(text(canal.etiqueta()).size(12.0).color(tema::TEXTO2))
+                .width(Length::Fixed(VALOR + 40.0))
+                .align_right(Length::Fixed(VALOR + 40.0)),
+        ]
+        .align_y(Vertical::Center);
+        let fila_barra: PanelElement<'a> = if canal.disponible {
+            // El silencio se pulsa en su icono, que enseña el estado (tachado
+            // al silenciar), con placa al pasar por encima o mientras calla.
+            let placa = tema::mezclar(
+                tema::superficie_en_tarjeta(),
+                tema::elevado(),
+                if canal.silenciado {
+                    1.0
+                } else {
+                    self.boton.intensidad(realce)
+                },
+            );
+            let silencio = container(match &canal.icono {
+                Some(ic) => crate::icono::ver_teñido(ic, 18.0, Some(tema::texto())),
+                None => Space::new().into(),
+            })
+            .width(Length::Fixed(ICONO_BARRA))
+            .height(Length::Fixed(FILA_BARRA))
+            .center_x(Length::Fixed(ICONO_BARRA))
+            .center_y(Length::Fixed(FILA_BARRA))
+            .style(move |_: &iced_widget::Theme| container::Style {
+                background: Some(placa.into()),
+                border: Border {
+                    radius: 8.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let grueso = if self.agarrada.is_some_and(|(f, _, _)| f == fila) {
+                control::grueso_barra(self.grosor.valor())
+            } else {
+                PISTA
+            };
+            // Silenciado, el nivel se conserva pero en gris: es lo que volverá
+            // a sonar al quitar el silencio.
+            let barra = control::barra(
+                ANCHO_BARRA,
+                grueso,
+                f32::from(canal.nivel) / 100.0,
+                if canal.silenciado {
+                    tema::TEXTO2
+                } else {
+                    tema::acento()
+                },
+                tema::elevado(),
+                &[],
+                None,
+            );
+            let fijo = container(match &canal.icono_fijo {
+                Some(ic) => crate::icono::ver_teñido(ic, 22.0, Some(tema::texto())),
+                None => Space::new().into(),
+            })
+            .width(Length::Fixed(ICONO_BARRA))
+            .height(Length::Fixed(FILA_BARRA))
+            .center_x(Length::Fixed(ICONO_BARRA))
+            .center_y(Length::Fixed(FILA_BARRA));
+            row![
+                silencio,
+                Space::new().width(Length::Fixed(ENTRE_BARRA)),
+                barra,
+                Space::new().width(Length::Fixed(ENTRE_BARRA)),
+                fijo,
+            ]
+            .align_y(Vertical::Center)
+            .height(Length::Fixed(FILA_BARRA))
+            .into()
+        } else {
             let mensaje = bookos_system::unavailable("audio")
                 .map(|_| "Servicio de audio no disponible")
                 .unwrap_or("Esperando dispositivo de audio…");
-            return column![
-                cabecera,
-                Space::new().height(Length::Fixed(BAJO_ETIQUETA)),
-                container(text(mensaje).size(12.0).color(tema::TEXTO2))
-                    .height(Length::Fixed(FILA_PILDORA))
-                    .center_y(Length::Fixed(FILA_PILDORA)),
-            ]
-            .into();
-        }
-        // El botón va en acento mientras el canal suena y en el color del surco
-        // al silenciarlo: su icono es el del estado, así que dice las dos cosas.
-        let controles = control::fila_pildora(
-            canal.icono_fijo.as_ref(),
-            control::pildora(
-                control::ancho_pildora(BLOQUE, true),
-                PILDORA,
-                canal.nivel,
-                canal.silenciado,
-                tema::superficie(),
-            ),
-            Some(control::boton(
-                canal.icono.as_ref(),
-                !canal.silenciado,
-                tema::superficie(),
-                señalado,
-            )),
-        );
-        column![
-            cabecera,
-            Space::new().height(Length::Fixed(BAJO_ETIQUETA)),
-            controles,
-        ]
+            container(text(mensaje).size(12.0).color(tema::TEXTO2))
+                .height(Length::Fixed(FILA_BARRA))
+                .center_y(Length::Fixed(FILA_BARRA))
+                .into()
+        };
+        container(column![
+            container(cabecera)
+                .height(Length::Fixed(TITULO))
+                .center_y(Length::Fixed(TITULO)),
+            Space::new().height(Length::Fixed(ENTRE)),
+            fila_barra,
+        ])
+        .width(Length::Fixed(ANCHO_TARJETA))
+        .height(Length::Fixed(ALTO_CANAL))
+        .padding(Padding {
+            top: PAD_ARRIBA,
+            bottom: PAD_ABAJO,
+            left: PAD_H,
+            right: PAD_H,
+        })
+        .style(|_: &iced_widget::Theme| container::Style {
+            background: Some(tema::superficie_en_tarjeta().into()),
+            border: Border {
+                radius: tema::R_TARJETA.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
         .into()
     }
 }

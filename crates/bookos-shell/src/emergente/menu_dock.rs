@@ -22,8 +22,11 @@ use super::{Ancla, Tecla};
 
 /// Más ancho que el del logo: "Desanclar del dock" con su icono no cabía en 210.
 const ANCHO: f32 = 230.0;
-const BORDE_SUP: f32 = 4.0;
-const BORDE_INF: f32 = 4.0;
+/// Iguales al margen lateral de las filas, como en el menú del logo: con 4
+/// arriba y 5 a los lados el realce de la primera fila no quedaba concéntrico
+/// con la esquina.
+const BORDE_SUP: f32 = MARGEN_FILA;
+const BORDE_INF: f32 = MARGEN_FILA;
 
 /// Lo que sabe el menú del icono sobre el que se abrió.
 pub struct Objetivo {

@@ -5,6 +5,9 @@
 //! hace mirar el estado de la red.
 
 mod bateria;
+
+pub(crate) use bateria::mostrar as bateria_mostrar;
+pub(crate) use bateria::perfil_cambiado as bateria_perfil_cambiado;
 pub(crate) use bateria::icono_aviso as icono_aviso_bateria;
 pub use bateria::sobre_fondo as bateria_sobre_fondo;
 mod bateria_simple;

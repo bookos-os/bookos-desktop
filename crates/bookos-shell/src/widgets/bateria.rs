@@ -9,9 +9,10 @@
 //! avisa cuando la batería necesita atención. Enchufado a AC no se dibuja la
 //! pila: se dibuja un rayo verde en su hueco (ver [`rayo_ac`]).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use iced_widget::{row, text};
+use iced_widget::{Space, container, row, text};
 
 use crate::icono::{self, Icono};
 use crate::state::Battery;
@@ -86,8 +87,8 @@ impl Simbolo {
         }
     }
 
-    /// Para la clave del icono cacheado.
-    // 0.1.0
+    /// Solo para nombrar los SVG que vuelca el test.
+    #[cfg(test)]
     fn clave(self) -> &'static str {
         match self {
             Self::Nada => "-",
@@ -200,6 +201,42 @@ fn rayo_ac(color: iced_core::Color) -> String {
     )
 }
 
+/// Medidas de la píldora del panel, en píxeles: el SVG se dibuja 1:1, así que
+/// las unidades del `viewBox` son las del texto que va encima.
+// añadido en la 0.2.1
+const PILDORA_ANCHO: f32 = 33.0;
+const PILDORA_ALTO: f32 = 20.0;
+const CUERPO_X: f32 = 1.0;
+const CUERPO_ANCHO: f32 = 28.5;
+const CUERPO_ALTO: f32 = 15.0;
+const NUMERO: f32 = 10.5;
+
+/// El rayo que va junto a la píldora mientras carga: el `bolt` 16/solid del
+/// sistema de diseño, sin teñir de antemano.
+const RAYO_PEQUEÑO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="2 1 12 14" fill="#ffffff"><path fill-rule="evenodd" d="M9.58 1.077a.75.75 0 0 1 .405.82L9.165 6h4.085a.75.75 0 0 1 .567 1.241l-6.5 7.5a.75.75 0 0 1-1.302-.638L6.835 10H2.75a.75.75 0 0 1-.567-1.241l6.5-7.5a.75.75 0 0 1 .897-.182Z" clip-rule="evenodd"/></svg>"##;
+
+/// La píldora del panel, como la del iPhone: pista, relleno hasta el nivel y
+/// una punta. **Sin el número**: va encima, en iced, porque el texto de un SVG
+/// depende de que `resvg` encuentre una fuente y aquí no se garantiza.
+///
+/// El relleno se recorta con el cuerpo para que lleve sus mismas esquinas
+/// aunque esté a medias. La punta se rellena solo al 100 %.
+// añadido en la 0.2.1
+fn pastilla_svg(porciento: u8, relleno: iced_core::Color, contorno: iced_core::Color) -> String {
+    let ancho = CUERPO_ANCHO * porciento.min(100) as f32 / 100.0;
+    let (r, c) = (hex(relleno), hex(contorno));
+    let punta = if porciento >= 100 { &r } else { &c };
+    let opacidad_punta = if porciento >= 100 { 1.0 } else { 0.4 };
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {PILDORA_ANCHO} {PILDORA_ALTO}">
+<defs><clipPath id="cuerpo"><rect x="{CUERPO_X}" y="2.5" width="{CUERPO_ANCHO}" height="{CUERPO_ALTO}" rx="4.5"/></clipPath></defs>
+<rect x="{CUERPO_X}" y="2.5" width="{CUERPO_ANCHO}" height="{CUERPO_ALTO}" rx="4.5" fill="{c}" fill-opacity="0.28"/>
+<rect x="{CUERPO_X}" y="2.5" width="{ancho:.2}" height="{CUERPO_ALTO}" fill="{r}" clip-path="url(#cuerpo)"/>
+<rect x="30.4" y="7.5" width="1.8" height="5" rx="0.9" fill="{punta}" fill-opacity="{opacidad_punta}"/>
+</svg>"##
+    )
+}
+
 /// El icono del aviso de conectar o desconectar el cargador: el mismo dibujo
 /// que el panel en ese momento, para que la notificación y la barra cuenten lo
 /// mismo con el mismo símbolo. Con el icono del tema salía otra batería, de
@@ -262,6 +299,35 @@ pub fn sobre_fondo(bat: &Battery) -> (Icono, (f32, f32), String, iced_core::Colo
     )
 }
 
+/// Qué enseña el widget. Globales y no campos porque `panel.conf` lo decide
+/// Ajustes y los widgets se construyen sin acceso a la configuración.
+// añadido en la 0.2.2
+static VER_PORCENTAJE: AtomicBool = AtomicBool::new(true);
+static VER_TIEMPO: AtomicBool = AtomicBool::new(true);
+/// Con colores, el relleno dice el perfil de energía; sin ellos (el icono
+/// sólido) va en el color del texto y solo se colorea lo que pide atención:
+/// cargando, batería baja y modo ahorro.
+// añadido en la 0.2.2
+static COLORES_PERFIL: AtomicBool = AtomicBool::new(true);
+/// El perfil cambió y la caché de [`CADA_PERFIL`] ya no vale. Lo pone el
+/// compositor al ver el aviso de sysfs en `platform_profile`.
+// añadido en la 0.2.2
+static PERFIL_SUCIO: AtomicBool = AtomicBool::new(false);
+
+/// El perfil de energía ha cambiado: el siguiente refresco lo relee.
+// añadido en la 0.2.2
+pub fn perfil_cambiado() {
+    PERFIL_SUCIO.store(true, Ordering::Relaxed);
+}
+
+/// Aplica lo que dice `panel.conf` sobre porcentaje y tiempo restante.
+// añadido en la 0.2.2
+pub fn mostrar(porcentaje: bool, tiempo: bool, colores: bool) {
+    VER_PORCENTAJE.store(porcentaje, Ordering::Relaxed);
+    VER_TIEMPO.store(tiempo, Ordering::Relaxed);
+    COLORES_PERFIL.store(colores, Ordering::Relaxed);
+}
+
 pub struct Bateria {
     dato: Option<Battery>,
     /// El icono que toca para el nivel y el estado de carga actuales.
@@ -278,6 +344,25 @@ pub struct Bateria {
     ahorro_automatico: bool,
     /// Cuándo cruzó el 15 %, para los dos latidos de la cifra.
     alerta_desde: Option<Instant>,
+    /// El rayo de al lado de la píldora, cargado una vez.
+    // añadido en la 0.2.1
+    rayo: Icono,
+    /// Con qué ajustes de [`mostrar`] se pintó: porcentaje, tiempo y colores.
+    /// Cambiarlos desde Ajustes no trae ningún dato nuevo de la batería, así
+    /// que sin compararlos el refresco decía «nada cambió» y la pila se
+    /// quedaba con el relleno de antes hasta el siguiente cambio de perfil.
+    // añadido en la 0.2.2
+    ajustes: (bool, bool, bool),
+}
+
+/// Los ajustes de [`mostrar`] ahora mismo.
+// añadido en la 0.2.2
+fn ajustes_vista() -> (bool, bool, bool) {
+    (
+        VER_PORCENTAJE.load(Ordering::Relaxed),
+        VER_TIEMPO.load(Ordering::Relaxed),
+        COLORES_PERFIL.load(Ordering::Relaxed),
+    )
 }
 
 /// Cada cuánto se vuelven a leer las dos fuentes lentas.
@@ -311,6 +396,8 @@ impl Bateria {
             minutos_leidos: Instant::now() - CADA_MINUTOS,
             ahorro_automatico: false,
             alerta_desde: None,
+            rayo: icono::desde_svg(RAYO_PEQUEÑO),
+            ajustes: ajustes_vista(),
         };
         b.refrescar();
         b
@@ -322,28 +409,48 @@ impl Bateria {
     /// rasterizarlo en cada lectura sería trabajo por nada, y el relleno no se
     /// distingue por debajo de un punto porcentual.
     // 0.1.0
-    fn actualizar_icono(&mut self) {
+    // modified 0.2.1 -- la píldora con el número dentro, también enchufado
+    fn actualizar_icono(&mut self) -> bool {
         let Some(bat) = self.dato else {
-            self.icono = None;
+            let habia = self.icono.take().is_some();
             self.icono_nombre.clear();
-            return;
+            return habia;
         };
-        if bat.plugged {
-            let clave = "ac".to_string();
-            if clave != self.icono_nombre {
-                self.icono = Some(icono::desde_svg(&rayo_ac(tema::verde())));
-                self.icono_nombre = clave;
-            }
-            return;
-        }
-        let color = Self::color(&bat, self.perfil.as_deref());
-        let simbolo = Simbolo::de(&bat);
-        let clave = format!("{}-{}-{}", bat.percent, simbolo.clave(), hex(color));
+        let relleno = self.relleno(&bat);
+        let clave = format!("{}-{}-{}", bat.percent, hex(relleno), hex(TEXT()));
         if clave == self.icono_nombre {
-            return;
+            return false;
         }
-        self.icono = Some(icono::desde_svg(&pictograma(bat.percent, simbolo, color)));
+        self.icono = Some(icono::desde_svg(&pastilla_svg(
+            bat.percent,
+            relleno,
+            TEXT(),
+        )));
         self.icono_nombre = clave;
+        true
+    }
+
+    /// El color del relleno: verde mientras carga o enchufado; si no, el que
+    /// dice [`Bateria::color`] (el del perfil de energía, o el rojo del aviso).
+    /// Sin nada que decir va en la tinta del tema.
+    // añadido en la 0.2.1
+    fn relleno(&self, bat: &Battery) -> iced_core::Color {
+        if bat.charging || bat.plugged {
+            tema::verde()
+        } else {
+            Self::color(bat, self.perfil.as_deref())
+        }
+    }
+
+    /// Lo que va fuera de la píldora: el tiempo restante, si lo hay. El
+    /// porcentaje ya está dentro.
+    // añadido en la 0.2.1
+    fn tiempo(bat: &Battery) -> Option<String> {
+        // Mismo criterio que antes: a punto de llegar al tope, «0:04» es ruido.
+        bat.minutes
+            .filter(|_| VER_TIEMPO.load(Ordering::Relaxed))
+            .filter(|m| !bat.charging || *m >= 5)
+            .map(|min| format!("{}:{:02}", min / 60, min % 60))
     }
 
     /// Activa ahorro al entrar en el tramo bajo, una vez por descarga.
@@ -428,8 +535,24 @@ impl Bateria {
     /// aviso y no un estado: ahí el perfil da igual.
     // 0.1.0
     fn color(bat: &Battery, perfil: Option<&str>) -> iced_core::Color {
+        Self::color_con(bat, perfil, COLORES_PERFIL.load(Ordering::Relaxed))
+    }
+
+    /// La regla de [`Bateria::color`] con el estilo dado, para poder probarla
+    /// sin tocar el ajuste global que comparten los tests en paralelo.
+    // añadido en la 0.2.2
+    fn color_con(bat: &Battery, perfil: Option<&str>, colores: bool) -> iced_core::Color {
+        let ahorro = matches!(perfil, Some("low-power" | "power-saver" | "quiet"));
         if bat.percent <= 15 && !bat.plugged {
             PELIGRO()
+        } else if !colores {
+            if bat.percent <= 20 && !bat.plugged {
+                tema::bateria_baja()
+            } else if ahorro {
+                tema::perfil_ahorro()
+            } else {
+                TEXT()
+            }
         } else if bat.percent <= 20 && !bat.plugged {
             tema::perfil_ahorro()
         } else {
@@ -460,7 +583,8 @@ impl Bateria {
     /// llegan en ráfaga con cada evento de `power_supply`.
     // 0.1.0
     fn perfil(&mut self) -> Option<String> {
-        if self.perfil_leido.elapsed() < CADA_PERFIL {
+        if !PERFIL_SUCIO.swap(false, Ordering::Relaxed) && self.perfil_leido.elapsed() < CADA_PERFIL
+        {
             return self.perfil.clone();
         }
         self.perfil_leido = Instant::now();
@@ -517,9 +641,14 @@ impl Widget for Bateria {
             self.conservar_minutos(b, toca_minutos);
         }
         let perfil = self.perfil();
-        if fresco == self.dato && perfil == self.perfil {
-            return false;
+        let ajustes = ajustes_vista();
+        if fresco == self.dato && perfil == self.perfil && ajustes == self.ajustes {
+            // La clave del icono lleva la tinta del tema: sin esto, al pasar a
+            // claro u oscuro la píldora seguía con la tinta vieja hasta que
+            // la batería variase un punto.
+            return self.actualizar_icono();
         }
+        self.ajustes = ajustes;
         let critica = |b: &Option<Battery>| b.is_some_and(|b| b.percent <= 15 && !b.plugged);
         if critica(&fresco) && !critica(&self.dato) && !tema::efectos_reducidos() {
             self.alerta_desde = Some(Instant::now());
@@ -538,54 +667,105 @@ impl Widget for Bateria {
             .is_some_and(|t| t.elapsed() < D_ALERTA * LATIDOS)
     }
 
-    /// Icono, su hueco y el texto, que puede ser "85 %" o "85 % 2:15".
+    /// La píldora, el rayo si carga y el tiempo restante si lo hay.
     // 0.1.0
+    // modified 0.2.1 -- el porcentaje va dentro de la píldora
     fn ancho(&self) -> f32 {
         let Some(bat) = &self.dato else {
             return 0.0;
         };
-        ANCHO_ICONO + 5.0 + crate::widget::ancho_de(&Self::etiqueta(bat), tema::T_CUERPO)
+        let rayo = if bat.charging || bat.plugged {
+            RAYO_LADO + 3.0
+        } else {
+            0.0
+        };
+        let tiempo =
+            Self::tiempo(bat).map_or(0.0, |t| 5.0 + crate::widget::ancho_de(&t, tema::T_CUERPO));
+        rayo + PILDORA_ANCHO + tiempo
     }
 
     // 0.1.0
+    // modified 0.2.1 -- píldora con el número dentro, que se invierte donde lo cubre el relleno
     fn ver(&self) -> PanelElement<'_> {
         let Some(bat) = &self.dato else {
             return crate::widget::vacio();
         };
-        // El texto **no** sigue al color del pictograma: en el diseño el "67 %"
-        // va en blanco con la batería amarilla, porque quien indica el estado
-        // es el dibujo y el número solo es el dato. Solo bajo mínimos se pinta
-        // también el texto, que ahí sí conviene que grite.
-        let mut color = if bat.percent <= 15 && !bat.plugged {
-            PELIGRO()
-        } else {
-            TEXT()
-        };
         // Al cruzar el 15 % la cifra late dos veces y se queda quieta. Latir
         // siempre sería un reclamo que no se puede apagar mientras se busca el
         // cargador.
+        let mut pulso = 1.0;
         if let Some(desde) = self.alerta_desde {
             let pasado = desde.elapsed();
             if pasado < D_ALERTA * LATIDOS {
                 let ciclo =
                     (pasado.as_secs_f32() % D_ALERTA.as_secs_f32()) / D_ALERTA.as_secs_f32();
-                color.a *= 1.0 - 0.55 * (std::f32::consts::PI * ciclo).sin();
+                pulso = 1.0 - 0.55 * (std::f32::consts::PI * ciclo).sin();
             }
         }
-        let etiqueta = Self::etiqueta(bat);
+        let numero = bat.percent.min(100).to_string();
+        let fuente = iced_core::Font {
+            weight: iced_core::font::Weight::Bold,
+            ..iced_core::Font::DEFAULT
+        };
+        // Las dos capas de texto salen del mismo sitio, por la misma cuenta: la
+        // de abajo con la tinta del tema sobre la pista, y la de arriba, con la
+        // tinta que se lea sobre el relleno, recortada a donde llega el
+        // relleno. Donde el relleno cubre el número, este se invierte; así se
+        // lee igual a cualquier carga.
+        let x = CUERPO_X
+            + (CUERPO_ANCHO - crate::widget::ancho_con_fuente(&numero, NUMERO, fuente)) / 2.0;
+        let capa = |color: iced_core::Color| {
+            let mut color = color;
+            color.a *= pulso;
+            container(text(numero.clone()).size(NUMERO).font(fuente).color(color))
+                .padding(iced_core::Padding::ZERO.left(x))
+                .height(iced_core::Length::Fixed(PILDORA_ALTO))
+                .center_y(iced_core::Length::Fixed(PILDORA_ALTO))
+        };
+        let relleno = self.relleno(bat);
+        let hasta = CUERPO_X + CUERPO_ANCHO * bat.percent.min(100) as f32 / 100.0;
+        let mut pastilla = iced_widget::stack![];
+        if let Some(ic) = &self.icono {
+            // Sin teñir: el pictograma ya trae dentro los dos colores.
+            pastilla = pastilla.push(icono::ver(ic, PILDORA_ANCHO, PILDORA_ALTO));
+        }
+        if VER_PORCENTAJE.load(Ordering::Relaxed) {
+            pastilla = pastilla
+                .push(capa(TEXT()))
+                .push(crate::recorte::Recorte::new(
+                    capa(tema::tinta_sobre(relleno)),
+                    hasta,
+                    PILDORA_ALTO,
+                    0.0,
+                ));
+        }
+        let pastilla = pastilla
+            .width(iced_core::Length::Fixed(PILDORA_ANCHO))
+            .height(iced_core::Length::Fixed(PILDORA_ALTO));
 
         let mut fila = row![]
-            .spacing(5)
+            .spacing(3)
             .align_y(iced_core::alignment::Vertical::Center);
-        if let Some(ic) = &self.icono {
-            // Sin teñir: el pictograma ya trae dentro el color del estado, el
-            // del borde y el del relleno, que son tres y distintos.
-            fila = fila.push(icono::ver(ic, ANCHO_ICONO, ALTO_ICONO));
+        if bat.charging || bat.plugged {
+            fila = fila.push(icono::ver_teñido(
+                &self.rayo,
+                RAYO_LADO,
+                Some(tema::verde()),
+            ));
         }
-        fila.push(text(etiqueta).size(tema::T_CUERPO).color(color))
-            .into()
+        fila = fila.push(pastilla);
+        if let Some(tiempo) = Self::tiempo(bat) {
+            fila = fila.push(Space::new().width(iced_core::Length::Fixed(2.0)));
+            let mut color = TEXT();
+            color.a *= pulso;
+            fila = fila.push(text(tiempo).size(tema::T_CUERPO).color(color));
+        }
+        fila.into()
     }
 }
+
+/// El lado de la caja del rayo de al lado de la píldora.
+const RAYO_LADO: f32 = 12.0;
 
 #[cfg(test)]
 mod tests {
@@ -598,6 +778,22 @@ mod tests {
             plugged,
             minutes: None,
         }
+    }
+
+    /// Cambiar el estilo en Ajustes no trae datos nuevos de la batería: el
+    /// refresco tiene que darse cuenta igual, o la pila se queda con el
+    /// relleno de antes hasta el siguiente cambio de perfil.
+    #[test]
+    fn cambiar_los_ajustes_rehace_la_pila() {
+        let mut w = Bateria::new();
+        w.refrescar();
+        let (p, t, c) = ajustes_vista();
+        w.ajustes = (p, t, !c);
+        // Sin batería en la máquina de pruebas no hay pila que rehacer.
+        if w.dato.is_some() {
+            assert!(w.refrescar(), "otro estilo es otra pila");
+        }
+        assert_eq!(w.ajustes, ajustes_vista());
     }
 
     /// Enchufar entre dos lecturas de corriente no puede dejar en el panel la
@@ -742,6 +938,22 @@ mod tests {
 
     /// El relleno es continuo y proporcional: es lo que un icono del tema, con
     /// sus cuatro escalones, no puede dar.
+    #[test]
+    fn el_solido_solo_colorea_lo_que_avisa() {
+        let c =
+            |p: u8, perfil: &str| Bateria::color_con(&bat(p, false, false), Some(perfil), false);
+        assert_eq!(c(80, "balanced"), TEXT());
+        assert_eq!(c(80, "performance"), TEXT());
+        assert_eq!(c(80, "power-saver"), tema::perfil_ahorro());
+        assert_eq!(c(18, "balanced"), tema::bateria_baja());
+        assert_eq!(c(6, "balanced"), PELIGRO());
+        // Con colores, el perfil manda.
+        let c = |perfil: &str| Bateria::color_con(&bat(80, false, false), Some(perfil), true);
+        assert_eq!(c("balanced"), tema::perfil_equilibrado());
+        assert_eq!(c("performance"), tema::perfil_rendimiento());
+        assert_eq!(c("low-power"), tema::perfil_ahorro());
+    }
+
     #[test]
     fn el_relleno_sigue_al_porcentaje() {
         // Se busca el rectángulo por su origen para no confundirlo con la

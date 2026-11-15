@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ffffff">
+  <!-- Casco legible a 13–18 px: diadema fina y almohadillas macizas. El
+       «auriculares» de heroicons, a ese tamaño, parecía una herradura. -->
+  <path d="M4 14.5V12a8 8 0 0 1 16 0v2.5" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round"/>
+  <rect x="2.5" y="13" width="6" height="8.5" rx="2.6"/>
+  <rect x="15.5" y="13" width="6" height="8.5" rx="2.6"/>
+</svg>

@@ -39,6 +39,7 @@ fn base(clase: Clase) -> Estado {
         nivel: 0.7,
         aleatorio: true,
         repetir: false,
+        anc: None,
         portada: Some(portada()),
         metricas: Vec::new(),
         cola: vec![
@@ -112,6 +113,7 @@ fn auriculares() -> Estado {
     Estado {
         titulo: "Buds3 Pro de Evelyn".into(),
         metricas: vec![m("Izquierdo", 59), m("Derecho", 18), m("Estuche", 40)],
+        anc: Some(1),
         portada: None,
         cola: Vec::new(),
         ..base(Clase::Auriculares)
@@ -257,8 +259,15 @@ fn main() {
             base(Clase::Player),
             // El segundo clic cae en «A continuación», en la fila de debajo
             // del progreso: 26 de margen + la posición que le dan las
-            // constantes.
-            &[(180.0, 55.0), (26.0 + 60.0, 26.0 + 235.0)],
+            // constantes, más los 24 de la cabecera «App ›».
+            &[(180.0, 55.0), (26.0 + 60.0, 26.0 + 259.0)],
+        );
+        pinta(
+            &format!("player-menu-{etiqueta}"),
+            tema,
+            base(Clase::Player),
+            // ⋯, arriba a la derecha de la tarjeta.
+            &[(180.0, 55.0), (26.0 + 440.0 - 27.0, 26.0 + 20.0)],
         );
         pinta(
             &format!("timer-compacto-{etiqueta}"),

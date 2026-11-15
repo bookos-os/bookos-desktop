@@ -463,7 +463,12 @@ impl Sesion {
             .remove(&self.ruta);
         if let Some(sesion) = sesion {
             tracing::info!(sesion, "la aplicación cerró la sesión de captura");
-            self.estado.avisar(Aviso::Cerrar { sesion });
+            // modified 0.2.0 -- `Cancelar` y no `Cerrar`: si la tarjeta de
+            // permiso de esta sesión sigue abierta, hay que retirarla. Vesktop
+            // cierra una sesión y abre otra en 65 ms; con la tarjeta vieja
+            // puesta, el `Start` nuevo fallaba por «un diálogo cada vez» y lo
+            // que se aceptaba era la sesión muerta: pantalla negra en Discord.
+            self.estado.avisar(Aviso::Cancelar { sesion });
         }
         // Se retira la tarjeta de su ruta: si no, una sesión nueva con la misma
         // ruta —el portal las reutiliza— chocaría con esta.
@@ -1399,14 +1404,16 @@ pub fn responder(state: &mut crate::state::BookosComp, sesion: u32, pantalla: Op
 
     let tamano = crate::captura::tamano_de(&output);
     let (ancho, alto) = (tamano.w.max(0) as u32, tamano.h.max(0) as u32);
-    // El tope de fotogramas es el de la pantalla, con 60 como techo: por encima
-    // de eso lo que se gana es tráfico, no fluidez, y el camino todavía pasa
-    // por la CPU. `refresh` viene en milihercios.
+    // modified 0.2.0 -- techo subido de 60 a 120 para que el panel de 120 Hz
+    // salga entero. Es el tope que se anuncia: el consumidor puede pedir menos
+    // (Discord se queda en 60). El camino sigue pasando por la CPU, así que a
+    // 120 fps y 2880×1800 son ~2,4 GB/s de copia mientras haya movimiento.
+    // `refresh` viene en milihercios.
     let fps = output
         .current_mode()
         .map(|modo| (modo.refresh as u32).div_ceil(1000))
         .unwrap_or(60)
-        .clamp(1, 60);
+        .clamp(1, 120);
     let periodo = std::time::Duration::from_micros(1_000_000 / fps as u64);
 
     let Some(emisor) = state.emisiones.hilo() else {

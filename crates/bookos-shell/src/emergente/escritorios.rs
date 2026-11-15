@@ -38,7 +38,7 @@ const MARGEN: f32 = 24.0;
 const HUECO: f32 = 18.0;
 /// Ancho de una previa, dentro de lo que caben las que haya.
 const PREVIA_MIN: f32 = 130.0;
-const PREVIA_MAX: f32 = 250.0;
+const PREVIA_MAX: f32 = 176.0;
 /// Cuánto se mete hacia dentro lo que compone el compositor, para que el marco
 /// redondeado de la previa no quede tapado por un contenido de esquinas rectas.
 const PREVIA_INSET: f32 = 2.0;
@@ -533,5 +533,57 @@ mod tests {
             e.tecla(TeclaPulsada::Intro),
             Tecla::Hacer(Accion::RenombrarEscritorio { indice: 0, nombre }) if nombre == "Uno!"
         ));
+    }
+
+    /// Vuelca la franja a PNG **con alfa**, que es translúcida y sus miniaturas
+    /// son huecos: `BOOKOS_ESCRITORIOS_PNG=/tmp/esc` escribe
+    /// `/tmp/esc-<n>-<tema>.png` (RGBA, sin componer sobre nada).
+    #[test]
+    fn vuelca_la_franja_a_png() {
+        let Ok(prefijo) = std::env::var("BOOKOS_ESCRITORIOS_PNG") else {
+            return;
+        };
+        for (tema, nombre) in [
+            (crate::tema::Tema::Oscuro, "oscuro"),
+            (crate::tema::Tema::Claro, "claro"),
+        ] {
+            for n in [1usize, 3, 5] {
+                let config = crate::Config {
+                    tema,
+                    ..crate::Config::default()
+                };
+                let mut shell = crate::Shell::con_config(1440, 1.0, config);
+                let nombres = (1..=n).map(|i| format!("Escritorio {i}")).collect();
+                shell.abrir(super::super::Emergente::escritorios(
+                    (1440.0, 900.0),
+                    1.min(n - 1),
+                    nombres,
+                ));
+                let (w, h) = shell.emergente_buffer_size().expect("tiene superficie");
+                let mut buf = vec![0u8; (w * h * 4) as usize];
+                shell.draw_emergente(&mut buf);
+                // B,G,R,A premultiplicado a R,G,B,A directo.
+                for p in buf.as_chunks_mut::<4>().0 {
+                    let a = p[3] as u32;
+                    let (b, g, r) = (p[0] as u32, p[1] as u32, p[2] as u32);
+                    let un = |v: u32| {
+                        if a == 0 {
+                            0
+                        } else {
+                            ((v * 255 + a / 2) / a).min(255) as u8
+                        }
+                    };
+                    *p = [un(r), un(g), un(b), a as u8];
+                }
+                image::save_buffer(
+                    format!("{prefijo}-{n}-{nombre}.png"),
+                    &buf,
+                    w,
+                    h,
+                    image::ExtendedColorType::Rgba8,
+                )
+                .expect("se escribe el PNG");
+            }
+        }
     }
 }

@@ -4,6 +4,7 @@
 //! CPU cuando no pasa nada.
 
 mod ajustes;
+mod inhibir;
 mod apariencia;
 mod atenuacion;
 mod autenticar;

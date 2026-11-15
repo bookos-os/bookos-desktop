@@ -844,6 +844,13 @@ pub fn perfil_equilibrado() -> Color {
 pub fn perfil_rendimiento() -> Color {
     hex(0x0a84ff)
 }
+/// La pila entre el 16 y el 20 % con el icono sólido: el ámbar de aviso del
+/// HIG (§2). No es `perfil_ahorro`: en el sólido el amarillo dice «ahorro
+/// puesto», y la batería baja tiene que leerse distinta de eso.
+// añadido en la 0.2.2
+pub fn bateria_baja() -> Color {
+    hex(0xff9f0a)
+}
 
 /// Blanco o negro, el que se lea sobre `fondo`.
 ///
@@ -1070,6 +1077,10 @@ fn derivada(p1: f32, p2: f32, t: f32) -> f32 {
 pub const C_SUAVE: Curva = Curva::new(0.4, 0.0, 0.2, 1.0);
 /// Aparición de un popover. Muelle: se pasa y vuelve.
 pub const C_MUELLE_POPOVER: Curva = Curva::new(0.32, 1.3, 0.5, 1.0);
+/// `M_ISLA`: sobreimpulso leve, menos que el del popover, porque la isla es
+/// parte de la pantalla y no una tarjeta que salta.
+// añadido en la 0.2.2
+pub const C_MUELLE_ISLA: Curva = Curva::new(0.32, 1.2, 0.5, 1.0);
 /// Aparición de una tarjeta y transición de página. Sin rebote.
 ///
 /// Arranca despacio, acelera en el centro y frena con una cola larga, como un
@@ -1100,6 +1111,11 @@ pub const D_HOVER: Duration = Duration::from_millis(120);
 pub const D_POPOVER: Duration = Duration::from_millis(180);
 /// Aparición de una tarjeta. Va con [`C_ENTRADA`].
 pub const D_TARJETA: Duration = Duration::from_millis(220);
+/// La isla al cambiar de forma (`M_ISLA` del HIG, §8 y §17): píldora y tarjeta
+/// difieren en más del doble en cada eje, y con 220 ms el salto se leía como
+/// un parpadeo. Va con [`C_MUELLE_ISLA`].
+// añadido en la 0.2.2
+pub const D_ISLA: Duration = Duration::from_millis(420);
 /// Maximizar, restaurar y encajar. Va con [`C_VENTANA`].
 pub const D_VENTANA: Duration = Duration::from_millis(260);
 /// Conmutador y aparición de un modal. Va con [`C_MUELLE`].
@@ -1815,7 +1831,14 @@ mod tests {
         // Lo de "exacto" no es purismo: el compositor compara el resultado con
         // 1,0 para decidir si puede dibujar sin la capa de escalado, y un
         // 0,999999 dejaría a las ventanas envueltas el resto de su vida.
-        for curva in [C_SUAVE, C_MUELLE_POPOVER, C_ENTRADA, C_VENTANA, C_MUELLE] {
+        for curva in [
+            C_SUAVE,
+            C_MUELLE_POPOVER,
+            C_MUELLE_ISLA,
+            C_ENTRADA,
+            C_VENTANA,
+            C_MUELLE,
+        ] {
             assert_eq!(curva.eval(0.0), 0.0);
             assert_eq!(curva.eval(1.0), 1.0);
         }

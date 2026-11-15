@@ -342,6 +342,11 @@ It leaves in place:
 
 The log of each start-up lands in `$XDG_RUNTIME_DIR/bookos-session.log`.
 
+To update an existing install after changing the code, run `./actualizar.sh`
+as your normal user (not with sudo): it builds the release binaries, runs the
+installers above (and the greeter's, if it is installed), and checks that what
+was installed matches what was built. Log out and back in afterwards.
+
 ### Pantalla de acceso de BookOS
 
 El crate `bookos-greeter` ofrece un login básico en iced sobre greetd y Cage.

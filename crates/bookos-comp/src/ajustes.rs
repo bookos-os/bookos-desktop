@@ -219,6 +219,9 @@ fn config_json(config: &bookos_shell::Config) -> serde_json::Value {
     // porque la macro ya está en su límite de recursión.
     json["widgets_disponibles"] = bookos_shell::WIDGETS_DISPONIBLES.into();
     json["captura_cursor"] = config.captura_cursor.into();
+    json["bateria_porcentaje"] = config.bateria_porcentaje.into();
+    json["bateria_tiempo"] = config.bateria_tiempo.into();
+    json["bateria_colores"] = config.bateria_colores.into();
     json["captura_retardo"] = config.captura_retardo.into();
     json
 }
@@ -461,6 +464,9 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                 v
             }
             "alto_contraste"
+            | "bateria_porcentaje"
+            | "bateria_tiempo"
+            | "bateria_colores"
             | "bloqueo_huella"
             | "brillo_automatico_pantalla"
             | "brillo_automatico_teclado"
@@ -553,9 +559,16 @@ pub enum Aviso {
     Redetectar,
     /// La actividad y el nombre único de la conexión que la publicó.
     Actividad(bookos_shell::actividad::Estado, Option<String>),
-    CerrarActividad(String),
+    /// La actividad que cerrar y quién lo pide.
+    CerrarActividad(String, Option<String>),
     /// Una conexión del bus se ha ido: la app se cerró, se colgó o la mataron.
     RemitenteCaido(String),
+    /// `org.freedesktop.ScreenSaver.Inhibit`: la cookie y quién la pidió.
+    // añadido en la 0.2.2
+    Inhibir(u32, String),
+    /// `UnInhibit` de esa cookie.
+    // añadido en la 0.2.2
+    Desinhibir(u32),
     AbrirActividadPrevisualizacion(String),
     CapturarTecla(bool),
     PrevisualizarSalvapantallas(
@@ -591,6 +604,9 @@ struct ActividadJson {
     aleatorio: bool,
     #[serde(default)]
     repetir: bool,
+    // añadido en la 0.2.2 -- modo del control de ruido; solo los auriculares.
+    #[serde(default)]
+    anc: Option<u8>,
     #[serde(default)]
     portada: String,
     // añadido en la 0.2.0 -- la fase del asistente; el resto de clases no la mandan.
@@ -845,6 +861,7 @@ impl Servidor {
             nivel: json.nivel.clamp(0.0, 1.0),
             aleatorio: json.aleatorio,
             repetir: json.repetir,
+            anc: json.anc.filter(|m| *m <= 3),
             portada,
             cola: json
                 .cola
@@ -883,11 +900,18 @@ impl Servidor {
     }
 
     // 0.1.0
-    fn close_activity(&self, app_id: String) -> bool {
+    fn close_activity(
+        &self,
+        #[zbus(header)] cabecera: zbus::message::Header<'_>,
+        app_id: String,
+    ) -> bool {
         if clase_permitida(&app_id, "").is_none() {
             return false;
         }
-        self.canal.send(Aviso::CerrarActividad(app_id)).is_ok()
+        let remitente = cabecera.sender().map(|u| u.to_string());
+        self.canal
+            .send(Aviso::CerrarActividad(app_id, remitente))
+            .is_ok()
     }
 
     /// Abre una actividad ya publicada para inspeccionarla durante el
@@ -956,7 +980,17 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
                 state.needs_redraw = true;
             }
         }
-        Aviso::CerrarActividad(app_id) => {
+        Aviso::CerrarActividad(app_id, remitente) => {
+            // Solo cierra quien la publicó. Con cuatro BookOS Player abiertos
+            // (12-11), los tres sin cola mandaban CloseActivity cada 5 s y
+            // borraban la isla del que sí sonaba.
+            if let (Some(dueño), Some(r)) =
+                (state.remitentes_actividad.get(&app_id), remitente.as_ref())
+                && dueño != r
+            {
+                tracing::debug!(app_id, remitente = r, "cierre de actividad ajena ignorado");
+                return;
+            }
             state.remitentes_actividad.remove(&app_id);
             if state
                 .shell
@@ -966,7 +1000,22 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
                 state.needs_redraw = true;
             }
         }
+        Aviso::Inhibir(cookie, remitente) => {
+            state.inhibiciones_bus.insert(cookie, remitente);
+            crate::handlers::inhibicion_cambiada(state);
+        }
+        Aviso::Desinhibir(cookie) => {
+            if state.inhibiciones_bus.remove(&cookie).is_some() {
+                crate::handlers::inhibicion_cambiada(state);
+            }
+        }
         Aviso::RemitenteCaido(nombre) => {
+            let antes = state.inhibiciones_bus.len();
+            state.inhibiciones_bus.retain(|_, r| *r != nombre);
+            if state.inhibiciones_bus.len() != antes {
+                tracing::info!(nombre, "inhibición soltada: su app ya no está en el bus");
+                crate::handlers::inhibicion_cambiada(state);
+            }
             let huerfanas: Vec<String> = state
                 .remitentes_actividad
                 .iter()
@@ -1117,7 +1166,17 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
     if matches!(seccion, "desktop" | "escritorio" | "all")
         && let Some(shell) = state.shell.as_mut()
     {
+        bookos_shell::bateria_mostrar(
+            config.bateria_porcentaje,
+            config.bateria_tiempo,
+            config.bateria_colores,
+        );
         shell.widgets_panel(config.centro.as_deref(), &config.derecha);
+    }
+    // Con la misma lista de widgets `widgets_panel` no rehace nada: los que
+    // dependen de ajustes globales (la pila de la batería) tienen que releerlos.
+    if matches!(seccion, "desktop" | "escritorio" | "all") {
+        crate::backend::refresh_panel(state);
     }
 
     // `|` y no `||`: con el dock sin cambios el panel tiene que aplicarse igual.
@@ -1434,6 +1493,7 @@ pub fn arrancar(
     match conexion {
         Ok(conexion) => {
             tracing::info!("interfaz de ajustes de BookOS en el bus");
+            crate::inhibir::arrancar(&conexion, canal.clone());
             vigilar_remitentes(&conexion, canal_vigia);
             Some(conexion)
         }

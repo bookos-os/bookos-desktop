@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Lucide «contrast» (BookOS-HIG/lucide), con la mitad rellena: el símbolo de apariencia de Ajustes. -->
+  <circle cx="12" cy="12" r="9.6"/>
+  <path d="M12 18a6 6 0 0 0 0-12v12z" fill="#ffffff"/>
+</svg>

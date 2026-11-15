@@ -158,8 +158,8 @@ impl Destino {
     // 0.1.0
     fn simbolo(self) -> &'static str {
         match self {
-            Self::Portapapeles => "⧉",
-            Self::Guardar => "⤓",
+            Self::Portapapeles => "copiar",
+            Self::Guardar => "guardar",
         }
     }
 }
@@ -182,8 +182,8 @@ impl Opcion {
     // añadido en la 0.2.0
     fn simbolo(self) -> &'static str {
         match self {
-            Self::Cursor => "↖",
-            Self::Espera => "◷",
+            Self::Cursor => "cursor",
+            Self::Espera => "reloj",
         }
     }
 }
@@ -207,14 +207,13 @@ impl Modo {
         }
     }
 
-    /// Un pictograma dibujado con caracteres, como el selector de proyección:
-    /// aquí no hay iconos propios y un `<text>` no necesita fuentes cargadas
-    /// para estos, que son de la tabla de formas geométricas.
+    /// El icono propio que lo dibuja. Eran caracteres (⛶ ⧉ ⤓ ↖) y la ISO no
+    /// trae ninguna fuente que los tenga: salían como cajas vacías.
     // 0.1.0
     fn simbolo(self) -> &'static str {
         match self {
-            Self::Pantalla => "▣",
-            Self::Seleccion => "⛶",
+            Self::Pantalla => "monitor",
+            Self::Seleccion => "seleccion",
         }
     }
 }
@@ -769,11 +768,14 @@ impl Captura {
             celdas = celdas.push(
                 container(
                     column![
-                        text(simbolo).size(22.0).color(if activa {
-                            tema::acento()
-                        } else {
-                            tema::TEXTO2
-                        }),
+                        match crate::icono::propio(simbolo) {
+                            Some(ic) => crate::icono::ver_teñido_propio(
+                                &ic,
+                                22.0,
+                                if activa { tema::acento() } else { tema::TEXTO2 },
+                            ),
+                            None => Space::new().height(Length::Fixed(22.0)).into(),
+                        },
                         Space::new().height(Length::Fixed(2.0)),
                         text(nombre).size(tema::T_PEQUENO).color(if apagada {
                             tema::TEXTO2

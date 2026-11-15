@@ -20,7 +20,6 @@
 use std::process::{Command, Stdio};
 
 use iced_core::alignment::Vertical;
-use iced_core::border::Radius;
 use iced_core::font::Weight;
 use iced_core::{Border, Color, Length};
 use iced_widget::{Space, column, container, row, stack, text};
@@ -40,32 +39,29 @@ use super::{control, lista};
 const ANCHO: f32 = 336.0;
 const MARGEN: f32 = 16.0;
 const INTERIOR: f32 = ANCHO - MARGEN * 2.0;
-/// Fila del título «Batería» con la pastilla de estado a la derecha.
+/// La fila del título «Batería» con su pastilla de estado.
 const TITULO: f32 = 22.0;
 const BAJO_TITULO: f32 = 4.0;
-/// El porcentaje, a 28/Bold: el «Título app» del sistema de diseño.
-const NIVEL: f32 = 34.0;
-const SOBRE_BARRA: f32 = 10.0;
+/// El renglón de estado de debajo del título. A la derecha de las dos va el
+/// porcentaje, a 36/Heavy: el HIG reserva el peso 800 a las cifras de batería.
+const ESTADO: f32 = 16.0;
+const CABECERA: f32 = TITULO + BAJO_TITULO + ESTADO;
+const SOBRE_BARRA: f32 = 12.0;
 const BARRA: f32 = 8.0;
 /// La marca del tope sobresale 3 px por arriba y por abajo de la barra.
 const MARCA_TOPE: f32 = BARRA + 6.0;
-const SOBRE_ESTADO: f32 = 10.0;
-const ESTADO: f32 = 16.0;
 /// El rótulo «Modo de energía» con su aire.
-const SOBRE_SECCION: f32 = 16.0;
+const SOBRE_SECCION: f32 = 18.0;
 const SECCION: f32 = 16.0;
 const BAJO_SECCION: f32 = 8.0;
-/// Alto de cada pieza de la lista: la fila del lateral de Ajustes, con título
-/// y subtítulo.
-const FILA: f32 = 58.0;
-/// Hueco entre piezas. Tan fino que las tres se leen como un bloque, pero cada
-/// una sigue pareciendo pulsable por separado.
-const HUECO_FILA: f32 = 3.0;
-const PUNTO: f32 = 30.0;
-const ICONO_PUNTO: f32 = 17.0;
-/// Lado de la marca del perfil elegido y de la flecha del pie.
-const MARCA: f32 = 16.0;
-const SOBRE_PIE: f32 = 12.0;
+/// El selector de modo: una cápsula con una píldora que se desliza al elegido,
+/// y la descripción del modo debajo. En vez de tres filas altas para elegir una
+/// de tres, una sola señal de selección.
+const CAPSULA: f32 = 54.0;
+const PAD_CAPSULA: f32 = 6.0;
+const SOBRE_DESCRIPCION: f32 = 10.0;
+const DESCRIPCION: f32 = 17.0;
+const SOBRE_PIE: f32 = 14.0;
 const PIE: f32 = 44.0;
 
 /// Un porcentaje como se escribe en cada idioma: «80 %» y «80%».
@@ -94,20 +90,10 @@ fn peso(w: Weight) -> iced_core::Font {
     control::peso(w)
 }
 
-/// El icono teñido, o un hueco de su tamaño si falta.
-// 0.1.0
-fn icono_o_hueco(icono: Option<&Icono>, px: f32, color: Color) -> PanelElement<'_> {
-    match icono {
-        Some(i) => icono::ver_teñido(i, px, Some(color)),
-        None => Space::new().width(Length::Fixed(px)).into(),
-    }
-}
-
 /// Un perfil de energía tal como lo nombra `power-profiles-daemon`.
 struct Perfil {
     /// La clave que entiende el daemon: `power-saver`, `balanced`…
     clave: String,
-    etiqueta: &'static str,
     /// Lo que hace, en el subtítulo de la fila.
     detalle: &'static str,
     /// El color que lo identifica: el mismo que lleva el pictograma del panel
@@ -115,32 +101,9 @@ struct Perfil {
     /// el rótulo al lado es lo que lo distingue para quien no separa el
     /// amarillo del verde.
     color: Color,
-    /// El pictograma que va dentro del círculo de color: el segundo canal,
-    /// además del rótulo, para quien no distingue los colores.
-    icono: Option<Icono>,
-}
-
-/// Los pictogramas de los perfiles, **macizos**: el teñido de iced sustituye
-/// el relleno, y uno de solo trazo saldría hueco. Balanza y cohete son los
-/// `24/solid` de Heroicons; la hoja no existe allí y es la silueta de la de
-/// Lucide, sin el nervio.
-// 0.1.0
-fn icono_perfil(clave: &str) -> Option<Icono> {
-    let d = match clave {
-        "power-saver" => {
-            "M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"
-        }
-        "balanced" => {
-            "M12 2.25a.75.75 0 0 1 .75.75v.756a49.106 49.106 0 0 1 9.152 1 .75.75 0 0 1-.152 1.485h-1.918l2.474 10.124a.75.75 0 0 1-.375.84A6.723 6.723 0 0 1 18.75 18a6.723 6.723 0 0 1-3.181-.795.75.75 0 0 1-.375-.84l2.474-10.124H12.75v13.28c1.293.076 2.534.343 3.697.776a.75.75 0 0 1-.262 1.453h-8.37a.75.75 0 0 1-.262-1.453c1.162-.433 2.404-.7 3.697-.775V6.24H6.332l2.474 10.124a.75.75 0 0 1-.375.84A6.723 6.723 0 0 1 5.25 18a6.723 6.723 0 0 1-3.181-.795.75.75 0 0 1-.375-.84L4.168 6.241H2.25a.75.75 0 0 1-.152-1.485 49.105 49.105 0 0 1 9.152-1V3a.75.75 0 0 1 .75-.75Zm4.878 13.543 1.872-7.662 1.872 7.662h-3.744Zm-9.756 0L5.25 8.131l-1.872 7.662h3.744Z"
-        }
-        "performance" => {
-            "M9.315 7.584C12.195 3.883 16.695 1.5 21.75 1.5a.75.75 0 0 1 .75.75c0 5.056-2.383 9.555-6.084 12.436A6.75 6.75 0 0 1 9.75 22.5a.75.75 0 0 1-.75-.75v-4.131A15.838 15.838 0 0 1 6.382 15H2.25a.75.75 0 0 1-.75-.75 6.75 6.75 0 0 1 7.815-6.666ZM15 6.75a2.25 2.25 0 1 0 0 4.5 2.25 2.25 0 0 0 0-4.5Z M5.26 17.242a.75.75 0 1 0-.897-1.203 5.243 5.243 0 0 0-2.05 5.022.75.75 0 0 0 .625.627 5.243 5.243 0 0 0 5.022-2.051.75.75 0 1 0-1.202-.897 3.744 3.744 0 0 1-3.008 1.51c0-1.23.592-2.323 1.51-3.008Z"
-        }
-        _ => return None,
-    };
-    Some(icono::desde_svg(&format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" clip-rule="evenodd" d="{d}"/></svg>"##
-    )))
+    /// El nombre corto de la cápsula, que no cabe entero en un tercio del ancho.
+    // añadido en la 0.2.1
+    corto: &'static str,
 }
 
 /// El rayo y el aviso de la pastilla de estado: `bolt` y
@@ -184,10 +147,55 @@ fn nombrar(clave: &str) -> (&'static str, &'static str, Color) {
     }
 }
 
+/// El nombre del perfil en la cápsula.
+// añadido en la 0.2.1
+fn corto(clave: &str) -> &'static str {
+    match clave {
+        "power-saver" => t("Ahorro", "Saver"),
+        "balanced" => t("Equilibrado", "Balanced"),
+        "performance" => t("Rendimiento", "Performance"),
+        _ => t("Otro", "Other"),
+    }
+}
+
 /// Los perfiles que ofrece el daemon, en el orden en que los da: de menos a más
 /// consumo.
 // 0.1.0
+// modified 0.2.0 -- la lista se pregunta una vez por sesión, no en cada apertura
 fn perfiles() -> Vec<Perfil> {
+    // Los perfiles que hay los fija el hardware: no cambian mientras dura la
+    // sesión, y preguntarlos es lanzar un `busctl` (8–11 ms medidos aquí) en
+    // el hilo del compositor cada vez que se abre la tarjeta, un fotograma
+    // entero a 120 Hz. Una lista vacía no se guarda: es el daemon que aún no
+    // ha arrancado, y la siguiente apertura tiene que volver a preguntar.
+    static CLAVES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let claves = match CLAVES.get() {
+        Some(claves) => claves.clone(),
+        None => {
+            let claves = claves_perfiles();
+            if !claves.is_empty() {
+                let _ = CLAVES.set(claves.clone());
+            }
+            claves
+        }
+    };
+    claves
+        .into_iter()
+        .map(|clave| {
+            let (_, detalle, color) = nombrar(&clave);
+            Perfil {
+                corto: corto(&clave),
+                clave,
+                detalle,
+                color,
+            }
+        })
+        .collect()
+}
+
+/// Las claves de los perfiles tal como las da `power-profiles-daemon`.
+// 0.2.0
+fn claves_perfiles() -> Vec<String> {
     let salida = Command::new("busctl")
         .args([
             "--system",
@@ -219,18 +227,6 @@ fn perfiles() -> Vec<Perfil> {
         }
     }
     claves
-        .into_iter()
-        .map(|clave| {
-            let (etiqueta, detalle, color) = nombrar(&clave);
-            Perfil {
-                icono: icono_perfil(&clave),
-                clave,
-                etiqueta,
-                detalle,
-                color,
-            }
-        })
-        .collect()
 }
 
 /// Qué perfil está puesto ahora.
@@ -301,8 +297,6 @@ pub struct Energia {
     tinte_desde: Color,
     tinte_hasta: Color,
     /// Se cargan una vez: son los mismos en cada repintado.
-    marca: Option<Icono>,
-    flecha: Option<Icono>,
     rayo: Icono,
     aviso: Icono,
 }
@@ -335,8 +329,6 @@ impl Energia {
             tinte: tema::Transicion::nueva(1.0, tema::M_SUAVE),
             tinte_desde: tema::TEXTO2,
             tinte_hasta: tema::TEXTO2,
-            marca: icono::propio("comprobado"),
-            flecha: icono::propio("chevron-derecha"),
             rayo: icono::desde_svg(RAYO),
             aviso: icono::desde_svg(AVISO),
         };
@@ -394,25 +386,26 @@ impl Energia {
         )
     }
 
-    /// La cabecera entera: título, nivel, barra si hay batería y estado.
+    /// La cabecera entera: título, estado y porcentaje, y la barra si hay batería.
     // 0.1.0
+    // modified 0.2.1 -- el porcentaje a la derecha, en la misma fila que el título
     fn alto_cabecera(&self) -> f32 {
         let barra = if self.bateria.is_some() {
-            SOBRE_BARRA + BARRA
+            SOBRE_BARRA + MARCA_TOPE
         } else {
             0.0
         };
-        TITULO + BAJO_TITULO + NIVEL + barra + SOBRE_ESTADO + ESTADO
+        CABECERA + barra
     }
 
-    /// Lo que ocupan las piezas de la lista.
+    /// Lo que ocupa el selector: la cápsula y la descripción de debajo.
     // 0.1.0
+    // modified 0.2.1 -- una cápsula en vez de una fila por perfil
     fn alto_lista(&self) -> f32 {
-        let filas = self.perfiles.len() as f32;
-        if filas == 0.0 {
+        if self.perfiles.is_empty() {
             return 0.0;
         }
-        filas * FILA + (filas - 1.0) * HUECO_FILA
+        CAPSULA + SOBRE_DESCRIPCION + DESCRIPCION
     }
 
     // 0.1.0
@@ -426,23 +419,19 @@ impl Energia {
         MARGEN + self.alto_cabecera() + SOBRE_SECCION + SECCION + BAJO_SECCION
     }
 
-    /// Qué fila de perfil cae en ese punto.
+    /// Qué perfil de la cápsula cae en ese punto. Los segmentos son contiguos:
+    /// no hay hueco entre ellos que no sea de nadie.
     // 0.1.0
+    // modified 0.2.1 -- segmentos de una cápsula en vez de filas
     fn fila_en(&self, x: f32, y: f32) -> Option<usize> {
-        if !(MARGEN..=ANCHO - MARGEN).contains(&x) {
+        let n = self.perfiles.len();
+        let y0 = self.y_lista();
+        if n == 0 || !(y0..y0 + CAPSULA).contains(&y) {
             return None;
         }
-        let rel = y - self.y_lista();
-        if rel < 0.0 {
-            return None;
-        }
-        let i = (rel / (FILA + HUECO_FILA)) as usize;
-        // El hueco entre piezas no es de nadie: pulsarlo no debe cambiar el
-        // perfil por accidente.
-        if rel - i as f32 * (FILA + HUECO_FILA) > FILA {
-            return None;
-        }
-        (i < self.perfiles.len()).then_some(i)
+        let ancho = (INTERIOR - PAD_CAPSULA * 2.0) / n as f32;
+        let rel = x - MARGEN - PAD_CAPSULA;
+        (rel >= 0.0 && rel < ancho * n as f32).then(|| (rel / ancho) as usize)
     }
 
     /// ¿Cae el punto en el pie? Incluye el margen de debajo: es el borde de la
@@ -617,33 +606,35 @@ impl Energia {
         }
     }
 
-    /// Título y pastilla, el porcentaje grande, la barra y el renglón.
+    /// Título con su pastilla y el estado debajo, el porcentaje grande a la
+    /// derecha y, debajo de las dos cosas, la barra.
     // 0.1.0
+    // modified 0.2.1 -- como el menú de batería de macOS: título y porcentaje enfrentados
     fn cabecera(&self) -> PanelElement<'_> {
         let mut titulo = row![
             text(t("Batería", "Battery"))
-                .size(12.0)
-                .font(peso(Weight::Medium))
-                .color(tema::TEXTO2),
-            Space::new().width(Length::Fill),
+                .size(15.0)
+                .font(peso(Weight::Semibold))
+                .color(tema::texto()),
         ]
+        .spacing(8)
         .height(Length::Fixed(TITULO))
         .align_y(Vertical::Center);
         if let Some((rotulo, icono, color)) = self.pastilla() {
             titulo = titulo.push(
                 container(
                     row![
-                        icono::ver_teñido(icono, 14.0, Some(color)),
+                        icono::ver_teñido(icono, 12.0, Some(color)),
                         text(rotulo)
-                            .size(12.0)
-                            .font(peso(Weight::Medium))
+                            .size(11.0)
+                            .font(peso(Weight::Semibold))
                             .color(tema::texto()),
                     ]
                     .spacing(4)
                     .align_y(Vertical::Center),
                 )
-                .height(Length::Fixed(TITULO))
-                .center_y(Length::Fixed(TITULO))
+                .height(Length::Fixed(18.0))
+                .center_y(Length::Fixed(18.0))
                 .padding([0, 8])
                 .style(|_theme: &iced_widget::Theme| container::Style {
                     background: Some(tema::superficie_en_tarjeta().into()),
@@ -655,57 +646,50 @@ impl Energia {
                 }),
             );
         }
-
         let fase = Fase::de(self.bateria);
         let nivel = match self.bateria {
             Some(b) => por_ciento(b.percent),
             None => t("Sin batería", "No battery").into(),
         };
-        // Bajo mínimos el número también se pone rojo: a 28 px el rojo pasa el
-        // 3:1 que pide el texto grande, y es lo que tiene que verse de lejos.
+        // Bajo mínimos el número también se pone rojo: a este tamaño el rojo
+        // pasa el 3:1 que pide el texto grande, y es lo que tiene que verse de lejos.
         let color_nivel = if fase == Fase::Baja {
             tema::rojo()
         } else {
             tema::texto()
         };
-        let mut cabecera = column![
+        let izquierda = column![
             titulo,
             Space::new().height(Length::Fixed(BAJO_TITULO)),
             container(
-                text(nivel)
-                    .size(28.0)
-                    .font(peso(Weight::Bold))
-                    .color(color_nivel)
+                text(lista::recortar(&self.estado(), INTERIOR - 100.0, 12.0))
+                    .size(12.0)
+                    .color(tema::TEXTO2)
             )
-            .height(Length::Fixed(NIVEL))
-            .center_y(Length::Fixed(NIVEL)),
+            .height(Length::Fixed(ESTADO))
+            .center_y(Length::Fixed(ESTADO)),
+        ];
+        let mut cabecera = column![
+            row![
+                izquierda,
+                Space::new().width(Length::Fill),
+                container(
+                    text(nivel)
+                        .size(34.0)
+                        .font(peso(Weight::ExtraBold))
+                        .color(color_nivel)
+                )
+                .height(Length::Fixed(CABECERA))
+                .center_y(Length::Fixed(CABECERA)),
+            ]
+            .height(Length::Fixed(CABECERA)),
         ];
         if self.bateria.is_some() {
             cabecera = cabecera
                 .push(Space::new().height(Length::Fixed(SOBRE_BARRA)))
                 .push(self.barra());
         }
-
-        let mut renglon = row![
-            text(lista::recortar(&self.estado(), INTERIOR - 70.0, 13.0))
-                .size(13.0)
-                .color(tema::TEXTO2),
-            Space::new().width(Length::Fill),
-        ]
-        .height(Length::Fixed(ESTADO))
-        .align_y(Vertical::Center);
-        if let Some(u) = self.tope_visible() {
-            let tope = if *ES {
-                format!("Tope {}", por_ciento(u))
-            } else {
-                format!("Limit {}", por_ciento(u))
-            };
-            renglon = renglon.push(text(tope).size(13.0).color(tema::TEXTO2));
-        }
-        cabecera
-            .push(Space::new().height(Length::Fixed(SOBRE_ESTADO)))
-            .push(renglon)
-            .into()
+        cabecera.into()
     }
 
     /// La barra de nivel con la marca del tope encima, si toca.
@@ -717,7 +701,7 @@ impl Energia {
     fn barra(&self) -> PanelElement<'_> {
         let color = self.color_barra_ahora();
         // Nunca más estrecho que alto: con menos, iced recorta el radio y
-        // asoma una barrita recta por las curvas (ver `control::pildora`).
+        // asoma una barrita recta por las curvas.
         let lleno = (INTERIOR * self.nivel.valor().clamp(0.0, 1.0)).max(BARRA);
         let pista = container(
             container(Space::new())
@@ -768,144 +752,140 @@ impl Energia {
         container(capas).height(Length::Fixed(MARCA_TOPE)).into()
     }
 
-    /// Una pieza de la lista segmentada.
+    /// El selector de modo: una cápsula con una píldora que se desliza al
+    /// elegido y, debajo, lo que hace.
+    ///
+    /// La píldora va con la media de los índices ponderada por lo «elegido» de
+    /// cada perfil, que ya llevan su muelle: al cambiar de modo se desliza de
+    /// un segmento a otro sin que haga falta un muelle más, y sin pasarse (el
+    /// muelle es crítico, §8 del HIG).
     // 0.1.0
-    // modified 0.1.1 -- en oscuro el acento al 20 %, como control::seleccionada
-    fn fila(&self, i: usize) -> PanelElement<'_> {
-        let perfil = &self.perfiles[i];
-        // 0 a 1; con el muelle se pasa un poco, y un color no admite eso.
-        let elegido = self.seleccion[i].valor().clamp(0.0, 1.0);
-        let señalado = self.señalado.intensidad(i);
-        let base = tema::superficie_en_tarjeta();
-
-        // El elegido, con el acento al 10 % como lo seleccionado en cualquier
-        // lista del sistema —al 20 % en oscuro, por lo mismo que en
-        // `control::seleccionada`—; el color del perfil se queda en el círculo.
-        let mezcla = if tema::es_claro() { 0.10 } else { 0.20 };
-        let fondo = tema::mezclar(
-            tema::mezclar(base, tema::tinta(), 0.05 * señalado),
-            tema::mezclar(base, tema::acento(), mezcla + 0.06 * señalado),
-            elegido,
-        );
-        let color = tema::mezclar(tema::texto(), tema::acento(), elegido);
-        // Esquinas de control por fuera del bloque y de chip donde se tocan
-        // dos piezas: las tres forman una sola figura.
-        let ultima = i + 1 == self.perfiles.len();
-        let (arriba, abajo) = (
-            if i == 0 {
-                tema::R_CONTROL
-            } else {
-                tema::R_CHIP
-            },
-            if ultima {
-                tema::R_CONTROL
-            } else {
-                tema::R_CHIP
-            },
-        );
-        let radio = Radius {
-            top_left: arriba,
-            top_right: arriba,
-            bottom_right: abajo,
-            bottom_left: abajo,
+    // modified 0.2.1 -- cápsula con píldora deslizante en vez de una fila por perfil
+    fn selector(&self) -> PanelElement<'_> {
+        let n = self.perfiles.len();
+        let ancho = (INTERIOR - PAD_CAPSULA * 2.0) / n as f32;
+        let alto_pulgar = CAPSULA - PAD_CAPSULA * 2.0;
+        let pesos: Vec<f32> = self
+            .seleccion
+            .iter()
+            .map(|t| t.valor().clamp(0.0, 1.0))
+            .collect();
+        let suma: f32 = pesos.iter().sum();
+        let posicion = if suma > 0.001 {
+            pesos
+                .iter()
+                .enumerate()
+                .map(|(i, p)| i as f32 * p)
+                .sum::<f32>()
+                / suma
+        } else {
+            0.0
         };
-
-        let color_punto = perfil.color;
-        let punto = container(icono_o_hueco(
-            perfil.icono.as_ref(),
-            ICONO_PUNTO,
-            tema::tinta_sobre(color_punto),
-        ))
-        .width(Length::Fixed(PUNTO))
-        .height(Length::Fixed(PUNTO))
-        .center_x(Length::Fixed(PUNTO))
-        .center_y(Length::Fixed(PUNTO))
-        .style(move |_theme: &iced_widget::Theme| container::Style {
-            background: Some(color_punto.into()),
-            border: Border {
-                radius: (PUNTO / 2.0).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        // Lo que queda para el texto: la pieza menos el relleno, el círculo,
-        // su hueco y la marca con el suyo.
-        let ancho_texto = INTERIOR - 28.0 - PUNTO - 14.0 - MARCA - 14.0;
-        let textos = column![
-            text(lista::recortar(perfil.etiqueta, ancho_texto, 14.0))
-                .size(14.0)
-                .font(peso(Weight::Medium))
-                .color(color),
-            text(lista::recortar(perfil.detalle, ancho_texto, 11.0))
-                .size(11.0)
-                .color(tema::TEXTO2),
-        ]
-        .spacing(2);
-        let mut contenido = row![
-            punto,
-            Space::new().width(Length::Fixed(14.0)),
-            textos,
-            Space::new().width(Length::Fill),
-        ]
-        .align_y(Vertical::Center);
-        // La marca se enciende con el fundido; el hueco que deja el spacer
-        // `Fill` hace que su ausencia no mueva el texto.
-        if elegido > 0.01 {
-            contenido = contenido.push(icono_o_hueco(
-                self.marca.as_ref(),
-                MARCA,
-                tema::alfa(tema::acento(), elegido),
-            ));
-        }
-        container(contenido)
+        let pista = container(Space::new())
             .width(Length::Fixed(INTERIOR))
-            .height(Length::Fixed(FILA))
-            .center_y(Length::Fixed(FILA))
-            .padding([0, 14])
-            .style(move |_theme: &iced_widget::Theme| container::Style {
-                background: Some(fondo.into()),
+            .height(Length::Fixed(CAPSULA))
+            .style(|_| container::Style {
+                background: Some(tema::superficie_en_tarjeta().into()),
                 border: Border {
-                    radius: radio,
+                    radius: (CAPSULA / 2.0).into(),
                     ..Default::default()
                 },
                 ..Default::default()
-            })
-            .into()
+            });
+        let mut capas = stack![pista];
+        if self.activo.is_some() {
+            let pulgar = container(Space::new())
+                .width(Length::Fixed(ancho))
+                .height(Length::Fixed(alto_pulgar))
+                .style(move |_| container::Style {
+                    background: Some(tema::texto().into()),
+                    border: Border {
+                        radius: (alto_pulgar / 2.0).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            capas = capas.push(
+                container(pulgar)
+                    .padding(
+                        iced_core::Padding::ZERO
+                            .left(PAD_CAPSULA + posicion * ancho)
+                            .top(PAD_CAPSULA),
+                    )
+                    .width(Length::Fixed(INTERIOR))
+                    .height(Length::Fixed(CAPSULA)),
+            );
+        }
+        let tinta_elegido = tema::tinta_sobre(tema::texto());
+        let mut etiquetas = row![];
+        for (i, perfil) in self.perfiles.iter().enumerate() {
+            let elegido = pesos[i];
+            let color = tema::mezclar(
+                tema::mezclar(tema::TEXTO2, tema::texto(), self.señalado.intensidad(i)),
+                tinta_elegido,
+                elegido,
+            );
+            etiquetas = etiquetas.push(
+                container(
+                    text(perfil.corto)
+                        .size(13.0)
+                        .font(peso(if elegido > 0.5 {
+                            Weight::Semibold
+                        } else {
+                            Weight::Medium
+                        }))
+                        .color(color),
+                )
+                .width(Length::Fixed(ancho))
+                .height(Length::Fixed(CAPSULA))
+                .center_x(Length::Fixed(ancho))
+                .center_y(Length::Fixed(CAPSULA)),
+            );
+        }
+        capas = capas.push(
+            container(etiquetas)
+                .padding(iced_core::Padding::ZERO.left(PAD_CAPSULA))
+                .width(Length::Fixed(INTERIOR))
+                .height(Length::Fixed(CAPSULA)),
+        );
+        let detalle = self
+            .activo
+            .as_deref()
+            .and_then(|a| self.perfiles.iter().find(|p| p.clave == a))
+            .map_or("", |p| p.detalle);
+        column![
+            capas,
+            Space::new().height(Length::Fixed(SOBRE_DESCRIPCION)),
+            container(text(detalle).size(12.0).color(tema::TEXTO2))
+                .padding([0, 4])
+                .height(Length::Fixed(DESCRIPCION))
+                .center_y(Length::Fixed(DESCRIPCION)),
+        ]
+        .into()
     }
 
-    /// El pie: «Preferencias de batería», que abre su página en Ajustes. En el
+    /// El pie: «Preferencias de batería…», que abre su página en Ajustes. En el
     /// color del texto y no en gris: es un botón, y en gris parecía apagado.
     // 0.1.0
+    // modified 0.2.1 -- una fila de texto sobre un divisor, no una baldosa con flecha
     fn pie(&self) -> PanelElement<'_> {
-        control::grupo(
-            container(
-                row![
-                    text(t("Preferencias de batería", "Battery settings"))
-                        .size(14.0)
-                        .font(peso(Weight::Medium))
-                        .color(tema::texto()),
-                    Space::new().width(Length::Fill),
-                    icono_o_hueco(self.flecha.as_ref(), MARCA, tema::TEXTO2),
-                ]
-                .align_y(Vertical::Center),
-            )
-            .height(Length::Fixed(PIE))
-            .center_y(Length::Fixed(PIE))
-            .padding([0, 14])
-            .into(),
-            INTERIOR,
-            0.0,
+        container(
+            text(t("Preferencias de batería…", "Battery settings…"))
+                .size(13.0)
+                .font(peso(Weight::Medium))
+                .color(tema::texto()),
         )
+        .width(Length::Fixed(INTERIOR))
+        .height(Length::Fixed(PIE))
+        .center_y(Length::Fixed(PIE))
+        .padding([0, 4])
+        .into()
     }
 
     // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let mut contenido = column![self.cabecera()];
         if !self.perfiles.is_empty() {
-            let mut filas = column![].spacing(HUECO_FILA);
-            for i in 0..self.perfiles.len() {
-                filas = filas.push(self.fila(i));
-            }
             contenido = contenido
                 .push(Space::new().height(Length::Fixed(SOBRE_SECCION)))
                 .push(
@@ -915,14 +895,16 @@ impl Energia {
                             .font(peso(Weight::Medium))
                             .color(tema::TEXTO2),
                     )
+                    .padding([0, 4])
                     .height(Length::Fixed(SECCION))
                     .center_y(Length::Fixed(SECCION)),
                 )
                 .push(Space::new().height(Length::Fixed(BAJO_SECCION)))
-                .push(filas);
+                .push(self.selector());
         }
         contenido = contenido
-            .push(Space::new().height(Length::Fixed(SOBRE_PIE)))
+            .push(Space::new().height(Length::Fixed(SOBRE_PIE - 0.5)))
+            .push(control::divisor(INTERIOR))
             .push(self.pie());
         control::tarjeta(contenido.into(), ANCHO, MARGEN)
     }
@@ -938,25 +920,36 @@ mod tests {
             .iter()
             .map(|c| Perfil {
                 clave: (*c).into(),
-                etiqueta: "X",
                 detalle: "Y",
                 color: tema::TEXTO2,
-                icono: None,
+                corto: "X",
             })
             .collect();
         e
     }
 
-    /// El hueco entre piezas no pertenece a ninguna: pulsarlo no debe cambiar
-    /// el perfil.
+    /// Los segmentos de la cápsula son contiguos y cada uno es de su tercio: el
+    /// perfil se elige por dónde se pulsa, y fuera de la cápsula no se elige.
     #[test]
-    fn el_hueco_entre_filas_no_es_de_nadie() {
-        let e = con_perfiles(&["a", "b"]);
-        let y0 = e.y_lista();
-        assert_eq!(e.fila_en(50.0, y0 + 1.0), Some(0));
-        assert_eq!(e.fila_en(50.0, y0 + FILA + HUECO_FILA / 2.0), None);
-        assert_eq!(e.fila_en(50.0, y0 + FILA + HUECO_FILA + 1.0), Some(1));
-        assert_eq!(e.fila_en(50.0, y0 - 1.0), None, "por encima de la lista");
+    fn el_selector_se_pulsa_por_segmentos() {
+        let e = con_perfiles(&["a", "b", "c"]);
+        let y = e.y_lista() + CAPSULA / 2.0;
+        let ancho = (INTERIOR - PAD_CAPSULA * 2.0) / 3.0;
+        for (i, esperado) in [Some(0), Some(1), Some(2)].into_iter().enumerate() {
+            let x = MARGEN + PAD_CAPSULA + ancho * (i as f32 + 0.5);
+            assert_eq!(e.fila_en(x, y), esperado);
+        }
+        assert_eq!(e.fila_en(MARGEN + 1.0, y), None, "el borde de la cápsula");
+        assert_eq!(
+            e.fila_en(ANCHO / 2.0, e.y_lista() - 1.0),
+            None,
+            "por encima"
+        );
+        assert_eq!(
+            e.fila_en(ANCHO / 2.0, e.y_lista() + CAPSULA + 1.0),
+            None,
+            "la descripción no se pulsa"
+        );
     }
 
     /// Sin perfiles —un equipo sin `power-profiles-daemon`— la tarjeta encoge
@@ -991,15 +984,16 @@ mod tests {
         }
     }
 
-    /// El pie y la última fila no se pisan: pulsar la última fila cambia el
+    /// El pie y el último segmento no se pisan: pulsar el último modo cambia el
     /// perfil y no abre Ajustes.
     #[test]
-    fn la_ultima_fila_no_es_el_pie() {
+    fn el_ultimo_modo_no_es_el_pie() {
         let mut e = con_perfiles(&["a", "b", "c"]);
         e.activo = Some("a".into());
-        let y = e.y_lista() + 2.0 * (FILA + HUECO_FILA) + FILA - 1.0;
-        assert_eq!(e.fila_en(ANCHO / 2.0, y), Some(2));
-        assert!(!e.en_pie(ANCHO / 2.0, y));
+        let y = e.y_lista() + CAPSULA - 1.0;
+        let x = ANCHO - MARGEN - PAD_CAPSULA - 4.0;
+        assert_eq!(e.fila_en(x, y), Some(2));
+        assert!(!e.en_pie(x, y));
     }
 
     #[test]
@@ -1021,7 +1015,7 @@ mod tests {
         });
         let con = e.alto_cabecera();
         e.bateria = None;
-        assert_eq!(e.alto_cabecera(), con - SOBRE_BARRA - BARRA);
+        assert_eq!(e.alto_cabecera(), con - SOBRE_BARRA - MARCA_TOPE);
         assert_eq!(Fase::de(None), Fase::SinBateria);
     }
 }

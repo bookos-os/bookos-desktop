@@ -23,13 +23,16 @@ use super::{Ancla, Tecla};
 /// sesión de …». Más allá se recorta: un menú de medio panel tapa el escritorio
 /// que se quería mirar.
 const ANCHO_MIN: f32 = 200.0;
-const ANCHO_MAX: f32 = 300.0;
-/// 24 y no 26: con 26 el menú del logo se leía como una lista de botones.
-/// 24 sigue siendo alcanzable con el dedo y queda a la densidad del menú de
-/// macOS (22 pt a 13 pt de letra), que es la referencia.
-pub(super) const FILA: f32 = 24.0;
+const ANCHO_MAX: f32 = 280.0;
+/// 30 y no los 24 que tuvo: a 24 con esquinas de 10 el menú era la única
+/// superficie del escritorio con otra densidad y otro radio —dock, tarjetas y
+/// bloqueo van a 18–22—, y al lado de ellos se leía como un menú de otro
+/// sistema. 30 con letra de 13 deja el mismo aire que las filas del centro de
+/// control y cabe la esquina de popover sin comerse la primera fila.
+// modified 0.2.0 -- 24 → 30, a juego con el resto de emergentes
+pub(super) const FILA: f32 = 30.0;
 /// Alto del bloque separador, con su línea de 1 px en medio.
-pub(super) const DIVISOR: f32 = 9.0;
+pub(super) const DIVISOR: f32 = 11.0;
 /// Margen lateral de las filas dentro del menú.
 pub(super) const MARGEN: f32 = 5.0;
 /// Márgenes de arriba y de abajo del menú entero: iguales al lateral, para que
@@ -39,16 +42,12 @@ const BORDE_INF: f32 = MARGEN;
 /// Relleno del texto dentro de la fila, a cada lado.
 const RELLENO: f32 = 10.0;
 /// Aire mínimo entre la etiqueta y su atajo.
-const HUECO_ATAJO: f32 = 24.0;
-/// Letra de los atajos, y lado de los símbolos de modificador que la
-/// acompañan. El símbolo va un punto por encima de la letra: dibujado a la
-/// misma medida, el trazo de 1,75 sobre 24 lo dejaba más fino y bajo que la
-/// «L» de al lado.
+const HUECO_ATAJO: f32 = 20.0;
+/// Letra de los atajos y relleno lateral de la cápsula de cada tecla.
 const T_ATAJO: f32 = tema::T_PEQUENO - 1.0;
-const SIMBOLO: f32 = T_ATAJO + 1.0;
-/// Entre una tecla y la siguiente del mismo atajo: pegadas, como en macOS,
-/// pero sin que el ⌥ toque al ⌃.
-const HUECO_TECLA: f32 = 1.0;
+const RELLENO_TECLA: f32 = 5.0;
+/// Entre una tecla y la siguiente del mismo atajo.
+const HUECO_TECLA: f32 = 4.0;
 
 /// Alto del icono de una fila, y hueco hasta el texto.
 ///
@@ -74,7 +73,7 @@ enum Entrada {
 }
 
 // 0.1.0
-// modificado en la 0.2.0 -- sin iconos y «Cerrar sesión de <nombre>…»
+// modificado en la 0.2.0 -- sin iconos y «Cerrar sesión de <nombre>» (sin puntos suspensivos desde la 0.2.0)
 fn entradas() -> Vec<Entrada> {
     use Entrada::{Divisor, Item};
     let item = |etiqueta: &str, atajo, accion| Item {
@@ -89,10 +88,10 @@ fn entradas() -> Vec<Entrada> {
         // Plasma y de Qt en vez de las de BookOS.
         item("Acerca de este PC", None, || Accion::Acerca),
         Divisor,
-        // Antes de «Preferencias del sistema…», que abre otro programa: esta
+        // Antes de «Preferencias del sistema», que abre otro programa: esta
         // es del propio escritorio y se aplica al pulsarla.
-        item("Apariencia…", None, || Accion::Emergente("apariencia")),
-        item("Preferencias del sistema…", None, || {
+        item("Apariencia", None, || Accion::Emergente("apariencia")),
+        item("Preferencias del sistema", None, || {
             Accion::Lanzar("bookos-settings".into())
         }),
         // `bookos-store` todavía no existe —no hay ni un crate con ese nombre
@@ -101,7 +100,7 @@ fn entradas() -> Vec<Entrada> {
         // como si hubiera funcionado. Mientras no haya tienda propia, cae a
         // Discover, que es la que ya trae esta base y hace lo mismo de verdad:
         // instalar software.
-        item("BookOS Store…", None, || {
+        item("BookOS Store", None, || {
             Accion::Lanzar("bookos-store || plasma-discover".into())
         }),
         Divisor,
@@ -119,10 +118,10 @@ fn entradas() -> Vec<Entrada> {
     let login = std::env::var("USER").unwrap_or_default();
     let nombre = crate::bloqueo::nombre_completo(&login).unwrap_or(login);
     entradas.extend([
-        item("Reiniciar…", None, || {
+        item("Reiniciar", None, || {
             Accion::Lanzar("systemctl reboot".into())
         }),
-        item("Apagar…", None, || {
+        item("Apagar", None, || {
             Accion::Lanzar("systemctl poweroff".into())
         }),
         Divisor,
@@ -131,9 +130,9 @@ fn entradas() -> Vec<Entrada> {
             // Con el nombre, como en macOS: en un equipo con varias cuentas
             // dice cuál se va a cerrar. Sin `USER` queda la frase sola.
             etiqueta: if nombre.is_empty() {
-                "Cerrar sesión…".into()
+                "Cerrar sesión".into()
             } else {
-                format!("Cerrar sesión de {nombre}…")
+                format!("Cerrar sesión de {nombre}")
             },
             atajo: Some("Ctrl+Alt+Supr"),
             accion: || Accion::CerrarSesion,
@@ -325,18 +324,19 @@ impl Menu {
 /// La comparten el menú del logo, el del dock y el del escritorio con su
 /// submenú, que antes la escribían cada uno por su lado.
 ///
-/// El radio es el de botón pequeño (10) y no el de popover (18): un menú es
-/// una lista estrecha, y con 18 sobre 200 px de ancho las esquinas se comían
-/// la primera y la última fila y se leía como una burbuja. 10 es lo que usa el
-/// menú de macOS, y con el margen de 5 deja el realce de radio 6 concéntrico.
+/// El radio es el de popover (18), el de todas las emergentes. Tuvo el de
+/// botón pequeño (10) mientras las filas medían 24, porque con 18 las esquinas
+/// se comían la primera y la última; a 30 de fila ya caben, y con el margen de
+/// 5 el realce de radio 13 (`R_ITEM_POPOVER`) queda concéntrico.
 // 0.2.0
+// modified 0.2.0 -- radio de popover, como el resto de emergentes
 pub(super) fn caja(contenido: PanelElement<'_>, ancho: f32) -> PanelElement<'_> {
     container(contenido)
         .width(Length::Fixed(ancho))
         .style(|_theme| container::Style {
             background: Some(tema::card().into()),
             border: Border {
-                radius: tema::R_BOTON_PEQUENO.into(),
+                radius: tema::R_POPOVER.into(),
                 width: 1.0,
                 color: tema::borde(),
             },
@@ -394,7 +394,7 @@ pub(super) fn fila(
             .style(move |_theme| container::Style {
                 background: Some(fondo.into()),
                 border: Border {
-                    radius: tema::R_CHIP.into(),
+                    radius: tema::R_ITEM_POPOVER.into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -405,20 +405,21 @@ pub(super) fn fila(
     .into()
 }
 
-/// El icono que sustituye a un modificador escrito, como los de macOS:
-/// «Meta+L» se lee ⌘L. Meta va a ⌘ porque es la tecla del sistema, la que en
-/// BookOS hace lo que en macOS hace Comando. Lo que no está aquí —letras, «›»
-/// del dock— se queda en texto.
-// añadido en la 0.2.0
-fn simbolo(tecla: &str) -> Option<&'static str> {
+/// Cómo se lee cada tecla en el menú: con palabras, no con los símbolos de
+/// Apple (⌘ ⌃ ⌥). En BookOS la tecla del sistema es Súper y ese es el nombre
+/// que lleva en el teclado de quien lo usa; los símbolos solo los entiende
+/// quien viene de macOS. Lo que no está aquí —letras— se escribe tal cual.
+// modificado en la 0.2.0 -- palabras en teclas pequeñas, sin símbolos de Mac
+fn nombre_tecla(tecla: &str) -> &str {
     match tecla {
-        "Meta" => Some("tecla-cmd"),
-        "Ctrl" => Some("tecla-ctrl"),
-        "Alt" => Some("tecla-alt"),
-        "Mayús" => Some("mayus"),
-        "Supr" => Some("tecla-supr"),
-        _ => None,
+        "Meta" => "Súper",
+        otra => otra,
     }
+}
+
+/// Lo que ocupa una tecla dibujada: la palabra y el relleno de la cápsula.
+fn ancho_tecla(tecla: &str) -> f32 {
+    crate::widget::ancho_de(nombre_tecla(tecla), T_ATAJO) + RELLENO_TECLA * 2.0
 }
 
 /// Lo que ocupa un atajo dibujado con [`teclas`].
@@ -426,27 +427,34 @@ fn simbolo(tecla: &str) -> Option<&'static str> {
 fn ancho_atajo(atajo: &str) -> f32 {
     let partes = atajo.split('+');
     let huecos = (partes.clone().count() - 1) as f32 * HUECO_TECLA;
-    partes
-        .map(|t| match simbolo(t) {
-            Some(_) => SIMBOLO,
-            None => crate::widget::ancho_de(t, T_ATAJO),
-        })
-        .sum::<f32>()
-        + huecos
+    partes.map(ancho_tecla).sum::<f32>() + huecos
 }
 
-/// Un atajo como fila de teclas: símbolo para cada modificador y la tecla
-/// final en texto, sin los «+».
-// añadido en la 0.2.0
+/// Un atajo como fila de teclas pequeñas, una cápsula por tecla y sin «+».
+/// La cápsula toma el color del texto del atajo con poco alfa, así que sigue a
+/// la fila cuando el hover la pasa a fondo de acento.
+// modificado en la 0.2.0 -- cápsulas con palabras
 fn teclas(atajo: &str, color: iced_core::Color) -> PanelElement<'static> {
     let mut fila = row![]
         .spacing(HUECO_TECLA)
         .align_y(iced_core::alignment::Vertical::Center);
     for tecla in atajo.split('+') {
-        fila = fila.push(match simbolo(tecla).and_then(crate::icono::propio) {
-            Some(ic) => crate::icono::ver_teñido_propio(&ic, SIMBOLO, color),
-            None => text(tecla.to_string()).size(T_ATAJO).color(color).into(),
-        });
+        fila = fila.push(
+            container(
+                text(nombre_tecla(tecla).to_string())
+                    .size(T_ATAJO)
+                    .color(color),
+            )
+            .padding([1, RELLENO_TECLA as u16])
+            .style(move |_theme| container::Style {
+                background: Some(tema::alfa(color, 0.16).into()),
+                border: Border {
+                    radius: 5.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        );
     }
     fila.into()
 }
@@ -461,7 +469,7 @@ pub(super) fn divisor() -> PanelElement<'static> {
                 ..Default::default()
             }),
     )
-    .padding([4, RELLENO as u16 + MARGEN as u16])
+    .padding([5, RELLENO as u16 + MARGEN as u16])
     .height(Length::Fixed(DIVISOR))
     .into()
 }

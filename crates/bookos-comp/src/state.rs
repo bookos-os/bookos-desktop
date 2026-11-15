@@ -752,6 +752,10 @@ pub struct BookosComp {
     #[allow(dead_code)]
     pub idle_inhibit_state: IdleInhibitManagerState,
     pub idle_inhibidores: Vec<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    /// Las inhibiciones pedidas por `org.freedesktop.ScreenSaver`: cookie y
+    /// nombre único de quien la pidió. Ver `inhibir.rs`.
+    // añadido en la 0.2.2
+    pub inhibiciones_bus: std::collections::HashMap<u32, String>,
     /// `ext_idle_notifier_v1`: permite que salvapantallas y agentes de sesión
     /// conozcan el idle sin sondear dispositivos ni despertar el proceso.
     pub idle_notifier_state: IdleNotifierState<Self>,
@@ -854,6 +858,13 @@ fn keymap_de_vconsole() -> Option<String> {
 }
 
 impl BookosComp {
+    /// Si alguna app pide ahora que no se apague la pantalla: por el protocolo
+    /// de Wayland o por `org.freedesktop.ScreenSaver`.
+    // añadido en la 0.2.2
+    pub fn idle_inhibido(&self) -> bool {
+        !self.idle_inhibidores.is_empty() || !self.inhibiciones_bus.is_empty()
+    }
+
     /// ¿Hay alguna animación en marcha?
     ///
     /// El backend lo usa para no relajarse mientras algo se mueve. Sin esto, el
@@ -1065,6 +1076,7 @@ impl BookosComp {
             [
                 (bus_notificaciones.clone(), crate::notificaciones::INTERFAZ),
                 (bus_ajustes.clone(), crate::ajustes::NOMBRE),
+                (bus_ajustes.clone(), crate::inhibir::NOMBRE),
                 (bus_portal.clone(), crate::portal::NOMBRE),
             ]
             .into_iter()
@@ -1281,6 +1293,7 @@ impl BookosComp {
             cursor_shape_state,
             idle_inhibit_state,
             idle_inhibidores: Vec::new(),
+            inhibiciones_bus: std::collections::HashMap::new(),
             idle_notifier_state,
             pointer_constraints_state,
             relative_pointer_state,

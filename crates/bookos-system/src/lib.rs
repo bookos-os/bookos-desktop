@@ -277,9 +277,15 @@ pub async fn call(op: &Operation) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
         let payload = serde_json::to_string(op).map_err(|e| e.to_string())?;
+        // El servicio ya devuelve el motivo en castellano; Display de zbus le
+        // antepone «org.freedesktop.DBus.Error.Failed: » y eso llegaba tal cual
+        // al aviso en pantalla.
         p.call::<_, _, ()>("Perform", &(payload,))
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| match e {
+                zbus::Error::MethodError(_, Some(motivo), _) => motivo,
+                e => e.to_string(),
+            })
     };
     tokio::time::timeout(std::time::Duration::from_secs(110), work)
         .await
