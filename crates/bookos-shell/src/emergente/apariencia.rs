@@ -122,6 +122,8 @@ impl Apariencia {
         marca_color.señalar(indice(acento));
         marca_color.terminar();
         let claro = tema::es_claro();
+        refrescar_catalogo(claro);
+        precalentar_variante(!claro);
         let (fondos, elegido) = Self::fondos_para(claro, acento);
         let mut marca_fondo = Realce::nuevo();
         marca_fondo.señalar(elegido);
@@ -130,7 +132,7 @@ impl Apariencia {
         Self {
             modo,
             acento,
-            pulgar: tema::Transicion::nueva(posicion, tema::M_RAPIDO),
+            pulgar: tema::Transicion::nueva(posicion, tema::M_SEGMENTADO),
             hover_modo: Realce::nuevo(),
             hover_color: Realce::nuevo(),
             marca_color,
@@ -163,9 +165,11 @@ impl Apariencia {
     /// acento, y el índice del que ya está puesto (por nombre de familia: con
     /// el tema oscuro el fichero cargado es el `_dark` de la pareja).
     // 0.1.0
+    // modified 0.2.3 -- reutiliza el catálogo leído al abrir para no tocar disco al conmutar claro/oscuro
     fn fondos_para(es_claro: bool, acento: Acento) -> (Vec<crate::fondos::Familia>, Option<usize>) {
-        let mut fondos = crate::fondos::instaladas(es_claro);
-        ordenar_por_afinidad(&mut fondos, acento);
+        let mut entradas = catalogo_cacheado(es_claro);
+        ordenar_catalogo_por_afinidad(&mut entradas, acento);
+        let fondos: Vec<crate::fondos::Familia> = entradas.into_iter().map(|(f, _)| f).collect();
         let puesta = crate::fondos::elegida();
         let elegido = puesta
             .as_deref()
@@ -461,7 +465,7 @@ impl Apariencia {
             tx2: if claro {
                 Color::from_rgb8(0x6c, 0x6c, 0x70)
             } else {
-                tema::TEXTO2
+                tema::texto2()
             },
             sep: tema::mezclar(card, tx, 0.1),
         }
@@ -476,11 +480,14 @@ impl Apariencia {
         let ancho = ancho_util() - 2.0 * SANGRIA;
         let w = (ancho - 2.0 * SELECTOR_RELLENO) / MODOS.len() as f32;
         let alto = SELECTOR - 2.0 * SELECTOR_RELLENO;
-        let elegido = MODOS.iter().position(|m| *m == self.modo).unwrap_or(0);
         let foco = self.foco == Some(Foco::Modo);
         let (tx, tx2, card) = (p.tx, p.tx2, p.card);
+        // Desde el borde de la cápsula: el rebote de M_SEGMENTADO entra en el
+        // relleno en vez de cortarse en 0.
         let pulgar = row![
-            Space::new().width(Length::Fixed(w * self.pulgar.valor())),
+            Space::new().width(Length::Fixed(
+                (SELECTOR_RELLENO + w * self.pulgar.valor()).max(0.0)
+            )),
             caja(
                 Space::new().into(),
                 w,
@@ -492,9 +499,15 @@ impl Apariencia {
         ]
         // A todo el ancho: la pila toma el tamaño de su primera capa, y con el
         // pulgar en la primera opción medía un tercio y recortaba las otras.
-        .width(Length::Fixed(ancho - 2.0 * SELECTOR_RELLENO));
+        .width(Length::Fixed(ancho))
+        .padding(Padding::ZERO.top(SELECTOR_RELLENO))
+        .height(Length::Fixed(SELECTOR));
+        let posicion = self.pulgar.valor();
         let opciones = MODOS.iter().enumerate().fold(row![], |fila, (i, modo)| {
-            let on = i == elegido;
+            // modified 0.2.3 -- la etiqueta sigue a la píldora, como en Energía
+            // Cuánto la tapa la píldora: cambia de tinta y de peso según
+            // pasa por encima, no de golpe al elegir.
+            let on = (1.0 - (posicion - i as f32).abs()).clamp(0.0, 1.0);
             let señalada = self.hover_modo.intensidad(i);
             let nombre = match modo {
                 ModoTema::Automatico => t("Automático", "Auto"),
@@ -505,16 +518,12 @@ impl Apariencia {
                 container(
                     text(nombre)
                         .size(13.0)
-                        .font(super::control::peso(if on {
+                        .font(super::control::peso(if on > 0.5 {
                             iced_core::font::Weight::Semibold
                         } else {
                             iced_core::font::Weight::Medium
                         }))
-                        .color(if on {
-                            card
-                        } else {
-                            tema::mezclar(tx2, tx, señalada)
-                        })
+                        .color(tema::mezclar(tema::mezclar(tx2, tx, señalada), card, on))
                         .wrapping(iced_core::text::Wrapping::None),
                 )
                 .center_x(Length::Fixed(w))
@@ -522,9 +531,7 @@ impl Apariencia {
             )
         });
         container(caja(
-            container(stack![pulgar, opciones])
-                .padding(SELECTOR_RELLENO)
-                .into(),
+            stack![pulgar, container(opciones).padding(SELECTOR_RELLENO)].into(),
             ancho,
             SELECTOR,
             p.grupo,
@@ -866,7 +873,82 @@ fn caja<'a>(
 /// Grafito no tiene tono —es gris— y con él se deja el orden alfabético: no hay
 /// ningún fondo que le pegue más que otro. Lo mismo con las familias sin SVG,
 /// que van al final porque de ellas no se sabe el color sin decodificar el PNG.
+type EntradaCatalogo = (crate::fondos::Familia, Option<f32>);
+
+static CATALOGO: std::sync::OnceLock<
+    std::sync::Mutex<[Option<Vec<EntradaCatalogo>>; 2]>,
+> = std::sync::OnceLock::new();
+
+type ClaveVista = (std::path::PathBuf, Option<std::time::SystemTime>, u32, u32);
+
+static CACHE_VISTAS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<ClaveVista, iced_core::image::Handle>>,
+> = std::sync::OnceLock::new();
+
+// added 0.2.3
+fn leer_catalogo(es_claro: bool) -> Vec<EntradaCatalogo> {
+    crate::fondos::instaladas(es_claro)
+        .into_iter()
+        .map(|f| {
+            let t = crate::fondos::tono(&f);
+            (f, t)
+        })
+        .collect()
+}
+
+// added 0.2.3
+fn refrescar_catalogo(es_claro: bool) {
+    let entradas = leer_catalogo(es_claro);
+    let cache = CATALOGO.get_or_init(Default::default);
+    cache.lock().unwrap_or_else(|e| e.into_inner())[es_claro as usize] = Some(entradas);
+}
+
+// added 0.2.3
+fn catalogo_cacheado(es_claro: bool) -> Vec<EntradaCatalogo> {
+    let cache = CATALOGO.get_or_init(Default::default);
+    if let Some(guardado) =
+        cache.lock().unwrap_or_else(|e| e.into_inner())[es_claro as usize].clone()
+    {
+        return guardado;
+    }
+    let entradas = leer_catalogo(es_claro);
+    cache.lock().unwrap_or_else(|e| e.into_inner())[es_claro as usize] = Some(entradas.clone());
+    entradas
+}
+
+/// Precalienta en segundo plano las miniaturas SVG de la variante opuesta al
+/// abrir la tarjeta: cuando el usuario pulsa «Claro» u «Oscuro», `elegir_modo`
+/// ya las tiene en memoria y no bloquea el primer fotograma de la píldora.
+// added 0.2.3
+fn precalentar_variante(es_claro: bool) {
+    let _ = std::thread::Builder::new()
+        .name("apariencia-vistas".into())
+        .spawn(move || {
+            let entradas = leer_catalogo(es_claro);
+            let familias: Vec<crate::fondos::Familia> =
+                entradas.iter().map(|(f, _)| f.clone()).collect();
+            let _ = vistas_de(&familias);
+            let cache = CATALOGO.get_or_init(Default::default);
+            cache.lock().unwrap_or_else(|e| e.into_inner())[es_claro as usize] = Some(entradas);
+        });
+}
+
+// added 0.2.3
+fn ordenar_catalogo_por_afinidad(entradas: &mut [EntradaCatalogo], acento: Acento) {
+    let Some(objetivo) = tono_de_acento(acento) else {
+        return;
+    };
+    entradas.sort_by(|a, b| {
+        let d = |t: Option<f32>| {
+            t.map(|tono| crate::fondos::distancia_de_tono(tono, objetivo))
+                .unwrap_or(f32::MAX)
+        };
+        d(a.1).total_cmp(&d(b.1)).then_with(|| a.0.nombre.cmp(&b.0.nombre))
+    });
+}
+
 // 0.1.0
+#[cfg(test)]
 fn ordenar_por_afinidad(fondos: &mut [crate::fondos::Familia], acento: Acento) {
     let Some(objetivo) = tono_de_acento(acento) else {
         return;
@@ -936,6 +1018,7 @@ fn vistas_de(fondos: &[crate::fondos::Familia]) -> Vec<Option<iced_core::image::
 }
 
 // 0.1.0
+// modified 0.2.3 -- cachea el Handle ya redondeado por ruta y fecha de modificación
 fn vista_redondeada(
     ruta: &std::path::Path,
     ancho: f32,
@@ -949,6 +1032,17 @@ fn vista_redondeada(
         (ancho * RESOLUCION).round() as u32,
         (alto * RESOLUCION).round() as u32,
     );
+    let modificado = std::fs::metadata(ruta).ok().and_then(|m| m.modified().ok());
+    let clave = (ruta.to_path_buf(), modificado, pw, ph);
+    let cache = CACHE_VISTAS.get_or_init(Default::default);
+    if let Some(guardada) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&clave)
+        .cloned()
+    {
+        return Some(guardada);
+    }
     let datos = std::fs::read(ruta).ok()?;
     let arbol = resvg::usvg::Tree::from_data(&datos, &resvg::usvg::Options::default()).ok()?;
     let t = arbol.size();
@@ -973,7 +1067,12 @@ fn vista_redondeada(
         FONDO_RADIO * RESOLUCION,
         crate::Alfa::Recto,
     );
-    Some(iced_core::image::Handle::from_rgba(pw, ph, rgba))
+    let handle = iced_core::image::Handle::from_rgba(pw, ph, rgba);
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(clave, handle.clone());
+    Some(handle)
 }
 
 /// El círculo del acento automático: los colores del fondo en tres franjas, el
@@ -1153,10 +1252,10 @@ mod tests {
             assert_eq!(indice(a.acento), Some(antes + COLUMNAS));
         }
         a.tecla(T::Tabulador);
-        a.tecla(T::Tabulador);
         if !a.fondos.is_empty() {
-            assert_eq!(a.foco, Some(Foco::Mas));
+            a.tecla(T::Tabulador);
         }
+        assert_eq!(a.foco, Some(Foco::Mas));
         assert!(matches!(a.tecla(T::Intro), Tecla::Hacer(Accion::Lanzar(_))));
         assert!(matches!(a.tecla(T::Escape), Tecla::Cerrar));
     }

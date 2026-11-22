@@ -3,9 +3,11 @@
 //! Hito H1: arranca, publica el socket, muestra clientes xdg-shell y no gasta
 //! CPU cuando no pasa nada.
 
+mod accesibilidad;
 mod ajustes;
 mod inhibir;
 mod apariencia;
+mod archivos;
 mod atenuacion;
 mod autenticar;
 mod backend;
@@ -25,6 +27,7 @@ mod emojis;
 mod escritorios;
 mod fondo;
 mod fundido;
+mod esquinas;
 mod genio;
 #[cfg(feature = "udev")]
 mod cinco_dedos;
@@ -35,6 +38,7 @@ mod keybinds;
 mod locale1;
 mod luz_nocturna;
 mod metricas;
+mod miniatura_captura;
 mod multimedia;
 mod multitarea;
 mod notificaciones;
@@ -47,6 +51,7 @@ mod selftest;
 mod shell;
 mod state;
 mod teclado;
+mod teclas_accesibles;
 mod teclas;
 mod ventanas;
 mod xwayland;

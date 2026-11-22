@@ -32,6 +32,9 @@
 //! actividades = si
 //! actividades_animaciones = si
 //! alto_contraste = no
+//! texto_tamano = 100
+//! teclas_especiales = no
+//! teclas_lentas = 0
 //! bateria_porcentaje = si
 //! bateria_tiempo = si
 //! bateria_colores = si
@@ -136,6 +139,41 @@ impl TamanoPanel {
             "pequeno" => Some(TamanoPanel::Pequeno),
             "mediano" => Some(TamanoPanel::Mediano),
             "grande" => Some(TamanoPanel::Grande),
+            _ => None,
+        }
+    }
+}
+
+/// Cómo se abren las ventanas principales nuevas.
+///
+/// `Normal` deja al cliente elegir su tamaño flotante. `Maximizada` ocupa el
+/// área útil (respetando panel y dock) y `PantallaCompleta` ocupa toda la
+/// pantalla sin panel ni dock. Los diálogos con padre siguen siendo ventanas.
+// añadido en la 0.2.4
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AperturaVentanas {
+    #[default]
+    Normal,
+    Maximizada,
+    PantallaCompleta,
+}
+
+impl AperturaVentanas {
+    // añadido en la 0.2.4
+    pub fn nombre(self) -> &'static str {
+        match self {
+            AperturaVentanas::Normal => "normal",
+            AperturaVentanas::Maximizada => "maximizada",
+            AperturaVentanas::PantallaCompleta => "pantalla_completa",
+        }
+    }
+
+    // añadido en la 0.2.4
+    pub fn desde_nombre(nombre: &str) -> Option<Self> {
+        match nombre {
+            "normal" => Some(AperturaVentanas::Normal),
+            "maximizada" => Some(AperturaVentanas::Maximizada),
+            "pantalla_completa" => Some(AperturaVentanas::PantallaCompleta),
             _ => None,
         }
     }
@@ -289,6 +327,34 @@ impl Default for Pasos {
 pub struct Config {
     pub dock_tamano: u32,
     pub panel_tamano: TamanoPanel,
+    /// Cómo se abren las ventanas principales nuevas (`normal`, `maximizada` o
+    /// `pantalla_completa`).
+    // añadido en la 0.2.4
+    pub apertura_ventanas: AperturaVentanas,
+    /// Límite de refresco en Hz cuando VRR está activo en la salida (0 = sin
+    /// límite, hasta el máximo del panel). Por ejemplo, 48 o 60 para ahorro.
+    // añadido en la 0.2.4
+    pub vrr_refresco_max: u32,
+    /// Aplicaciones cuyos avisos no críticos se archivan en silencio sin toast.
+    // añadido en la 0.2.4
+    pub notificaciones_silenciadas: Vec<String>,
+    /// Modo de bajo consumo unificado: activa `power-saver`, tope VRR a 48 Hz,
+    /// efectos reducidos y pausa fondos animados.
+    // añadido en la 0.2.4
+    pub bajo_consumo: bool,
+    /// Agrandar el cursor temporalmente al agitar rápido el ratón (macOS).
+    // añadido en la 0.2.4
+    pub agitar_cursor: bool,
+    /// Modo de concentración activo (`""` = ninguno, `"trabajo"`, `"estudio"`,
+    /// `"juego"`, `"no_molestar"`…).
+    // añadido en la 0.2.4
+    pub modo_concentracion: String,
+    /// Activar automáticamente el filtrado de concentración en pantalla completa.
+    // añadido en la 0.2.4
+    pub concentracion_auto_juego: bool,
+    /// Apps permitidas por cada modo de concentración (`concentracion_<modo>`).
+    // añadido en la 0.2.4
+    pub concentracion_permitidas: HashMap<String, Vec<String>>,
     pub bloqueo_huella: bool,
     pub centro: Option<String>,
     pub derecha: Vec<String>,
@@ -304,6 +370,18 @@ pub struct Config {
     /// Tamaño **lógico** del cursor. El tema elige luego qué imagen de las que
     /// trae se acerca más a ese tamaño por la escala de la pantalla.
     pub cursor: u32,
+    /// Tamaño del texto de las aplicaciones, en %. 100 es el de serie; no
+    /// toca al shell, cuyas cajas son de alto fijo.
+    // añadido en la 0.2.3
+    pub texto_tamano: u32,
+    /// Teclas especiales (pegajosas): Mayús, Ctrl y Alt se pulsan de una en
+    /// una; una vez queda puesta para la tecla siguiente y dos la bloquea.
+    // añadido en la 0.2.3
+    pub teclas_especiales: bool,
+    /// Teclas lentas: una tecla solo cuenta si se mantiene tantos ms. 0 la
+    /// apaga. Para quien pulsa sin querer al rozar el teclado.
+    // añadido en la 0.2.3
+    pub teclas_lentas: u32,
     /// ¿Se ve el dock con el launchpad abierto?
     ///
     /// Es lo que hace macOS, y no es cosmético: es lo que convierte el
@@ -426,6 +504,9 @@ pub struct Config {
     pub dock_esquiva: bool,
     /// Si se ven los iconos de la carpeta Escritorio sobre el fondo.
     pub iconos_escritorio: bool,
+    /// Tamaño de los iconos del escritorio (`pequeno`, `mediano`, `grande`).
+    // añadido en la 0.2.3
+    pub tamano_iconos: crate::escritorio::Tamano,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -722,6 +803,7 @@ impl Default for Config {
                 // no *qué tienes*, así que va aparte de los estados, pegado al
                 // borde izquierdo del grupo.
                 "escritorios".into(),
+                "privacidad".into(),
                 "bateria".into(),
                 "bluetooth".into(),
                 "red".into(),
@@ -763,8 +845,19 @@ impl Default for Config {
             // al elegir imagen. Pedir 24 a escala 1,75 da los 42 px que el
             // tema tiene dibujados de verdad, sin inventar píxeles.
             cursor: 24,
+            texto_tamano: 100,
+            teclas_especiales: false,
+            teclas_lentas: 0,
             dock_tamano: 50,
             panel_tamano: TamanoPanel::default(),
+            apertura_ventanas: AperturaVentanas::default(),
+            vrr_refresco_max: 0,
+            notificaciones_silenciadas: Vec::new(),
+            bajo_consumo: false,
+            agitar_cursor: true,
+            modo_concentracion: String::new(),
+            concentracion_auto_juego: true,
+            concentracion_permitidas: HashMap::new(),
             bloqueo_huella: false,
             launchpad_dock: true,
             entrada: Entrada::default(),
@@ -811,8 +904,23 @@ impl Default for Config {
             panel_esquiva: false,
             dock_esquiva: false,
             iconos_escritorio: true,
+            tamano_iconos: crate::escritorio::Tamano::Mediano,
         }
     }
+}
+
+/// Garantiza que los indicadores de privacidad sigan presentes en el panel
+/// aunque la configuración los omita (por ejemplo, al migrar desde una versión
+/// anterior). Respeta la posición elegida si ya están en `derecha` o `centro`.
+pub(crate) fn asegurar_privacidad(centro: Option<&str>, derecha: &mut Vec<String>) {
+    if centro == Some("privacidad") || derecha.iter().any(|n| n == "privacidad") {
+        return;
+    }
+    let pos = derecha
+        .iter()
+        .position(|n| n == "escritorios")
+        .map_or(0, |i| i + 1);
+    derecha.insert(pos, "privacidad".into());
 }
 
 impl Config {
@@ -925,6 +1033,10 @@ impl Config {
                         config.iconos_escritorio = v;
                     }
                 }
+                "tamano_iconos_escritorio" => match crate::escritorio::Tamano::de_clave(valor) {
+                    Some(t) => config.tamano_iconos = t,
+                    None => tracing::warn!(?ruta, linea = n + 1, valor, "tamaño de iconos no válido"),
+                },
                 "temporizador_siempre_visible" => {
                     if let Some(v) = booleano(valor, ruta, n + 1) {
                         config.actividades.temporizador_siempre = v;
@@ -1052,6 +1164,58 @@ impl Config {
                         "«panel_tamano» solo entiende pequeno, mediano o grande"
                     ),
                 },
+                "apertura_ventanas" => match AperturaVentanas::desde_nombre(valor.trim()) {
+                    Some(m) => config.apertura_ventanas = m,
+                    None => tracing::warn!(
+                        valor,
+                        "«apertura_ventanas» solo entiende normal, maximizada o pantalla_completa"
+                    ),
+                },
+                "vrr_refresco_max" => match valor.trim().parse::<u32>() {
+                    Ok(v) if v == 0 || (24..=360).contains(&v) => config.vrr_refresco_max = v,
+                    _ => tracing::warn!(
+                        valor,
+                        "«vrr_refresco_max» debe ser 0 (sin límite) o entre 24 y 360 Hz"
+                    ),
+                },
+                "notificaciones_silenciadas" => {
+                    config.notificaciones_silenciadas = valor
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect();
+                }
+                "bajo_consumo" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.bajo_consumo = v;
+                    }
+                }
+                "agitar_cursor" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.agitar_cursor = v;
+                    }
+                }
+                "modo_concentracion" => {
+                    config.modo_concentracion = valor.trim().to_lowercase();
+                }
+                "concentracion_auto_juego" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.concentracion_auto_juego = v;
+                    }
+                }
+                clave if clave.starts_with("concentracion_") => {
+                    let modo = clave.trim_start_matches("concentracion_").trim().to_lowercase();
+                    if !modo.is_empty() {
+                        let apps: Vec<String> = valor
+                            .split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .map(String::from)
+                            .collect();
+                        config.concentracion_permitidas.insert(modo, apps);
+                    }
+                }
                 "efectos" => match valor.trim() {
                     "completos" => config.efectos = Efectos::Completos,
                     "reducidos" => config.efectos = Efectos::Reducidos,
@@ -1151,6 +1315,29 @@ impl Config {
                         "tamaño de cursor fuera de [8 - 128]; se ignora"
                     ),
                 },
+                "teclas_especiales" => {
+                    if let Some(v) = booleano(valor, ruta, n + 1) {
+                        config.teclas_especiales = v;
+                    }
+                }
+                "teclas_lentas" => match valor.trim().parse::<u32>() {
+                    Ok(v) if v <= 2000 => config.teclas_lentas = v,
+                    _ => tracing::warn!(
+                        ?ruta,
+                        linea = n + 1,
+                        valor = valor.trim(),
+                        "retardo de teclas lentas fuera de [0 - 2000]; se ignora"
+                    ),
+                },
+                "texto_tamano" => match valor.trim().parse::<u32>() {
+                    Ok(v) if (100..=200).contains(&v) => config.texto_tamano = v,
+                    _ => tracing::warn!(
+                        ?ruta,
+                        linea = n + 1,
+                        valor = valor.trim(),
+                        "tamaño de texto fuera de [100 - 200]; se ignora"
+                    ),
+                },
                 "tema_claro_desde" => {
                     if let Some(h) = hora_del_dia(valor, ruta, n + 1) {
                         config.tema_claro_desde = h;
@@ -1242,6 +1429,7 @@ impl Config {
                 config.nombres_escritorios.len() + 1
             ));
         }
+        asegurar_privacidad(config.centro.as_deref(), &mut config.derecha);
         // El tema efectivo se deriva aquí y en ningún otro sitio: con el modo
         // automático depende de la hora, y tener dos verdades —lo elegido y lo
         // pintado— solo funciona si una sale de la otra en un único punto.
@@ -1509,6 +1697,12 @@ pub fn guardar_esquiva(clave: &str, esquiva: bool) -> std::io::Result<()> {
     escribir_claves(&[(clave, if esquiva { "si" } else { "no" }.to_string())])
 }
 
+/// Persiste el tamaño de los iconos del escritorio.
+// añadido en la 0.2.3
+pub fn guardar_tamano_iconos(tamano: crate::escritorio::Tamano) -> std::io::Result<()> {
+    escribir_claves(&[("tamano_iconos_escritorio", tamano.clave().to_string())])
+}
+
 /// Persiste si se ven los iconos del escritorio.
 // 0.1.1
 pub fn guardar_iconos_escritorio(visibles: bool) -> std::io::Result<()> {
@@ -1516,6 +1710,12 @@ pub fn guardar_iconos_escritorio(visibles: bool) -> std::io::Result<()> {
         "iconos_escritorio",
         if visibles { "si" } else { "no" }.to_string(),
     )])
+}
+
+/// Persiste la lista de aplicaciones silenciadas en las notificaciones.
+// añadido en la 0.2.4
+pub fn guardar_notificaciones_silenciadas(apps: &[String]) -> std::io::Result<()> {
+    escribir_claves(&[("notificaciones_silenciadas", apps.join(", "))])
 }
 
 /// Punto único de persistencia para la API estructurada del compositor.
@@ -2173,5 +2373,63 @@ mod tests {
         let c = parsear("escala = 1.5\nesto no es nada\nvelocidad_touchpad = 0.4\n");
         assert_eq!(c.escala, Some(1.5));
         assert_eq!(c.entrada.velocidad_touchpad, 0.4);
+    }
+
+    #[test]
+    fn apertura_vrr_y_notificaciones_silenciadas() {
+        assert_eq!(parsear("").apertura_ventanas, AperturaVentanas::Normal);
+        assert_eq!(
+            parsear("apertura_ventanas = maximizada").apertura_ventanas,
+            AperturaVentanas::Maximizada
+        );
+        assert_eq!(
+            parsear("apertura_ventanas = pantalla_completa").apertura_ventanas,
+            AperturaVentanas::PantallaCompleta
+        );
+        assert_eq!(
+            parsear("apertura_ventanas = inventado").apertura_ventanas,
+            AperturaVentanas::Normal
+        );
+
+        assert_eq!(parsear("").vrr_refresco_max, 0);
+        assert_eq!(parsear("vrr_refresco_max = 48").vrr_refresco_max, 48);
+        assert_eq!(parsear("vrr_refresco_max = 10").vrr_refresco_max, 0);
+
+        let c = parsear("notificaciones_silenciadas = Discord, , Firefox ");
+        assert_eq!(c.notificaciones_silenciadas, ["Discord", "Firefox"]);
+
+        let f = parsear(
+            "bajo_consumo = si\nagitar_cursor = no\nmodo_concentracion = Trabajo\nconcentracion_auto_juego = no\nconcentracion_trabajo = Mail, Calendar\n",
+        );
+        assert!(f.bajo_consumo);
+        assert!(!f.agitar_cursor);
+        assert_eq!(f.modo_concentracion, "trabajo");
+        assert!(!f.concentracion_auto_juego);
+        assert_eq!(
+            f.concentracion_permitidas.get("trabajo").map(Vec::as_slice),
+            Some(["Mail".to_string(), "Calendar".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn privacidad_va_junto_a_escritorios_y_no_se_puede_quitar() {
+        let def = Config::default();
+        assert_eq!(&def.derecha[..2], ["escritorios", "privacidad"]);
+
+        // Si un fichero viejo omite «privacidad», se inserta al lado de escritorios.
+        let viejo = parsear("derecha = escritorios, bateria, reloj\n");
+        assert_eq!(
+            viejo.derecha,
+            ["escritorios", "privacidad", "bateria", "reloj"]
+        );
+
+        // Si el usuario la mueve de sitio, su orden se respeta.
+        let movido = parsear("derecha = reloj, privacidad, escritorios\n");
+        assert_eq!(movido.derecha, ["reloj", "privacidad", "escritorios"]);
+
+        // Y si está en el centro, no se duplica en la derecha.
+        let centro = parsear("centro = privacidad\nderecha = escritorios, reloj\n");
+        assert_eq!(centro.centro.as_deref(), Some("privacidad"));
+        assert_eq!(centro.derecha, ["escritorios", "reloj"]);
     }
 }

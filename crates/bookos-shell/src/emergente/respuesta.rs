@@ -97,7 +97,7 @@ impl Respuesta {
         let escrito: PanelElement<'_> = if self.texto.is_empty() {
             text(t("Escribe tu respuesta", "Type your reply"))
                 .size(16.0)
-                .color(tema::TEXTO2)
+                .color(tema::texto2())
                 .into()
         } else {
             // Sin parpadeo, por lo mismo que el buscador: dos repintados por
@@ -115,7 +115,7 @@ impl Respuesta {
             container(
                 text(super::recortar_texto(&self.contexto, ancho_texto, 13.0))
                     .size(13.0)
-                    .color(tema::TEXTO2)
+                    .color(tema::texto2())
             )
             .padding([0, MARGEN as u16])
             .height(Length::Fixed(CABECERA))
@@ -128,7 +128,7 @@ impl Respuesta {
             container(
                 text(t("Intro envía · Esc cancela", "Enter sends · Esc cancels"))
                     .size(11.0)
-                    .color(tema::TEXTO2)
+                    .color(tema::texto2())
             )
             .padding([0, MARGEN as u16])
             .height(Length::Fixed(PIE))

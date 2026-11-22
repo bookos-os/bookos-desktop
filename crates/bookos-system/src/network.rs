@@ -36,6 +36,64 @@ async fn wifi_device(c: &Connection) -> Result<OwnedObjectPath, String> {
     }
     Err("No hay adaptador Wi-Fi".into())
 }
+/// Prioriza Ethernet (cable o módem USB) sobre Wi-Fi: mientras haya una
+/// interfaz Ethernet conectada (`State == 100`), desconecta cualquier Wi-Fi
+/// activa o en curso para que no convivan dos rutas; al desconectar Ethernet,
+/// devuelve `Autoconnect = true` al adaptador Wi-Fi para que reconecte solo.
+// añadido en la 0.2.4
+pub async fn priorizar_ethernet(c: &Connection, wifi_pausado: &mut bool) {
+    let Ok(lista) = devices(c).await else {
+        return;
+    };
+    let mut ethernet_conectado = false;
+    let mut wifis = Vec::new();
+    for d in lista {
+        let Ok(dev) = proxy(c, d.as_str(), "org.freedesktop.NetworkManager.Device").await else {
+            continue;
+        };
+        let Ok(kind) = dev.get_property::<u32>("DeviceType").await else {
+            continue;
+        };
+        let Ok(status) = dev.get_property::<u32>("State").await else {
+            continue;
+        };
+        if kind == 1 && status == 100 {
+            ethernet_conectado = true;
+        } else if kind == 2 {
+            wifis.push((d, status));
+        }
+    }
+    if ethernet_conectado {
+        for (d, status) in wifis {
+            // Estados 40..=100 en NM: Prepare, Config, NeedAuth, IpConfig,
+            // IpCheck, Secondaries y Activated.
+            if (40..=100).contains(&status)
+                && let Ok(dev) =
+                    proxy(c, d.as_str(), "org.freedesktop.NetworkManager.Device").await
+            {
+                let _ = dev.call::<_, _, ()>("Disconnect", &()).await;
+                *wifi_pausado = true;
+            }
+        }
+    } else if *wifi_pausado {
+        *wifi_pausado = false;
+        let wifi_habilitado = match proxy(c, ROOT, NAME).await {
+            Ok(m) => m.get_property::<bool>("WirelessEnabled").await.unwrap_or(false),
+            Err(_) => false,
+        };
+        if wifi_habilitado {
+            for (d, status) in wifis {
+                if status == 30
+                    && let Ok(dev) =
+                        proxy(c, d.as_str(), "org.freedesktop.NetworkManager.Device").await
+                {
+                    let _ = dev.set_property("Autoconnect", true).await;
+                }
+            }
+        }
+    }
+}
+
 // 0.1.0
 // modified 0.1.1 -- marca qué redes están guardadas y si se conectan solas
 pub async fn state(c: &Connection) -> Result<Json, String> {
@@ -69,8 +127,13 @@ pub async fn state(c: &Connection) -> Result<Json, String> {
             .await
             .map_err(|e| e.to_string())?;
         if kind == 1 {
-            ethernet = json!({"present":true,"connected":status == 100,"device":d.as_str(),
-                "interface":device.get_property::<String>("Interface").await.unwrap_or_default()});
+            // Con más de una interfaz Ethernet (p. ej. puerto integrado sin
+            // cable y módem USB conectado), la conectada siempre tiene prioridad.
+            let ya_conectada = ethernet["connected"].as_bool().unwrap_or(false);
+            if !ya_conectada || status == 100 {
+                ethernet = json!({"present":true,"connected":status == 100,"device":d.as_str(),
+                    "interface":device.get_property::<String>("Interface").await.unwrap_or_default()});
+            }
         }
         if kind != 2 {
             continue;
@@ -253,6 +316,9 @@ pub async fn perform(c: &Connection, op: &Operation) -> Result<(), String> {
         }
         Operation::WifiConnect { ssid, password } => {
             let s = state(c).await?;
+            if s["ethernet"]["connected"] == true {
+                return Err("Ethernet conectado: desconecta el cable para usar Wi-Fi".into());
+            }
             let ap = s["networks"]
                 .as_array()
                 .and_then(|ns| ns.iter().find(|n| n["ssid"] == ssid.as_str()))
@@ -262,6 +328,10 @@ pub async fn perform(c: &Connection, op: &Operation) -> Result<(), String> {
             let a = OwnedObjectPath::try_from(ap["id"].as_str().ok_or("Red inválida")?)
                 .map_err(|e| e.to_string())?;
             let saved = profiles(c, ssid).await?;
+            // El perfil que crea esta orden. Si no llega a conectar se borra:
+            // con una clave mal escrita quedaba guardado, la red pasaba a
+            // «conocida» y los siguientes intentos ya no pedían la clave.
+            let mut nuevo: Option<OwnedObjectPath> = None;
             let active: OwnedObjectPath = if !saved.is_empty() {
                 if !password.is_empty() {
                     let profile = proxy(
@@ -314,10 +384,11 @@ pub async fn perform(c: &Connection, op: &Operation) -> Result<(), String> {
                         ]),
                     );
                 }
-                let (_, connection): (OwnedObjectPath, OwnedObjectPath) = manager
+                let (perfil, connection): (OwnedObjectPath, OwnedObjectPath) = manager
                     .call("AddAndActivateConnection", &(settings, &d, &a))
                     .await
                     .map_err(|e| e.to_string())?;
+                nuevo = Some(perfil);
                 connection
             };
             let connection = proxy(
@@ -341,7 +412,7 @@ pub async fn perform(c: &Connection, op: &Operation) -> Result<(), String> {
                 }
             })
             .await;
-            match result {
+            let result = match result {
                 Ok(result) => result,
                 Err(_) => {
                     let _ = manager
@@ -349,7 +420,21 @@ pub async fn perform(c: &Connection, op: &Operation) -> Result<(), String> {
                         .await;
                     Err("La conexión Wi-Fi no respondió a tiempo".into())
                 }
+            };
+            if result.is_err()
+                && let Some(perfil) = nuevo
+            {
+                proxy(
+                    c,
+                    perfil.as_str(),
+                    "org.freedesktop.NetworkManager.Settings.Connection",
+                )
+                .await?
+                .call::<_, _, ()>("Delete", &())
+                .await
+                .map_err(|e| e.to_string())?;
             }
+            result
         }
         _ => Err("Operación de red no válida".into()),
     }

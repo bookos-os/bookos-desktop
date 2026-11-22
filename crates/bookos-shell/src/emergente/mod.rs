@@ -40,6 +40,7 @@ mod menu;
 mod menu_dock;
 mod notificaciones;
 mod color_carpeta;
+pub mod dialogo;
 mod proyeccion;
 mod red;
 mod respuesta;
@@ -100,7 +101,7 @@ pub enum Tecla {
 
 pub use compartir::Pantalla as PantallaCompartible;
 pub use escritorios::RADIO_MINIATURA as RADIO_MINIATURA_ESCRITORIO;
-pub use menu_dock::Objetivo;
+pub use menu_dock::{Entrada as EntradaMenu, Fila as FilaMenu, Marca as MarcaMenu, Rapida as RapidaMenu};
 pub use proyeccion::Modo as ModoProyeccion;
 
 /// Recorta un texto al ancho que hay, con puntos suspensivos.
@@ -128,6 +129,10 @@ pub enum Transicion {
     /// Lo de dentro ha cambiado sin cambiar de vista —el color de la carpeta,
     /// una aplicación que se quita, el modo edición—: fundido y nada más.
     Fundido,
+    /// Cambio de página en el launchpad (`+1.0` siguiente, `-1.0` anterior).
+    /// Lo dispara cualquier origen (touchpad, rueda, puntos, teclado o borde)
+    /// para que todos tengan el mismo deslizamiento lateral en GPU.
+    Pagina(f32),
     AbrirDetalle(iced_core::Rectangle),
     CerrarDetalle(iced_core::Rectangle),
 }
@@ -157,10 +162,73 @@ pub enum Emergente {
     Escritorios(escritorios::Escritorios),
     Proyeccion(proyeccion::Proyeccion),
     ColorCarpeta(color_carpeta::ColorCarpeta),
+    /// Pegar, renombrar, información y vista rápida del escritorio.
+    // añadido en la 0.2.3
+    Dialogo(dialogo::Dialogo),
     Compartir(compartir::Compartir),
 }
 
+/// Un control de la tarjeta para el lector de pantalla, en coordenadas de la
+/// tarjeta (las mismas que recibe `pulsar`). Pulsarlo desde Orca es un clic en
+/// su centro: el mismo camino que el ratón, sin una segunda forma de activar.
+// añadido en la 0.2.2
+pub struct FilaAccesible {
+    /// Estable entre actualizaciones: Orca sigue el foco por identificador.
+    pub id: String,
+    pub rol: accesskit::Role,
+    pub nombre: String,
+    pub valor: String,
+    pub rect: (f32, f32, f32, f32),
+    /// Interruptores: encendido o apagado.
+    pub marcada: Option<bool>,
+    /// La fila señalada con el teclado o el puntero.
+    pub seleccionada: bool,
+}
+
 impl Emergente {
+    /// Cómo se llama la tarjeta para un lector de pantalla.
+    // añadido en la 0.2.2
+    pub fn titulo_accesible(&self) -> &'static str {
+        match self {
+            Self::Menu(_) => t("Menú de BookUI", "BookUI menu"),
+            Self::Apariencia(_) => t("Apariencia", "Appearance"),
+            Self::Apagar(_) => t("Apagar", "Shut down"),
+            Self::Calendario(_) => t("Calendario", "Calendar"),
+            Self::Sonido(_) => t("Sonido", "Sound"),
+            Self::Brillo(_) => t("Brillo", "Brightness"),
+            Self::Energia(_) => t("Batería", "Battery"),
+            Self::MenuDock(_) => t("Menú", "Menu"),
+            Self::Acerca(_) => t("Acerca de este equipo", "About this computer"),
+            Self::Atajos(_) => t("Atajos de teclado", "Keyboard shortcuts"),
+            Self::Centro(_) => t("Centro de control", "Control centre"),
+            Self::Notificaciones(_) => t("Notificaciones", "Notifications"),
+            Self::Red(_) => "Wi-Fi",
+            Self::Bluetooth(_) => "Bluetooth",
+            Self::Launchpad(_) => "Launchpad",
+            Self::Buscador(_) => t("Buscador", "Search"),
+            Self::Emojis(_) => t("Emojis", "Emoji"),
+            Self::Respuesta(_) => t("Respuesta", "Reply"),
+            Self::Escritorios(_) => t("Escritorios", "Desktops"),
+            Self::Proyeccion(_) => t("Proyectar", "Project"),
+            Self::ColorCarpeta(_) => t("Color de la carpeta", "Folder colour"),
+            Self::Dialogo(_) => t("Diálogo", "Dialog"),
+            Self::Compartir(_) => t("Compartir pantalla", "Share screen"),
+        }
+    }
+
+    /// Los controles de la tarjeta para el lector de pantalla. Vacío en las
+    /// que aún no lo describen: entonces Orca solo lee su título.
+    // añadido en la 0.2.2
+    pub fn accesible(&self) -> Vec<FilaAccesible> {
+        match self {
+            Self::Red(r) => r.accesible(),
+            Self::Apagar(a) => a.accesible(),
+            Self::Menu(m) => m.accesible(),
+            Self::Dialogo(d) => d.accesible(),
+            _ => Vec::new(),
+        }
+    }
+
     // 0.1.0
     pub fn menu_ventana(opciones: Vec<(String, Accion)>) -> Self {
         Self::MenuDock(menu_dock::MenuDock::ventana(opciones))
@@ -169,11 +237,9 @@ impl Emergente {
     /// El mismo menú, pero anclado a un punto de la pantalla en vez de
     /// centrado: lo que quiere el clic derecho sobre el escritorio.
     // 0.1.1
-    pub fn menu_escritorio(
-        opciones: Vec<Option<(String, &'static str, Accion)>>,
-        punto: (f32, f32),
-    ) -> Self {
-        Self::MenuDock(menu_dock::MenuDock::escritorio(opciones, punto))
+    // modified 0.2.3 -- entradas armadas por quien lo abre
+    pub fn menu_escritorio(entradas: Vec<menu_dock::Entrada>, punto: (f32, f32)) -> Self {
+        Self::MenuDock(menu_dock::MenuDock::escritorio(entradas, punto))
     }
     // 0.1.0
     pub fn menu() -> Self {
@@ -194,6 +260,11 @@ impl Emergente {
     // 0.1.0
     pub fn confirmar_energia(accion: crate::confirmacion::Energia) -> Self {
         Self::Apagar(apagar::Apagar::confirmar(accion))
+    }
+
+    // añadido en la 0.2.3
+    pub fn confirmar_con(confirmacion: crate::confirmacion::Confirmacion) -> Self {
+        Self::Apagar(apagar::Apagar::confirmar_con(confirmacion))
     }
 
     // 0.1.0
@@ -247,8 +318,9 @@ impl Emergente {
     }
 
     // 0.1.0
-    pub fn menu_dock(objetivo: menu_dock::Objetivo) -> Self {
-        Self::MenuDock(menu_dock::MenuDock::new(objetivo))
+    // modified 0.2.3 -- entradas armadas por el dock
+    pub fn menu_dock(entradas: Vec<menu_dock::Entrada>, x: f32) -> Self {
+        Self::MenuDock(menu_dock::MenuDock::dock(entradas, x))
     }
 
     /// `pantalla` es el tamaño **lógico** de la pantalla: el launchpad la
@@ -340,6 +412,7 @@ impl Emergente {
             Self::Escritorios(_) => "escritorios",
             Self::Proyeccion(_) => "proyeccion",
             Self::ColorCarpeta(_) => "color_carpeta",
+            Self::Dialogo(_) => "dialogo",
             Self::Compartir(_) => "compartir",
         }
     }
@@ -370,6 +443,7 @@ impl Emergente {
             Self::Escritorios(e) => e.size(),
             Self::Proyeccion(p) => p.size(),
             Self::ColorCarpeta(c) => c.size(),
+            Self::Dialogo(d) => d.size(),
             Self::Compartir(c) => c.size(),
         }
     }
@@ -425,6 +499,7 @@ impl Emergente {
             Self::Escritorios(e) => e.ancla(),
             Self::Proyeccion(p) => p.ancla(),
             Self::ColorCarpeta(c) => c.ancla(),
+            Self::Dialogo(d) => d.ancla(),
             Self::Compartir(c) => c.ancla(),
         }
     }
@@ -476,6 +551,7 @@ impl Emergente {
             Self::Escritorios(e) => e.animando(),
             Self::Proyeccion(p) => p.animando(),
             Self::ColorCarpeta(c) => c.animando(),
+            Self::Dialogo(d) => d.animando(),
             Self::Compartir(c) => c.animando(),
             Self::Brillo(b) => b.animando(),
         }
@@ -531,6 +607,7 @@ impl Emergente {
             // También es un diálogo, y de los que hay que mirar dos veces:
             // alguien está pidiendo ver la pantalla entera.
             Self::Compartir(c) => Some(c.velo()),
+            Self::Dialogo(d) => Some(d.velo()),
             _ => None,
         }
     }
@@ -581,6 +658,7 @@ impl Emergente {
             Self::Escritorios(e) => e.view(),
             Self::Proyeccion(p) => p.view(),
             Self::ColorCarpeta(c) => c.view(),
+            Self::Dialogo(d) => d.view(),
             Self::Compartir(c) => c.view(),
         }
     }
@@ -622,6 +700,7 @@ impl Emergente {
             Self::Escritorios(e) => e.puntero(punto),
             Self::Proyeccion(p) => p.puntero(punto),
             Self::ColorCarpeta(c) => c.puntero(punto),
+            Self::Dialogo(d) => d.puntero(punto),
             Self::Compartir(c) => c.puntero(punto),
         }
     }
@@ -653,6 +732,7 @@ impl Emergente {
             Self::Escritorios(e) => e.pulsar(x, y),
             Self::Proyeccion(p) => p.pulsar(x, y),
             Self::ColorCarpeta(c) => c.pulsar(x, y),
+            Self::Dialogo(d) => d.pulsar(x, y),
             Self::Compartir(c) => c.pulsar(x, y),
         }
     }
@@ -689,6 +769,7 @@ impl Emergente {
         match self {
             Self::Sonido(s) => (s.soltar(), None),
             Self::Brillo(b) => (b.soltar(), None),
+            Self::Buscador(b) => (b.soltar(), None),
             Self::Centro(c) => c.soltar(),
             Self::Emojis(e) => (e.soltar(), None),
             Self::Launchpad(l) => l.soltar(),
@@ -706,6 +787,7 @@ impl Emergente {
         match self {
             Self::Sonido(s) => s.agarrado(),
             Self::Brillo(b) => b.agarrado(),
+            Self::Buscador(b) => b.agarrado(),
             Self::Centro(c) => c.agarrado(),
             Self::Emojis(e) => e.agarrado(),
             Self::Launchpad(l) => l.agarrado(),
@@ -719,6 +801,7 @@ impl Emergente {
         match self {
             Self::Sonido(s) => s.arrastre_en(x, y),
             Self::Brillo(b) => b.arrastre_en(x, y),
+            Self::Buscador(b) => b.arrastre_en(x, y),
             Self::Centro(c) => c.arrastre_en(x, y),
             Self::Emojis(e) => e.arrastre_en(x, y),
             Self::Launchpad(l) => l.arrastre_en(x, y),
@@ -752,6 +835,7 @@ impl Emergente {
             Self::Escritorios(e) => e.tecla(tecla),
             Self::Proyeccion(p) => p.tecla(tecla),
             Self::ColorCarpeta(c) => c.tecla(tecla),
+            Self::Dialogo(d) => d.tecla(tecla),
             Self::Compartir(c) => c.tecla(tecla),
         }
     }

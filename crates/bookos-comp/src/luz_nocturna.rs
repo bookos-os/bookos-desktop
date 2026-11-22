@@ -26,6 +26,8 @@
 //! siguiente borde —apagarla a las once deja de valer a las siete—, que es lo
 //! que hace Night Shift.
 
+use std::time::Instant;
+
 use smithay::reexports::calloop::RegistrationToken;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
@@ -33,35 +35,149 @@ use bookos_shell::{LuzNocturna, ModoLuzNocturna};
 
 use crate::state::BookosComp;
 
-/// Aplica la curva a todas las pantallas encendidas. La pone el backend real.
-pub type AplicarGamma = Box<dyn FnMut([f32; 3]) -> Result<(), String>>;
-
-/// Lo que dura el fundido al encender o apagar.
-///
-/// Corto y en pocos pasos a propósito: cada paso es un `SETGAMMA`, que el
-/// kernel resuelve con un commit atómico **bloqueante** y espera al vblank
-/// —hasta 8 ms a 120 Hz— en el hilo del compositor. Ocho pasos son ocho
-/// fotogramas que pueden llegar tarde en medio segundo; un fundido largo y fino
-/// serían cientos.
-const PASOS: u32 = 8;
-const PASO: std::time::Duration = std::time::Duration::from_millis(60);
+/// Ritmo del muelle en mireds (`10^6 / K`), perceptualmente uniforme a lo largo
+/// de la curva del cuerpo negro: calienta pausado estilo Night Shift y vuelve
+/// al blanco neutro con algo más de agilidad.
+const RESPUESTA_CALIDO: f64 = 0.85;
+const RESPUESTA_NEUTRO: f64 = 0.65;
+const TOLERANCIA_MIRED: f64 = 0.15;
+const TOLERANCIA_VELOCIDAD: f64 = 0.5;
 
 /// Por lo mismo que en el tema: el cálculo va en minutos y el despertar cae
 /// siempre después del minuto en punto.
 const MINIMO: std::time::Duration = std::time::Duration::from_secs(70);
 
+fn a_mired(kelvin: f64) -> f64 {
+    1_000_000.0 / kelvin.max(1.0)
+}
+
+fn desde_mired(mired: f64) -> f64 {
+    1_000_000.0 / mired.max(1.0)
+}
+
+struct Transicion {
+    origen: f64,
+    velocidad: f64,
+    objetivo: f64,
+    objetivo_kelvin: u32,
+    inicio: Instant,
+    frecuencia: f64,
+    instantanea: bool,
+}
+
+impl Transicion {
+    fn frecuencia_para(desde_mired: f64, objetivo_mired: f64) -> f64 {
+        let respuesta = if objetivo_mired > desde_mired {
+            RESPUESTA_CALIDO
+        } else {
+            RESPUESTA_NEUTRO
+        };
+        std::f64::consts::TAU / respuesta
+    }
+
+    fn con_efectos(
+        desde_kelvin: f64,
+        velocidad_mired: f64,
+        objetivo_kelvin: u32,
+        ahora: Instant,
+        animar: bool,
+    ) -> Self {
+        let origen = a_mired(desde_kelvin);
+        let objetivo = a_mired(f64::from(objetivo_kelvin));
+        Self {
+            origen,
+            velocidad: velocidad_mired,
+            objetivo,
+            objetivo_kelvin,
+            inicio: ahora,
+            frecuencia: Self::frecuencia_para(origen, objetivo),
+            instantanea: !animar,
+        }
+    }
+
+    fn nueva(desde_kelvin: f64, objetivo_kelvin: u32, ahora: Instant) -> Self {
+        Self::con_efectos(
+            desde_kelvin,
+            0.0,
+            objetivo_kelvin,
+            ahora,
+            !bookos_shell::tema::efectos_reducidos(),
+        )
+    }
+
+    fn estado(&self, ahora: Instant) -> (f64, f64) {
+        if self.instantanea {
+            return (self.objetivo, 0.0);
+        }
+        let t = ahora.saturating_duration_since(self.inicio).as_secs_f64();
+        let w = self.frecuencia;
+        let c1 = self.origen - self.objetivo;
+        let c2 = self.velocidad + w * c1;
+        let e = (-w * t).exp();
+        (
+            self.objetivo + (c1 + c2 * t) * e,
+            (c2 - w * (c1 + c2 * t)) * e,
+        )
+    }
+
+    fn terminada(&self, ahora: Instant) -> bool {
+        if self.instantanea {
+            return true;
+        }
+        let (mired, velocidad) = self.estado(ahora);
+        (mired - self.objetivo).abs() < TOLERANCIA_MIRED && velocidad.abs() < TOLERANCIA_VELOCIDAD
+    }
+
+    fn kelvin(&self, ahora: Instant) -> f64 {
+        if self.terminada(ahora) {
+            return f64::from(self.objetivo_kelvin);
+        }
+        let mired = self.estado(ahora).0;
+        let minimo = self.origen.min(self.objetivo);
+        let maximo = self.origen.max(self.objetivo);
+        desde_mired(mired.clamp(minimo, maximo))
+    }
+
+    fn dirigir(&mut self, objetivo_kelvin: u32, ahora: Instant) {
+        if self.objetivo_kelvin == objetivo_kelvin {
+            return;
+        }
+        let (mired, vel_actual) = self.estado(ahora);
+        let objetivo = a_mired(f64::from(objetivo_kelvin));
+        let frecuencia = Self::frecuencia_para(mired, objetivo);
+        let delta = objetivo - mired;
+        let velocidad = if delta * vel_actual > 0.0 {
+            let limite = frecuencia * delta.abs();
+            vel_actual.clamp(-limite, limite)
+        } else {
+            0.0
+        };
+        *self = Self {
+            origen: mired,
+            velocidad,
+            objetivo,
+            objetivo_kelvin,
+            inicio: ahora,
+            frecuencia,
+            instantanea: self.instantanea,
+        };
+    }
+}
+
 pub struct Estado {
     pub config: LuzNocturna,
-    /// La temperatura que hay puesta en la curva. [`LuzNocturna::NEUTRA`] es
+    /// La temperatura que hay puesta en la curva, en Kelvin. [`LuzNocturna::NEUTRA`] es
     /// sin teñir.
-    aplicada: u32,
+    aplicada: f64,
     /// Encendida o apagada a mano con el horario puesto; vale hasta el próximo
     /// borde del horario.
     forzada: Option<bool>,
     /// El despertar del próximo borde del horario.
     tick: Option<RegistrationToken>,
     /// El fundido en marcha.
-    fundido: Option<RegistrationToken>,
+    transicion: Option<Transicion>,
+    /// Multiplicadores RGB listos para enviar en el próximo fotograma KMS.
+    pendiente: Option<[f32; 3]>,
 }
 
 impl Estado {
@@ -69,11 +185,20 @@ impl Estado {
     pub fn nuevo(config: LuzNocturna) -> Self {
         Self {
             config,
-            aplicada: LuzNocturna::NEUTRA,
+            aplicada: f64::from(LuzNocturna::NEUTRA),
             forzada: None,
             tick: None,
-            fundido: None,
+            transicion: None,
+            pendiente: None,
         }
+    }
+
+    pub fn animando(&self) -> bool {
+        self.transicion.is_some()
+    }
+
+    pub fn tomar_pendiente(&mut self) -> Option<[f32; 3]> {
+        self.pendiente.take()
     }
 
     // 0.1.0
@@ -102,8 +227,12 @@ impl Estado {
 /// una diferencia que no se ve.
 // 0.1.0
 pub fn multiplicadores(kelvin: u32) -> [f32; 3] {
+    multiplicadores_f64(f64::from(kelvin))
+}
+
+fn multiplicadores_f64(kelvin: f64) -> [f32; 3] {
     // 0.1.0
-    fn crudo(kelvin: u32) -> [f32; 3] {
+    fn crudo(kelvin: f64) -> [f32; 3] {
         let t = kelvin as f32 / 100.0;
         let r = if t <= 66.0 {
             255.0
@@ -126,7 +255,7 @@ pub fn multiplicadores(kelvin: u32) -> [f32; 3] {
     }
     // A 6500 K la fórmula no da el blanco exacto (verde 0,997 y azul 0,980):
     // sin normalizar, «sin teñir» ya amarillearía un poco.
-    let base = crudo(LuzNocturna::NEUTRA);
+    let base = crudo(f64::from(LuzNocturna::NEUTRA));
     let c = crudo(kelvin);
     [0, 1, 2].map(|i| (c[i] / base[i]).clamp(0.0, 1.0))
 }
@@ -172,69 +301,63 @@ pub fn alternar(state: &mut BookosComp, encender: bool) {
     ir_al_objetivo(state);
 }
 
-/// Vuelve a poner la curva que había, sin fundido. Hace falta después de que
-/// otro haya podido tocarla: al volver de otro TTY —el maestro de allí la deja
-/// como quiere— y al encender una pantalla nueva, que nace con la identidad.
+/// Vuelve a poner la curva que había al despertar de otro TTY o reconectar una
+/// pantalla, evitando el destello blanco antes del primer fotograma compuesto.
 // 0.1.0
 pub fn reponer(state: &mut BookosComp) {
-    let aplicada = state.luz_nocturna.aplicada;
-    if aplicada != LuzNocturna::NEUTRA {
-        poner(state, aplicada);
+    let luz = &mut state.luz_nocturna;
+    if (luz.aplicada - f64::from(LuzNocturna::NEUTRA)).abs() >= 0.5 || luz.transicion.is_some() {
+        luz.pendiente = Some(multiplicadores_f64(luz.aplicada));
+        state.needs_redraw = true;
+    }
+}
+
+/// Avanza un paso del fundido en cada fotograma mientras haya transición activa.
+// añadido en la 0.2.4
+pub fn avanzar(state: &mut BookosComp) {
+    let luz = &mut state.luz_nocturna;
+    let Some(transicion) = luz.transicion.as_ref() else {
+        return;
+    };
+    let ahora = Instant::now();
+    let kelvin = transicion.kelvin(ahora);
+    let terminada = transicion.terminada(ahora);
+    luz.aplicada = kelvin;
+    luz.pendiente = Some(multiplicadores_f64(kelvin));
+    if terminada {
+        luz.transicion = None;
     }
 }
 
 /// Funde de lo que hay a lo que toca ahora.
 // 0.1.0
+// modificado en la 0.2.4 -- muelle continuo en mireds sincronizado con el bucle VSync
 fn ir_al_objetivo(state: &mut BookosComp) {
-    let ahora = bookos_shell::hora_local_ahora();
-    let objetivo = state.luz_nocturna.objetivo(ahora);
-    bookos_shell::marcar_luz_nocturna(state.luz_nocturna.encendida(ahora));
+    let ahora_hora = bookos_shell::hora_local_ahora();
+    let objetivo = state.luz_nocturna.objetivo(ahora_hora);
+    bookos_shell::marcar_luz_nocturna(state.luz_nocturna.encendida(ahora_hora));
     // Las tarjetas abiertas enseñan el estado: que se repinten.
     state.needs_redraw = true;
-    if let Some(token) = state.luz_nocturna.fundido.take() {
-        state.loop_handle.remove(token);
-    }
-    let desde = state.luz_nocturna.aplicada;
-    if desde == objetivo {
-        return;
-    }
+    let luz = &mut state.luz_nocturna;
     // Sin animaciones no hay fundido: el cambio entero en un paso.
     if bookos_shell::tema::efectos_reducidos() {
-        poner(state, objetivo);
+        luz.transicion = None;
+        luz.aplicada = f64::from(objetivo);
+        luz.pendiente = Some(multiplicadores(objetivo));
         return;
     }
-    let mut paso = 0;
-    let token = state
-        .loop_handle
-        .insert_source(Timer::immediate(), move |_, _, state| {
-            paso += 1;
-            let f = paso as f32 / PASOS as f32;
-            let k = desde as f32 + (objetivo as f32 - desde as f32) * f;
-            poner(state, k.round() as u32);
-            if paso >= PASOS {
-                state.luz_nocturna.fundido = None;
-                TimeoutAction::Drop
-            } else {
-                TimeoutAction::ToDuration(PASO)
-            }
-        });
-    match token {
-        Ok(token) => state.luz_nocturna.fundido = Some(token),
-        Err(err) => {
-            tracing::warn!("no se pudo programar el fundido de la luz nocturna: {err}");
-            poner(state, objetivo);
+    let ahora = Instant::now();
+    if let Some(transicion) = luz.transicion.as_mut() {
+        transicion.dirigir(objetivo, ahora);
+        if transicion.terminada(ahora) {
+            luz.transicion = None;
+            luz.aplicada = f64::from(objetivo);
+            luz.pendiente = Some(multiplicadores(objetivo));
         }
-    }
-}
-
-// 0.1.0
-fn poner(state: &mut BookosComp, kelvin: u32) {
-    state.luz_nocturna.aplicada = kelvin;
-    let Some(aplicar) = state.aplicar_gamma.as_mut() else {
         return;
-    };
-    if let Err(err) = aplicar(multiplicadores(kelvin)) {
-        tracing::warn!(kelvin, "no se pudo aplicar la luz nocturna: {err}");
+    }
+    if (luz.aplicada - f64::from(objetivo)).abs() >= 0.5 {
+        luz.transicion = Some(Transicion::nueva(luz.aplicada, objetivo, ahora));
     }
 }
 
@@ -306,5 +429,104 @@ mod tests {
         let r = rampa(1024, 0.5);
         assert_eq!(r[1023], 32768);
         assert!(r.windows(2).all(|p| p[0] <= p[1]));
+    }
+
+    #[test]
+    fn la_escala_en_mireds_es_perceptualmente_uniforme() {
+        let m_calido = a_mired(2500.0);
+        let m_neutro = a_mired(6500.0);
+        let medio = desde_mired((m_calido + m_neutro) * 0.5);
+        assert!(
+            (medio - 3611.11).abs() < 1.0,
+            "punto medio en mireds debe caer cerca de 3611 K, dio {medio}"
+        );
+    }
+
+    #[test]
+    fn el_muelle_calienta_y_enfria_sin_saltos_ni_sobrepaso() {
+        use std::time::Duration;
+        let ahora = Instant::now();
+        let duracion = Duration::from_secs(4);
+        for (desde, objetivo) in [(6500.0, 2700), (2700.0, 6500), (4500.0, 3500)] {
+            let t = Transicion::con_efectos(desde, 0.0, objetivo, ahora, true);
+            assert!((t.kelvin(ahora) - desde).abs() < 1e-6);
+            let muestras: Vec<f64> = (0..=100)
+                .map(|i| t.kelvin(ahora + Duration::from_millis(1600) * i / 100))
+                .collect();
+            let fin = f64::from(objetivo);
+            assert!(
+                muestras
+                    .iter()
+                    .all(|k| (desde.min(fin)..=desde.max(fin)).contains(k)),
+                "no debe rebasar {desde} -> {fin}"
+            );
+            assert!(muestras.windows(2).all(|p| if desde < fin {
+                p[0] <= p[1] + 1e-9
+            } else {
+                p[0] >= p[1] - 1e-9
+            }));
+            let max_paso = muestras
+                .windows(2)
+                .map(|p| (p[1] - p[0]).abs())
+                .fold(0.0_f64, f64::max);
+            assert!((muestras[1] - desde).abs() < max_paso);
+            assert!((fin - muestras[99]).abs() < max_paso);
+            assert!(t.terminada(ahora + duracion));
+            assert_eq!(t.kelvin(ahora + duracion), fin);
+        }
+    }
+
+    #[test]
+    fn invertir_sentido_a_mitad_del_fundido_conserva_temperatura() {
+        use std::time::Duration;
+        let ahora = Instant::now();
+        let mut t = Transicion::con_efectos(6500.0, 0.0, 2700, ahora, true);
+        let cambio = ahora + Duration::from_millis(250);
+        let antes = t.kelvin(cambio);
+        assert!(antes < 6500.0 && antes > 2700.0);
+        t.dirigir(6500, cambio);
+        assert!((t.kelvin(cambio) - antes).abs() < 1e-6);
+        assert!(t.kelvin(cambio + Duration::from_millis(16)) > antes);
+        assert_eq!(t.kelvin(cambio + Duration::from_secs(4)), 6500.0);
+    }
+
+    #[test]
+    fn redirigir_en_mismo_sentido_conserva_velocidad_sin_sobrepaso() {
+        use std::time::Duration;
+        let ahora = Instant::now();
+        let mut t = Transicion::con_efectos(6500.0, 0.0, 3500, ahora, true);
+        let cambio = ahora + Duration::from_millis(220);
+        let (mired_antes, vel_antes) = t.estado(cambio);
+        assert!(vel_antes > 0.0);
+        t.dirigir(2500, cambio);
+        let (mired_despues, vel_despues) = t.estado(cambio);
+        assert!((mired_despues - mired_antes).abs() < 1e-9);
+        assert!((vel_despues - vel_antes).abs() < 1e-9);
+        assert!((0..=100).all(|i| {
+            let k = t.kelvin(cambio + Duration::from_millis(20) * i);
+            (2500.0..=6500.0).contains(&k)
+        }));
+    }
+
+    #[test]
+    fn volver_a_neutro_es_mas_agil_que_calentar() {
+        use std::time::Duration;
+        let ahora = Instant::now();
+        let calentar = Transicion::con_efectos(6500.0, 0.0, 3000, ahora, true);
+        let enfriar = Transicion::con_efectos(3000.0, 0.0, 6500, ahora, true);
+        let instante = ahora + Duration::from_millis(250);
+        let (m_cal, _) = calentar.estado(instante);
+        let (m_enf, _) = enfriar.estado(instante);
+        let frac_cal = (m_cal - a_mired(6500.0)) / (a_mired(3000.0) - a_mired(6500.0));
+        let frac_enf = (a_mired(3000.0) - m_enf) / (a_mired(3000.0) - a_mired(6500.0));
+        assert!(frac_enf > frac_cal);
+    }
+
+    #[test]
+    fn sin_efectos_salta_en_un_solo_paso() {
+        let ahora = Instant::now();
+        let t = Transicion::con_efectos(6500.0, 0.0, 3000, ahora, false);
+        assert!(t.terminada(ahora));
+        assert_eq!(t.kelvin(ahora), 3000.0);
     }
 }

@@ -850,7 +850,95 @@ fn frames_webp(ruta: &Path) -> Option<image::Frames<'static>> {
     decoder.has_animation().then(|| decoder.into_frames())
 }
 
+/// Resultado de decodificar y reducir un fondo fuera del hilo del compositor.
+///
+/// `Send` a propósito: toda la lectura de disco, la decodificación del PNG o
+/// primer fotograma y los dos reescalados (`mini_rgba` y `cristal_reducido`)
+/// ocurren en un hilo corto para no congelar las animaciones del shell.
+// added 0.2.3
+pub struct FondoListo {
+    ruta: PathBuf,
+    encaje: EncajeFondo,
+    primero: Fotograma,
+    cristal_reducido: (Vec<u8>, (i32, i32)),
+    fuente_animacion: Option<FuenteAnimacion>,
+}
+
+enum FuenteAnimacion {
+    Webp(Duration),
+    Video(Video),
+}
+
+/// Carga y reduce el fondo de `claro` sin tocar GL ni tipos `!Send`.
+// added 0.2.3
+pub fn cargar_en_hilo(eleccion: &Eleccion, claro: bool) -> Option<FondoListo> {
+    let ruta = ruta_para(eleccion, claro)?;
+    let (fuente_animacion, primero) = if es_video(&ruta) {
+        let (video, primero) = Video::abrir(&ruta)?;
+        (Some(FuenteAnimacion::Video(video)), primero)
+    } else if let Some(mut frames) = frames_webp(&ruta) {
+        let frame = frames.next()?.ok()?;
+        let espera = retraso(frame.delay());
+        let rgba = frame.into_buffer();
+        let (w, h) = rgba.dimensions();
+        (
+            Some(FuenteAnimacion::Webp(espera)),
+            Fotograma::de_rgba(&rgba, (w as i32, h as i32)),
+        )
+    } else {
+        let (pixeles, w, h) = decodificar_estatico(&ruta)?;
+        (None, Fotograma::de_rgba(&pixeles, (w as i32, h as i32)))
+    };
+    let cristal_reducido = crate::desenfoque::reducir_rgba(&primero.rgba, primero.pixeles);
+    Some(FondoListo {
+        ruta,
+        encaje: eleccion.encaje,
+        primero,
+        cristal_reducido,
+        fuente_animacion,
+    })
+}
+
 impl Fondo {
+    /// Convierte el resultado del hilo de carga en un [`Fondo`] listo para
+    /// componer y devuelve la textura reducida del cristal.
+    // added 0.2.3
+    pub fn desde_listo(listo: FondoListo) -> Option<(Self, (Vec<u8>, (i32, i32)))> {
+        let animacion = match listo.fuente_animacion {
+            None => None,
+            Some(FuenteAnimacion::Video(video)) => Some(Animacion::Video(video)),
+            Some(FuenteAnimacion::Webp(espera)) => {
+                let mut frames = frames_webp(&listo.ruta)?;
+                let _ = frames.next();
+                Some(Animacion::Webp {
+                    ruta: listo.ruta.clone(),
+                    frames,
+                    siguiente: Instant::now() + espera,
+                })
+            }
+        };
+        tracing::info!(
+            ruta = ?listo.ruta,
+            w = listo.primero.pixeles.0,
+            h = listo.primero.pixeles.1,
+            animado = animacion.is_some(),
+            "fondo del escritorio"
+        );
+        let fondo = Self {
+            ruta: listo.ruta,
+            encaje: listo.encaje,
+            buffer: compartido(&listo.primero.rgba),
+            pixeles: listo.primero.pixeles,
+            rgba: listo.primero.rgba,
+            mini_rgba: listo.primero.mini_rgba,
+            mini_pixeles: listo.primero.mini_pixeles,
+            mini: std::cell::RefCell::new(Vec::new()),
+            gemelo: std::cell::RefCell::new(None),
+            animacion,
+        };
+        Some((fondo, listo.cristal_reducido))
+    }
+
     /// Carga el fondo. `None` si no hay ninguno donde mirar, y entonces el
     /// escritorio se queda con su color liso de siempre.
     // 0.1.0
@@ -1195,38 +1283,52 @@ fn decodificar_estatico(ruta: &Path) -> Option<(Vec<u8>, u32, u32)> {
 /// y saltarse píxeles deja escalones visibles en una previa de 250 px. El coste
 /// es una pasada por la imagen al arrancar.
 // 0.1.0
+// modified 0.2.3 -- indexado directo sobre bloques de 4 bytes
 fn reducir(rgba: &[u8], (w, h): (i32, i32), ancho: i32) -> (Vec<u8>, (i32, i32)) {
     if w <= ancho || w <= 0 || h <= 0 {
         return (rgba.to_vec(), (w, h));
     }
+    let pixeles = rgba.as_chunks::<4>().0;
+    let w_usize = w as usize;
+    if pixeles.len() < w_usize * h as usize {
+        return (rgba.to_vec(), (w, h));
+    }
     let nw = ancho;
     let nh = ((h as f64 * ancho as f64 / w as f64).round() as i32).max(1);
-    let mut destino = vec![0u8; (nw * nh * 4) as usize];
-    for y in 0..nh {
-        let y0 = (y as i64 * h as i64 / nh as i64) as i32;
-        let y1 = (((y + 1) as i64 * h as i64 / nh as i64) as i32)
-            .max(y0 + 1)
-            .min(h);
-        for x in 0..nw {
+    let columnas: Vec<(usize, usize)> = (0..nw)
+        .map(|x| {
             let x0 = (x as i64 * w as i64 / nw as i64) as i32;
             let x1 = (((x + 1) as i64 * w as i64 / nw as i64) as i32)
                 .max(x0 + 1)
                 .min(w);
+            (x0 as usize, x1 as usize)
+        })
+        .collect();
+    let mut destino = vec![0u8; (nw * nh * 4) as usize];
+    for y in 0..nh {
+        let y0 = (y as i64 * h as i64 / nh as i64) as usize;
+        let y1 = (((y + 1) as i64 * h as i64 / nh as i64) as i32)
+            .max(y0 as i32 + 1)
+            .min(h) as usize;
+        let fila_dst = &mut destino[(y * nw * 4) as usize..((y + 1) * nw * 4) as usize];
+        let filas = (y1 - y0) as u32;
+        for (x, &(x0, x1)) in columnas.iter().enumerate() {
             let mut suma = [0u32; 4];
-            let mut cuenta = 0u32;
             for sy in y0..y1 {
-                for sx in x0..x1 {
-                    let i = ((sy as usize * w as usize) + sx as usize) * 4;
-                    for c in 0..4 {
-                        suma[c] += rgba[i + c] as u32;
-                    }
-                    cuenta += 1;
+                let fila = &pixeles[sy * w_usize + x0..sy * w_usize + x1];
+                for &p in fila {
+                    suma[0] += p[0] as u32;
+                    suma[1] += p[1] as u32;
+                    suma[2] += p[2] as u32;
+                    suma[3] += p[3] as u32;
                 }
             }
-            let d = ((y as usize * nw as usize) + x as usize) * 4;
-            for c in 0..4 {
-                destino[d + c] = (suma[c] / cuenta.max(1)) as u8;
-            }
+            let cuenta = (filas * (x1 - x0) as u32).max(1);
+            let d = x * 4;
+            fila_dst[d] = (suma[0] / cuenta) as u8;
+            fila_dst[d + 1] = (suma[1] / cuenta) as u8;
+            fila_dst[d + 2] = (suma[2] / cuenta) as u8;
+            fila_dst[d + 3] = (suma[3] / cuenta) as u8;
         }
     }
     (destino, (nw, nh))

@@ -51,8 +51,19 @@ const MANDO_V: f32 = 10.0;
 const MANDO_HUECO: f32 = 8.0;
 const LINEA: f32 = 16.0;
 const SEGMENTO: f32 = 30.0;
-/// La pista del selector: el segmento y 2 de margen por arriba y por abajo.
-const PISTA: f32 = SEGMENTO + 4.0;
+/// Relleno de la pista alrededor de la pastilla: los 3 del segmentado del HIG
+/// (§9), los mismos que el selector de Apariencia.
+// modificado en la 0.2.3
+const RELLENO_PISTA: f32 = 3.0;
+const PISTA: f32 = SEGMENTO + RELLENO_PISTA * 2.0;
+/// Margen de la pista a los lados, menor que el del resto del mando: con
+/// cuatro opciones en 12 de margen, «Ambiente» y «Adaptativo» se tocaban.
+// añadido en la 0.2.3
+const PISTA_X: f32 = 6.0;
+/// Lo que baja el contenido del mando mientras se despliega: entra desde un
+/// poco más arriba de su sitio y el recorte lo va descubriendo.
+// añadido en la 0.2.3
+const ENTRADA_MANDO: f32 = 10.0;
 const ENLACES: f32 = 20.0;
 const Y_PISTA: f32 = MANDO_V + LINEA + MANDO_HUECO;
 const Y_ENLACES: f32 = Y_PISTA + PISTA + MANDO_HUECO;
@@ -139,6 +150,15 @@ pub struct Bluetooth {
     /// parpadeando hacia atrás.
     elegido: Option<(Modo, Instant)>,
     desplegado: bool,
+    /// Cuánto está abierto el mando, de 0 a 1, siguiendo a `desplegado`. La
+    /// fila crece con él en vez de aparecer ya abierta.
+    // añadido en la 0.2.3
+    despliegue: tema::Transicion,
+    /// Dónde está la pastilla del selector de ruido, en índices de
+    /// [`Modo::TODOS`]. `None` hasta saber el modo: entonces se planta sin
+    /// recorrido.
+    // añadido en la 0.2.3
+    pulgar: Option<tema::Transicion>,
 }
 
 impl Bluetooth {
@@ -164,6 +184,8 @@ impl Bluetooth {
             buds_estado: None,
             elegido: None,
             desplegado: false,
+            despliegue: tema::Transicion::nueva(0.0, tema::M_SUAVE),
+            pulgar: None,
         };
         b.refrescar();
         b
@@ -303,7 +325,9 @@ impl Bluetooth {
         }
         self.buds_estado = leido;
         if leido.is_none() {
+            // De golpe: los Buds ya no están y su fila tampoco.
             self.desplegado = false;
+            self.despliegue.fijar(0.0);
         }
         self.reconstruir();
         self.desplazamiento = self.desplazamiento.min(self.maximo());
@@ -348,6 +372,32 @@ impl Bluetooth {
             .or(self.buds_estado.map(|e| e.anc))
     }
 
+    /// Lo que mide ahora el mando de los Buds: de 0 a [`MANDO_H`] con el muelle.
+    // añadido en la 0.2.3
+    fn alto_mando(&self) -> f32 {
+        let v = self.despliegue.valor().clamp(0.0, 1.0);
+        if v < 0.001 { 0.0 } else { MANDO_H * v }
+    }
+
+    /// Lleva la pastilla al modo que se enseña. La primera vez se planta: al
+    /// abrir la tarjeta no tiene que cruzar el selector delante de nadie.
+    // añadido en la 0.2.3
+    fn seguir_modo(&mut self) {
+        let Some(i) = self.modo().map(Modo::indice) else {
+            return;
+        };
+        match self.pulgar.as_mut() {
+            Some(p) => {
+                p.ir_a(i as f32);
+            }
+            None => {
+                let mut p = tema::Transicion::nueva(i as f32, tema::M_SEGMENTADO);
+                p.fijar(i as f32);
+                self.pulgar = Some(p);
+            }
+        }
+    }
+
     /// Todo lo que hay en la lista, con su altura y su `y` dentro de ella.
     /// Entre filas van [`lista::HUECO_FILA`], salvo entre unos Buds y lo que
     /// llevan desplegado, que forman una sola pieza.
@@ -358,7 +408,9 @@ impl Bluetooth {
             return v;
         }
         let mut y = 0.0;
-        let buds = self.indice_buds().filter(|_| self.desplegado);
+        // Mientras se pliega sigue ocupando lo que le queda.
+        let abierto = self.alto_mando();
+        let buds = self.indice_buds().filter(|_| abierto > 0.0);
         let mios = self
             .dispositivos
             .iter()
@@ -372,7 +424,7 @@ impl Bluetooth {
             if buds == Some(i) {
                 // Sin el hueco: el mando continúa la fila.
                 y -= lista::HUECO_FILA;
-                lista::poner(&mut v, &mut y, Fila::Mando(i), MANDO_H);
+                lista::poner(&mut v, &mut y, Fila::Mando(i), abierto);
             }
         }
         if mios < self.dispositivos.len() || self.buscando() {
@@ -447,8 +499,7 @@ impl Bluetooth {
                 let y = y - c.y;
                 let dentro = x - MANDO_X;
                 if (Y_PISTA..Y_PISTA + PISTA).contains(&y) {
-                    let ancho = (lista::BALDOSA - MANDO_X * 2.0) / Modo::TODOS.len() as f32;
-                    let i = (dentro / ancho).floor();
+                    let i = ((x - PISTA_X - RELLENO_PISTA) / ancho_segmento()).floor();
                     return (i >= 0.0)
                         .then(|| Modo::TODOS.get(i as usize).copied())
                         .flatten()
@@ -484,8 +535,13 @@ impl Bluetooth {
 
     /// ¿Se mueve algo dentro de la tarjeta?
     // 0.1.0
+    // modificado en la 0.2.3 -- también el despliegue y la pastilla
     pub fn animando(&self) -> bool {
-        self.señalada.animando() || self.pie.animando() || self.interruptor.animando()
+        self.señalada.animando()
+            || self.pie.animando()
+            || self.interruptor.animando()
+            || self.despliegue.animando()
+            || self.pulgar.as_ref().is_some_and(tema::Transicion::animando)
     }
 
     /// Rueda o touchpad sobre la lista. `true` si se movió.
@@ -539,16 +595,24 @@ impl Bluetooth {
             Zona::Ruido(modo) => {
                 buds::poner(modo);
                 self.elegido = Some((modo, Instant::now()));
+                self.seguir_modo();
                 None
             }
             Zona::Desconectar => {
                 let i = self.indice_buds()?;
-                self.desplegado = false;
+                self.plegar();
                 self.desconectar(i);
                 None
             }
             Zona::AjustesBuds => Some(Accion::Lanzar("bookos-settings --page buds".into())),
         }
+    }
+
+    /// Recoge el mando con la misma animación con que se abrió.
+    // añadido en la 0.2.3
+    fn plegar(&mut self) {
+        self.desplegado = false;
+        self.despliegue.ir_a(0.0);
     }
 
     fn desconectar(&self, i: usize) {
@@ -572,6 +636,11 @@ impl Bluetooth {
         if d.conectado {
             if self.indice_buds() == Some(i) {
                 self.desplegado = !self.desplegado;
+                self.despliegue.ir_a(self.desplegado as u8 as f32);
+                if tema::efectos_reducidos() {
+                    self.despliegue.fijar(self.desplegado as u8 as f32);
+                }
+                self.seguir_modo();
                 if self.desplegado
                     && let Some(c) = self
                         .colocar()
@@ -653,7 +722,9 @@ impl Bluetooth {
         let mut cambio = self.aplicar(state.bluetooth, bookos_system::unavailable("bluetooth"));
         self.vigilar_buds();
         cambio |= self.leer_buds();
-        cambio | self.caducar()
+        cambio |= self.caducar();
+        self.seguir_modo();
+        cambio
     }
 
     // 0.1.0
@@ -697,8 +768,10 @@ impl Bluetooth {
                         ),
                         c.alto,
                     ),
-                    Fila::Dispositivo(i) if self.desplegado && self.indice_buds() == Some(i) => {
-                        (self.buds_desplegados(i), lista::FILA + MANDO_H)
+                    Fila::Dispositivo(i)
+                        if self.alto_mando() > 0.0 && self.indice_buds() == Some(i) =>
+                    {
+                        (self.buds_desplegados(i), lista::FILA + self.alto_mando())
                     }
                     Fila::Dispositivo(i) => (
                         lista::fila(&self.entradas[i], self.señalada.intensidad(i)),
@@ -727,50 +800,24 @@ impl Bluetooth {
     /// La fila de unos Buds y, pegado debajo, su mando, sobre un mismo fondo:
     /// dos baldosas redondeadas apiladas dejaban una cintura en la unión.
     // añadido en la 0.2.1
+    // modificado en la 0.2.3 -- se despliega con muelle; segmentado de pastilla que se desliza
     fn buds_desplegados(&self, i: usize) -> PanelElement<'_> {
-        let (disco, glifo) = control::encendido();
-        let activo = self.modo();
-        let ancho = (lista::BALDOSA - MANDO_X * 2.0 - 4.0) / Modo::TODOS.len() as f32;
-        let mut segmentos = row![];
-        for modo in Modo::TODOS {
-            let marcado = activo == Some(modo);
-            segmentos = segmentos.push(
-                container(
-                    text(modo.etiqueta())
-                        .size(12.0)
-                        .font(control::peso(Weight::Semibold))
-                        .color(if marcado { glifo } else { tema::texto() }),
-                )
-                .width(Length::Fixed(ancho))
-                .height(Length::Fixed(SEGMENTO))
-                .center_x(Length::Fixed(ancho))
-                .center_y(Length::Fixed(SEGMENTO))
-                .style(move |_| container::Style {
-                    background: marcado.then(|| disco.into()),
-                    border: Border {
-                        radius: tema::R_BOTON_PEQUENO.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-            );
-        }
-        let pista = container(segmentos).padding(2).style(|_| container::Style {
-            background: Some(tema::superficie_en_tarjeta().into()),
-            border: Border {
-                radius: (tema::R_BOTON_PEQUENO + 2.0).into(),
-                ..Default::default()
-            },
+        let pista = self.selector_ruido();
+        let enlace = |t: &'static str| text(t).size(12.0).color(tema::texto2());
+        let lado = |x: f32| iced_core::Padding {
+            left: x,
+            right: x,
             ..Default::default()
-        });
-        let enlace = |t: &'static str| text(t).size(12.0).color(tema::TEXTO2);
+        };
         let mando = container(
             column![
                 Space::new().height(Length::Fixed(MANDO_V)),
-                container(text(self.linea_de_pilas()).size(11.0).color(tema::TEXTO2))
+                container(text(self.linea_de_pilas()).size(11.0).color(tema::texto2()))
+                    .padding(lado(MANDO_X))
                     .height(Length::Fixed(LINEA)),
                 Space::new().height(Length::Fixed(MANDO_HUECO)),
-                pista,
+                // Más cerca del borde que el texto: ver `PISTA_X`.
+                container(pista).padding(lado(PISTA_X)),
                 Space::new().height(Length::Fixed(MANDO_HUECO)),
                 container(
                     row![
@@ -780,24 +827,96 @@ impl Bluetooth {
                     ]
                     .align_y(Vertical::Center)
                 )
+                .padding(lado(MANDO_X))
                 .height(Length::Fixed(ENLACES))
                 .center_y(Length::Fixed(ENLACES)),
             ]
             .width(Length::Fill),
         )
-        .padding(iced_core::Padding {
-            left: MANDO_X,
-            right: MANDO_X,
-            ..Default::default()
-        })
         .width(Length::Fixed(lista::BALDOSA))
         .height(Length::Fixed(MANDO_H));
+        // El recorte descubre el mando a la altura del muelle y el contenido
+        // baja los últimos píxeles hasta su sitio: se lee como que sale de la
+        // fila, no como un bloque que aparece y empuja.
+        let v = self.despliegue.valor().clamp(0.0, 1.0);
+        let mando = crate::recorte::Recorte::new(
+            mando,
+            lista::BALDOSA,
+            self.alto_mando(),
+            ENTRADA_MANDO * (1.0 - v),
+        );
         container(column![lista::fila(&self.entradas[i], 1.0), mando])
             .width(Length::Fixed(lista::BALDOSA))
             .style(|_| container::Style {
                 background: Some(tema::elevado().into()),
                 border: Border {
                     radius: tema::R_CONTROL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// El segmentado del control de ruido, como el de Apariencia: pista en
+    /// gris, una pastilla del color del texto que se desliza con un muelle y
+    /// la opción elegida en el color del fondo. Antes cada segmento encendía
+    /// su propio fondo del acento, y cambiar era un salto de uno a otro.
+    // añadido en la 0.2.3
+    fn selector_ruido(&self) -> PanelElement<'_> {
+        let w = ancho_segmento();
+        let elegido = self.modo();
+        let fondo = tema::elevado();
+        let mut capas = iced_widget::stack![];
+        if let Some(p) = &self.pulgar {
+            capas = capas.push(
+                // Desde el borde de la pista y no desde dentro: el rebote de
+                // M_SEGMENTADO entra en el relleno en vez de cortarse en 0.
+                row![
+                    Space::new().width(Length::Fixed((RELLENO_PISTA + w * p.valor()).max(0.0))),
+                    container(Space::new())
+                        .width(Length::Fixed(w))
+                        .height(Length::Fixed(SEGMENTO))
+                        .style(|_| container::Style {
+                            background: Some(tema::texto().into()),
+                            border: Border {
+                                radius: (SEGMENTO / 2.0).into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }),
+                ]
+                // A todo el ancho: la pila mide lo que su primera capa.
+                .width(Length::Fixed(
+                    w * Modo::TODOS.len() as f32 + RELLENO_PISTA * 2.0,
+                ))
+                .padding(iced_core::Padding::ZERO.top(RELLENO_PISTA))
+                .height(Length::Fixed(PISTA)),
+            );
+        }
+        let opciones = Modo::TODOS.iter().fold(row![], |fila, modo| {
+            let on = elegido == Some(*modo);
+            fila.push(
+                container(
+                    text(modo.etiqueta())
+                        .size(11.5)
+                        .font(control::peso(if on {
+                            Weight::Semibold
+                        } else {
+                            Weight::Medium
+                        }))
+                        .color(if on { fondo } else { tema::texto2() })
+                        .wrapping(iced_core::text::Wrapping::None),
+                )
+                .center_x(Length::Fixed(w))
+                .center_y(Length::Fixed(SEGMENTO)),
+            )
+        });
+        container(capas.push(container(opciones).padding(RELLENO_PISTA)))
+            .style(|_| container::Style {
+                background: Some(tema::superficie_en_tarjeta().into()),
+                border: Border {
+                    radius: (PISTA / 2.0).into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -823,6 +942,13 @@ impl Bluetooth {
         .collect::<Vec<_>>()
         .join(" · ")
     }
+}
+
+/// El ancho de cada opción del selector de ruido: el dibujo y el clic salen
+/// de aquí.
+// añadido en la 0.2.3
+fn ancho_segmento() -> f32 {
+    (lista::BALDOSA - PISTA_X * 2.0 - RELLENO_PISTA * 2.0) / Modo::TODOS.len() as f32
 }
 
 impl Drop for Bluetooth {
@@ -1011,6 +1137,10 @@ mod tests {
         let sin = b.total();
         assert!(b.activar(0).is_none());
         assert!(b.desplegado);
+        // Se abre con el muelle: al principio apenas ocupa, y crece.
+        assert!(b.animando(), "el mando se despliega animado");
+        assert!(b.total() < sin + MANDO_H, "no aparece ya abierto");
+        b.despliegue.fijar(1.0);
         assert_eq!(b.total(), sin + MANDO_H, "el mando va pegado a su fila");
 
         let mando = b
@@ -1018,26 +1148,21 @@ mod tests {
             .into_iter()
             .find(|c| matches!(c.fila, Fila::Mando(_)))
             .expect("desplegado hay mando");
-        let x0 = lista::MARGEN + control::GRUPO + MANDO_X;
+        let x0 = lista::MARGEN + control::GRUPO + PISTA_X + RELLENO_PISTA;
         let y = b.y_lista() + mando.y - b.desplazamiento;
-        let ancho = (lista::BALDOSA - MANDO_X * 2.0) / 3.0;
+        let ancho = ancho_segmento();
         let en_pista = y + Y_PISTA + PISTA / 2.0;
-        assert_eq!(
-            b.zona(x0 + 4.0, en_pista),
-            Some(Zona::Ruido(Modo::Cancelacion))
-        );
-        assert_eq!(
-            b.zona(x0 + ancho * 1.5, en_pista),
-            Some(Zona::Ruido(Modo::Ambiente))
-        );
-        assert_eq!(
-            b.zona(x0 + ancho * 2.5, en_pista),
-            Some(Zona::Ruido(Modo::Apagado))
-        );
+        for (i, modo) in Modo::TODOS.into_iter().enumerate() {
+            assert_eq!(
+                b.zona(x0 + ancho * (i as f32 + 0.5), en_pista),
+                Some(Zona::Ruido(modo)),
+                "el segmento {i}"
+            );
+        }
         let en_enlaces = y + Y_ENLACES + ENLACES / 2.0;
         assert_eq!(b.zona(x0 + 4.0, en_enlaces), Some(Zona::Desconectar));
         assert_eq!(
-            b.zona(x0 + ancho * 2.5, en_enlaces),
+            b.zona(x0 + ancho * 3.5, en_enlaces),
             Some(Zona::AjustesBuds)
         );
         assert_eq!(
@@ -1048,6 +1173,9 @@ mod tests {
 
         assert!(b.activar(0).is_none());
         assert!(!b.desplegado, "otra pulsación los pliega");
+        // Y se recoge animado: la fila sigue ahí mientras se cierra.
+        assert!(b.animando());
+        assert!(b.total() > sin);
     }
 
     /// El modo recién elegido se enseña ya, sin esperar a que budsd lo

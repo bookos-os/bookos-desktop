@@ -28,7 +28,10 @@ use crate::tema;
 use crate::view::{ACENTO, PanelElement, TEXT};
 
 pub const ICON: f32 = 50.0;
-pub const GAP: f32 = 14.0;
+/// Aire entre iconos. Subió de 14 a 18 a petición de Evelyn: con 14 los
+/// iconos de 50 se leían apiñados al lado de los de macOS.
+// modificado en la 0.2.3
+pub const GAP: f32 = 18.0;
 /// Padding horizontal: del borde del dock al primer y al último icono.
 ///
 /// Antes iba a 9 en las cuatro direcciones —lo que traía calibrado
@@ -418,6 +421,20 @@ impl Dock {
         }
     }
 
+    /// Refresca solo el icono del launchpad cuando cambia claro/oscuro sin que
+    /// haya cambiado el tema de iconos de las aplicaciones.
+    // added 0.2.3
+    pub fn refrescar_segun_tema(&mut self) -> bool {
+        let mut cambio = false;
+        for item in &mut self.items {
+            if item.icono_nombre == icono::LAUNCHPAD {
+                item.icon = icono::cargar(&item.icono_nombre);
+                cambio = true;
+            }
+        }
+        cambio
+    }
+
     /// Marca qué lanzadores tienen ventana abierta, a partir de los `app_id`
     /// que hay en el escritorio. Devuelve `true` si cambió algo.
     ///
@@ -705,11 +722,15 @@ impl Dock {
                 left: PAD,
                 right: PAD,
             })
+            // El filo de 1 px del HIG para una superficie que flota: sin él, en
+            // claro el dock era una mancha beis sin canto sobre el fondo.
+            // modificado en la 0.2.3 -- con borde
             .style(move |_theme| container::Style {
                 background: Some(fondo.into()),
                 border: Border {
                     radius: radio,
-                    ..Default::default()
+                    width: 1.0,
+                    color: tema::borde(),
                 },
                 ..Default::default()
             })
@@ -819,17 +840,22 @@ fn icon_view(item: &DockItem, señalado: f32, tamano: f32) -> PanelElement<'_> {
 /// Siempre ocupa su sitio, esté encendido o no: si el hueco apareciera y
 /// desapareciera, el dock entero cambiaría de alto al abrir una ventana.
 // 0.1.0
+// modificado en la 0.2.3 -- más pequeño y en gris: era una bola negra bajo cada icono
 fn punto<'a>(encendida: bool, tamano: f32) -> PanelElement<'a> {
+    // Un indicador, no un adorno: a 5 px y al 85 % del texto pesaba casi como
+    // los iconos, y con varias apps abiertas era una fila de bolas negras. El
+    // de macOS es así de discreto; 4 px al 55 % sigue pasando el 3:1 que el
+    // HIG pide a un indicador sobre el fondo del dock.
     let color = if encendida {
-        Color { a: 0.85, ..TEXT() }
+        Color { a: 0.55, ..TEXT() }
     } else {
         Color::TRANSPARENT
     };
     container(
         container(
             Space::new()
-                .width(Length::Fixed(5.0))
-                .height(Length::Fixed(5.0)),
+                .width(Length::Fixed(4.0))
+                .height(Length::Fixed(4.0)),
         )
         .style(move |_theme| container::Style {
             background: Some(color.into()),

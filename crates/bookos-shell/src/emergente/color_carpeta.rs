@@ -17,7 +17,7 @@ use crate::{Accion, TeclaPulsada};
 
 /// Las medidas salen de `.dlg`, `.sw`, `.fico-big` y `.custom-color` del
 /// explorador, para que los dos diálogos se lean como el mismo.
-const SOMBRA: f32 = 22.0;
+pub(super) const SOMBRA: f32 = 22.0;
 const ANCHO: f32 = 310.0;
 const LATERAL: f32 = 24.0;
 const ARRIBA: f32 = 28.0;
@@ -138,9 +138,16 @@ fn hex_a_hsv(hex: &str) -> Option<(f32, f32, f32)> {
 /// entera, 15,5 con estas cuatro y 11 sin ninguna sombra.
 // añadido en la 0.2.0
 fn sombra_rasterizada(alto_tarjeta: f32) -> [Icono; 4] {
+    sombra_dialogo(ANCHO, alto_tarjeta)
+}
+
+/// Las cuatro tiras de la sombra de un diálogo de `ancho`×`alto` lógicos,
+/// rasterizadas una vez. La comparten todos los diálogos del escritorio.
+// modificado en la 0.2.3 -- con el ancho como parámetro
+pub(super) fn sombra_dialogo(ancho_tarjeta: f32, alto_tarjeta: f32) -> [Icono; 4] {
     let sombra = tema::sombra_popover();
     let px = |logico: f32| logico * ESCALA_SOMBRA;
-    let (medio_x, medio_y) = (px(ANCHO) / 2.0, px(alto_tarjeta) / 2.0);
+    let (medio_x, medio_y) = (px(ancho_tarjeta) / 2.0, px(alto_tarjeta) / 2.0);
     let (centro_x, centro_y) = (px(SOMBRA) + medio_x, px(SOMBRA + sombra.offset.y) + medio_y);
     let (radio, difuminado) = (px(tema::R_DIALOGO), px(sombra.blur_radius));
     let tira = |x0: f32, y0: f32, ancho: f32, alto: f32| {
@@ -163,13 +170,13 @@ fn sombra_rasterizada(alto_tarjeta: f32) -> [Icono; 4] {
             .collect();
         Icono::Raster(iced_core::image::Handle::from_rgba(ancho, alto, rgba))
     };
-    let ancho = ANCHO + SOMBRA * 2.0;
+    let ancho = ancho_tarjeta + SOMBRA * 2.0;
     let franja = SOMBRA + tema::R_DIALOGO;
     let lado = alto_tarjeta + SOMBRA * 2.0 - franja * 2.0;
     [
         tira(0.0, 0.0, ancho, franja),
         tira(0.0, franja, SOMBRA, lado),
-        tira(SOMBRA + ANCHO, franja, SOMBRA, lado),
+        tira(SOMBRA + ancho_tarjeta, franja, SOMBRA, lado),
         tira(0.0, franja + lado, ancho, franja),
     ]
 }
@@ -628,7 +635,7 @@ impl ColorCarpeta {
         let cursor = if libre.hex_seleccionado { "" } else { "|" };
         let hex = container(
             row![
-                text("HEX").size(10).color(tema::TEXTO2),
+                text("HEX").size(10).color(tema::texto2()),
                 Space::new().width(Length::Fill),
                 text(format!("{}{cursor}", libre.hex))
                     .size(tema::T_PEQUENO)

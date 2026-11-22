@@ -35,11 +35,39 @@ use iced_widget::Space;
 use crate::tema;
 use crate::view::PanelElement;
 
+/// «72 %, cargando» o «72 %, quedan 3 h 10 min». Lo comparten los dos widgets
+/// de batería, que leen el mismo dato.
+// añadido en la 0.2.2
+pub(crate) fn bateria_accesible(dato: Option<&crate::state::Battery>) -> String {
+    use crate::emergente::t;
+    let Some(b) = dato else {
+        return "—".into();
+    };
+    let mut valor = format!("{} %", b.percent);
+    if b.charging {
+        valor.push_str(t(", cargando", ", charging"));
+    } else if b.plugged {
+        valor.push_str(t(", enchufada", ", plugged in"));
+    }
+    if let Some(m) = b.minutes {
+        valor.push_str(&format!(", {} {} h {} min", t("quedan", "remaining"), m / 60, m % 60));
+    }
+    valor
+}
+
 pub trait Widget {
     /// Nombre estable: es la clave en la configuración y lo que sale en las
     /// trazas cuando el widget falla.
     // 0.1.0
     fn nombre(&self) -> &'static str;
+
+    /// Lo que dice un lector de pantalla del widget: su nombre y lo que
+    /// enseña ahora («Batería», «72 %, cargando»). El panel lo pinta el
+    /// compositor y sin esto no existe para Orca (HIG §11, semántica).
+    // añadido en la 0.2.2
+    fn accesible(&self) -> (&'static str, String) {
+        (self.nombre(), String::new())
+    }
 
     /// Relee su fuente. `true` si lo que enseña ha cambiado.
     // 0.1.0
@@ -127,6 +155,12 @@ pub trait Widget {
     /// Si «No molestar» está puesto. Solo le importa a la campana.
     // 0.1.0
     fn no_molestar(&mut self, _activo: bool) -> bool {
+        false
+    }
+
+    /// Indicadores de privacidad activos (micrófono, cámara, pantalla compartida).
+    // añadido en la 0.2.4
+    fn privacidad(&mut self, _estado: crate::widgets::privacidad::Privacidad) -> bool {
         false
     }
 
@@ -292,7 +326,7 @@ impl AvisoDesconexion {
         if ancho == 0.0 {
             return icono;
         }
-        let mut color = crate::tema::TEXTO2;
+        let mut color = crate::tema::texto2();
         color.a *= self.visible.valor().clamp(0.0, 1.0);
         iced_widget::row![
             icono,
@@ -562,6 +596,15 @@ impl Panel {
     /// Se calcula de derecha a izquierda porque esa fila está anclada al borde
     /// derecho: el primero de la lista es el que queda más a la izquierda, pero
     /// el que tiene la posición fija es el último.
+    /// Nombre y valor del widget de la derecha que se llama así.
+    // añadido en la 0.2.2
+    pub fn accesible_de(&self, nombre: &str) -> Option<(&'static str, String)> {
+        self.derecha
+            .iter()
+            .find(|r| !r.muerto && r.widget.nombre() == nombre)
+            .map(|r| r.widget.accesible())
+    }
+
     // 0.1.0
     pub fn zonas_derecha(
         &self,
@@ -627,6 +670,18 @@ impl Panel {
         let mut cambio = false;
         for ranura in self.ranuras_mut() {
             if let Some(si) = ranura.guard("no molestar", |w| w.no_molestar(activo)) {
+                cambio |= si;
+            }
+        }
+        cambio
+    }
+
+    /// Reparte los indicadores de privacidad al botón de Centro de control.
+    // añadido en la 0.2.4
+    pub fn privacidad(&mut self, estado: crate::widgets::privacidad::Privacidad) -> bool {
+        let mut cambio = false;
+        for ranura in self.ranuras_mut() {
+            if let Some(si) = ranura.guard("privacidad", |w| w.privacidad(estado)) {
                 cambio |= si;
             }
         }

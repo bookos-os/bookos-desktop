@@ -23,6 +23,67 @@ fn confirmacion_hig_y_cancelacion() {
         shell.emergente_tecla(TeclaPulsada::Intro),
         (true, Some(Accion::EnergiaConfirmada(Energia::Bloquear)))
     ));
+
+    // Vuelcos opcionales para inspección visual de todos los estados.
+    let volcar_emergente = |var: &str, em: Emergente, teclas: &[TeclaPulsada]| {
+        if std::env::var_os(var).is_none() {
+            return;
+        }
+        let mut sh = comun::shell(2.0);
+        sh.abrir(em);
+        for t in teclas {
+            sh.emergente_tecla(t.clone());
+        }
+        if !teclas.is_empty() {
+            std::thread::sleep(bookos_shell::tema::D_HOVER);
+        }
+        let (bw, bh) = sh.emergente_buffer_size().unwrap();
+        let mut b = vec![0; (bw * bh * 4) as usize];
+        sh.draw_emergente(&mut b);
+        comun::volcar(var, &b, bw, bh);
+    };
+    volcar_emergente("BOOKOS_DUMP_APAGAR_P1", Emergente::apagar(), &[]);
+    volcar_emergente(
+        "BOOKOS_DUMP_APAGAR_DEST",
+        Emergente::apagar(),
+        &[
+            TeclaPulsada::Derecha,
+            TeclaPulsada::Derecha,
+            TeclaPulsada::Derecha,
+            TeclaPulsada::Derecha,
+        ],
+    );
+    volcar_emergente(
+        "BOOKOS_DUMP_APAGAR_CANCELAR",
+        Emergente::apagar(),
+        &[TeclaPulsada::Tabulador],
+    );
+    volcar_emergente(
+        "BOOKOS_DUMP_CONF_REINICIAR",
+        Emergente::confirmar_energia(Energia::Reiniciar),
+        &[],
+    );
+    volcar_emergente(
+        "BOOKOS_DUMP_CONF_SALIR",
+        Emergente::confirmar_energia(Energia::CerrarSesion),
+        &[],
+    );
+
+    if std::env::var_os("BOOKOS_DUMP_CONF_LARGO").is_some() {
+        let mut c = bookos_shell::confirmacion::Confirmacion::amplia(
+            Energia::Apagar,
+            "Hay aplicaciones con cambios sin guardar. Si continúas ahora, se cerrarán de inmediato.",
+        );
+        c.poner_error("Error: un proceso activo inhibe el apagado.");
+        let (cw, ch) = c.size();
+        assert!(cw == 420.0 && ch > 208.0);
+        let mut sh = comun::shell(2.0);
+        sh.abrir(Emergente::confirmar_con(c));
+        let (bw, bh) = sh.emergente_buffer_size().unwrap();
+        let mut b = vec![0; (bw * bh * 4) as usize];
+        sh.draw_emergente(&mut b);
+        comun::volcar("BOOKOS_DUMP_CONF_LARGO", &b, bw, bh);
+    }
 }
 
 #[test]

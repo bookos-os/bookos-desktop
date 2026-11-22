@@ -617,7 +617,18 @@ pub struct Arrastre {
     /// creyendo que sigues pulsando y no vuelve a pedir otro movimiento. Ese
     /// era el "a veces no agarra".
     pub del_cliente: bool,
+    /// La ventana está encajada o agrupada y aún no se ha soltado de ahí.
+    ///
+    /// Se suelta al pasar de [`UMBRAL_SOLTAR_ENCAJE`], no al pulsar: las apps
+    /// con barra propia (Tauri) piden mover en el mismo `mousedown`, así que
+    /// un clic suelto restauraba la maximizada y un doble clic la restauraba
+    /// y la volvía a maximizar.
+    pub suelta_pendiente: bool,
 }
+
+/// Cuánto hay que mover el puntero para que tirar de una ventana encajada la
+/// suelte de su zona. 10 px es el umbral de gesto del HIG (§8).
+const UMBRAL_SOLTAR_ENCAJE: f64 = 10.0;
 
 /// Cuánto de una ventana tiene que quedar dentro del área útil.
 ///
@@ -1381,6 +1392,53 @@ impl BookosComp {
             self.enfocar(window);
             return;
         }
+        // añadido en la 0.2.4 -- modo de apertura configurable (`normal`,
+        // `maximizada`, `pantalla_completa`) para ventanas principales nuevas.
+        if duena.is_none() {
+            match self.apertura_ventanas {
+                bookos_shell::AperturaVentanas::PantallaCompleta => {
+                    let pantalla = self.pantalla();
+                    estado(window).completa.set(true);
+                    if let Some(x11) = window.x11_surface() {
+                        let _ = x11.set_fullscreen(true);
+                        let _ = x11.configure(pantalla);
+                    }
+                    self.space.map_element(window.clone(), pantalla.loc, true);
+                    nace(window);
+                    self.enfocar(window);
+                    self.revisar_barras();
+                    return;
+                }
+                bookos_shell::AperturaVentanas::Maximizada => {
+                    let area = crate::decoracion::area_util(self, window);
+                    // Guardamos una geometría flotante razonable (75 % centrada)
+                    // para que pulsar Meta+F o el botón de restaurar la devuelva
+                    // a un tamaño cómodo en vez de no hacer nada.
+                    let w = ((area.size.w as f64) * 0.75).round() as i32;
+                    let h = ((area.size.h as f64) * 0.75).round() as i32;
+                    let flotante = Rectangle::new(
+                        (
+                            area.loc.x + (area.size.w - w) / 2,
+                            area.loc.y + (area.size.h - h) / 2,
+                        )
+                            .into(),
+                        (w.max(320), h.max(240)).into(),
+                    );
+                    guardar_restaurar(window, flotante);
+                    estado(window).zona.set(Some(Zona::Maxima));
+                    if let Some(x11) = window.x11_surface() {
+                        let _ = x11.set_maximized(true);
+                        let _ = x11.configure(area);
+                    }
+                    self.space.map_element(window.clone(), area.loc, true);
+                    nace(window);
+                    self.enfocar(window);
+                    self.revisar_barras();
+                    return;
+                }
+                bookos_shell::AperturaVentanas::Normal => {}
+            }
+        }
         let area = crate::decoracion::area_util(self, window);
         let sitio = match &duena {
             Some(Duena::Padre(padre)) => match self.space.element_geometry(padre) {
@@ -1505,6 +1563,7 @@ impl BookosComp {
     // modified 0.2.0 -- cierra el menú contextual abierto
     // modified 0.2.0 -- el menú abierto de otra ventana ya no se queda con el teclado
     pub fn enfocar(&mut self, window: &Window) {
+        let era_inhibido = self.idle_inhibido();
         // Un menú contextual abierto es de «antes de esto»: si una ventana
         // vuelve del dock o recibe el foco, el usuario ya ha pasado a otra
         // cosa y el menú se quedaba flotando encima hasta el siguiente clic.
@@ -1564,6 +1623,7 @@ impl BookosComp {
             }
             kbd.set_focus(self, surface, SERIAL_COUNTER.next_serial());
         }
+        crate::handlers::sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
     }
 
@@ -1574,6 +1634,7 @@ impl BookosComp {
     /// lo que se tecleara fuera a ir a ella.
     // 0.1.1
     pub fn desenfocar(&mut self) {
+        let era_inhibido = self.idle_inhibido();
         let todas: Vec<Window> = self.space.elements().cloned().collect();
         for ventana in &todas {
             if ventana.set_activated(false)
@@ -1585,6 +1646,7 @@ impl BookosComp {
         if let Some(kbd) = self.seat.get_keyboard() {
             kbd.set_focus(self, None, SERIAL_COUNTER.next_serial());
         }
+        crate::handlers::sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
     }
 
@@ -1665,10 +1727,7 @@ impl BookosComp {
         let Some(loc) = self.space.element_location(window) else {
             return;
         };
-        if modo == Modo::Mover {
-            self.soltar_para_arrastrar(window, loc, self.pointer_location);
-        }
-        let loc = self.space.element_location(window).unwrap_or(loc);
+        let suelta_pendiente = self.por_soltar(window, modo);
         let geo = Rectangle::new(loc, window.geometry().size);
         self.arrastre = Some(Arrastre {
             window: window.clone(),
@@ -1679,7 +1738,13 @@ impl BookosComp {
             previa_desde: None,
             previa_nacida: None,
             del_cliente,
+            suelta_pendiente,
         });
+    }
+
+    // 0.1.1
+    fn por_soltar(&self, window: &Window, modo: Modo) -> bool {
+        modo == Modo::Mover && (encajada(window) || crate::multitarea::agrupada(self, window))
     }
 
     /// Arrastrar una ventana encajada —o la mitad de un grupo lado a lado— la
@@ -1736,13 +1801,9 @@ impl BookosComp {
         if maximizada(&window) && modo != Modo::Mover {
             return false;
         }
-        // Arrastrar una ventana encajada la suelta de su zona, como en KWin:
-        // recupera su tamaño flotante y se queda colgando del cursor. Sin esto
-        // arrastrarías media pantalla entera, que además no cabe en ningún
-        // sitio y vuelve a encajarse al primer roce con un borde.
-        if modo == Modo::Mover {
-            self.soltar_para_arrastrar(&window, loc, punto);
-        }
+        // Arrastrar una ventana encajada la suelta de su zona, como en KWin,
+        // pero en `seguir_arrastre`, cuando el puntero ya se ha movido.
+        let suelta_pendiente = self.por_soltar(&window, modo);
         let loc = self.space.element_location(&window).unwrap_or(loc);
         let geo = Rectangle::new(loc, window.geometry().size);
         // El cuadrante se decide **al empezar**: si se recalculara en cada
@@ -1765,6 +1826,7 @@ impl BookosComp {
             previa_desde: None,
             previa_nacida: None,
             del_cliente: false,
+            suelta_pendiente,
         });
         true
     }
@@ -1777,6 +1839,23 @@ impl BookosComp {
         let Some(arrastre) = self.arrastre.clone() else {
             return false;
         };
+        if arrastre.suelta_pendiente {
+            let p = self.pointer_location;
+            if (p.x - arrastre.inicio.x).hypot(p.y - arrastre.inicio.y) < UMBRAL_SOLTAR_ENCAJE {
+                return true;
+            }
+            let loc = self
+                .space
+                .element_location(&arrastre.window)
+                .unwrap_or(arrastre.geo.loc);
+            self.soltar_para_arrastrar(&arrastre.window, loc, arrastre.inicio);
+            let loc = self.space.element_location(&arrastre.window).unwrap_or(loc);
+            if let Some(a) = self.arrastre.as_mut() {
+                a.geo = Rectangle::new(loc, a.window.geometry().size);
+                a.suelta_pendiente = false;
+            }
+            return self.seguir_arrastre();
+        }
         let area = crate::decoracion::area_util(self, &arrastre.window);
         let destino = arrastre.geometria(self.pointer_location, area);
         if arrastre.modo == Modo::Mover
@@ -1880,6 +1959,7 @@ impl BookosComp {
     // 0.1.0
     // modified 0.1.1 -- separa del grupo, sale de pantalla completa y forma grupo con la complementaria
     pub fn encajar(&mut self, window: &Window, zona: Zona) {
+        let era_inhibido = self.idle_inhibido();
         crate::multitarea::separar(self, window);
         salir_de_pantalla_completa(window);
         // El área es la de esta ventana, no la del escritorio: una decorada
@@ -1928,6 +2008,7 @@ impl BookosComp {
         }
         self.space.map_element(window.clone(), destino.loc, true);
         crate::multitarea::encajada(self, window, zona);
+        crate::handlers::sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
         self.revisar_barras();
     }
@@ -1936,6 +2017,7 @@ impl BookosComp {
     // 0.1.0
     // modified 0.1.1 -- sale también de pantalla completa
     pub fn desencajar(&mut self, window: &Window) {
+        let era_inhibido = self.idle_inhibido();
         let Some(previa) = tomar_restaurar(window) else {
             return;
         };
@@ -1969,6 +2051,7 @@ impl BookosComp {
             let _ = x11.configure(previa);
         }
         self.space.map_element(window.clone(), previa.loc, true);
+        crate::handlers::sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
         self.revisar_barras();
     }
@@ -2006,6 +2089,7 @@ impl BookosComp {
     // 0.1.0
     // modified 0.1.1 -- separa del grupo al ponerla a pantalla completa
     pub fn pantalla_completa(&mut self, window: &Window, activar: bool) {
+        let era_inhibido = self.idle_inhibido();
         if activar {
             crate::multitarea::separar(self, window);
         }
@@ -2065,6 +2149,7 @@ impl BookosComp {
             let _ = x11.configure(destino);
         }
         self.space.map_element(window.clone(), destino.loc, true);
+        crate::handlers::sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
         self.revisar_barras();
     }
@@ -2194,27 +2279,45 @@ impl BookosComp {
         }
     }
 
-    /// ¿Hay alguna ventana a pantalla completa tapándolo todo?
+    /// ¿Hay alguna ventana a pantalla completa activa arriba del todo en alguna salida?
     ///
-    /// Lo pregunta la escena para no dibujar el shell encima.
+    /// Lo pregunta la escena para no dibujar el shell encima e inhibir la
+    /// inactividad mientras se ve un vídeo o juego a pantalla completa.
     // 0.1.0
     pub fn hay_pantalla_completa(&self) -> bool {
-        self.space.elements().any(completa)
+        if self.space.outputs().next().is_some() {
+            self.space
+                .outputs()
+                .any(|o| self.hay_pantalla_completa_en(o))
+        } else {
+            self.space
+                .elements()
+                .rev()
+                .find(|w| w.alive())
+                .is_some_and(completa)
+        }
     }
 
-    /// ¿Hay una ventana a pantalla completa sobre esta salida concreta?
-    /// Una aplicación fullscreen en el proyector no debe esconder el panel del
-    /// portátil ni alterar la composición de los demás monitores.
+    /// ¿Está a pantalla completa la ventana superior visible en esta salida?
+    ///
+    /// Al cambiar a otra app desde una ventana a pantalla completa, la nueva
+    /// sube encima en el `Space`: consultar solo la ventana superior permite
+    /// que el panel y el dock vuelvan a mostrarse y responder sin bloquearse.
     // 0.1.0
     pub fn hay_pantalla_completa_en(&self, output: &Output) -> bool {
         let Some(salida) = self.space.output_geometry(output) else {
             return false;
         };
-        self.space.elements().filter(|w| completa(w)).any(|window| {
-            self.space
-                .element_location(window)
-                .is_some_and(|loc| Rectangle::new(loc, window.geometry().size).overlaps(salida))
-        })
+        self.space
+            .elements()
+            .rev()
+            .filter(|w| w.alive() && !self.escritorios.se_va(w))
+            .find(|window| {
+                self.space
+                    .element_location(window)
+                    .is_some_and(|loc| Rectangle::new(loc, window.geometry().size).overlaps(salida))
+            })
+            .is_some_and(completa)
     }
 }
 

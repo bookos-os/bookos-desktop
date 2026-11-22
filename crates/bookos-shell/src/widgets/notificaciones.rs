@@ -79,7 +79,7 @@ impl Notificaciones {
 
     // 0.1.0
     fn color(&self) -> iced_core::Color {
-        if self.silencio { tema::TEXTO2 } else { TEXT() }
+        if self.silencio { tema::texto2() } else { TEXT() }
     }
 
     // 0.1.0
@@ -115,6 +115,14 @@ impl Widget for Notificaciones {
     // 0.1.0
     fn nombre(&self) -> &'static str {
         "notificaciones"
+    }
+
+    fn accesible(&self) -> (&'static str, String) {
+        let mut valor = format!("{} {}", self.pendientes, crate::emergente::t("pendientes", "pending"));
+        if self.silencio {
+            valor.push_str(crate::emergente::t(", no molestar", ", do not disturb"));
+        }
+        (crate::emergente::t("Notificaciones", "Notifications"), valor)
     }
 
     // 0.1.0

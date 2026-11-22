@@ -142,7 +142,7 @@ fn nombrar(clave: &str) -> (&'static str, &'static str, Color) {
         _ => (
             t("Otro perfil", "Other profile"),
             t("Definido por el fabricante", "Defined by the manufacturer"),
-            tema::TEXTO2,
+            tema::texto2(),
         ),
     }
 }
@@ -284,10 +284,13 @@ pub struct Energia {
     activo: Option<String>,
     /// Sobre qué fila está el ratón, para el realce.
     señalado: tema::Realce,
-    /// Cuánto de «elegido» lleva cada perfil, en el orden de `perfiles`: el
-    /// fondo y la marca se funden de uno a otro en vez de saltar.
-    // añadido en la 0.2.0
-    seleccion: Vec<tema::Transicion>,
+    /// Dónde está la píldora, en índices de `perfiles`. También dice cuánto
+    /// de «elegido» lleva cada etiqueta: con un muelle aparte (`M_RAPIDO`,
+    /// 210 ms) el texto se ponía en negrita y en la tinta de la píldora antes
+    /// de que ella llegara (`M_SEGMENTADO`, ~320 ms).
+    // añadido en la 0.2.3
+    // modified 0.2.3 -- sustituye a `seleccion`
+    pulgar: tema::Transicion,
     /// El porcentaje que dibuja la barra, de 0 a 1. Sigue a la batería con un
     /// muelle: al enchufar o al refrescar, la barra se desliza.
     nivel: tema::Transicion,
@@ -307,16 +310,13 @@ impl Energia {
     pub fn new() -> Self {
         let perfiles = perfiles();
         let activo = perfil_activo();
-        let seleccion = perfiles
-            .iter()
-            .map(|p| {
-                let elegido = activo.as_deref() == Some(p.clave.as_str());
-                tema::Transicion::nueva(elegido as u8 as f32, tema::M_RAPIDO)
-            })
-            .collect();
         // Con tiempo restante: es la tarjeta que lo enseña, y solo se lee
         // mientras está abierta.
         let bateria = Battery::read(true);
+        let indice = perfiles
+            .iter()
+            .position(|p| activo.as_deref() == Some(p.clave.as_str()))
+            .unwrap_or(0) as f32;
         let nivel = bateria.map_or(0.0, |b| b.percent.min(100) as f32 / 100.0);
         let mut e = Self {
             bateria,
@@ -324,11 +324,11 @@ impl Energia {
             perfiles,
             activo,
             señalado: tema::Realce::nuevo(),
-            seleccion,
+            pulgar: tema::Transicion::nueva(indice, tema::M_SEGMENTADO),
             nivel: tema::Transicion::nueva(nivel, tema::M_SUAVE),
             tinte: tema::Transicion::nueva(1.0, tema::M_SUAVE),
-            tinte_desde: tema::TEXTO2,
-            tinte_hasta: tema::TEXTO2,
+            tinte_desde: tema::texto2(),
+            tinte_hasta: tema::texto2(),
             rayo: icono::desde_svg(RAYO),
             aviso: icono::desde_svg(AVISO),
         };
@@ -454,7 +454,7 @@ impl Energia {
         self.señalado.animando()
             || self.nivel.animando()
             || self.tinte.animando()
-            || self.seleccion.iter().any(|t| t.animando())
+            || self.pulgar.animando()
     }
 
     // 0.1.0
@@ -497,9 +497,7 @@ impl Energia {
         // Se da por puesto sin releer: la lectura tardaría lo que tarde el
         // daemon en aplicarlo y la fila se quedaría sin marcar hasta el
         // siguiente refresco. Si la llamada falla, el próximo `new` lo corrige.
-        for (p, t) in self.perfiles.iter().zip(self.seleccion.iter_mut()) {
-            t.ir_a((p.clave == clave) as u8 as f32);
-        }
+        self.pulgar.ir_a(i as f32);
         self.activo = Some(clave);
         self.sincronizar_color();
         None
@@ -540,7 +538,7 @@ impl Energia {
         self.activo
             .as_deref()
             .and_then(|a| self.perfiles.iter().find(|p| p.clave == a))
-            .map_or(tema::TEXTO2, |p| p.color)
+            .map_or(tema::texto2(), |p| p.color)
     }
 
     /// El tope solo cuenta enchufado: descargando no frena nada y dibujarlo
@@ -664,7 +662,7 @@ impl Energia {
             container(
                 text(lista::recortar(&self.estado(), INTERIOR - 100.0, 12.0))
                     .size(12.0)
-                    .color(tema::TEXTO2)
+                    .color(tema::texto2())
             )
             .height(Length::Fixed(ESTADO))
             .center_y(Length::Fixed(ESTADO)),
@@ -755,32 +753,24 @@ impl Energia {
     /// El selector de modo: una cápsula con una píldora que se desliza al
     /// elegido y, debajo, lo que hace.
     ///
-    /// La píldora va con la media de los índices ponderada por lo «elegido» de
-    /// cada perfil, que ya llevan su muelle: al cambiar de modo se desliza de
-    /// un segmento a otro sin que haga falta un muelle más, y sin pasarse (el
-    /// muelle es crítico, §8 del HIG).
+    /// La píldora lleva su propio muelle, el de los segmentados: se pasa un
+    /// poco y vuelve, como en el Player.
     // 0.1.0
     // modified 0.2.1 -- cápsula con píldora deslizante en vez de una fila por perfil
+    // modified 0.2.3 -- píldora con M_SEGMENTADO
     fn selector(&self) -> PanelElement<'_> {
         let n = self.perfiles.len();
         let ancho = (INTERIOR - PAD_CAPSULA * 2.0) / n as f32;
         let alto_pulgar = CAPSULA - PAD_CAPSULA * 2.0;
-        let pesos: Vec<f32> = self
-            .seleccion
-            .iter()
-            .map(|t| t.valor().clamp(0.0, 1.0))
+        let posicion = self.pulgar.valor();
+        // Cuánto tapa la píldora a cada etiqueta: 1 debajo, 0 a un hueco.
+        // Sin perfil activo no hay píldora, y `pulgar` vale 0 por defecto.
+        let pesos: Vec<f32> = (0..n)
+            .map(|i| match self.activo {
+                Some(_) => (1.0 - (posicion - i as f32).abs()).clamp(0.0, 1.0),
+                None => 0.0,
+            })
             .collect();
-        let suma: f32 = pesos.iter().sum();
-        let posicion = if suma > 0.001 {
-            pesos
-                .iter()
-                .enumerate()
-                .map(|(i, p)| i as f32 * p)
-                .sum::<f32>()
-                / suma
-        } else {
-            0.0
-        };
         let pista = container(Space::new())
             .width(Length::Fixed(INTERIOR))
             .height(Length::Fixed(CAPSULA))
@@ -809,7 +799,7 @@ impl Energia {
                 container(pulgar)
                     .padding(
                         iced_core::Padding::ZERO
-                            .left(PAD_CAPSULA + posicion * ancho)
+                            .left((PAD_CAPSULA + posicion * ancho).max(0.0))
                             .top(PAD_CAPSULA),
                     )
                     .width(Length::Fixed(INTERIOR))
@@ -821,7 +811,7 @@ impl Energia {
         for (i, perfil) in self.perfiles.iter().enumerate() {
             let elegido = pesos[i];
             let color = tema::mezclar(
-                tema::mezclar(tema::TEXTO2, tema::texto(), self.señalado.intensidad(i)),
+                tema::mezclar(tema::texto2(), tema::texto(), self.señalado.intensidad(i)),
                 tinta_elegido,
                 elegido,
             );
@@ -856,7 +846,7 @@ impl Energia {
         column![
             capas,
             Space::new().height(Length::Fixed(SOBRE_DESCRIPCION)),
-            container(text(detalle).size(12.0).color(tema::TEXTO2))
+            container(text(detalle).size(12.0).color(tema::texto2()))
                 .padding([0, 4])
                 .height(Length::Fixed(DESCRIPCION))
                 .center_y(Length::Fixed(DESCRIPCION)),
@@ -893,7 +883,7 @@ impl Energia {
                         text(t("Modo de energía", "Power mode"))
                             .size(12.0)
                             .font(peso(Weight::Medium))
-                            .color(tema::TEXTO2),
+                            .color(tema::texto2()),
                     )
                     .padding([0, 4])
                     .height(Length::Fixed(SECCION))
@@ -921,7 +911,7 @@ mod tests {
             .map(|c| Perfil {
                 clave: (*c).into(),
                 detalle: "Y",
-                color: tema::TEXTO2,
+                color: tema::texto2(),
                 corto: "X",
             })
             .collect();

@@ -32,20 +32,13 @@ fn menu_ventana_dibuja_y_envia_el_destino_exacto() {
 /// Con `BOOKOS_MENU_ESCRITORIO_PNG=/ruta.png` guarda lo que pinta.
 #[test]
 fn menu_del_escritorio_se_dibuja() {
+    use bookos_shell::{EntradaMenu as E, FilaMenu as F};
     use bookos_shell::{Accion, Emergente};
     let mut shell = comun::shell(2.0);
     let opciones = vec![
-        Some((
-            "Abrir".to_string(),
-            "abrir",
-            Accion::EscritorioEliminarSeleccion,
-        )),
-        None,
-        Some((
-            "Mover a la papelera".to_string(),
-            "papelera",
-            Accion::EscritorioEliminarSeleccion,
-        )),
+        E::Fila(F::new("Abrir", "abrir", Accion::EscritorioEliminarSeleccion)),
+        E::Divisor,
+        E::Fila(F::new("Mover a la papelera", "papelera", Accion::EscritorioEliminarSeleccion).peligro()),
     ];
     shell.abrir(Emergente::menu_escritorio(opciones, (100.0, 100.0)));
     let (w, h) = shell.emergente_buffer_size().unwrap();
@@ -60,17 +53,18 @@ fn menu_del_escritorio_se_dibuja() {
 /// Con `BOOKOS_MENU_CREAR_PNG=/ruta.png` guarda lo que pinta, a 2×.
 #[test]
 fn menu_del_escritorio_despliega_crear() {
+    use bookos_shell::{EntradaMenu as E, FilaMenu as F};
     use bookos_shell::escritorio::NuevoElemento;
     use bookos_shell::{Accion, Emergente};
     let mut shell = comun::shell(2.0);
     let opciones = vec![
-        Some((
-            "Crear".to_string(),
-            "vista-anadir",
-            Accion::EscritorioNuevo(NuevoElemento::Carpeta),
+        E::Fila(F::submenu(
+            "Crear",
+            "carpeta-nueva",
+            vec![E::Fila(F::new("Carpeta", "carpeta-nueva", Accion::EscritorioNuevo(NuevoElemento::Carpeta)))],
         )),
-        None,
-        Some(("Cambiar fondo…".to_string(), "fondo", Accion::AbrirCaptura)),
+        E::Divisor,
+        E::Fila(F::new("Cambiar fondo…", "fondo", Accion::AbrirCaptura)),
     ];
     shell.abrir(Emergente::menu_escritorio(opciones, (100.0, 100.0)));
     shell.emergente_puntero(Some((20.0, 17.0)));

@@ -130,6 +130,25 @@ impl CompositorHandler for BookosComp {
             if self.cursor_surface_is(surface) {
                 self.needs_redraw = true;
             }
+            // El icono de arrastre se mueve con los `attach(dx, dy)` del
+            // cliente, que se acumulan: GTK y Qt lo usan para centrarlo bajo
+            // el cursor o dejarlo donde se agarró.
+            if let Some((icono, desfase)) = self.icono_arrastre.as_mut()
+                && icono == surface
+            {
+                let delta = smithay::wayland::compositor::with_states(surface, |states| {
+                    states
+                        .cached_state
+                        .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                        .current()
+                        .buffer_delta
+                        .take()
+                });
+                if let Some(delta) = delta {
+                    *desfase += delta;
+                }
+                self.needs_redraw = true;
+            }
             return;
         };
 
@@ -329,16 +348,26 @@ impl BookosComp {
                 .unwrap_or(true)
         });
         if !pending {
-            // La ventana del kiosko nace a pantalla completa: va ya en esta
-            // primera configuración, que es la única que el cliente espera antes
-            // de pintar, y así su primer buffer ya tiene el tamaño de la
-            // pantalla. Los diálogos, con padre, siguen siendo ventanas.
-            if self.modo.kiosko() && toplevel.parent().is_none() {
-                let pantalla = self.pantalla();
-                toplevel.with_pending_state(|state| {
-                    state.states.set(xdg_toplevel::State::Fullscreen);
-                    state.size = Some(pantalla.size);
-                });
+            // La ventana del kiosko (o si el usuario configuró apertura a
+            // pantalla completa o maximizada) nace ya con ese tamaño y estado
+            // en su primera configuración, antes de pintar su primer buffer.
+            // Los diálogos, con padre, siguen siendo ventanas flotantes.
+            if toplevel.parent().is_none() {
+                if self.modo.kiosko()
+                    || self.apertura_ventanas == bookos_shell::AperturaVentanas::PantallaCompleta
+                {
+                    let pantalla = self.pantalla();
+                    toplevel.with_pending_state(|state| {
+                        state.states.set(xdg_toplevel::State::Fullscreen);
+                        state.size = Some(pantalla.size);
+                    });
+                } else if self.apertura_ventanas == bookos_shell::AperturaVentanas::Maximizada {
+                    let area = self.work_area();
+                    toplevel.with_pending_state(|state| {
+                        state.states.set(xdg_toplevel::State::Maximized);
+                        state.size = Some(area.size);
+                    });
+                }
             }
             toplevel.send_configure();
         }
@@ -436,6 +465,7 @@ impl XdgShellHandler for BookosComp {
     // 0.1.0
     // modified 0.1.1 -- saca la ventana cerrada de su grupo
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let era_inhibido = self.idle_inhibido();
         // Lo primero, mientras la superficie sigue viva con sus texturas: en
         // el mismo lote el cliente destruye la `wl_surface` y ya no quedaría
         // nada que animar.
@@ -478,6 +508,7 @@ impl XdgShellHandler for BookosComp {
             crate::multitarea::retirar(self, &window);
         }
         crate::keybinds::refocalizar(self);
+        sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
         // La ventana muerta sigue en el espacio hasta el siguiente `refresh()`,
         // así que `actualizar_dock` la filtra por `alive()`.
@@ -887,6 +918,10 @@ impl smithay::wayland::dmabuf::DmabufHandler for BookosComp {
 pub enum Seleccion {
     /// Bytes propios: hoy, la captura de pantalla.
     Bytes(std::sync::Arc<Vec<u8>>),
+    /// Unos bytes por tipo: los archivos copiados en el escritorio, que se
+    /// ofrecen como lista de URIs, en el formato de GNOME y como texto.
+    // añadido en la 0.2.3
+    PorTipo(std::sync::Arc<Vec<(String, Vec<u8>)>>),
     /// La puso un programa X11. XWayland entero es un solo cliente y no tiene
     /// `wl_data_device` propio: el puente es el gestor de ventanas, y cuando
     /// alguien pega hay que pedírsela a él.
@@ -945,6 +980,10 @@ impl SelectionHandler for BookosComp {
         source: Option<smithay::wayland::selection::SelectionSource>,
         _seat: Seat<Self>,
     ) {
+        // añadido en la 0.2.3 -- el escritorio ofrece «Pegar» solo si hay archivos.
+        if ty == smithay::wayland::selection::SelectionTarget::Clipboard {
+            self.archivos.tipos = source.as_ref().map(|s| s.mime_types()).unwrap_or_default();
+        }
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(err) = xwm.new_selection(ty, source.map(|s| s.mime_types()))
         {
@@ -964,6 +1003,11 @@ impl SelectionHandler for BookosComp {
     ) {
         match datos {
             Seleccion::Bytes(datos) => escribir_seleccion(datos.clone(), mime_type, fd),
+            Seleccion::PorTipo(tipos) => {
+                if let Some((_, datos)) = tipos.iter().find(|(t, _)| *t == mime_type) {
+                    escribir_seleccion(std::sync::Arc::new(datos.clone()), mime_type, fd);
+                }
+            }
             Seleccion::X11 => {
                 let Some(xwm) = self.xwm.as_mut() else {
                     // XWayland murió con la selección puesta: el `fd` se cierra
@@ -999,7 +1043,33 @@ impl DataControlHandler for BookosComp {
     }
 }
 
-impl ClientDndGrabHandler for BookosComp {}
+impl ClientDndGrabHandler for BookosComp {
+    /// Sin esto el cliente mandaba su imagen y no se pintaba: al arrastrar
+    /// una foto o un fichero solo se veía la flecha.
+    // añadido en la 0.2.3
+    fn started(
+        &mut self,
+        _source: Option<smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
+        self.icono_arrastre = icon.map(|s| (s, (0, 0).into()));
+        // Durante el arrastre ningún cliente recibe el foco del puntero, así
+        // que nadie más va a poner cursor: el «+» de copiar es el de siempre
+        // en los demás sistemas y el tema lo trae.
+        self.cursor_status = smithay::input::pointer::CursorImageStatus::Named(
+            smithay::input::pointer::CursorIcon::Copy,
+        );
+        self.needs_redraw = true;
+    }
+
+    // añadido en la 0.2.3
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.icono_arrastre = None;
+        self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+        self.needs_redraw = true;
+    }
+}
 impl ServerDndGrabHandler for BookosComp {}
 
 /// La decoración: por defecto la dibuja el escritorio.
@@ -1105,6 +1175,18 @@ pub fn inhibicion_cambiada(state: &mut BookosComp) {
     }
     crate::backend::programar_bloqueo_inactividad(state);
     crate::backend::programar_suspension_inactividad(state);
+}
+
+/// Sincroniza la inhibición cuando cambia la ventana en primer plano o su estado
+/// de pantalla completa, despertando la atenuación si pasa a estar inhibida.
+pub fn sincronizar_inhibicion(state: &mut BookosComp, era_inhibido: bool) {
+    let inhibido = state.idle_inhibido();
+    if inhibido != era_inhibido {
+        if inhibido && state.atenuacion.activa() {
+            crate::atenuacion::despertar(state);
+        }
+        inhibicion_cambiada(state);
+    }
 }
 
 delegate_idle_inhibit!(BookosComp);

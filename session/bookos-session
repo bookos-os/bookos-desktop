@@ -176,7 +176,7 @@ sesion_tmp=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/bookos-session.XXXXXXXX") || ex
 export BOOKOS_SESSION_SOCKET_FILE="$sesion_tmp/socket"
 export BOOKOS_SESSION_LOCK_FILE="$sesion_tmp/unlocked"
 comp=""
-sonido_login=false
+reinicio=false
 finalizar() {
     trap - TERM INT HUP
     if [ -n "$comp" ]; then kill "$comp" 2>/dev/null || true; wait "$comp" 2>/dev/null || true; fi
@@ -193,8 +193,12 @@ while true; do
     printf unlocked >"$BOOKOS_SESSION_LOCK_FILE"
     rm -f "$BOOKOS_SESSION_SOCKET_FILE"
     # Una sesión real no debe convertirse en anidada al reutilizar su entorno.
-    unset WAYLAND_DISPLAY DISPLAY
-    "$binario" >>"$registro" 2>&1 &
+    unset WAYLAND_DISPLAY DISPLAY BOOKOS_REINICIO
+    if [ "$reinicio" = true ]; then
+        BOOKOS_REINICIO=1 "$binario" >>"$registro" 2>&1 &
+    else
+        "$binario" >>"$registro" 2>&1 &
+    fi
     comp=$!
     socket=""
     for _ in $(seq 100); do
@@ -240,12 +244,6 @@ while true; do
         # había usado; el arranque de verdad lo hace el target de arriba.
         systemctl --user try-restart xdg-desktop-portal.service >/dev/null 2>&1 || true
         lanzar_autostart
-        # La recuperación puede relanzar el compositor dentro de esta misma
-        # sesión. El sonido marca el login, no cada reinicio tras un fallo.
-        if [ "$sonido_login" = false ] && command -v canberra-gtk-play >/dev/null 2>&1; then
-            canberra-gtk-play -i desktop-login >/dev/null 2>&1 &
-            sonido_login=true
-        fi
     fi
     wait "$comp"
     codigo=$?
@@ -265,7 +263,10 @@ while true; do
     if [ -f "$recuperacion" ] && command -v python3 >/dev/null 2>&1; then
         python3 "$recuperacion" --status "$codigo" --log "$error_log" "${bloqueo[@]}" >>"$registro" 2>&1
         respuesta=$?
-        [ "$respuesta" -eq 10 ] && continue
+        if [ "$respuesta" -eq 10 ]; then
+            reinicio=true
+            continue
+        fi
     fi
     exit 0
 done

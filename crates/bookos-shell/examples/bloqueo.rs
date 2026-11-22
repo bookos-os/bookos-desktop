@@ -24,8 +24,9 @@ fn main() {
             ("menu", None),
             ("musica", Some(cancion(None))),
             ("caratula", caratula.as_deref().map(|c| cancion(Some(c)))),
+            ("agarrada", caratula.as_deref().map(|c| cancion(Some(c)))),
         ] {
-            if variante == "caratula" && sonando.is_none() {
+            if matches!(variante, "caratula" | "agarrada") && sonando.is_none() {
                 continue;
             }
             let mut config = Config {
@@ -37,7 +38,16 @@ fn main() {
             let pantalla = (2880.0 / ESCALA, 1800.0 / ESCALA);
             let mut shell = Shell::con_config(pantalla.0 as u32, ESCALA, config);
             shell.bloquear("10:42".into(), "lunes, 29 de septiembre".into(), pantalla);
-            shell.bloqueo_medio(sonando);
+            // Con carátula hace de BookOS Player: aleatorio puesto y repetir
+            // la canción, para ver los cinco mandos. Sin ella, otro
+            // reproductor con los tres de siempre.
+            // modificado en la 0.2.3
+            let modos = if matches!(variante, "caratula" | "agarrada") {
+                (Some(true), Some(bookos_shell::medios::Repetir::Cancion))
+            } else {
+                (None, None)
+            };
+            shell.bloqueo_medio(sonando, modos);
             // añadido en la 0.2.0 -- el menú de apagado desplegado, que es donde se ven sus iconos.
             if variante == "menu" {
                 let b = shell.bloqueo_mut().expect("bloqueo puesto");
@@ -46,6 +56,18 @@ fn main() {
                 // El menú se abre con muelle aunque las animaciones del bloqueo
                 // estén apagadas: se espera a que asiente.
                 std::thread::sleep(std::time::Duration::from_millis(600));
+            }
+            // añadido en la 0.2.3 -- la barra agarrada al 60 %: engorda y los
+            // tiempos siguen al dedo. 64 y 244 son `MEDIOS_BARRA_X` y
+            // `MEDIOS_BARRA_W`; 140, el centro de la fila de la barra.
+            if variante == "agarrada" {
+                let (x, y, _, _) = shell
+                    .bloqueo_capas()
+                    .into_iter()
+                    .find(|(c, _)| *c == bookos_shell::bloqueo::Capa::Medios)
+                    .expect("hay música")
+                    .1;
+                shell.bloqueo_pulsado(x + 64.0 + 244.0 * 0.6, y + 140.0);
             }
             let (w, h) = shell.bloqueo_buffer_size().expect("bloqueo puesto");
             let mut buf = vec![0u8; (w * h * 4) as usize];
@@ -62,7 +84,6 @@ fn main() {
                     cw,
                     ch,
                     None,
-                    None,
                 );
             }
             volcar(
@@ -71,7 +92,6 @@ fn main() {
                 w,
                 h,
                 fondo.as_deref(),
-                shell.bloqueo_velo(),
             );
         }
     }
@@ -87,7 +107,14 @@ fn cancion(caratula: Option<&str>) -> bookos_shell::medios::Sonando {
         reproduciendo: true,
         posicion: Some(78),
         duracion: Some(214),
-        calidad: None,
+        posicion_ms: Some(78_000),
+        duracion_ms: Some(214_000),
+        calidad: Some(bookos_shell::medios::Calidad {
+            codec: "FLAC".into(),
+            frecuencia: 96_000,
+            bits: 24,
+            tasa: 0,
+        }),
     }
 }
 
@@ -97,7 +124,6 @@ fn volcar(
     w: u32,
     h: u32,
     fondo: Option<&str>,
-    velo: Option<iced_core::Color>,
 ) {
     let mut lienzo = fondo
         .and_then(|f| image::open(f).ok())
@@ -106,16 +132,6 @@ fn volcar(
                 .to_rgba8()
         })
         .unwrap_or_else(|| image::RgbaImage::from_pixel(w, h, image::Rgba([40, 40, 48, 255])));
-    // El velo baja desde arriba y se apaga al 60 % del alto, como el del
-    // compositor.
-    if let Some(v) = velo {
-        for (_, y, p) in lienzo.enumerate_pixels_mut() {
-            let a = v.a * (1.0 - y as f32 / (h as f32 * 0.6)).max(0.0);
-            for (c, o) in p.0.iter_mut().zip([v.r, v.g, v.b]) {
-                *c = (*c as f32 * (1.0 - a) + o * 255.0 * a) as u8;
-            }
-        }
-    }
     // El buffer viene en B,G,R,A premultiplicado.
     for (p, q) in lienzo.pixels_mut().zip(buf.as_chunks::<4>().0) {
         let a = q[3] as f32 / 255.0;

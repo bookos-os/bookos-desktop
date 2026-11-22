@@ -257,9 +257,37 @@ pub fn alto_contraste() -> bool {
     ALTO_CONTRASTE.load(Ordering::Relaxed)
 }
 
+/// Se está pintando la isla dinámica en tema claro. La isla es una superficie
+/// con su propio tono (`#D8D8DD`, más oscura que el panel blanco) y los grises
+/// y el acento del tema claro, pensados para fondo blanco, no llegan a 4,5:1
+/// sobre él. Se enciende solo mientras se pinta, como el modo de alto
+/// contraste, y así las llamadas a `tema::texto()` y compañía de la isla no
+/// necesitan saber en qué tema están.
+// añadido en la 0.2.3
+static ISLA_CLARA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// añadido en la 0.2.3
+pub fn pintando_isla_clara(activo: bool) {
+    ISLA_CLARA.store(activo, Ordering::Relaxed);
+}
+
+fn isla_clara() -> bool {
+    ISLA_CLARA.load(Ordering::Relaxed)
+}
+
 // 0.1.0
 fn token(nombre: &str, claro: Color, oscuro: Color) -> Color {
     let normal = if es_claro() { claro } else { oscuro };
+    if isla_clara() && !alto_contraste() {
+        // Los valores de la maqueta («Panel e isla»): la isla `#D8D8DD`, tinta
+        // `#1C1C1E` y el interruptor apagado un paso más oscuro que ella.
+        match nombre {
+            "card" => return hex(0xd8d8dd),
+            "texto" => return hex(0x1c1c1e),
+            "control_apagado" => return hex(0xbcbcc1),
+            _ => {}
+        }
+    }
     if !alto_contraste() {
         return normal;
     }
@@ -664,6 +692,11 @@ pub fn acento_actual() -> Acento {
 /// El acento del sistema, el único color que significa «esto se toca».
 // 0.1.0
 pub fn acento() -> Color {
+    // Sobre la isla clara el acento del tema (`#007aff`, 2,7:1) no se ve: se
+    // oscurece un 18 %, que en el azul da el `#0a60d6` de la maqueta.
+    if isla_clara() && !alto_contraste() {
+        return mezclar(acento_actual().color(), Color::BLACK, 0.18);
+    }
     acento_actual().color()
 }
 
@@ -750,6 +783,95 @@ pub fn alfa(c: Color, a: f32) -> Color {
 /// de diseño— y por eso sigue siendo constante.
 pub const TEXTO2: Color = hex(0x8e8e93);
 
+/// El texto secundario de ahora. Con alto contraste sube a casi el del texto:
+/// `#8e8e93` da 3,3:1 sobre blanco y la accesibilidad pide 7:1.
+// añadido en la 0.2.3
+pub fn texto2() -> Color {
+    // `#8e8e93` sobre `#D8D8DD` da 2,6:1; la maqueta baja un paso, a `#545458`.
+    if isla_clara() && !alto_contraste() {
+        return hex(0x545458);
+    }
+    match (alto_contraste(), es_claro()) {
+        (false, true) => hex(0x6c6c70),
+        (false, false) => hex(0x98989f),
+        (true, true) => hex(0x3a3a3c),
+        (true, false) => hex(0xd1d1d6),
+    }
+}
+
+fn resolver_tinta_en(base: Color, fondo: Color, minimo: f32) -> Color {
+    let objetivo = if luminancia(fondo) > 0.179 {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+    (0..=20)
+        .map(|n| mezclar(base, objetivo, n as f32 * 0.05))
+        .find(|c| contraste(*c, fondo) >= minimo)
+        .unwrap_or(objetivo)
+}
+
+/// Variante de [`rojo`] que alcanza al menos 4,5:1 de contraste sobre `fondo`.
+// añadido en la 0.2.3
+pub fn rojo_en(fondo: Color) -> Color {
+    resolver_tinta_en(rojo(), fondo, 4.5)
+}
+
+/// Variante de [`acento`] que alcanza al menos 4,5:1 de contraste sobre `fondo`.
+// añadido en la 0.2.3
+pub fn acento_en(fondo: Color) -> Color {
+    resolver_tinta_en(acento(), fondo, 4.5)
+}
+
+/// Superficie tonal suave para insignias destructivas sobre [`card`].
+// añadido en la 0.2.3
+pub fn rojo_suave() -> Color {
+    let p = if alto_contraste() {
+        0.24
+    } else if es_claro() {
+        0.12
+    } else {
+        0.18
+    };
+    mezclar(card(), rojo(), p)
+}
+
+/// Superficie tonal suave del acento sobre [`card`].
+// añadido en la 0.2.3
+pub fn acento_suave_en_tarjeta() -> Color {
+    let p = if alto_contraste() {
+        0.24
+    } else if es_claro() {
+        0.12
+    } else {
+        0.18
+    };
+    mezclar(card(), acento(), p)
+}
+
+/// Pareja accesible `(fondo, tinta)` para controles destructivos activos.
+/// Garantiza al menos 4,5:1 entre fondo y tinta y al menos 3,0:1 del fondo
+/// respecto a [`card`].
+// añadido en la 0.2.3
+pub fn pareja_destructiva() -> (Color, Color) {
+    let tarjeta = card();
+    let base = rojo();
+    if let Some(fondo) = (0..=20)
+        .map(|n| mezclar(base, Color::BLACK, n as f32 * 0.04))
+        .find(|&f| contraste(f, Color::WHITE) >= 4.5 && contraste(f, tarjeta) >= 3.0)
+    {
+        return (fondo, Color::WHITE);
+    }
+    for n in 0..=20 {
+        let f = mezclar(base, Color::BLACK, n as f32 * 0.04);
+        let tinta = tinta_sobre(f);
+        if contraste(f, tinta) >= 4.5 && contraste(f, tarjeta) >= 3.0 {
+            return (f, tinta);
+        }
+    }
+    (base, tinta_sobre(base))
+}
+
 /// Una superficie **por encima** de la que hay debajo: el `--surface` del
 /// sistema de diseño, un velo del color del texto (blanco al 8 % en oscuro,
 /// negro al 6 % en claro).
@@ -778,6 +900,102 @@ pub fn superficie() -> Color {
 pub fn superficie_en_tarjeta() -> Color {
     let s = superficie();
     mezclar(card(), Color { a: 1.0, ..s }, s.a)
+}
+
+/// El color dominante del fondo, avivado. La media de un fondo variado sale
+/// grisácea: separarla del gris un 80 % devuelve el matiz que se ve.
+// añadido en la 0.2.2
+fn dominante_vivo() -> Color {
+    let c = hex(PALETA_FONDO[0].load(Ordering::Relaxed));
+    let gris = (c.r + c.g + c.b) / 3.0;
+    let vivo = |v: f32| (gris + (v - gris) * 1.8).clamp(0.0, 1.0);
+    Color::from_rgb(vivo(c.r), vivo(c.g), vivo(c.b))
+}
+
+/// El fondo de un aviso: la tarjeta teñida con el color del fondo de
+/// pantalla, opaca (ver «Sin translúcidos»). 22 % en oscuro y 28 % en claro:
+/// con menos no se nota el matiz y con más el texto secundario pierde 4,5:1.
+// añadido en la 0.2.2
+pub fn aviso_fondo() -> Color {
+    // Sin tinte: el matiz del fondo le quita contraste al texto.
+    if alto_contraste() {
+        return card();
+    }
+    mezclar(
+        card(),
+        dominante_vivo(),
+        if es_claro() { 0.28 } else { 0.22 },
+    )
+}
+
+/// La tarjeta de los avisos de atrás de la pila: el tinte del de delante sobre
+/// una base más honda (`--tinte-atras` del diseño), igual en todos los niveles;
+/// la profundidad la da el encogerse y asomar.
+// añadido en la 0.2.2
+pub fn aviso_fondo_atras() -> Color {
+    if alto_contraste() {
+        return bg();
+    }
+    if es_claro() {
+        mezclar(hex(0xebebf0), dominante_vivo(), 0.30)
+    } else {
+        mezclar(hex(0x141416), dominante_vivo(), 0.22)
+    }
+}
+
+/// El filo de 1 px del aviso: el mismo matiz, un escalón más claro, para que
+/// no se vea plano sobre un fondo parecido.
+// añadido en la 0.2.2
+pub fn aviso_filo() -> Color {
+    if alto_contraste() {
+        return texto();
+    }
+    if es_claro() {
+        mezclar(card(), dominante_vivo(), 0.45)
+    } else {
+        mezclar(hex(0x343438), dominante_vivo(), 0.30)
+    }
+}
+
+/// El texto secundario sobre el aviso teñido: el `TEXTO2` de siempre baja de
+/// 4,5:1 sobre el azul pálido en claro.
+// añadido en la 0.2.2
+pub fn aviso_texto2() -> Color {
+    if alto_contraste() {
+        return texto();
+    }
+    if es_claro() {
+        hex(0x3d4652)
+    } else {
+        hex(0xb8bcc6)
+    }
+}
+
+/// Lo que va en relieve dentro de un aviso (botones, ✕, surcos).
+// añadido en la 0.2.2
+pub fn aviso_relieve() -> Color {
+    if alto_contraste() {
+        return if es_claro() { hex(0xd8d8d8) } else { hex(0x3a3a3a) };
+    }
+    if es_claro() {
+        mezclar(hex(0xffffff), dominante_vivo(), 0.40)
+    } else {
+        mezclar(hex(0x2c2c30), dominante_vivo(), 0.25)
+    }
+}
+
+/// El botón secundario del aviso con el puntero encima: `--div` del diseño,
+/// un gris neutro y no el matiz del fondo.
+// añadido en la 0.2.2
+pub fn aviso_boton_hover() -> Color {
+    if alto_contraste() {
+        return if es_claro() { hex(0xbcbcbc) } else { hex(0x5a5a5a) };
+    }
+    if es_claro() {
+        hex(0xebebeb)
+    } else {
+        hex(0x2e2e30)
+    }
 }
 
 /// Lo que va **en relieve** dentro de un grupo: baldosas, botones redondos,
@@ -864,6 +1082,13 @@ pub fn bateria_baja() -> Color {
 pub fn tinta_sobre(fondo: Color) -> Color {
     let l = luminancia(fondo);
     if l > 0.45 { Color::BLACK } else { Color::WHITE }
+}
+
+/// Razón de contraste WCAG entre dos colores opacos, de 1 a 21.
+// added 0.2.3
+pub fn contraste(a: Color, b: Color) -> f32 {
+    let (x, y) = (luminancia(a), luminancia(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
 // 0.1.1
@@ -1175,6 +1400,11 @@ impl ParametrosMuelle {
 pub const M_RAPIDO: ParametrosMuelle = ParametrosMuelle::nuevo(1.0, 0.21);
 pub const M_SUAVE: ParametrosMuelle = ParametrosMuelle::nuevo(1.0, 0.315);
 pub const M_REBOTE: ParametrosMuelle = ParametrosMuelle::nuevo(0.8, 0.28);
+// añadido en la 0.2.3 -- la pastilla de los segmentados.
+// modified 0.2.3 -- más lenta: calcada del Player (pico a 157 ms) se veía brusca.
+// Con ζ 0,72 y respuesta 0,36 s el sobrepaso es 3,8 % y el pico, que cae en
+// π/(ω·√(1-ζ²)), sale a 259 ms.
+pub const M_SEGMENTADO: ParametrosMuelle = ParametrosMuelle::nuevo(0.72, 0.36);
 
 // añadido en la 0.2.0 -- integral de una velocidad con decaimiento exponencial de 200 ms; no espera al usuario.
 pub fn proyectar_impulso(posicion: f32, velocidad: f32) -> f32 {
@@ -1216,6 +1446,12 @@ impl Muelle {
     // añadido en la 0.2.0
     pub fn destino(&self) -> f32 {
         self.destino
+    }
+
+    /// Cambia la respuesta/amortiguación del muelle conservando posición y
+    /// velocidad actuales para poder ajustar el ritmo al vuelo.
+    pub fn poner_parametros(&mut self, parametros: ParametrosMuelle) {
+        self.parametros = parametros;
     }
 
     // añadido en la 0.2.0
@@ -1318,6 +1554,9 @@ pub struct Transicion {
     destino: f32,
     inicio: std::time::Instant,
     frecuencia: f32,
+    /// ζ. Hasta la 0.2.3 se daba por 1 y `M_REBOTE` no rebotaba aquí.
+    // añadido en la 0.2.3
+    amortiguacion: f32,
     /// Lo que se considera «llegado», proporcional al salto: con un umbral
     /// fijo de 0,0005 un desplazamiento de 500 px seguía pidiendo fotogramas
     /// de movimiento subpíxel casi el doble de tiempo que uno de 0 a 1.
@@ -1334,15 +1573,29 @@ impl Transicion {
             destino: valor,
             inicio: std::time::Instant::now(),
             frecuencia: parametros.rigidez.sqrt(),
+            amortiguacion: parametros.amortiguacion / (2.0 * parametros.rigidez.sqrt()),
             tolerancia: 0.0005,
         }
     }
 
     /// Posición y velocidad a `t` segundos del último cambio de destino.
     // añadido en la 0.2.0
+    // modificado en la 0.2.3 -- caso subamortiguado
     fn estado(&self, t: f32) -> (f32, f32) {
         let w = self.frecuencia;
         let c1 = self.origen - self.destino;
+        let z = self.amortiguacion;
+        if z < 1.0 {
+            let wd = w * (1.0 - z * z).sqrt();
+            let c2 = (self.velocidad + z * w * c1) / wd;
+            let e = (-z * w * t).exp();
+            let (sen, cos) = (wd * t).sin_cos();
+            let x = c1 * cos + c2 * sen;
+            return (
+                self.destino + x * e,
+                (-z * w * x + wd * (c2 * cos - c1 * sen)) * e,
+            );
+        }
         let c2 = self.velocidad + w * c1;
         let e = (-w * t).exp();
         (
@@ -1737,6 +1990,20 @@ mod tests {
         assert_eq!(Acento::desde_nombre("fucsia"), None);
     }
 
+    /// El de los segmentados se pasa un ~4 % hacia los 260 ms y se asienta
+    /// antes de 0,6 s: lento para leerse, sin quedarse colgando.
+    #[test]
+    fn el_muelle_del_segmentado_se_pasa_como_el_player() {
+        let mut t = Transicion::nueva(0.0, M_SEGMENTADO);
+        t.destino = 1.0;
+        let (pico, cuando) = (0..600)
+            .map(|ms| (t.estado(ms as f32 / 1000.0).0, ms))
+            .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a });
+        assert!((1.03..1.045).contains(&pico), "{pico}");
+        assert!((245..275).contains(&cuando), "{cuando} ms");
+        assert!((t.estado(0.6).0 - 1.0).abs() < 0.005);
+    }
+
     /// Redirigir a medio camino no puede dar un salto: es lo que se ve al
     /// sacar el ratón de un botón antes de que acabe de encenderse.
     #[test]
@@ -2017,5 +2284,55 @@ mod tests {
         assert!((fraccion(mitad, D_VENTANA) - 0.5).abs() < 0.01);
 
         aplicar_efectos_reducidos(false);
+    }
+
+    #[test]
+    fn contraste_hig_de_texto2_y_parejas_semanticas() {
+        let antes = (actual(), acento_actual(), alto_contraste());
+        for hc in [false, true] {
+            aplicar_alto_contraste(hc);
+            for tema in [Tema::Claro, Tema::Oscuro] {
+                aplicar(tema);
+                let tarjeta = card();
+                let sup = superficie_en_tarjeta();
+                assert!(
+                    contraste(texto2(), tarjeta) >= 4.5,
+                    "texto2 sobre card en {tema:?} hc={hc}"
+                );
+                assert!(
+                    contraste(texto2(), sup) >= 4.5,
+                    "texto2 sobre superficie en {tema:?} hc={hc}"
+                );
+                assert!(
+                    contraste(rojo_en(tarjeta), tarjeta) >= 4.5,
+                    "rojo_en(card) en {tema:?} hc={hc}"
+                );
+                let rs = rojo_suave();
+                assert!(
+                    contraste(rojo_en(rs), rs) >= 4.5,
+                    "rojo_en(rojo_suave) en {tema:?} hc={hc}"
+                );
+                let (df, dt) = pareja_destructiva();
+                assert!(
+                    contraste(df, dt) >= 4.5 && contraste(df, tarjeta) >= 3.0,
+                    "pareja_destructiva en {tema:?} hc={hc}"
+                );
+                for ac in Acento::FIJOS {
+                    aplicar_acento(ac);
+                    let asv = acento_suave_en_tarjeta();
+                    assert!(
+                        contraste(acento_en(tarjeta), tarjeta) >= 4.5,
+                        "acento_en(card) {ac:?} en {tema:?} hc={hc}"
+                    );
+                    assert!(
+                        contraste(acento_en(asv), asv) >= 4.5,
+                        "acento_en(acento_suave) {ac:?} en {tema:?} hc={hc}"
+                    );
+                }
+            }
+        }
+        aplicar(antes.0);
+        aplicar_acento(antes.1);
+        aplicar_alto_contraste(antes.2);
     }
 }

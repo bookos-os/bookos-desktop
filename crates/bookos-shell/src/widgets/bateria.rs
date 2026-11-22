@@ -623,6 +623,10 @@ impl Widget for Bateria {
         "bateria"
     }
 
+    fn accesible(&self) -> (&'static str, String) {
+        (crate::emergente::t("Batería", "Battery"), crate::widget::bateria_accesible(self.dato.as_ref()))
+    }
+
     // 0.1.0
     fn subsistemas(&self) -> &'static [&'static str] {
         &["power_supply"]

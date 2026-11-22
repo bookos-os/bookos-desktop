@@ -68,6 +68,13 @@ impl Widget for Escritorios {
         "escritorios"
     }
 
+    fn accesible(&self) -> (&'static str, String) {
+        (
+            crate::emergente::t("Escritorios", "Desktops"),
+            format!("{} / {}", self.activo + 1, self.cuantos),
+        )
+    }
+
     /// No lee nada: su dato entra por `Widget::escritorios`, no de sysfs.
     // 0.1.0
     fn refrescar(&mut self) -> bool {

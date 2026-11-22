@@ -615,10 +615,11 @@ impl Ajustes {
 ///
 /// Se llama desde el bucle de frames al aplicar apariencia o efectos. Sin la
 /// señal, una app GTK ya abierta se queda con el tema con el que arrancó.
-// 0.1.0
-pub fn apariencia_cambiada(conexion: Option<&zbus::blocking::Connection>) {
+// modified 0.2.2 -- avisa también por `org.bookos.Desktop.AppearanceChanged`
+pub fn apariencia_cambiada(state: &crate::state::BookosComp) {
     tema_gtk();
-    let Some(conexion) = conexion else {
+    crate::ajustes::aspecto_cambiado(state.bus_ajustes.as_ref());
+    let Some(conexion) = state.bus_portal.as_ref() else {
         return;
     };
     for (clave, valor) in [
@@ -655,15 +656,32 @@ pub fn apariencia_cambiada(conexion: Option<&zbus::blocking::Connection>) {
 /// esto reescribiría el tema GTK del anfitrión.
 // 0.1.0
 // modified 0.1.1 -- pasa el tema y tamaño de cursor a GTK y recoge los gsettings sin dejar zombis
+// modified 0.2.3 -- consulta gsettings, carga config y reescribe settings.ini en segundo plano para no bloquear el hilo del compositor
 pub fn tema_gtk() {
     if std::env::var("XDG_CURRENT_DESKTOP").as_deref() != Ok("BookOS") {
         return;
     }
     let claro = bookos_shell::tema::es_claro();
+    let acento = bookos_shell::tema::acento_actual();
+    let reducidos = bookos_shell::tema::efectos_reducidos();
+    // GTK guarda sus propias preferencias y puede ignorar XCURSOR_THEME:
+    // dejarlas en Breeze cambiaba el puntero al entrar en una ventana GTK.
+    let cursor = crate::cursor::nombre_tema();
+    let _ = std::thread::Builder::new()
+        .name("tema-gtk".into())
+        .spawn(move || aplicar_tema_gtk(claro, acento, reducidos, cursor));
+}
+
+fn aplicar_tema_gtk(
+    claro: bool,
+    acento: bookos_shell::tema::Acento,
+    reducidos: bool,
+    cursor: String,
+) {
     // Del tema GTK solo hay variantes azul y verde; los acentos que no son
     // verdosos se quedan con la azul, que es la de serie.
     use bookos_shell::tema::Acento;
-    let color = match bookos_shell::tema::acento_actual() {
+    let color = match acento {
         Acento::Verde | Acento::Turquesa => "Green",
         _ => "Blue",
     };
@@ -673,24 +691,33 @@ pub fn tema_gtk() {
     // claro u oscuro.
     let tintado = bookos_shell::icono::tema_elegido().filter(|t| t.starts_with("BookOS-Tinted"));
     let iconos = tintado.as_deref().unwrap_or_else(|| tema_iconos(claro));
-    // GTK guarda sus propias preferencias y puede ignorar XCURSOR_THEME:
-    // dejarlas en Breeze cambiaba el puntero al entrar en una ventana GTK.
-    let cursor = crate::cursor::nombre_tema();
-    let tamano_cursor = bookos_shell::Config::cargar().cursor.to_string();
+    let config = bookos_shell::Config::cargar();
+    let tamano_cursor = config.cursor.to_string();
+    // GTK 3 y 4 releen este factor en vivo; es la forma de agrandar el texto de
+    // las aplicaciones GTK sin tocar su geometría.
+    // añadido en la 0.2.3
+    let factor_texto = format!("{:.2}", f64::from(config.texto_tamano) / 100.0);
     let mut hijos = Vec::new();
     for (clave, valor) in [
         ("gtk-theme", tema.as_str()),
         ("icon-theme", iconos),
         ("cursor-theme", cursor.as_str()),
         ("cursor-size", tamano_cursor.as_str()),
+        // Las apps GTK no leen `reduced-motion` del portal: lo suyo es esta
+        // clave de gsettings.
+        // añadido en la 0.2.3
+        (
+            "enable-animations",
+            if reducidos { "false" } else { "true" },
+        ),
+        ("text-scaling-factor", factor_texto.as_str()),
         (
             "color-scheme",
             if claro { "prefer-light" } else { "prefer-dark" },
         ),
     ] {
-        // Sin esperar en este hilo: `gsettings` habla con dconf por D-Bus y no
-        // hay nada que hacer con su respuesta. Se recoge en segundo plano para
-        // no dejar zombis.
+        // Sin esperar en el hilo del compositor: `gsettings` habla con dconf por
+        // D-Bus y ya estamos en un hilo propio que recoge los procesos al final.
         if let Ok(hijo) = std::process::Command::new("gsettings")
             .args(["set", "org.gnome.desktop.interface", clave, valor])
             .stdout(std::process::Stdio::null())
@@ -701,48 +728,40 @@ pub fn tema_gtk() {
         }
     }
     let sonido = tema_sonido();
-    if let Some(sonido) = sonido {
-        // El OSD suena con `canberra-gtk-play`, que sigue este ajuste; las apps
-        // GTK que avisan con sonido, también.
-        if let Ok(hijo) = std::process::Command::new("gsettings")
+    if let Some(sonido) = sonido
+        && let Ok(hijo) = std::process::Command::new("gsettings")
             .args(["set", "org.gnome.desktop.sound", "theme-name", sonido])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-        {
-            hijos.push(hijo);
-        }
+    {
+        hijos.push(hijo);
     }
-    if !hijos.is_empty() {
-        std::thread::spawn(move || {
-            for mut hijo in hijos {
-                let _ = hijo.wait();
-            }
-        });
-    }
-    let Some(config) =
-        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-    else {
-        return;
-    };
     let oscuro = if claro { "false" } else { "true" };
-    for version in ["gtk-3.0", "gtk-4.0"] {
-        let ruta = config.join(version).join("settings.ini");
-        let mut valores = vec![
-            ("gtk-theme-name", tema.as_str()),
-            ("gtk-icon-theme-name", iconos),
-            ("gtk-cursor-theme-name", cursor.as_str()),
-            ("gtk-cursor-theme-size", tamano_cursor.as_str()),
-            // Si se quedara en `true`, GTK cargaría `gtk-dark.css` del tema
-            // claro y seguiría saliendo oscuro.
-            ("gtk-application-prefer-dark-theme", oscuro),
-        ];
-        if let Some(sonido) = sonido {
-            valores.push(("gtk-sound-theme-name", sonido));
+    if let Some(config_dir) =
+        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+    {
+        for version in ["gtk-3.0", "gtk-4.0"] {
+            let ruta = config_dir.join(version).join("settings.ini");
+            let mut valores = vec![
+                ("gtk-theme-name", tema.as_str()),
+                ("gtk-icon-theme-name", iconos),
+                ("gtk-cursor-theme-name", cursor.as_str()),
+                ("gtk-cursor-theme-size", tamano_cursor.as_str()),
+                // Si se quedara en `true`, GTK cargaría `gtk-dark.css` del tema
+                // claro y seguiría saliendo oscuro.
+                ("gtk-application-prefer-dark-theme", oscuro),
+            ];
+            if let Some(sonido) = sonido {
+                valores.push(("gtk-sound-theme-name", sonido));
+            }
+            if let Err(err) = reescribir_ini(&ruta, &valores) {
+                tracing::warn!(?ruta, "no se pudo escribir el tema GTK: {err}");
+            }
         }
-        if let Err(err) = reescribir_ini(&ruta, &valores) {
-            tracing::warn!(?ruta, "no se pudo escribir el tema GTK: {err}");
-        }
+    }
+    for mut hijo in hijos {
+        let _ = hijo.wait();
     }
 }
 
@@ -1303,6 +1322,7 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
         }
         Aviso::Cerrar { sesion } => {
             state.emisiones.quitar(sesion);
+            crate::backend::actualizar_privacidad(state);
         }
         Aviso::Cancelar { sesion } => cancelar(state, sesion),
         Aviso::Descriptor { respuesta } => {
@@ -1332,6 +1352,7 @@ fn cancelar(state: &mut crate::state::BookosComp, sesion: u32) {
         state.needs_redraw = true;
     }
     state.emisiones.quitar(sesion);
+    crate::backend::actualizar_privacidad(state);
 }
 
 // 0.1.0
@@ -1436,6 +1457,7 @@ pub fn responder(state: &mut crate::state::BookosComp, sesion: u32, pantalla: Op
         // siguiente dibujo y no haya un hueco negro al empezar la llamada.
         ultimo: std::time::Instant::now() - periodo,
     });
+    crate::backend::actualizar_privacidad(state);
     consentimiento.respuesta.entregar((ancho, alto));
 }
 

@@ -12,7 +12,6 @@ use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{self, WinitEvent, WinitGraphicsBackend};
 use smithay::desktop::space::render_output;
-use smithay::desktop::utils::surface_primary_scanout_output;
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -171,6 +170,7 @@ pub fn run(
     }
     state.cristal = crate::desenfoque::Cristal::new(backend.renderer());
     state.genio = crate::genio::Genio::new(backend.renderer());
+    state.esquinas = crate::esquinas::Esquinas::new(backend.renderer());
     state.contexto_gl = Some(smithay::backend::renderer::Renderer::context_id(
         backend.renderer(),
     ));
@@ -201,6 +201,7 @@ pub fn run(
         );
     }
     instalar_pantallas(state, &output);
+    crate::backend::programar_precalentado(state);
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     // EGL_BUFFER_AGE_EXT no es válido hasta que la superficie ha pasado por un
@@ -224,7 +225,7 @@ pub fn run(
             if state.needs_redraw {
                 con_pendiente += 1;
             }
-            if std::env::var_os("BOOKOS_PERFIL").is_some()
+            if crate::backend::perfil_activo()
                 && reloj_vueltas.elapsed() >= Duration::from_secs(1)
             {
                 tracing::info!(vueltas, con_pendiente, "vueltas del pump por segundo");
@@ -511,9 +512,7 @@ fn draw(
             // cliente que pidió uno para engancharse al vsync se queda parado
             // para siempre si aquí se sale sin decirle nada.
             let time = state.start_time.elapsed();
-            for window in state.space.elements() {
-                window.send_frame(output, time, Some(periodo), surface_primary_scanout_output);
-            }
+            crate::backend::enviar_frames_ventanas(state, output, time, periodo);
             crate::backend::enviar_frames_capas(output, time, periodo);
             // Y las capturas también aquí: componen su propio buffer y no
             // dependen de que este fotograma haya cambiado nada. Sin esto, una
@@ -525,7 +524,7 @@ fn draw(
         }
     }
 
-    if std::env::var_os("BOOKOS_PERFIL").is_some() {
+    if crate::backend::perfil_activo() {
         tracing::info!(
             escena_ms = format_args!("{:.2}", t_escena.as_secs_f64() * 1000.0),
             render_ms = format_args!("{:.2}", t_render.as_secs_f64() * 1000.0),
@@ -539,9 +538,7 @@ fn draw(
     // dibujar el siguiente". Enviarlos antes hace que los clientes corran en
     // vacío y es una fuga de consumo clásica.
     let time = state.start_time.elapsed();
-    for window in state.space.elements() {
-        window.send_frame(output, time, Some(periodo), surface_primary_scanout_output);
-    }
+    crate::backend::enviar_frames_ventanas(state, output, time, periodo);
     crate::backend::enviar_frames_capas(output, time, periodo);
 
     // añadido en la 0.2.0 -- anidado confirma al terminar submit, no existe vblank de KMS.

@@ -154,12 +154,16 @@ pub fn barra<'a>(
             .height(Length::Fixed(FILA_BARRA))
             .center_y(Length::Fixed(FILA_BARRA))
     };
-    let relleno = (ancho * fraccion.clamp(0.0, 1.0)).max(grueso);
-    let base: PanelElement<'a> = iced_widget::stack![
-        pieza(ancho, grueso, surco, grueso / 2.0),
-        pieza(relleno, grueso, lleno, grueso / 2.0),
-    ]
-    .into();
+    let base: PanelElement<'a> = if fraccion <= 0.0 {
+        pieza(ancho, grueso, surco, grueso / 2.0).into()
+    } else {
+        let relleno = (ancho * fraccion.clamp(0.0, 1.0)).max(grueso);
+        iced_widget::stack![
+            pieza(ancho, grueso, surco, grueso / 2.0),
+            pieza(relleno, grueso, lleno, grueso / 2.0),
+        ]
+        .into()
+    };
     let mut capas = vec![centrada(base).into()];
     // Los cortes van del color de la placa de detrás, para que se lean como
     // huecos tanto sobre el relleno como sobre el surco.
@@ -178,7 +182,7 @@ pub fn barra<'a>(
         // para que no se tome por un tirador.
         let y = (FILA_BARRA + PISTA_AGARRADA) / 2.0 + 1.0;
         capas.push(
-            container(pieza(5.0, 5.0, tema::TEXTO2, 2.5))
+            container(pieza(5.0, 5.0, tema::texto2(), 2.5))
                 .padding(iced_core::Padding::ZERO.left(x).top(y))
                 .width(Length::Fixed(ancho))
                 .height(Length::Fixed(FILA_BARRA))

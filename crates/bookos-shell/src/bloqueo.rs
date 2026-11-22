@@ -92,25 +92,41 @@ const FECHA: f32 = 22.0;
 /// Diámetro de los puntos de la contraseña.
 pub const PUNTO: f32 = 10.0;
 const ESTADO_TOTAL: Duration = Duration::from_millis(520);
+// modificado en la 0.2.3 -- la tarjeta del Player: carátula grande, barra a
+// todo el ancho con los tiempos a los lados y mandos sin placa. En vertical,
+// como el Player, no cabe: a 1280×800 lógicos el bloque de acceso acaba hacia
+// los 775 px y quedan ~240 debajo.
 const MEDIOS_ANCHO: f32 = 372.0;
-const MEDIOS_ARTE: f32 = 78.0;
-const MEDIOS_INFO: f32 = 246.0;
-const MEDIOS_ALTO: f32 = 124.0;
-const MEDIOS_PAD: f32 = 12.0;
-/// Alto de la fila de botones, que es también el diámetro del central.
-const MEDIOS_CONTROL: f32 = 34.0;
-/// Diámetro de anterior y siguiente.
-const MEDIOS_BOTON: f32 = 30.0;
-/// De centro a centro entre dos botones.
-const MEDIOS_PASO: f32 = 39.0;
+const MEDIOS_PAD: f32 = 16.0;
+const MEDIOS_ARTE: f32 = 96.0;
+/// Donde empieza el texto, a la derecha de la carátula.
+const MEDIOS_INFO_X: f32 = MEDIOS_PAD + MEDIOS_ARTE + 14.0;
+const MEDIOS_INFO: f32 = MEDIOS_ANCHO - MEDIOS_INFO_X - MEDIOS_PAD;
+/// La fila de la barra, a 12 de la carátula.
+const MEDIOS_BARRA_Y: f32 = MEDIOS_PAD + MEDIOS_ARTE + 12.0;
+const MEDIOS_BARRA_FILA: f32 = 16.0;
+/// Lo que ocupa cada tiempo a un lado de la barra.
+const MEDIOS_TIEMPO: f32 = 40.0;
+const MEDIOS_BARRA_X: f32 = MEDIOS_PAD + MEDIOS_TIEMPO + 8.0;
+const MEDIOS_BARRA_W: f32 = MEDIOS_ANCHO - 2.0 * MEDIOS_BARRA_X;
+const MEDIOS_CONTROLES_Y: f32 = MEDIOS_BARRA_Y + MEDIOS_BARRA_FILA + 8.0;
+/// Alto de la fila de mandos y de la zona que atiende cada uno.
+const MEDIOS_CONTROL: f32 = 40.0;
+/// De centro a centro entre dos mandos.
+const MEDIOS_PASO: f32 = 64.0;
+const MEDIOS_ALTO: f32 = MEDIOS_CONTROLES_Y + MEDIOS_CONTROL + MEDIOS_PAD;
 
 /// Alto de la línea del nombre de usuario: tamaño 20 con el interlineado
 /// habitual de 1,2.
 const ALTO_NOMBRE: f32 = 24.0;
-/// Alto del aviso de la huella: tamaño 13 con el mismo interlineado. Está
+/// Alto del renglón de estado bajo el campo: la píldora de [`aviso`].
+// añadido en la 0.2.3
+const ALTO_MENSAJE: f32 = 26.0;
+/// Alto del aviso de la huella: otra píldora y 4 de aire sobre ella. Está
 /// vacío la mayor parte del tiempo, pero reserva su hueco igual —la tarjeta de
 /// medios no puede depender de si hoy hay algo que decir sobre la huella.
-const ALTO_HUELLA: f32 = 16.0;
+// modificado en la 0.2.3 -- píldora en vez de texto suelto
+const ALTO_HUELLA: f32 = 4.0 + ALTO_MENSAJE;
 /// Aire mínimo entre el bloque de acceso y la tarjeta de medios.
 ///
 /// Sin este mínimo, la tarjeta se posicionaba a una fracción fija de la
@@ -122,10 +138,69 @@ const ALTO_HUELLA: f32 = 16.0;
 /// por la carátula. En una pantalla más alta este mínimo no hace nada, porque
 /// `medios_y` ya deja de sobra.
 const MARGEN_MEDIOS: f32 = 24.0;
+/// Aire mínimo bajo la tarjeta de medios hasta el borde de la pantalla.
+// added 0.2.3
+const MARGEN_INFERIOR: f32 = 40.0;
 
 /// Fondo del campo y del botón: casi negro y translúcido, para que se vea el
 /// fondo por debajo sin perder el contraste de los puntos.
 pub const FONDO_CAMPO: Color = tema::hexa(0x16191e, 0.82);
+
+/// El cristal del campo, el menú y la tarjeta según el tema. En claro es la
+/// tarjeta del tema con el mismo alfa que el oscuro, para que el fondo se
+/// siga intuyendo igual en los dos. El greeter no tiene tema y sigue con
+/// [`FONDO_CAMPO`].
+// añadido en la 0.2.3
+fn fondo_campo() -> Color {
+    if tema::es_claro() {
+        tema::alfa(tema::card(), FONDO_CAMPO.a)
+    } else {
+        FONDO_CAMPO
+    }
+}
+
+/// La tinta que va sobre [`fondo_campo`]: el blanco de siempre en oscuro y el
+/// texto del tema en claro.
+// añadido en la 0.2.3
+fn tinta_campo() -> Color {
+    if tema::es_claro() {
+        tema::texto()
+    } else {
+        Color::WHITE
+    }
+}
+
+/// El fondo de la tarjeta de medios: el del campo teñido con la carátula,
+/// como la tarjeta grande del centro de control. Sin carátula, el del campo:
+/// el acento que guarda `Medio::color` en ese caso no es de la canción.
+// added 0.2.3
+fn fondo_medio(medio: &Medio) -> Color {
+    let base = fondo_campo();
+    if medio.caratula.is_none() {
+        return base;
+    }
+    // 22 % en claro, el de la celda del centro; en oscuro hace falta más
+    // porque sobre casi negro el mismo porcentaje apenas se ve.
+    let cuanto = if tema::es_claro() { 0.22 } else { 0.32 };
+    Color {
+        a: base.a,
+        ..tema::mezclar(base, medio.color, cuanto)
+    }
+}
+
+/// Lo recorrido de la barra: el color de la carátula llevado hacia la tinta
+/// hasta separarse 4,5:1 del fondo de la tarjeta. Sin carátula, la tinta.
+// added 0.2.3
+fn realce_medio(medio: &Medio, fondo: Color) -> Color {
+    let tinta = tinta_campo();
+    if medio.caratula.is_none() {
+        return tinta;
+    }
+    (0..=10)
+        .map(|i| tema::mezclar(medio.color, tinta, i as f32 / 10.0))
+        .find(|r| tema::contraste(*r, fondo) >= 4.5)
+        .unwrap_or(tinta)
+}
 
 /// Separación del botón de apagado respecto al borde de la pantalla.
 pub const MARGEN_ENERGIA: f32 = 22.0;
@@ -222,6 +297,8 @@ pub struct Medio {
     pub posicion: Option<u64>,
     pub duracion: Option<u64>,
     pub reproduciendo: bool,
+    // añadido en la 0.2.3
+    pub calidad: Option<crate::medios::Calidad>,
 }
 
 impl Medio {
@@ -254,6 +331,7 @@ impl Medio {
             posicion: sonando.posicion,
             duracion: sonando.duracion,
             reproduciendo: sonando.reproduciendo,
+            calidad: sonando.calidad,
         }
     }
 }
@@ -439,6 +517,39 @@ pub struct Bloqueo {
     /// algo que ya acabó.
     menu_desde: Option<(std::time::Instant, bool)>,
     pub medios: Vec<Medio>,
+    /// Dónde está el dedo en la barra mientras se arrastra, de 0 a 1. Manda
+    /// sobre lo que diga MPRIS hasta soltar: la lectura de cada segundo la
+    /// devolvería atrás a mitad del gesto.
+    // añadido en la 0.2.3
+    arrastre: Option<f32>,
+    /// El cursor está sobre la barra de la música.
+    // añadido en la 0.2.3
+    sobre_barra: bool,
+    /// Cuánto ha engordado la barra (0 fina, 1 gruesa), con el muelle de la
+    /// del centro de control: antes saltaba de 5 a 10 px de un fotograma a otro.
+    // added 0.2.3
+    grosor_barra: tema::Transicion,
+    /// El mando apretado y dónde empezó el toque. La orden sale al soltar
+    /// (HIG §8), y alejarse más de [`CANCELA_TOQUE`] la cancela.
+    // added 0.2.3
+    apretado: Option<(Mando, (f32, f32))>,
+    /// Cuánto está hundido `hundido_cual` (0 a 1). Se queda con el mando al
+    /// soltar para que vuelva a su tamaño animado y no de golpe.
+    // added 0.2.3
+    hundido: tema::Transicion,
+    // added 0.2.3
+    hundido_cual: Option<Mando>,
+    /// Cuándo empezó a hundirse y, si se soltó antes de [`HUNDIDO_MINIMO`],
+    /// que la vuelta está pendiente.
+    // added 0.2.3
+    hundido_desde: Instant,
+    // added 0.2.3
+    vuelta_pendiente: bool,
+    /// Aleatorio y repetición, solo con BookOS Player: los demás reproductores
+    /// van con los tres mandos de siempre. `None` en los dos, sin ellos.
+    // añadido en la 0.2.3
+    aleatorio: Option<bool>,
+    repetir: Option<crate::medios::Repetir>,
     usuario: Usuario,
     config: crate::config::Bloqueo,
     /// Entrada de reloj, identidad y tarjetas, escalonada desde este instante.
@@ -493,6 +604,16 @@ impl Bloqueo {
             menu: false,
             menu_desde: None,
             medios: Vec::new(),
+            arrastre: None,
+            sobre_barra: false,
+            grosor_barra: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
+            apretado: None,
+            hundido: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
+            hundido_cual: None,
+            hundido_desde: Instant::now(),
+            vuelta_pendiente: false,
+            aleatorio: None,
+            repetir: None,
             usuario: Usuario::leer(avatar),
             config,
             estado_desde: ahora - ESTADO_TOTAL,
@@ -536,8 +657,8 @@ impl Bloqueo {
                 self.config.reloj_tamano * 1.3 + if self.config.fecha { FECHA * 1.3 } else { 0.0 },
             ),
             Capa::Acceso => {
-                let ancho = (CAMPO + 100.0).max(self.config.avatar_tamano + 40.0).min(w);
-                let alto = self.config.avatar_tamano
+                let ancho = (CAMPO + 100.0).max(self.avatar_tamano(h) + 40.0).min(w);
+                let alto = self.avatar_tamano(h)
                     + if self.config.nombre {
                         12.0 + ALTO_NOMBRE
                     } else {
@@ -548,7 +669,7 @@ impl Bloqueo {
                     + 10.0
                     + 40.0
                     + ALTO_HUELLA;
-                ((w - ancho) / 2.0, h * self.config.acceso_y, ancho, alto)
+                ((w - ancho) / 2.0, self.acceso_y(h), ancho, alto)
             }
             Capa::Medios if self.config.medios && !self.medios.is_empty() => {
                 let ancho = MEDIOS_ANCHO.min(w);
@@ -602,6 +723,9 @@ impl Bloqueo {
 
     // añadido en la 0.2.0
     pub fn avanzar_entrada(&mut self, ahora: Instant) -> bool {
+        if self.vuelta_pendiente {
+            self.devolver_hundido(ahora);
+        }
         let animada = self.entrada_animada();
         let mut cambio = false;
         for (indice, muelle) in self.entrada.iter_mut().enumerate() {
@@ -694,7 +818,7 @@ impl Bloqueo {
         .width(Length::Fixed(ancho))
         .height(Length::Fixed(alto));
 
-        let avatar = self.config.avatar_tamano * (0.90 + 0.10 * acceso_avance);
+        let avatar = self.avatar_tamano(pantalla.1) * (0.90 + 0.10 * acceso_avance);
         let mut acceso = column![self.avatar(avatar, acceso_avance)];
         if self.config.nombre {
             acceso = acceso.push(Space::new().height(Length::Fixed(12.0))).push(
@@ -727,7 +851,7 @@ impl Bloqueo {
             Space::new().width(Length::Fixed((-sacudida * 2.0).max(0.0))),
         ]
         .align_y(Vertical::Center);
-        let acceso_y = pantalla.1 * self.config.acceso_y + (1.0 - acceso_avance) * 30.0;
+        let acceso_y = self.acceso_y(pantalla.1) + (1.0 - acceso_avance) * 30.0;
         let capa_acceso = column![
             Space::new().height(Length::Fixed((acceso_y - origen_y).max(0.0))),
             container(acceso_desplazado)
@@ -738,8 +862,6 @@ impl Bloqueo {
         .height(Length::Fixed(alto));
 
         let mut capas = iced_widget::stack![];
-        // El velo de la canción no va aquí: lo pinta el compositor en la GPU.
-        // Ver `velo_medios`.
         if capa.is_none_or(|c| c == Capa::Reloj) {
             capas = capas.push(capa_reloj);
         }
@@ -794,6 +916,56 @@ impl Bloqueo {
         capas.into()
     }
 
+    /// Del avatar al renglón de la huella, que se reserva aunque esté vacío.
+    // added 0.2.3
+    fn alto_acceso(&self, alto_pantalla: f32) -> f32 {
+        self.avatar_tamano(alto_pantalla) + Self::BAJO_AVATAR
+    }
+
+    // added 0.2.3
+    const BAJO_AVATAR: f32 = 12.0 + ALTO_NOMBRE + 16.0 + ALTO_CAMPO + 10.0 + ALTO_MENSAJE + ALTO_HUELLA;
+
+    /// Dónde empieza el bloque de acceso: la fracción de la configuración,
+    /// subida lo justo para que quepa debajo la tarjeta de medios.
+    ///
+    /// A 1280×800 lógicos el bloque acaba en 642 con `acceso_y` 0,435 y la
+    /// tarjeta, de 208, no cabía: el piso le ganaba al techo y se salía por
+    /// abajo. Depende de que los medios estén activados y no de que suene
+    /// algo, para que el campo no se mueva bajo el dedo al empezar una
+    /// canción.
+    // added 0.2.3
+    fn acceso_y(&self, alto_pantalla: f32) -> f32 {
+        let y = alto_pantalla * self.config.acceso_y;
+        if !self.config.medios {
+            return y;
+        }
+        y.min(alto_pantalla - Self::BAJO_ACCESO - self.alto_acceso(alto_pantalla))
+    }
+
+    /// Lo que va bajo el bloque de acceso cuando hay medios: aire, tarjeta y
+    /// margen inferior.
+    // added 0.2.3
+    const BAJO_ACCESO: f32 = MARGEN_MEDIOS + MEDIOS_ALTO + MARGEN_INFERIOR;
+
+    /// El avatar de la configuración, encogido lo justo para que el bloque de
+    /// acceso, al subir para dejar sitio a la tarjeta, no pise la fecha. A
+    /// 1280×800 con el reloj de 174 el avatar de 132 tapaba la fecha; queda
+    /// en 74. No baja de 72: antes que una foto del tamaño de un sello, que
+    /// se apriete el conjunto.
+    // added 0.2.3
+    fn avatar_tamano(&self, alto_pantalla: f32) -> f32 {
+        let completo = self.config.avatar_tamano;
+        if !self.config.medios {
+            return completo;
+        }
+        let fin_reloj = alto_pantalla * self.config.reloj_y
+            + self.config.reloj_tamano * 1.3
+            + if self.config.fecha { FECHA * 1.3 } else { 0.0 }
+            + 16.0;
+        let cabe = alto_pantalla - Self::BAJO_ACCESO - Self::BAJO_AVATAR - fin_reloj;
+        completo.min(cabe).max(72.0_f32.min(completo))
+    }
+
     /// Dónde empieza la tarjeta de medios en reposo, sin el término de la
     /// animación de entrada.
     ///
@@ -812,20 +984,15 @@ impl Bloqueo {
     /// los tests de abajo.
     // 0.1.0
     fn medios_y_asentada(&self, alto_pantalla: f32) -> f32 {
-        let piso = alto_pantalla * self.config.acceso_y
-            + self.config.avatar_tamano
-            + 12.0
-            + ALTO_NOMBRE
-            + 16.0
-            + ALTO_CAMPO
-            + 10.0
-            + 20.0
-            + ALTO_HUELLA
-            + MARGEN_MEDIOS;
-        // Tampoco se sale por abajo: con `medios_y` cerca del borde, la
-        // fracción deja menos sitio del que mide la tarjeta. El piso manda
-        // sobre este techo, porque tapar la contraseña es peor.
-        let techo = alto_pantalla - MEDIOS_ALTO - MARGEN_MEDIOS;
+        let acceso_fin = self.acceso_y(alto_pantalla) + self.alto_acceso(alto_pantalla);
+        let piso = acceso_fin + MARGEN_MEDIOS;
+        // modified 0.2.3 -- techo en el centro del hueco, no a 24 del borde
+        // Tampoco baja más que el centro del hueco que deja el acceso: con
+        // `medios_y` = 0,856 se quedaba a 24 px del borde y se veía pegada
+        // abajo. Centrada, el aire de arriba y el de abajo son el
+        // mismo. El piso manda sobre este techo, porque tapar la contraseña
+        // es peor.
+        let techo = acceso_fin + (alto_pantalla - acceso_fin - MEDIOS_ALTO) / 2.0;
         (alto_pantalla * self.config.medios_y).min(techo).max(piso)
     }
 
@@ -842,24 +1009,6 @@ impl Bloqueo {
     // 0.1.0
     fn medios_y_actual(&self, alto_pantalla: f32, medios_avance: f32) -> f32 {
         self.medios_y_asentada(alto_pantalla) + (1.0 - medios_avance) * 28.0
-    }
-
-    /// El color con que empieza, arriba, el velo de la canción: baja desde
-    /// arriba y se apaga del todo al 60 % del alto. `None` sin música.
-    ///
-    /// Lo pinta el compositor, no esta vista. Era un degradado translúcido a
-    /// pantalla completa rasterizado en CPU, y medido a escala 2 con música
-    /// sonando cada tecla de la contraseña costaba **55 ms** en vez de 3–7
-    /// (`examples/bloqueo_bench.rs`): el punto de cada carácter nacía a cuatro
-    /// fotogramas por segundo y parecía que las letras llegaban con retraso.
-    // 0.1.0
-    pub fn velo_medios(&self) -> Option<Color> {
-        let m = self.medios.first().filter(|_| self.config.medios)?;
-        Some(Color {
-            // modificado en la 0.2.0 -- el compositor funde la textura sin volver a rasterizar el degradado.
-            a: 0.30,
-            ..m.color
-        })
     }
 
     // 0.1.0
@@ -905,21 +1054,21 @@ impl Bloqueo {
 
     // 0.1.0
     fn aviso_huella<'a>(&self, alfa: f32) -> PanelElement<'a> {
-        let (texto, color) = match self.huella {
-            Huella::Callada => ("", Color::WHITE),
-            Huella::Aviso(texto) => (texto, con_alfa(Color::WHITE, 0.82)),
+        let (texto, senal) = match self.huella {
+            Huella::Callada => ("", None),
+            Huella::Aviso(texto) => (texto, None),
             // En rojo como la contraseña mala, y diciendo que PAM sigue
             // escuchando: no hace falta hacer nada más que volver a poner el
             // dedo.
-            Huella::NoCoincide => ("Huella no reconocida. Vuelve a intentarlo.", tema::rojo()),
-            Huella::Reconocida => ("Huella reconocida", Color::WHITE),
+            Huella::NoCoincide => (
+                "Huella no reconocida. Vuelve a intentarlo.",
+                Some(tema::rojo()),
+            ),
+            Huella::Reconocida => ("Huella reconocida", Some(tema::verde())),
         };
-        text(texto)
-            .size(13)
-            .color(Color {
-                a: color.a * alfa,
-                ..color
-            })
+        container(aviso(texto.to_string(), senal, alfa))
+            .height(Length::Fixed(ALTO_HUELLA))
+            .align_y(Vertical::Bottom)
             .into()
     }
 
@@ -959,11 +1108,36 @@ impl Bloqueo {
         if self.medios == nuevos {
             return false;
         }
+        let cancion = |m: &[Medio]| m.first().map(|m| (m.bus.clone(), m.titulo.clone()));
+        let otra = cancion(&self.medios) != cancion(&nuevos);
         self.medios = nuevos;
         // Una tarjeta que llega unas décimas después del bloqueo entra desde
-        // cero, no aparece ya terminada en mitad de la pantalla.
-        self.medio_desde = Some(Instant::now());
+        // cero, no aparece ya terminada en mitad de la pantalla. Solo al
+        // llegar otra canción: con la lectura de cada segundo, la misma
+        // volvía a entrar a cada tic.
+        if otra {
+            self.medio_desde = Some(Instant::now());
+        }
         true
+    }
+
+    /// Aleatorio y repetición del reproductor, de la misma lectura que
+    /// [`Self::poner_medio`]. `true` si cambia algo.
+    // añadido en la 0.2.3
+    pub fn poner_modos(
+        &mut self,
+        (aleatorio, repetir): (Option<bool>, Option<crate::medios::Repetir>),
+    ) -> bool {
+        let antes = (self.aleatorio, self.repetir);
+        self.aleatorio = aleatorio;
+        self.repetir = repetir;
+        antes != (aleatorio, repetir)
+    }
+
+    /// Si van los cinco mandos del Player o los tres de siempre.
+    // añadido en la 0.2.3
+    fn con_modos(&self) -> bool {
+        self.aleatorio.is_some() || self.repetir.is_some()
     }
 
     /// El renglón bajo el campo: qué está pasando con lo que se ha escrito.
@@ -972,54 +1146,33 @@ impl Bloqueo {
     /// el campo daría un salto de veinte píxeles justo al pulsar Intro.
     // 0.1.0
     // modified 0.1.1 -- no repite «introduce tu contraseña» con el aviso de la huella
+    // modificado en la 0.2.3 -- sobre píldora, con el color en una señal aparte
     fn mensaje<'a>(&self, alfa: f32) -> PanelElement<'a> {
-        let (texto_estado, color) = match self.estado {
-            Estado::Comprobando => (
-                "Comprobando…".to_string(),
-                Color {
-                    a: 0.75,
-                    ..Color::WHITE
-                },
-            ),
-            Estado::Fallo => ("Contraseña incorrecta".to_string(), tema::rojo()),
+        let (texto_estado, senal) = match self.estado {
+            Estado::Comprobando => ("Comprobando…".to_string(), None),
+            Estado::Fallo => ("Contraseña incorrecta".to_string(), Some(tema::rojo())),
             Estado::Espera(segundos) => (
                 if segundos == 1 {
                     "Espera un segundo para volver a intentarlo".to_string()
                 } else {
                     format!("Espera {segundos} segundos para volver a intentarlo")
                 },
-                tema::rojo(),
+                Some(tema::rojo()),
             ),
             Estado::Escribiendo if self.caps_lock => (
                 "Bloq Mayús está activado".to_string(),
-                Color {
-                    a: 0.82,
-                    ..tema::amarillo()
-                },
+                Some(tema::amarillo()),
             ),
             // El aviso de la huella ya dice «o introduce tu contraseña»; con los
             // dos renglones seguidos el mismo ruego salía dos veces.
             Estado::Escribiendo
                 if self.escritos == 0 && !matches!(self.huella, Huella::Aviso(_)) =>
             {
-                (
-                    "Introduce tu contraseña para desbloquear".to_string(),
-                    Color {
-                        a: 0.55,
-                        ..Color::WHITE
-                    },
-                )
+                ("Introduce tu contraseña para desbloquear".to_string(), None)
             }
-            Estado::Escribiendo => ("".to_string(), Color::TRANSPARENT),
+            Estado::Escribiendo => (String::new(), None),
         };
-        container(
-            text(texto_estado)
-                .size(tema::T_CUERPO)
-                .color(con_alfa(color, alfa)),
-        )
-        .height(Length::Fixed(20.0))
-        .center_y(Length::Fixed(20.0))
-        .into()
+        aviso(texto_estado, senal, alfa)
     }
 
     /// Dónde cae el botón de apagado, en lógicos y para la pantalla dada.
@@ -1057,9 +1210,10 @@ impl Bloqueo {
     // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32, pantalla: (f32, f32)) -> (Option<Peticion>, bool) {
         if let Some((peticion, c)) = &self.confirmacion {
+            let (cw, ch) = c.size();
             let resultado = c.pulsar(
-                x - (pantalla.0 - crate::confirmacion::Confirmacion::ANCHO) / 2.0,
-                y - (pantalla.1 - crate::confirmacion::Confirmacion::ALTO) / 2.0,
+                x - (pantalla.0 - cw) / 2.0,
+                y - (pantalla.1 - ch) / 2.0,
             );
             let accion = resultado.filter(|si| *si).map(|_| *peticion);
             if resultado.is_some() {
@@ -1090,18 +1244,63 @@ impl Bloqueo {
             }
             return (None, true);
         }
-        if let Some(orden) = self.medio_en(x, y, pantalla)
+        if self.en_barra(x, y, pantalla) {
+            self.arrastre = Some(self.fraccion_barra(x, pantalla));
+            self.engordar_barra();
+            return (None, true);
+        }
+        // modified 0.2.3 -- se hunde al apretar y actúa al soltar
+        let mando = self
+            .lateral_en(x, y, pantalla)
+            .map(Mando::Lateral)
+            .or_else(|| self.medio_en(x, y, pantalla).map(Mando::Orden));
+        if let Some(mando) = mando {
+            self.apretado = Some((mando, (x, y)));
+            self.hundido_cual = Some(mando);
+            self.hundido.ir_a(1.0);
+            self.hundido_desde = Instant::now();
+            self.vuelta_pendiente = false;
+            return (None, true);
+        }
+        let estaba_abierto = self.menu;
+        self.cerrar_menu();
+        (None, estaba_abierto)
+    }
+
+    /// Lo que hace un mando al soltarlo. `true` si cambió algo que se ve.
+    // added 0.2.3 -- antes iba dentro de `pulsar`, al apretar
+    fn accionar(&mut self, mando: Mando) -> bool {
+        if let Mando::Lateral(lateral) = mando
+            && let Some(medio) = self.medios.first()
+        {
+            // Sin esperar a releerlo, como el play: la lectura de cada
+            // segundo lo confirma o lo corrige.
+            return match (lateral, self.aleatorio, self.repetir) {
+                (Lateral::Aleatorio, Some(a), _)
+                    if crate::medios::poner_aleatorio(&medio.bus, !a) =>
+                {
+                    self.aleatorio = Some(!a);
+                    true
+                }
+                (Lateral::Repetir, _, Some(r))
+                    if crate::medios::poner_repetir(&medio.bus, r.siguiente()) =>
+                {
+                    self.repetir = Some(r.siguiente());
+                    true
+                }
+                _ => false,
+            };
+        }
+        if let Mando::Orden(orden) = mando
             && let Some(medio) = self.medios.first_mut()
         {
             let ejecutada = crate::medios::ejecutar_en(&medio.bus, orden);
             if orden == crate::medios::Orden::Alternar && ejecutada {
                 medio.reproduciendo = !medio.reproduciendo;
             }
-            return (None, ejecutada);
+            return ejecutada;
         }
-        let estaba_abierto = self.menu;
-        self.cerrar_menu();
-        (None, estaba_abierto)
+        false
     }
 
     // 0.1.0
@@ -1109,16 +1308,11 @@ impl Bloqueo {
         if !self.config.medios || self.medios.is_empty() {
             return None;
         }
-        let tarjeta_x = (pantalla.0 - MEDIOS_ANCHO) / 2.0;
-        let tarjeta_y = self.medios_y_actual(pantalla.1, self.medio_avance());
-        if y < tarjeta_y || y > tarjeta_y + MEDIOS_ALTO {
+        let (x, y) = self.en_tarjeta(x, y, pantalla);
+        if !(MEDIOS_CONTROLES_Y..=MEDIOS_CONTROLES_Y + MEDIOS_CONTROL).contains(&y) {
             return None;
         }
-        let centro = tarjeta_x + MEDIOS_PAD + MEDIOS_ARTE + 14.0 + MEDIOS_INFO / 2.0;
-        let control_y = tarjeta_y + MEDIOS_ALTO - MEDIOS_PAD - MEDIOS_CONTROL;
-        if y < control_y || y > control_y + MEDIOS_CONTROL {
-            return None;
-        }
+        let centro = MEDIOS_ANCHO / 2.0;
         let centros = [centro - MEDIOS_PASO, centro, centro + MEDIOS_PASO];
         let i = centros
             .iter()
@@ -1130,6 +1324,155 @@ impl Bloqueo {
                 crate::medios::Orden::Siguiente,
             ][i],
         )
+    }
+
+    /// Aleatorio o repetir bajo el punto, a dos pasos del centro; solo con
+    /// los cinco mandos.
+    // añadido en la 0.2.3
+    fn lateral_en(&self, x: f32, y: f32, pantalla: (f32, f32)) -> Option<Lateral> {
+        if !self.config.medios || self.medios.is_empty() || !self.con_modos() {
+            return None;
+        }
+        let (x, y) = self.en_tarjeta(x, y, pantalla);
+        if !(MEDIOS_CONTROLES_Y..=MEDIOS_CONTROLES_Y + MEDIOS_CONTROL).contains(&y) {
+            return None;
+        }
+        let centro = MEDIOS_ANCHO / 2.0;
+        let cerca = |cx: f32| (x - cx).abs() <= MEDIOS_CONTROL / 2.0;
+        if cerca(centro - 2.0 * MEDIOS_PASO) && self.aleatorio.is_some() {
+            Some(Lateral::Aleatorio)
+        } else if cerca(centro + 2.0 * MEDIOS_PASO) && self.repetir.is_some() {
+            Some(Lateral::Repetir)
+        } else {
+            None
+        }
+    }
+
+    /// El punto relativo a la esquina de la tarjeta, tal como se ve ahora.
+    // añadido en la 0.2.3
+    fn en_tarjeta(&self, x: f32, y: f32, pantalla: (f32, f32)) -> (f32, f32) {
+        (
+            x - (pantalla.0 - MEDIOS_ANCHO) / 2.0,
+            y - self.medios_y_actual(pantalla.1, self.medio_avance()),
+        )
+    }
+
+    /// Qué fracción de la canción hay bajo `x`. La barra mide 5 de alto; se
+    /// atiende la fila entera y 8 más a cada lado, o acertarla con el
+    /// touchpad era cuestión de suerte.
+    // añadido en la 0.2.3
+    fn fraccion_barra(&self, x: f32, pantalla: (f32, f32)) -> f32 {
+        let (x, _) = self.en_tarjeta(x, 0.0, pantalla);
+        ((x - MEDIOS_BARRA_X) / MEDIOS_BARRA_W).clamp(0.0, 1.0)
+    }
+
+    // añadido en la 0.2.3
+    fn en_barra(&self, x: f32, y: f32, pantalla: (f32, f32)) -> bool {
+        let con_duracion = self.config.medios
+            && self
+                .medios
+                .first()
+                .is_some_and(|m| m.duracion.is_some_and(|d| d > 0));
+        let (x, y) = self.en_tarjeta(x, y, pantalla);
+        con_duracion
+            && (MEDIOS_BARRA_Y - 8.0..=MEDIOS_BARRA_Y + MEDIOS_BARRA_FILA + 8.0).contains(&y)
+            && (MEDIOS_BARRA_X - 8.0..=MEDIOS_BARRA_X + MEDIOS_BARRA_W + 8.0).contains(&x)
+    }
+
+    /// El puntero se mueve: arrastra la barra si está agarrada y, si no,
+    /// sigue si está encima. `true` si hay que repintar; pasar por el resto
+    /// de la pantalla no repinta nada.
+    // añadido en la 0.2.3
+    pub fn mover(&mut self, x: f32, y: f32, pantalla: (f32, f32)) -> bool {
+        if let Some((_, (x0, y0))) = self.apretado {
+            if (x - x0).hypot(y - y0) <= CANCELA_TOQUE {
+                return false;
+            }
+            self.apretado = None;
+            self.hundido.ir_a(0.0);
+            return true;
+        }
+        if self.arrastre.is_some() {
+            let f = self.fraccion_barra(x, pantalla);
+            return self.arrastre.replace(f) != Some(f);
+        }
+        let encima = self.en_barra(x, y, pantalla);
+        let cambia = std::mem::replace(&mut self.sobre_barra, encima) != encima;
+        self.engordar_barra();
+        cambia
+    }
+
+    /// ¿Cae `(x, y)` en algo de la tarjeta de música que responde al apoyar
+    /// (los mandos y la barra)? Con el dedo, el compositor solo convierte el
+    /// toque en clic al levantarlo, por si era un arrastre; aquí no hace falta
+    /// esperar, porque los mandos ya se cancelan solos a los 10 pt.
+    // added 0.2.3
+    pub fn toque_directo(&self, x: f32, y: f32, pantalla: (f32, f32)) -> bool {
+        self.en_barra(x, y, pantalla)
+            || self.lateral_en(x, y, pantalla).is_some()
+            || self.medio_en(x, y, pantalla).is_some()
+    }
+
+    /// Lleva el grosor de la barra a lo que piden el cursor y el agarre.
+    // added 0.2.3
+    fn engordar_barra(&mut self) {
+        let gruesa = self.arrastre.is_some() || self.sobre_barra;
+        self.grosor_barra.ir_a(if gruesa { 1.0 } else { 0.0 });
+    }
+
+    /// ¿Se mueve algo de la tarjeta de música: la barra engordando o un
+    /// mando hundiéndose o volviendo?
+    // added 0.2.3
+    pub fn tarjeta_animando(&self) -> bool {
+        self.grosor_barra.animando() || self.hundido.animando() || self.vuelta_pendiente
+    }
+
+    /// Devuelve el mando a su tamaño, o lo deja pendiente si aún no ha
+    /// cumplido [`HUNDIDO_MINIMO`]: con el dedo, el compositor manda apretar
+    /// y soltar juntos al levantarlo, y el hundido no llegaba a verse.
+    // added 0.2.3
+    fn devolver_hundido(&mut self, ahora: Instant) {
+        self.vuelta_pendiente = ahora.duration_since(self.hundido_desde) < HUNDIDO_MINIMO;
+        if !self.vuelta_pendiente {
+            self.hundido.ir_a(0.0);
+        }
+    }
+
+    /// Cuánto está hundido `mando` ahora, de 0 a 1.
+    // added 0.2.3
+    fn hundimiento(&self, mando: Mando) -> f32 {
+        if self.hundido_cual == Some(mando) {
+            self.hundido.valor().clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Suelta la barra: salta a donde quedó el dedo. `Seek` es relativo
+    /// (ver [`crate::medios::saltar_en`]), así que se manda la diferencia con
+    /// la última posición leída; con la lectura de cada segundo, el error es
+    /// de menos de un segundo.
+    // añadido en la 0.2.3
+    pub fn soltar(&mut self) -> bool {
+        if let Some((mando, _)) = self.apretado.take() {
+            // La orden sale ya; lo que espera es solo la vuelta del icono.
+            self.accionar(mando);
+            self.devolver_hundido(Instant::now());
+            return true;
+        }
+        let Some(f) = self.arrastre.take() else {
+            return false;
+        };
+        self.engordar_barra();
+        if let Some(m) = self.medios.first_mut()
+            && let Some(d) = m.duracion
+        {
+            let objetivo = (f * d as f32).round() as u64;
+            crate::medios::saltar_en(&m.bus, objetivo as i64 - m.posicion.unwrap_or(0) as i64);
+            m.posicion = Some(objetivo);
+            m.progreso = Some(f);
+        }
+        true
     }
 
     // 0.1.0
@@ -1160,6 +1503,7 @@ impl Bloqueo {
     // 0.1.0
     pub fn animando(&self) -> bool {
         self.contenido_animando()
+            || self.tarjeta_animando()
             || (self.entrada_animada() && self.entrada.iter().any(|m| !m.quieto()))
             || (!self.medios.is_empty() && self.medio_avance() < 1.0)
     }
@@ -1291,7 +1635,7 @@ impl Bloqueo {
             for (i, (etiqueta, icono, _)) in entradas().iter().enumerate() {
                 let tinta = Color {
                     a: alfa,
-                    ..Color::WHITE
+                    ..tinta_campo()
                 };
                 // El fundido va en la opacidad: el tinte del SVG no respeta el
                 // alfa del color y el glifo salía entero con el menú aún invisible.
@@ -1300,7 +1644,7 @@ impl Bloqueo {
                         .width(Length::Fixed(ICONO_ENTRADA))
                         .height(Length::Fixed(ICONO_ENTRADA))
                         .style(|_, _| iced_widget::svg::Style {
-                            color: Some(Color::WHITE),
+                            color: Some(tinta_campo()),
                         })
                         .opacity(alfa)
                         .into(),
@@ -1346,7 +1690,7 @@ impl Bloqueo {
                                     background: Some(
                                         Color {
                                             a: 0.12 * alfa,
-                                            ..Color::WHITE
+                                            ..tinta_campo()
                                         }
                                         .into(),
                                     ),
@@ -1379,7 +1723,7 @@ impl Bloqueo {
                         background: Some(
                             Color {
                                 a: 0.94 * alfa,
-                                ..FONDO_CAMPO
+                                ..fondo_campo()
                             }
                             .into(),
                         ),
@@ -1521,7 +1865,7 @@ impl Bloqueo {
                 .width(Length::Fixed(lado.max(0.0)))
                 .height(Length::Fixed(lado.max(0.0)))
                 .style(move |_| container::Style {
-                    background: Some(con_alfa(Color::WHITE, alfa).into()),
+                    background: Some(con_alfa(tinta_campo(), alfa).into()),
                     border: Border {
                         radius: (lado / 2.0).max(0.0).into(),
                         ..Default::default()
@@ -1549,7 +1893,7 @@ impl Bloqueo {
                         background: Some(
                             Color {
                                 a: 0.8 * alfa,
-                                ..Color::WHITE
+                                ..tinta_campo()
                             }
                             .into(),
                         ),
@@ -1569,7 +1913,7 @@ impl Bloqueo {
                 Estado::Fallo | Estado::Espera(_) => tema::rojo(),
                 Estado::Comprobando => Color {
                     a: 0.35,
-                    ..Color::WHITE
+                    ..tinta_campo()
                 },
                 _ => Color {
                     a: 0.85,
@@ -1587,12 +1931,13 @@ impl Bloqueo {
         } else {
             Color {
                 a: 0.12 * alfa,
-                ..Color::WHITE
+                ..tinta_campo()
             }
         };
-        let tinta_flecha = Color {
-            a: if lleno { alfa } else { 0.45 * alfa },
-            ..Color::WHITE
+        let tinta_flecha = if lleno {
+            con_alfa(tema::tinta_sobre(tema::acento()), alfa)
+        } else {
+            con_alfa(tinta_campo(), 0.45 * alfa)
         };
         let boton = container(crate::icono::ver_teñido_propio(
             &self.flecha,
@@ -1617,7 +1962,7 @@ impl Bloqueo {
                 16.0,
                 Color {
                     a: 0.6 * alfa,
-                    ..Color::WHITE
+                    ..tinta_campo()
                 },
             ),
             Space::new().width(Length::Fixed(10.0)),
@@ -1634,7 +1979,7 @@ impl Bloqueo {
             // solo centra, y el campo se estiraba hasta ocupar media pantalla.
             .center_y(Length::Fixed(ALTO_CAMPO))
             .style(move |_| container::Style {
-                background: Some(con_alfa(FONDO_CAMPO, alfa).into()),
+                background: Some(con_alfa(fondo_campo(), alfa).into()),
                 border: Border {
                     radius: (ALTO_CAMPO / 2.0).into(),
                     width: 2.0,
@@ -1648,29 +1993,26 @@ impl Bloqueo {
     /// Una tarjeta de lo que está sonando.
     /// La tarjeta de «esto está sonando».
     ///
-    /// Habla el idioma del propio bloqueo, no el del escritorio: el mismo
-    /// cristal oscuro y el mismo blanco que el campo de la contraseña, con
-    /// botones redondos y el acento solo en lo que está activo —el progreso y
-    /// el botón central—. Con la paleta del tema, en claro salía una losa
-    /// blanca opaca bajo una píldora oscura, y en oscuro un gris macizo al
-    /// lado del cristal: dos piezas de sitios distintos. El bloqueo no cambia
-    /// con el tema —reloj, campo y menú van en blanco sobre el fondo—, y la
-    /// tarjeta tampoco.
+    /// El mismo cristal y la misma tinta que el campo de la contraseña
+    /// ([`fondo_campo`], [`tinta_campo`]), con botones redondos y el acento
+    /// solo en lo que está activo. Antes usaba `tema::card()` opaco y en claro
+    /// salía una losa blanca bajo una píldora oscura: si sigue al tema, lo
+    /// sigue con el campo, no por su cuenta.
     ///
     /// Los altos van fijos: `medio_en` busca los botones a una distancia
     /// conocida del borde de abajo, y con un alto que dependiera del texto el
     /// clic y el dibujo volverían a separarse.
     // 0.1.0
     // modified 0.1.1 -- tarjeta de música en blanco sobre cristal, sin seguir el tema
+    // modificado en la 0.2.3 -- campo, menú y tarjeta siguen el tema claro
     fn tarjeta<'a>(&self, medio: &'a Medio, alfa: f32) -> PanelElement<'a> {
         use crate::actividad::{ANTERIOR, PAUSA, PLAY, SIGUIENTE};
         let blanco = move |a: f32| Color {
             a: a * alfa,
-            ..Color::WHITE
+            ..tinta_campo()
         };
         let texto = blanco(1.0);
         let texto2 = blanco(0.6);
-        let acento = tema::acento();
 
         let arte: PanelElement<'a> = match medio.caratula.clone() {
             Some(h) => iced_widget::image(h)
@@ -1679,8 +2021,8 @@ impl Bloqueo {
                 .opacity(alfa)
                 .into(),
             None => container(match crate::icono::propio("musica") {
-                Some(ic) => crate::icono::ver_teñido_propio(&ic, 30.0, texto2),
-                None => Space::new().width(Length::Fixed(30.0)).into(),
+                Some(ic) => crate::icono::ver_teñido_propio(&ic, 34.0, texto2),
+                None => Space::new().width(Length::Fixed(34.0)).into(),
             })
             .width(Length::Fixed(MEDIOS_ARTE))
             .height(Length::Fixed(MEDIOS_ARTE))
@@ -1697,124 +2039,268 @@ impl Bloqueo {
             .into(),
         };
 
+        let linea = |cadena: &str, tamaño: f32, peso, color: Color, alto: f32| {
+            container(
+                text(crate::emergente::recortar_texto(
+                    cadena,
+                    MEDIOS_INFO,
+                    tamaño,
+                ))
+                .size(tamaño)
+                .font(iced_core::Font {
+                    weight: peso,
+                    ..iced_core::Font::DEFAULT
+                })
+                .wrapping(iced_core::text::Wrapping::None)
+                .color(color),
+            )
+            .height(Length::Fixed(alto))
+            .align_y(Vertical::Center)
+        };
+        use iced_core::font::Weight;
+        let mut info = column![
+            linea(&medio.titulo, tema::T_TITULO, Weight::Bold, texto, 24.0),
+            linea(&medio.detalle, tema::T_CUERPO, Weight::Normal, texto2, 18.0),
+        ];
+        // La pastilla de la calidad, como «Opus | 134 kb/s · 48 kHz» del
+        // Player: el nombre en negrita, el resto apagado.
+        // Solo sin pérdida y solo la etiqueta, como Apple Music: «Opus | 134
+        // kbps» no le dice nada a quien está delante del bloqueo, y «FLAC · 24
+        // bits · 96 kHz» no cabía al lado y partía la línea. El detalle sigue
+        // en el centro de control.
+        let sin_perdida = medio.calidad.as_ref().and_then(|c| match c.nivel() {
+            crate::medios::Nivel::HiRes => Some("Hi-Res Lossless"),
+            crate::medios::Nivel::SinPerdida => Some("Lossless"),
+            crate::medios::Nivel::ConPerdida => None,
+        });
+        if let Some(nombre) = sin_perdida {
+            let fila = text(nombre)
+                .size(tema::T_PEQUENO)
+                .font(iced_core::Font {
+                    weight: Weight::Semibold,
+                    ..iced_core::Font::DEFAULT
+                })
+                .color(texto);
+            info = info.push(Space::new().height(Length::Fixed(8.0))).push(
+                container(fila)
+                    .padding([4.0, 9.0])
+                    .style(move |_| container::Style {
+                        background: Some(blanco(0.1).into()),
+                        border: Border {
+                            radius: 8.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+        let arriba = row![
+            arte,
+            Space::new().width(Length::Fixed(14.0)),
+            container(info.width(Length::Fixed(MEDIOS_INFO)))
+                .height(Length::Fixed(MEDIOS_ARTE))
+                .align_y(Vertical::Center),
+        ];
+
+        // Mientras se arrastra manda el dedo, tiempos incluidos.
+        let progreso = self
+            .arrastre
+            .or(medio.progreso)
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        let posicion = match (self.arrastre, medio.duracion) {
+            (Some(f), Some(d)) => Some((f * d as f32).round() as u64),
+            _ => medio.posicion,
+        };
+        // Engorda bajo el cursor y agarrada, como la del centro de control:
+        // dice que se puede arrastrar. Cabe en los 16 de la fila sin mover nada.
+        let grosor = 5.0 + 5.0 * self.grosor_barra.valor().clamp(0.0, 1.0);
         let tramo = |ancho: f32, color: Color| {
             container(Space::new())
                 .width(Length::Fixed(ancho))
-                .height(Length::Fixed(4.0))
+                .height(Length::Fixed(grosor))
                 .style(move |_| container::Style {
                     background: Some(color.into()),
                     border: Border {
-                        radius: 2.0.into(),
+                        radius: (grosor / 2.0).into(),
                         ..Default::default()
                     },
                     ..Default::default()
                 })
         };
-        let lleno = MEDIOS_INFO * medio.progreso.unwrap_or(0.0).clamp(0.0, 1.0);
+        let lleno = MEDIOS_BARRA_W * progreso;
+        let tiempo = |cadena: String, derecha: bool| {
+            container(text(cadena).size(tema::T_PEQUENO).color(texto2))
+                .width(Length::Fixed(MEDIOS_TIEMPO))
+                .align_x(if derecha {
+                    Horizontal::Right
+                } else {
+                    Horizontal::Left
+                })
+        };
+        let restante = match (posicion, medio.duracion) {
+            (Some(p), Some(d)) => format!("-{}", crate::medios::reloj(d.saturating_sub(p))),
+            (_, Some(d)) => crate::medios::reloj(d),
+            _ => String::new(),
+        };
         let barra = row![
-            tramo(lleno, con_alfa(acento, alfa)),
-            tramo((MEDIOS_INFO - lleno).max(0.0), blanco(0.18)),
-        ];
-        let tiempo = |segundos: Option<u64>| {
-            text(segundos.map(crate::medios::reloj).unwrap_or_default())
-                .size(tema::T_PEQUENO)
-                .color(texto2)
-        };
-        let tiempos = row![
-            tiempo(medio.posicion),
-            Space::new().width(Length::Fill),
-            tiempo(medio.duracion),
-        ]
-        .width(Length::Fixed(MEDIOS_INFO));
-
-        let boton = |svg: &str, lado: f32, principal: bool| -> PanelElement<'a> {
-            // Los secundarios, como el botón del campo cuando aún no hay
-            // nada que mandar.
-            let (relleno, tinta) = if principal {
-                (
-                    con_alfa(acento, alfa),
-                    con_alfa(tema::tinta_sobre(acento), alfa),
-                )
-            } else {
-                (blanco(0.12), texto)
-            };
-            container(crate::icono::ver_teñido_propio(
-                &crate::icono::desde_svg(svg),
-                lado * 0.4,
-                tinta,
-            ))
-            .width(Length::Fixed(lado))
-            .height(Length::Fixed(lado))
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .style(move |_| container::Style {
-                background: Some(relleno.into()),
-                border: Border {
-                    radius: (lado / 2.0).into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .into()
-        };
-        // Los centros quedan a `MEDIOS_PASO` uno de otro, que es donde los
-        // busca `medio_en`.
-        let hueco = MEDIOS_PASO - (MEDIOS_BOTON + MEDIOS_CONTROL) / 2.0;
-        let controles = row![
-            boton(ANTERIOR, MEDIOS_BOTON, false),
-            Space::new().width(Length::Fixed(hueco)),
-            boton(
-                if medio.reproduciendo { PAUSA } else { PLAY },
-                MEDIOS_CONTROL,
-                true
+            tiempo(
+                posicion.map(crate::medios::reloj).unwrap_or_default(),
+                false
             ),
-            Space::new().width(Length::Fixed(hueco)),
-            boton(SIGUIENTE, MEDIOS_BOTON, false),
+            Space::new().width(Length::Fixed(8.0)),
+            // modified 0.2.3 -- lleno en el color de la carátula, no la tinta
+            // Del color de la carátula y no del acento, que sobre una carátula
+            // de cualquier color competía con ella.
+            // modified 0.2.3 -- una pista entera con lo recorrido encima
+            // Encima de la pista entera y no al lado de lo que falta: dos
+            // tramos redondeados se leían como dos barras, con un hueco entre
+            // las puntas que se movía al avanzar.
+            iced_widget::stack![
+                tramo(MEDIOS_BARRA_W, blanco(0.18)),
+                tramo(
+                    lleno.max(grosor),
+                    con_alfa(realce_medio(medio, fondo_medio(medio)), alfa)
+                ),
+            ],
+            Space::new().width(Length::Fixed(8.0)),
+            tiempo(restante, true),
         ]
+        .height(Length::Fixed(MEDIOS_BARRA_FILA))
         .align_y(Vertical::Center);
 
-        let info = column![
-            text(crate::emergente::recortar_texto(
-                &medio.titulo,
-                MEDIOS_INFO,
-                tema::T_CUERPO
+        // Sin placa, como en el Player: el de reproducir manda por tamaño.
+        // Apretado se hunde un 8 % y se apaga hacia el gris (HIG §8).
+        let hundir = |cual: Mando, lado: f32, color: Color| {
+            let h = self.hundimiento(cual);
+            (lado * (1.0 - 0.08 * h), tema::mezclar(color, texto2, h))
+        };
+        let mando = |svg: &str, lado: f32, cual: Mando| -> PanelElement<'a> {
+            let (lado, color) = hundir(cual, lado, texto);
+            container(crate::icono::ver_teñido_propio(
+                &crate::icono::desde_svg(svg),
+                lado,
+                color,
             ))
-            .size(tema::T_CUERPO)
-            .font(iced_core::Font {
-                weight: iced_core::font::Weight::Semibold,
-                ..iced_core::Font::DEFAULT
-            })
-            .wrapping(iced_core::text::Wrapping::None)
-            .color(texto),
-            text(crate::emergente::recortar_texto(
-                &medio.detalle,
-                MEDIOS_INFO,
-                tema::T_PEQUENO
-            ))
-            .size(tema::T_PEQUENO)
-            .wrapping(iced_core::text::Wrapping::None)
-            .color(texto2),
-            Space::new().height(Length::Fixed(7.0)),
-            barra,
-            Space::new().height(Length::Fixed(3.0)),
-            tiempos,
-            Space::new().height(Length::Fill),
-            container(controles)
-                .width(Length::Fixed(MEDIOS_INFO))
-                .height(Length::Fixed(MEDIOS_CONTROL))
-                .center_x(Length::Fill),
-        ]
-        .width(Length::Fixed(MEDIOS_INFO))
-        .height(Length::Fill);
+            .width(Length::Fixed(MEDIOS_PASO))
+            .height(Length::Fixed(MEDIOS_CONTROL))
+            .center_x(Length::Fixed(MEDIOS_PASO))
+            .center_y(Length::Fixed(MEDIOS_CONTROL))
+            .into()
+        };
+        // Tres celdas de `MEDIOS_PASO` centradas: los centros quedan donde
+        // los busca `medio_en`.
+        let centrales = row![
+            mando(ANTERIOR, 22.0, Mando::Orden(crate::medios::Orden::Anterior)),
+            mando(
+                if medio.reproduciendo { PAUSA } else { PLAY },
+                30.0,
+                Mando::Orden(crate::medios::Orden::Alternar)
+            ),
+            mando(SIGUIENTE, 22.0, Mando::Orden(crate::medios::Orden::Siguiente)),
+        ];
+        // Con BookOS Player, aleatorio y repetir a los lados, como en el
+        // Player: puestos, sobre una placa; quitados, en gris.
+        let lateral =
+            |icono: crate::icono::Icono, puesto: Option<bool>, uno: bool, cual: Lateral| -> PanelElement<'a> {
+                let on = puesto == Some(true);
+                let (lado, color) = hundir(Mando::Lateral(cual), 18.0, if on { texto } else { texto2 });
+                let glifo = crate::icono::ver_teñido_propio(&icono, lado, color);
+                let mut capa = iced_widget::stack![
+                    container(glifo)
+                        .width(Length::Fixed(36.0))
+                        .height(Length::Fixed(36.0))
+                        .center_x(Length::Fixed(36.0))
+                        .center_y(Length::Fixed(36.0))
+                        .style(move |_| container::Style {
+                            background: on.then(|| blanco(0.14).into()),
+                            border: Border {
+                                radius: 18.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })
+                ];
+                // Repetir la canción lleva el «1», como en el centro de control.
+                if uno {
+                    capa = capa.push(
+                        container(
+                            container(
+                                text("1")
+                                    .size(8.0)
+                                    .font(iced_core::Font {
+                                        weight: Weight::Bold,
+                                        ..iced_core::Font::DEFAULT
+                                    })
+                                    .color(con_alfa(fondo_campo(), alfa)),
+                            )
+                            .width(Length::Fixed(11.0))
+                            .height(Length::Fixed(11.0))
+                            .center_x(Length::Fixed(11.0))
+                            .center_y(Length::Fixed(11.0))
+                            .style(move |_| container::Style {
+                                background: Some(texto.into()),
+                                border: Border {
+                                    radius: 5.5.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }),
+                        )
+                        .width(Length::Fixed(36.0))
+                        .padding(iced_core::Padding {
+                            top: 4.0,
+                            right: 4.0,
+                            ..Default::default()
+                        })
+                        .align_x(Horizontal::Right),
+                    );
+                }
+                container(capa)
+                    .width(Length::Fixed(MEDIOS_PASO))
+                    .height(Length::Fixed(MEDIOS_CONTROL))
+                    .center_x(Length::Fixed(MEDIOS_PASO))
+                    .center_y(Length::Fixed(MEDIOS_CONTROL))
+                    .into()
+            };
+        let fila: PanelElement<'a> = if self.con_modos() {
+            use crate::medios::Repetir;
+            row![
+                lateral(
+                    crate::icono::desde_svg(ALEATORIO_PLAYER),
+                    self.aleatorio,
+                    false,
+                    Lateral::Aleatorio
+                ),
+                centrales,
+                lateral(
+                    crate::icono::propio_solido("repetir")
+                        .expect("repetir va incluido en el binario"),
+                    self.repetir.map(|r| r != Repetir::No),
+                    self.repetir == Some(Repetir::Cancion),
+                    Lateral::Repetir
+                ),
+            ]
+            .into()
+        } else {
+            centrales.into()
+        };
+        let controles = container(fila).width(Length::Fill).center_x(Length::Fill);
 
-        container(
-            row![arte, Space::new().width(Length::Fixed(14.0)), info].align_y(Vertical::Center),
-        )
+        container(column![
+            arriba,
+            Space::new().height(Length::Fixed(MEDIOS_BARRA_Y - MEDIOS_PAD - MEDIOS_ARTE)),
+            barra,
+            Space::new().height(Length::Fixed(
+                MEDIOS_CONTROLES_Y - MEDIOS_BARRA_Y - MEDIOS_BARRA_FILA
+            )),
+            controles,
+        ])
         .width(Length::Fixed(MEDIOS_ANCHO))
         .height(Length::Fixed(MEDIOS_ALTO))
         .padding(MEDIOS_PAD)
         .style(move |_| container::Style {
-            background: Some(con_alfa(FONDO_CAMPO, alfa).into()),
+            background: Some(con_alfa(fondo_medio(medio), alfa).into()),
             // El borde que el HIG pide a una tarjeta superpuesta, al 9 % del
             // texto: es lo que la separa del fondo de pantalla.
             border: Border {
@@ -1830,6 +2316,84 @@ impl Bloqueo {
         })
         .into()
     }
+}
+
+/// El aleatorio de BookOS Player (`#immShuffleBtn`): flechas cruzadas de
+/// trazo. El sólido del sistema son dos flechas paralelas y, junto al del
+/// Player, parecía otro botón.
+// añadido en la 0.2.3
+const ALEATORIO_PLAYER: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>"##;
+
+/// Un mando de la tarjeta de música: los tres del centro o los de los lados.
+// added 0.2.3
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mando {
+    Orden(crate::medios::Orden),
+    Lateral(Lateral),
+}
+
+/// Lo que puede moverse el puntero con un mando apretado antes de que el
+/// toque se cancele (HIG §8: más de 10 pt).
+// added 0.2.3
+const CANCELA_TOQUE: f32 = 10.0;
+
+/// Lo mínimo que se queda hundido un mando aunque se suelte antes. Con
+/// `M_RAPIDO` (0,21 s) a los 120 ms lleva el 87 % del recorrido: se ve
+/// el hundido sin retrasar nada, porque la orden ya ha salido.
+// added 0.2.3
+const HUNDIDO_MINIMO: Duration = Duration::from_millis(120);
+
+/// Los dos mandos de los lados, que solo salen con BookOS Player.
+// añadido en la 0.2.3
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lateral {
+    Aleatorio,
+    Repetir,
+}
+
+/// Un renglón de estado bajo el campo, sobre el mismo cristal que el campo.
+///
+/// Iba como texto suelto sobre la foto y, en un fondo claro, el blanco al
+/// 55 % de «Introduce tu contraseña» no se leía. El HIG (§2) pide 4,5:1 para
+/// todo texto y una base opaca bajo el que va sobre fotos; el cristal del
+/// campo da ~10:1 con su tinta sobre cualquier fondo. El rojo y el naranja del
+/// tema no llegan a 4,5:1 sobre claro (3,6 y 2,1), así que el texto va en la
+/// tinta y el color, en un punto delante: el significado lo lleva la frase.
+// añadido en la 0.2.3
+fn aviso<'a>(texto: String, senal: Option<Color>, alfa: f32) -> PanelElement<'a> {
+    if texto.is_empty() {
+        return Space::new().height(Length::Fixed(ALTO_MENSAJE)).into();
+    }
+    let mut fila = row![].spacing(7.0).align_y(Vertical::Center);
+    if let Some(color) = senal {
+        fila = fila.push(
+            container(Space::new())
+                .width(Length::Fixed(7.0))
+                .height(Length::Fixed(7.0))
+                .style(move |_| container::Style {
+                    background: Some(con_alfa(color, alfa).into()),
+                    border: Border {
+                        radius: 3.5.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        );
+    }
+    fila = fila.push(text(texto).size(13).color(con_alfa(tinta_campo(), alfa)));
+    container(fila)
+        .height(Length::Fixed(ALTO_MENSAJE))
+        .center_y(Length::Fixed(ALTO_MENSAJE))
+        .padding([0.0, 12.0])
+        .style(move |_| container::Style {
+            background: Some(con_alfa(fondo_campo(), alfa).into()),
+            border: Border {
+                radius: (ALTO_MENSAJE / 2.0).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 /// Conserva el color y modula su opacidad para las entradas escalonadas.
@@ -1985,13 +2549,16 @@ mod tests {
             posicion: Some(30),
             duracion: Some(60),
             reproduciendo: true,
+            calidad: None,
         });
         let pantalla = (1645.0, 1029.0);
         let x0 = (pantalla.0 - MEDIOS_ANCHO) / 2.0;
-        let centro = x0 + 12.0 + MEDIOS_ARTE + 14.0 + MEDIOS_INFO / 2.0;
-        let y = pantalla.1 * config.medios_y + MEDIOS_ALTO - MEDIOS_PAD - MEDIOS_CONTROL / 2.0;
+        let centro = pantalla.0 / 2.0;
+        let y = b.medios_y_actual(pantalla.1, b.medio_avance())
+            + MEDIOS_CONTROLES_Y
+            + MEDIOS_CONTROL / 2.0;
         assert_eq!(
-            b.medio_en(centro - 39.0, y, pantalla),
+            b.medio_en(centro - MEDIOS_PASO, y, pantalla),
             Some(crate::medios::Orden::Anterior)
         );
         assert_eq!(
@@ -1999,6 +2566,141 @@ mod tests {
             Some(crate::medios::Orden::Alternar)
         );
         assert_eq!(b.medio_en(x0 - 2.0, y, pantalla), None);
+    }
+
+    fn sonando_a(posicion: u64) -> crate::medios::Sonando {
+        crate::medios::Sonando {
+            bus: "org.mpris.MediaPlayer2.prueba".into(),
+            titulo: "Canción".into(),
+            artista: "Artista".into(),
+            aplicacion: "Prueba".into(),
+            caratula: None,
+            posicion: Some(posicion),
+            duracion: Some(60),
+            posicion_ms: Some(posicion * 1000),
+            duracion_ms: Some(60_000),
+            calidad: None,
+            reproduciendo: true,
+        }
+    }
+
+    /// Pulsar la barra la agarra, moverse arrastra (los tiempos siguen al
+    /// dedo) y soltar deja la posición donde quedó.
+    #[test]
+    fn la_barra_se_arrastra_y_salta_al_soltar() {
+        let config = crate::config::Bloqueo::default();
+        let mut b = Bloqueo::new("12:30".into(), "lunes".into(), None, config);
+        b.poner_medio(Some(sonando_a(30)));
+        let pantalla = (1645.0, 1029.0);
+        let x0 = (pantalla.0 - MEDIOS_ANCHO) / 2.0 + MEDIOS_BARRA_X;
+        let y = b.medios_y_actual(pantalla.1, b.medio_avance())
+            + MEDIOS_BARRA_Y
+            + MEDIOS_BARRA_FILA / 2.0;
+        let (peticion, repintar) = b.pulsar(x0 + MEDIOS_BARRA_W * 0.25, y, pantalla);
+        assert!(peticion.is_none() && repintar);
+        assert_eq!(b.arrastre, Some(0.25));
+        // Fuera de la barra, en horizontal, sigue arrastrando y se queda en el tope.
+        assert!(b.mover(x0 + MEDIOS_BARRA_W * 2.0, 0.0, pantalla));
+        assert_eq!(b.arrastre, Some(1.0));
+        assert!(b.mover(x0 + MEDIOS_BARRA_W * 0.75, 0.0, pantalla));
+        assert!(b.soltar());
+        assert_eq!(b.arrastre, None);
+        assert_eq!(b.medios[0].posicion, Some(45));
+        assert!(!b.soltar(), "soltar dos veces no salta otra vez");
+    }
+
+    /// Pasar por encima de la barra la engorda; salir la devuelve, y moverse
+    /// por el resto de la pantalla no pide repintar.
+    #[test]
+    fn la_barra_engorda_bajo_el_cursor() {
+        let config = crate::config::Bloqueo::default();
+        let mut b = Bloqueo::new("12:30".into(), "lunes".into(), None, config);
+        b.poner_medio(Some(sonando_a(30)));
+        let pantalla = (1645.0, 1029.0);
+        let x = (pantalla.0 - MEDIOS_ANCHO) / 2.0 + MEDIOS_BARRA_X + 20.0;
+        let y = b.medios_y_actual(pantalla.1, b.medio_avance())
+            + MEDIOS_BARRA_Y
+            + MEDIOS_BARRA_FILA / 2.0;
+        assert!(b.mover(x, y, pantalla));
+        assert!(b.sobre_barra);
+        assert!(!b.mover(x + 5.0, y, pantalla), "seguir encima no repinta");
+        assert!(b.mover(x, 10.0, pantalla));
+        assert!(!b.sobre_barra);
+        assert!(!b.mover(x, 20.0, pantalla));
+    }
+
+    /// Con BookOS Player salen aleatorio y repetir a dos pasos del centro y
+    /// se pulsan; sin modos, ahí no hay nada y los tres de en medio no se mueven.
+    #[test]
+    fn aleatorio_y_repetir_solo_con_modos() {
+        use crate::medios::Repetir;
+        let config = crate::config::Bloqueo::default();
+        let mut b = Bloqueo::new("12:30".into(), "lunes".into(), None, config);
+        b.poner_medio(Some(sonando_a(30)));
+        let pantalla = (1645.0, 1029.0);
+        let centro = pantalla.0 / 2.0;
+        let y = b.medios_y_actual(pantalla.1, b.medio_avance())
+            + MEDIOS_CONTROLES_Y
+            + MEDIOS_CONTROL / 2.0;
+        let izquierda = centro - 2.0 * MEDIOS_PASO;
+        let derecha = centro + 2.0 * MEDIOS_PASO;
+        assert_eq!(b.lateral_en(izquierda, y, pantalla), None);
+
+        assert!(b.poner_modos((Some(false), Some(Repetir::No))));
+        assert!(
+            !b.poner_modos((Some(false), Some(Repetir::No))),
+            "lo mismo no repinta"
+        );
+        assert_eq!(
+            b.lateral_en(izquierda, y, pantalla),
+            Some(Lateral::Aleatorio)
+        );
+        assert_eq!(b.lateral_en(derecha, y, pantalla), Some(Lateral::Repetir));
+        assert_eq!(
+            b.medio_en(centro, y, pantalla),
+            Some(crate::medios::Orden::Alternar)
+        );
+        // Apretar solo hunde; soltar cambia el estado ya, sin esperar a la
+        // lectura siguiente (HIG §8: actuar al soltar).
+        b.pulsar(izquierda, y, pantalla);
+        assert_eq!(b.aleatorio, Some(false), "apretar no actúa");
+        assert!(b.soltar());
+        assert_eq!(b.aleatorio, Some(true));
+        b.pulsar(derecha, y, pantalla);
+        b.soltar();
+        assert_eq!(b.repetir, Some(Repetir::Lista));
+        // Un toque rápido, como el del dedo: la orden sale al soltar, pero el
+        // icono se queda hundido hasta cumplir `HUNDIDO_MINIMO`.
+        b.pulsar(izquierda, y, pantalla);
+        b.soltar();
+        assert_eq!(b.aleatorio, Some(false), "la orden no espera");
+        assert!(b.vuelta_pendiente && b.tarjeta_animando());
+        assert_eq!(b.hundido.destino(), 1.0);
+        std::thread::sleep(HUNDIDO_MINIMO);
+        b.avanzar_entrada(Instant::now());
+        assert!(!b.vuelta_pendiente);
+        assert_eq!(b.hundido.destino(), 0.0);
+        // Irse más de 10 pt con el botón apretado lo cancela.
+        b.pulsar(derecha, y, pantalla);
+        assert!(b.mover(derecha, y + CANCELA_TOQUE + 1.0, pantalla));
+        b.soltar();
+        assert_eq!(b.repetir, Some(Repetir::Lista), "el toque cancelado no actúa");
+    }
+
+    /// La lectura de cada segundo cambia la posición; con la misma canción la
+    /// tarjeta no vuelve a entrar.
+    #[test]
+    fn la_misma_cancion_no_vuelve_a_entrar() {
+        let config = crate::config::Bloqueo::default();
+        let mut b = Bloqueo::new("12:30".into(), "lunes".into(), None, config);
+        b.poner_medio(Some(sonando_a(30)));
+        let desde = b.medio_desde;
+        assert!(b.poner_medio(Some(sonando_a(31))), "otra posición repinta");
+        assert_eq!(b.medio_desde, desde);
+        let mut otra = sonando_a(0);
+        otra.titulo = "Otra".into();
+        assert!(b.poner_medio(Some(otra)));
+        assert_ne!(b.medio_desde, desde);
     }
 
     /// El clic tiene que acertar donde la tarjeta **se ve**, aunque todavía
@@ -2023,6 +2725,8 @@ mod tests {
             caratula: None,
             posicion: Some(30),
             duracion: Some(60),
+            posicion_ms: Some(30_000),
+            duracion_ms: Some(60_000),
             calidad: None,
             reproduciendo: true,
         }));
@@ -2032,15 +2736,14 @@ mod tests {
         );
 
         let pantalla = (1645.0, 1029.0);
-        let x0 = (pantalla.0 - MEDIOS_ANCHO) / 2.0;
-        let centro = x0 + 12.0 + MEDIOS_ARTE + 14.0 + MEDIOS_INFO / 2.0;
+        let centro = pantalla.0 / 2.0;
         // La `y` de verdad: la misma cuenta que hace `view()` para dibujar,
         // con el término de la animación incluido. Si `medio_en` la ignora,
         // este punto cae fuera de lo que el hit-test busca y el `assert`
         // de abajo falla con `None`.
-        let y = b.medios_y_actual(pantalla.1, b.medio_avance()) + MEDIOS_ALTO
-            - MEDIOS_PAD
-            - MEDIOS_CONTROL / 2.0;
+        let y = b.medios_y_actual(pantalla.1, b.medio_avance())
+            + MEDIOS_CONTROLES_Y
+            + MEDIOS_CONTROL / 2.0;
         assert_eq!(
             b.medio_en(centro, y, pantalla),
             Some(crate::medios::Orden::Alternar),
@@ -2059,18 +2762,14 @@ mod tests {
         let config = crate::config::Bloqueo::default();
         let b = Bloqueo::new("23:50".into(), "jueves".into(), None, config);
         let alto = 800.0;
-        let fin_acceso = alto * config.acceso_y
-            + config.avatar_tamano
-            + 12.0
-            + ALTO_NOMBRE
-            + 16.0
-            + ALTO_CAMPO
-            + 10.0
-            + 20.0
-            + ALTO_HUELLA;
+        let fin_acceso = b.acceso_y(alto) + b.alto_acceso(alto);
         assert!(
             b.medios_y_asentada(alto) >= fin_acceso + MARGEN_MEDIOS,
             "la tarjeta de medios se solapa con el bloque de acceso"
+        );
+        assert!(
+            b.medios_y_asentada(alto) + MEDIOS_ALTO <= alto - MARGEN_INFERIOR + 0.5,
+            "la tarjeta de medios se sale por abajo o queda pegada al borde"
         );
     }
 

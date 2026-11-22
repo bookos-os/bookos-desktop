@@ -42,7 +42,7 @@ impl Brillo {
 
     // 0.1.0
     fn color(&self) -> iced_core::Color {
-        if self.legible { TEXT() } else { tema::TEXTO2 }
+        if self.legible { TEXT() } else { tema::texto2() }
     }
 }
 
@@ -71,6 +71,15 @@ impl Widget for Brillo {
     // 0.1.0
     fn nombre(&self) -> &'static str {
         "brillo"
+    }
+
+    fn accesible(&self) -> (&'static str, String) {
+        let valor = match crate::state::read_brightness() {
+            Some(p) if self.automatico => format!("{p} %, {}", crate::emergente::t("automático", "automatic")),
+            Some(p) => format!("{p} %"),
+            None => "—".into(),
+        };
+        (crate::emergente::t("Brillo", "Brightness"), valor)
     }
 
     // 0.1.0

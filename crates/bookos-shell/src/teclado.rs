@@ -448,7 +448,7 @@ impl Teclado {
                         container(
                             text(v.to_string())
                                 .size(tema::T_PEQUENO)
-                                .color(tema::TEXTO2)
+                                .color(tema::texto2())
                         )
                         .width(Length::Fill)
                         .align_x(Horizontal::Right)
@@ -488,7 +488,7 @@ impl Teclado {
             }
             Tecla::Borrar => self.icono("borrar", lado_icono, tinta),
             Tecla::Intro => self.icono("intro", lado_icono, tinta),
-            Tecla::Ocultar => self.icono("chevron-abajo", 20.0, tema::TEXTO2),
+            Tecla::Ocultar => self.icono("chevron-abajo", 20.0, tema::texto2()),
         };
         container(contenido)
             .width(Length::Fixed(c.ancho))
@@ -584,7 +584,7 @@ mod pruebas {
         let mut t = Teclado::new(1280.0, Capa::Letras);
         let (mx, my) = centro(&t, Tecla::Mayus);
         let (ax, ay) = centro(&t, Tecla::Car('a'));
-        let mut toca = |t: &mut Teclado, x, y| {
+        let toca = |t: &mut Teclado, x, y| {
             t.pulsar(x, y);
             t.soltar()
         };

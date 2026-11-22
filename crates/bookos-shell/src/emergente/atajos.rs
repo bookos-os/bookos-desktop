@@ -94,6 +94,9 @@ const SISTEMA: Grupo = (
         ("Meta+Esc", "Apagar o reiniciar", "Shut down or restart"),
         ("Ctrl+Alt+Supr", "Cerrar sesión", "Log out"),
         ("Meta+Alt+S", "Salvapantallas", "Screen saver"),
+        // añadido en la 0.2.2
+        ("Meta+Alt+L", "Lector de pantalla", "Screen reader"),
+        ("Meta+Alt+P", "Teclado al panel", "Keyboard to the panel"),
         (
             "Meta+Alt+B",
             "Ocultar la barra superior",
@@ -217,7 +220,7 @@ impl Atajos {
                     "Hold Meta to see this sheet.",
                 ))
                 .size(tema::T_PEQUENO)
-                .color(tema::TEXTO2)
+                .color(tema::texto2())
             )
             .height(Length::Fixed(PIE))
             .align_y(Vertical::Bottom),
@@ -240,7 +243,7 @@ impl Atajos {
 
 // añadido en la 0.2.0
 fn grupo_view(&(es, en, atajos): &Grupo, ancho_teclas: f32) -> PanelElement<'static> {
-    let cabecera = container(text(t(es, en)).size(tema::T_PEQUENO).color(tema::TEXTO2))
+    let cabecera = container(text(t(es, en)).size(tema::T_PEQUENO).color(tema::texto2()))
         .height(Length::Fixed(CABECERA))
         .align_y(Vertical::Top);
     atajos
@@ -278,7 +281,7 @@ fn combinacion(teclas: &'static str) -> PanelElement<'static> {
         let mut fila = Row::new().spacing(6.0).align_y(Vertical::Center).push(
             text(palabras.trim_end().to_owned())
                 .size(tema::T_PEQUENO)
-                .color(tema::TEXTO2),
+                .color(tema::texto2()),
         );
         for flecha in flechas.chars().filter_map(flecha) {
             fila = fila.push(tecla_view(flecha, true));
@@ -311,7 +314,7 @@ fn tecla_view(nombre: &'static str, tenue: bool) -> PanelElement<'static> {
     } else {
         tema::T_PEQUENO
     };
-    let color = if tenue { tema::TEXTO2 } else { tema::texto() };
+    let color = if tenue { tema::texto2() } else { tema::texto() };
     let marca = container(text(nombre).size(tamano).color(color))
         .height(Length::Fixed(TECLA_ALTO))
         .align_x(Horizontal::Center)

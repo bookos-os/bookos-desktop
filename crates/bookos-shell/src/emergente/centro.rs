@@ -173,6 +173,49 @@ fn rect_celda(celda: Celda) -> Rectangle {
 /// La placa de lo apagado y de las tarjetas: el `--surface` del sistema, que
 /// sobre la tarjeta del panel es lo que se despega.
 // 0.1.0
+/// Fondo de la celda compacta de música, teñido con la carátula.
+///
+/// En oscuro mezcla sobre una base casi negra (igual que `paleta_grande`) con
+/// el matiz avivado y el brillo acotado: mezclar sobre el gris de `placa()` al
+/// 42 % lavaba las carátulas cálidas en un marrón barro. En alto contraste se
+/// queda en `placa()` sin tinte (HIG §2).
+// añadido en la 0.2.4
+fn fondo_musica(tinte: Option<Color>) -> Color {
+    let Some(t) = tinte.filter(|_| !tema::alto_contraste()) else {
+        return placa();
+    };
+    let gris = (t.r + t.g + t.b) / 3.0;
+    let vivo = |v: f32| (gris + (v - gris) * 1.35).clamp(0.0, 1.0);
+    let matiz = Color::from_rgb(vivo(t.r), vivo(t.g), vivo(t.b));
+    if tema::es_claro() {
+        return tema::mezclar(placa(), matiz, 0.18);
+    }
+    // En oscuro, una carátula muy clara (p. ej. blanca o beige) se atenúa antes
+    // de mezclar para conservar una superficie profunda coherente con `--card`.
+    let pico = matiz.r.max(matiz.g).max(matiz.b);
+    let profundo = if pico > 0.55 {
+        let k = 0.55 / pico;
+        Color::from_rgb(matiz.r * k, matiz.g * k, matiz.b * k)
+    } else {
+        matiz
+    };
+    let base = Color::from_rgb8(16, 16, 18);
+    tema::mezclar(base, profundo, 0.34)
+}
+
+/// Tinta secundaria (artista) sobre `fondo` con contraste mínimo de 4,5:1
+/// garantizado según el HIG §2.
+// añadido en la 0.2.4
+fn tinta_secundaria_sobre(tinta: Color, fondo: Color) -> Color {
+    (0..=10)
+        .map(|i| {
+            let peso = 0.35 * (1.0 - i as f32 / 10.0);
+            tema::mezclar(tinta, fondo, peso)
+        })
+        .find(|c| tema::contraste(*c, fondo) >= 4.5)
+        .unwrap_or(tinta)
+}
+
 fn placa() -> Color {
     tema::superficie_en_tarjeta()
 }
@@ -322,6 +365,20 @@ pub struct Centro {
     volumen_inicial: u8,
     backlight: Option<(String, u32)>,
     sonando: Option<Sonando>,
+    /// Todas las fuentes MPRIS activas, para poder pasar entre ellas con el
+    /// touchpad o con ↑/↓ en la tarjeta ampliada.
+    // añadido en la 0.2.4
+    fuentes: Vec<Sonando>,
+    /// Bus de la fuente seleccionada por el usuario, para que el sondeo de 1 s
+    /// no le devuelva a otra mientras siga viva.
+    fuente_bus: Option<String>,
+    /// Acumulador vertical del touchpad y enfriamiento entre cambios de fuente.
+    scroll_fuente: f32,
+    ultimo_cambio_fuente: Option<Instant>,
+    /// Transición suave al cambiar de fuente (fondo + entrada vertical), 0→1.
+    cambio_fuente: tema::Transicion,
+    sentido_fuente: f32,
+    tinte_anterior: Option<Color>,
     /// Lo que se pidió con reproducir/pausa y cuándo. El hilo de medios puede
     /// traer una lectura salida antes del clic: sin esto pisaba el cambio y
     /// el botón hacía pausa → play → pausa.
@@ -360,6 +417,11 @@ pub struct Centro {
     /// Desde cuándo corren los tres puntos del bloque de calidad.
     // añadido en la 0.2.0
     onda: Instant,
+    /// Reloj local para interpolar la barra de progreso entre lecturas de MPRIS
+    /// (1 s) sin saltitos: `(bus, titulo, posicion_en_seg, instante_ancla)`.
+    reloj_avance: Option<(String, String, f64, Instant)>,
+    /// Posición continua (en segundos) mientras el usuario arrastra la barra.
+    posicion_arrastre: Option<f64>,
     /// Aleatorio y repetición del reproductor; se leen al abrir lo que suena
     /// en grande. `None` si no los publica: entonces no se enseñan.
     aleatorio: Option<bool>,
@@ -448,12 +510,23 @@ impl Centro {
             .lock()
             .expect("nadie suelta el cerrojo a medias")
             .take();
-        if let Some(mut l) = lectura {
+        if let Some(l) = lectura {
+            let fuentes_cambiaron = self.fuentes != l.fuentes;
+            self.fuentes = l.fuentes;
+            let elegida = self
+                .fuente_bus
+                .as_deref()
+                .and_then(|bus| self.fuentes.iter().find(|s| s.bus == bus))
+                .or_else(|| self.fuentes.first())
+                .cloned();
+            let eligio_primera = elegida.as_ref().map(|s| s.bus.as_str())
+                == l.sonando.as_ref().map(|s| s.bus.as_str());
+            let mut sonando_nuevo = elegida;
             // Una lectura en contra de lo pedido se descarta en lo que toca a
             // reproducir hasta que el reproductor lo confirme. 2 s cubre el
             // segundo del hilo más lo que tarda el móvil detrás de BookOS Link.
             if let Some((quiere, desde)) = self.alternado
-                && let Some(leido) = l.sonando.as_mut()
+                && let Some(leido) = sonando_nuevo.as_mut()
             {
                 if leido.reproduciendo == quiere
                     || desde.elapsed() > std::time::Duration::from_secs(2)
@@ -469,17 +542,35 @@ impl Centro {
             // menos de un segundo.
             // modified 0.2.0 -- conserva la posición arrastrada
             if self.agarre == Agarre::Posicion
-                && let (Some(antes), Some(leido)) = (&self.sonando, l.sonando.as_mut())
+                && let (Some(antes), Some(leido)) = (&self.sonando, sonando_nuevo.as_mut())
                 && antes.bus == leido.bus
             {
                 leido.posicion = antes.posicion;
+                leido.posicion_ms = antes.posicion_ms;
             }
             let otra = self.sonando.as_ref().and_then(|s| s.caratula.as_deref())
-                != l.sonando.as_ref().and_then(|s| s.caratula.as_deref());
-            changed |= self.sonando != l.sonando || self.caratula != l.caratula;
-            self.sonando = l.sonando;
-            self.caratula = l.caratula;
-            self.tinte = l.tinte;
+                != sonando_nuevo.as_ref().and_then(|s| s.caratula.as_deref());
+            let (nueva_caratula, nuevo_tinte) = if eligio_primera {
+                (l.caratula, l.tinte)
+            } else if !otra {
+                (self.caratula.clone(), self.tinte)
+            } else {
+                match sonando_nuevo
+                    .as_ref()
+                    .and_then(|s| s.caratula.as_deref())
+                    .and_then(caratula)
+                {
+                    Some((h, c)) => (Some(h), Some(c)),
+                    None => (None, None),
+                }
+            };
+            changed |=
+                fuentes_cambiaron || self.sonando != sonando_nuevo || self.caratula != nueva_caratula;
+            self.fuente_bus = sonando_nuevo.as_ref().map(|s| s.bus.clone());
+            self.sonando = sonando_nuevo;
+            self.caratula = nueva_caratula;
+            self.tinte = nuevo_tinte;
+            self.sincronizar_reloj_avance();
             if otra && self.musica_grande {
                 self.caratula_grande = self.cargar_grande();
                 self.caratula_ancha = self.cargar_ancha();
@@ -491,7 +582,8 @@ impl Centro {
             // Los extras solo cuando cambia la pista o el reproductor: el
             // favorito marcado aquí no puede volver atrás por una lectura que
             // el hilo hizo antes del clic.
-            if let Some(e) = l.extras
+            if eligio_primera
+                && let Some(e) = l.extras
                 && (e.pista != self.extras.pista || e.escritorio != self.extras.escritorio)
             {
                 if e.escritorio != self.extras.escritorio {
@@ -541,6 +633,13 @@ impl Centro {
             volumen_inicial: 0,
             backlight: crate::backlight(),
             sonando: None,
+            fuentes: Vec::new(),
+            fuente_bus: None,
+            scroll_fuente: 0.0,
+            ultimo_cambio_fuente: None,
+            cambio_fuente: tema::Transicion::nueva(1.0, tema::M_SUAVE),
+            sentido_fuente: 1.0,
+            tinte_anterior: None,
             caratula: None,
             caratula_grande: None,
             tinte: None,
@@ -548,7 +647,7 @@ impl Centro {
             menu_salida: false,
             menu: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
             caratula_ancha: None,
-            vista: tema::Transicion::nueva(1.0, tema::M_RAPIDO),
+            vista: tema::Transicion::nueva(1.0, tema::M_SEGMENTADO),
             cambio: tema::Transicion::nueva(1.0, tema::M_SUAVE),
             sentido: 1.0,
             extras: Extras::default(),
@@ -556,6 +655,8 @@ impl Centro {
             calidad_abierta: false,
             calidad: tema::Transicion::nueva(0.0, tema::M_SUAVE),
             onda: Instant::now(),
+            reloj_avance: None,
+            posicion_arrastre: None,
             aleatorio: None,
             repetir: None,
             lectura: Arc::default(),
@@ -571,10 +672,13 @@ impl Centro {
         };
         // La primera lectura en el sitio: si fuera por el hilo, la tarjeta
         // abriría sin la música y la pintaría un segundo después.
-        let primera = Lectura::nueva(Sonando::leer(), None);
+        let primera = Lectura::nueva(Sonando::leer_todos(), None);
+        c.fuentes = primera.fuentes;
+        c.fuente_bus = primera.sonando.as_ref().map(|s| s.bus.clone());
         c.sonando = primera.sonando;
         c.caratula = primera.caratula;
         c.tinte = primera.tinte;
+        c.sincronizar_reloj_avance();
         let previa = c
             .sonando
             .as_ref()
@@ -917,7 +1021,7 @@ impl Centro {
     fn abrir_musica(&mut self) {
         self.caratula_grande = self.cargar_grande();
         self.caratula_ancha = self.cargar_ancha();
-        self.vista = tema::Transicion::nueva(1.0, tema::M_RAPIDO);
+        self.vista = tema::Transicion::nueva(1.0, tema::M_SEGMENTADO);
         self.cambio = tema::Transicion::nueva(1.0, tema::M_SUAVE);
         self.menu_salida = false;
         self.menu.fijar(0.0);
@@ -976,10 +1080,16 @@ impl Centro {
         let Some(s) = self.sonando.as_mut() else {
             return false;
         };
-        let Some(d) = s.duracion else { return false };
-        let nueva = Some((fraccion * d as f32).round() as u64);
-        let cambia = s.posicion != nueva;
-        s.posicion = nueva;
+        let Some(d) = s.duracion_seg() else {
+            return false;
+        };
+        let nueva_seg = (fraccion as f64 * d).clamp(0.0, d);
+        let cambia = self
+            .posicion_arrastre
+            .is_none_or(|prev| (prev - nueva_seg).abs() > 0.001);
+        self.posicion_arrastre = Some(nueva_seg);
+        s.posicion = Some(nueva_seg.round() as u64);
+        s.posicion_ms = Some((nueva_seg * 1000.0).round() as u64);
         cambia
     }
 
@@ -991,8 +1101,10 @@ impl Centro {
             || self.calidad.animando()
             || self.menu.animando()
             || self.puntos_corriendo()
+            || self.barra_corriendo()
             || self.vista.animando()
             || self.cambio.animando()
+            || self.cambio_fuente.animando()
             || self.detalle.as_ref().is_some_and(|d| d.animando())
     }
 
@@ -1045,9 +1157,12 @@ impl Centro {
                 });
             }
             Agarre::Posicion => {
+                let destino_seg = self.posicion_arrastre.take();
                 if let Some(s) = &self.sonando
                     && let Some(destino) = s.posicion
                 {
+                    let seg = destino_seg.unwrap_or(destino as f64);
+                    self.reloj_avance = Some((s.bus.clone(), s.titulo.clone(), seg, Instant::now()));
                     // Al soltar y no en cada paso: el reproductor del móvil
                     // tarda en contestar y saltaría a saltos.
                     let leida = Sonando::leer()
@@ -1121,9 +1236,94 @@ impl Centro {
             .max(self.hundimiento(Zona::Disco(celda)))
     }
 
+    /// Índice de la fuente multimedia actualmente visible en `self.fuentes`.
+    // añadido en la 0.2.4
+    fn indice_fuente(&self) -> usize {
+        self.fuente_bus
+            .as_deref()
+            .and_then(|bus| self.fuentes.iter().position(|s| s.bus == bus))
+            .unwrap_or(0)
+    }
+
+    /// Cambia a la fuente multimedia anterior (`delta < 0`) o siguiente
+    /// (`delta > 0`) con transición vertical y fundido del tinte de fondo.
+    // añadido en la 0.2.4
+    fn cambiar_fuente(&mut self, delta: isize) -> bool {
+        if self.fuentes.len() <= 1 {
+            return false;
+        }
+        let actual = self.indice_fuente();
+        let destino = (actual as isize + delta).clamp(0, (self.fuentes.len() - 1) as isize) as usize;
+        if destino == actual {
+            return false;
+        }
+        self.seleccionar_fuente(destino, if delta > 0 { 1.0 } else { -1.0 })
+    }
+
+    // añadido en la 0.2.4
+    fn seleccionar_fuente(&mut self, destino: usize, sentido: f32) -> bool {
+        let Some(nueva) = self.fuentes.get(destino).cloned() else {
+            return false;
+        };
+        self.tinte_anterior = self.tinte;
+        self.fuente_bus = Some(nueva.bus.clone());
+        let (nueva_caratula, nuevo_tinte) = match nueva.caratula.as_deref().and_then(caratula) {
+            Some((h, c)) => (Some(h), Some(c)),
+            None => (None, None),
+        };
+        self.sonando = Some(nueva.clone());
+        self.caratula = nueva_caratula;
+        self.tinte = nuevo_tinte;
+        self.alternado = None;
+        self.posicion_arrastre = None;
+        self.sincronizar_reloj_avance();
+        self.caratula_grande = self.cargar_grande();
+        self.caratula_ancha = self.cargar_ancha();
+        self.extras = Extras::leer(&nueva.bus);
+        self.app_icono = self
+            .extras
+            .escritorio
+            .as_deref()
+            .and_then(icono_de_escritorio);
+        let (aleatorio, repetir) = medios::modos(&nueva.bus);
+        self.aleatorio = aleatorio;
+        self.repetir = repetir;
+        self.calidad_abierta = false;
+        self.calidad = tema::Transicion::nueva(0.0, tema::M_SUAVE);
+        self.sentido_fuente = sentido;
+        self.ultimo_cambio_fuente = Some(Instant::now());
+        if !tema::efectos_reducidos() {
+            self.cambio_fuente = tema::Transicion::nueva(0.0, tema::M_SUAVE);
+            self.cambio_fuente.ir_a(1.0);
+        } else {
+            self.cambio_fuente = tema::Transicion::nueva(1.0, tema::M_SUAVE);
+        }
+        true
+    }
+
     // añadido en la 0.2.0
+    // modified 0.2.4 -- en la tarjeta grande de música, el scroll vertical cambia de fuente
     pub fn desplazar(&mut self, dy: f32) -> bool {
-        self.detalle.as_mut().is_some_and(|d| d.desplazar(dy))
+        if let Some(d) = self.detalle.as_mut() {
+            return d.desplazar(dy);
+        }
+        if self.musica_grande && !self.menu_salida && self.fuentes.len() > 1 {
+            // Breve enfriamiento tras cambiar para absorber la inercia del touchpad.
+            if self
+                .ultimo_cambio_fuente
+                .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(260))
+            {
+                self.scroll_fuente = 0.0;
+                return false;
+            }
+            self.scroll_fuente += dy;
+            if self.scroll_fuente.abs() >= 48.0 {
+                let delta = if self.scroll_fuente > 0.0 { 1 } else { -1 };
+                self.scroll_fuente = 0.0;
+                return self.cambiar_fuente(delta);
+            }
+        }
+        false
     }
 
     // 0.1.0
@@ -1203,6 +1403,25 @@ impl Centro {
                     }
                 }
                 return None;
+            }
+            // Indicador vertical de fuentes en el borde derecho: clicable para
+            // saltar directamente a cualquiera sin necesidad de touchpad.
+            if self.fuentes.len() > 1 && x >= ANCHO - 20.0 {
+                let g = self.grande();
+                let n = self.fuentes.len();
+                let paso = 16.0;
+                let total = n as f32 * paso;
+                let y0 = (g.alto - total) / 2.0;
+                if y >= y0 - 8.0 && y <= y0 + total + 8.0 {
+                    let destino = (((y - y0) / paso).floor() as isize).clamp(0, (n - 1) as isize)
+                        as usize;
+                    let actual = self.indice_fuente();
+                    if destino != actual {
+                        let sentido = if destino > actual { 1.0 } else { -1.0 };
+                        self.seleccionar_fuente(destino, sentido);
+                    }
+                    return None;
+                }
             }
             // La etiqueta antes que la barra: la holgura de 10 px de la barra
             // tapaba la mitad de arriba de la píldora, y pulsarla ahí
@@ -1390,6 +1609,7 @@ impl Centro {
     // añadido en la 0.2.0
     // modified 0.2.2 -- recuerda lo pedido para que una lectura vieja no lo deshaga
     fn mandar(&mut self, orden: medios::Orden) {
+        let pos_antes = self.posicion_actual();
         if let Some(sonando) = self.sonando.as_mut()
             && sonando.ejecutar(orden)
             && orden == medios::Orden::Alternar
@@ -1398,6 +1618,10 @@ impl Centro {
             // BookOS Link tarda y el botón parecería muerto.
             sonando.reproduciendo = !sonando.reproduciendo;
             self.alternado = Some((sonando.reproduciendo, std::time::Instant::now()));
+            if let Some(pos) = pos_antes {
+                self.reloj_avance =
+                    Some((sonando.bus.clone(), sonando.titulo.clone(), pos, Instant::now()));
+            }
         }
     }
 
@@ -1451,6 +1675,18 @@ impl Centro {
                 self.volver();
                 Tecla::Consumida
             }
+            crate::TeclaPulsada::Arriba
+                if self.musica_grande && !self.menu_salida && self.fuentes.len() > 1 =>
+            {
+                self.cambiar_fuente(-1);
+                Tecla::Consumida
+            }
+            crate::TeclaPulsada::Abajo
+                if self.musica_grande && !self.menu_salida && self.fuentes.len() > 1 =>
+            {
+                self.cambiar_fuente(1);
+                Tecla::Consumida
+            }
             crate::TeclaPulsada::Escape => Tecla::Cerrar,
             tecla => match self.detalle.as_mut() {
                 Some(d) => d.tecla(tecla),
@@ -1480,6 +1716,100 @@ impl Centro {
         self.musica_grande
             && self.calidad_abierta
             && self.sonando.as_ref().is_some_and(|s| s.reproduciendo)
+    }
+
+    /// ¿La barra de progreso está avanzando en directo en la vista grande?
+    /// En pausa, en la rejilla compacta o con efectos reducidos devuelve false
+    /// para que el reposo cueste cero fotogramas.
+    fn barra_corriendo(&self) -> bool {
+        self.musica_grande
+            && self.agarre != Agarre::Posicion
+            && !tema::efectos_reducidos()
+            && self.sonando.as_ref().is_some_and(|s| {
+                s.reproduciendo
+                    && s.posicion_seg().is_some()
+                    && s.duracion_seg().is_some_and(|d| d > 0.0)
+            })
+    }
+
+    /// Ancla el reloj local del progreso a la última lectura de MPRIS.
+    /// Si la canción sigue avanzando normalmente, corrige suavemente el desfase
+    /// entre relojes sin provocar saltos visibles; si hubo un salto real (seek
+    /// o cambio de pista), se alinea al instante.
+    fn sincronizar_reloj_avance(&mut self) {
+        if self.agarre == Agarre::Posicion {
+            return;
+        }
+        let Some(s) = &self.sonando else {
+            self.reloj_avance = None;
+            return;
+        };
+        let Some(leida) = s.posicion_seg() else {
+            self.reloj_avance = None;
+            return;
+        };
+        let ahora = Instant::now();
+        let duracion = s.duracion_seg().unwrap_or(f64::INFINITY);
+        if let Some((bus, titulo, base, desde)) = &self.reloj_avance
+            && *bus == s.bus
+            && *titulo == s.titulo
+            && s.reproduciendo
+        {
+            let extrapolada = (*base + desde.elapsed().as_secs_f64()).clamp(0.0, duracion);
+            let desfase = leida - extrapolada;
+            let nueva = if desfase.abs() < 0.75 {
+                (extrapolada + desfase * 0.25).clamp(0.0, duracion)
+            } else {
+                leida.clamp(0.0, duracion)
+            };
+            self.reloj_avance = Some((s.bus.clone(), s.titulo.clone(), nueva, ahora));
+        } else {
+            self.reloj_avance = Some((
+                s.bus.clone(),
+                s.titulo.clone(),
+                leida.clamp(0.0, duracion),
+                ahora,
+            ));
+        }
+    }
+
+    /// Posición actual en segundos (continua) para la barra y los tiempos.
+    fn posicion_actual(&self) -> Option<f64> {
+        if self.agarre == Agarre::Posicion
+            && let Some(pos) = self.posicion_arrastre
+        {
+            return Some(pos);
+        }
+        let s = self.sonando.as_ref()?;
+        if let Some((bus, titulo, base, desde)) = &self.reloj_avance
+            && *bus == s.bus
+            && *titulo == s.titulo
+        {
+            let pos = if s.reproduciendo && !tema::efectos_reducidos() {
+                *base + desde.elapsed().as_secs_f64()
+            } else {
+                *base
+            };
+            return Some(match s.duracion_seg() {
+                Some(d) if d > 0.0 => pos.clamp(0.0, d),
+                _ => pos.max(0.0),
+            });
+        }
+        s.posicion_seg()
+    }
+
+    /// Fracción continua `[0.0, 1.0]` para el relleno de la barra de progreso.
+    fn avance_actual(&self) -> f32 {
+        let Some(s) = &self.sonando else {
+            return 0.0;
+        };
+        let (Some(pos), Some(d)) = (self.posicion_actual(), s.duracion_seg()) else {
+            return 0.0;
+        };
+        if d <= 0.0 {
+            return 0.0;
+        }
+        (pos / d).clamp(0.0, 1.0) as f32
     }
 
     // 0.1.0
@@ -1647,7 +1977,7 @@ impl Centro {
                         .wrapping(iced_core::text::Wrapping::None),
                     text(recortar_px(&estado, ancho_texto, 11.0))
                         .size(11.0)
-                        .color(tema::TEXTO2)
+                        .color(tema::texto2())
                         .wrapping(iced_core::text::Wrapping::None),
                 ]
                 .spacing(1.0),
@@ -1701,14 +2031,9 @@ impl Centro {
     fn musica(&self) -> PanelElement<'_> {
         let r = rect_celda(Celda::Musica);
         let ancho = r.width - MUSICA_RELLENO * 2.0;
-        // El tinte se mezcla en opaco con la placa —más en oscuro, menos en
-        // claro— para que el texto siga leyéndose sobre cualquier carátula.
-        let fondo = match self.tinte {
-            Some(t) => tema::mezclar(placa(), t, if tema::es_claro() { 0.22 } else { 0.42 }),
-            None => placa(),
-        };
+        let fondo = fondo_musica(self.tinte);
         let tinta = tema::tinta_sobre(fondo);
-        let tinta2 = tema::mezclar(tinta, fondo, 0.4);
+        let tinta2 = tinta_secundaria_sobre(tinta, fondo);
         let caratula: PanelElement<'_> = match &self.caratula {
             Some(foto) => iced_widget::image(foto.clone())
                 .width(Length::Fixed(MUSICA_CARATULA))
@@ -1719,7 +2044,7 @@ impl Centro {
                 MUSICA_CARATULA,
                 20.0,
                 disco_apagado(),
-                tema::TEXTO2,
+                tema::texto2(),
             ),
         };
         let (titulo, artista) = match &self.sonando {
@@ -1821,7 +2146,7 @@ impl Centro {
                 .center_y(Length::Fixed(DESL_FILA))
                 .into()
         };
-        let color = if apagado { tema::TEXTO2 } else { tema::acento() };
+        let color = if apagado { tema::texto2() } else { tema::acento() };
         let pista = control::barra(
             r.width,
             grueso,
@@ -1878,22 +2203,50 @@ impl Centro {
     fn paleta_grande(&self) -> Paleta {
         let claro = tema::es_claro();
         let negro = Color::from_rgb8(8, 8, 10);
-        let (arriba, abajo) = match self.tinte {
-            Some(c) if claro => (
-                tema::mezclar(Color::WHITE, c, 0.16),
-                tema::mezclar(Color::WHITE, c, 0.03),
-            ),
+        // Al cambiar de fuente, el tinte del fondo se funde suavemente con el
+        // mismo muelle que mueve el contenido.
+        let tinte_activo = if self.cambio_fuente.animando() {
+            let f = self.cambio_fuente.valor().clamp(0.0, 1.0);
+            match (self.tinte_anterior, self.tinte) {
+                (Some(a), Some(b)) => Some(tema::mezclar(a, b, f)),
+                (Some(a), None) => Some(tema::mezclar(a, tema::card(), f)),
+                (None, Some(b)) => Some(tema::mezclar(tema::card(), b, f)),
+                (None, None) => None,
+            }
+        } else {
+            self.tinte
+        };
+        let (arriba, abajo) = match tinte_activo {
+            // modificado en la 0.2.3 -- arriba es el fondo de la celda pequeña: con
+            // blanco al 16 % el tinte casi se perdía y al abrir cambiaba de color.
+            Some(c) if claro => {
+                let celda = tema::mezclar(placa(), c, 0.22);
+                (celda, tema::mezclar(celda, Color::WHITE, 0.45))
+            }
             Some(c) => (tema::mezclar(negro, c, 0.46), tema::mezclar(negro, c, 0.22)),
             None => (tema::card(), tema::card()),
         };
         let medio = tema::mezclar(arriba, abajo, 0.5);
         let tinta = tema::tinta_sobre(medio);
+        // added 0.2.3 -- realce del color de la carátula
+        // El tono de la carátula, llevado hacia la tinta lo justo para
+        // separarse 4,5:1 del fondo: la etiqueta de la pastilla va en `medio`
+        // encima, así que es el mismo par. Sin carátula, la tinta de siempre.
+        let realce = self
+            .tinte
+            .and_then(|c| {
+                (0..=10)
+                    .map(|i| tema::mezclar(c, tinta, i as f32 / 10.0))
+                    .find(|r| tema::contraste(*r, medio) >= 4.5)
+            })
+            .unwrap_or(tinta);
         Paleta {
             arriba,
             abajo,
             medio,
             tinta,
             tinta2: tema::mezclar(tinta, medio, 0.4),
+            realce,
             pista: tema::mezclar(medio, tinta, 0.18),
             placa: if claro {
                 tema::mezclar(medio, Color::WHITE, 0.72)
@@ -1984,8 +2337,11 @@ impl Centro {
         .align_y(Vertical::Center)
         .height(Length::Fixed(GRANDE_CABECERA));
 
-        // Carátula: entra desde el lado al cambiar de canción; pausar no la mueve.
-        let entra = self.cambio.valor();
+        // Carátula: entra desde el lado al cambiar de canción o en vertical al
+        // cambiar de fuente; pausar no la mueve.
+        let entra_pista = self.cambio.valor();
+        let entra_fuente = self.cambio_fuente.valor();
+        let entra = entra_pista.min(entra_fuente);
         let (radio, foto) = match (&self.caratula_ancha, self.ver_video()) {
             (Some(ancha), true) => (GRANDE_RADIO_VIDEO, Some(ancha)),
             _ => (GRANDE_RADIO, self.caratula_grande.as_ref()),
@@ -2005,12 +2361,14 @@ impl Centro {
                 radio,
             ),
         };
-        let dx = 24.0 * (1.0 - entra) * self.sentido;
+        let dx = 24.0 * (1.0 - entra_pista) * self.sentido;
+        let dy = 22.0 * (1.0 - entra_fuente) * self.sentido_fuente;
         let caratula = container(caratula)
             .padding(iced_core::Padding {
+                top: dy.max(0.0),
+                bottom: (-dy).max(0.0),
                 left: dx.max(0.0),
                 right: (-dx).max(0.0),
-                ..Default::default()
             })
             .width(Length::Fill)
             .center_x(Length::Fill)
@@ -2026,16 +2384,20 @@ impl Centro {
         if let Some(sy) = g.selector {
             let mitad = (SELECTOR_ANCHO - 8.0) / 2.0;
             let v = self.vista.valor();
-            let opcion = |nombre: &'static str, elegida: bool| -> PanelElement<'static> {
+            // modified 0.2.3 -- la etiqueta sigue a la píldora, como en Energía
+            // `cuanto`: lo que la tapa la píldora; tinta y peso cambian según
+            // pasa por encima, no de golpe al cruzar la mitad.
+            let opcion = |nombre: &'static str, cuanto: f32| -> PanelElement<'static> {
+                let cuanto = cuanto.clamp(0.0, 1.0);
                 container(
                     text(nombre)
                         .size(12.5)
-                        .font(control::peso(if elegida {
+                        .font(control::peso(if cuanto > 0.5 {
                             Weight::Semibold
                         } else {
                             Weight::Medium
                         }))
-                        .color(if elegida { p.medio } else { p.tinta2 }),
+                        .color(tema::mezclar(p.tinta2, p.medio, cuanto)),
                 )
                 .width(Length::Fixed(mitad))
                 .height(Length::Fixed(SELECTOR_ALTO - 8.0))
@@ -2049,14 +2411,17 @@ impl Centro {
                     Space::new().into(),
                     mitad,
                     SELECTOR_ALTO - 8.0,
-                    p.tinta,
+                    p.realce,
                     16.0
                 ),
-            ];
+            ]
+            // La pila mide lo que su primera capa: con el pulgar en «Portada»
+            // eran media cápsula y «Vídeo» quedaba recortado fuera.
+            .width(Length::Fixed(SELECTOR_ANCHO - 8.0));
             let selector = Self::caja(
                 container(iced_widget::stack![
                     pulgar,
-                    row![opcion("Portada", v <= 0.5), opcion("Vídeo", v > 0.5)],
+                    row![opcion("Portada", 1.0 - v), opcion("Vídeo", v)],
                 ])
                 .padding(4.0)
                 .into(),
@@ -2120,7 +2485,7 @@ impl Centro {
 
         // Posición: engorda de 6 a 12 al agarrarla, solo en alto.
         let r = self.rect_avance();
-        let avance = s.and_then(|s| s.avance()).unwrap_or(0.0);
+        let avance = self.avance_actual();
         let grueso = if self.agarre == Agarre::Posicion {
             AVANCE + (AVANCE_AGARRADO - AVANCE) * self.grosor.valor()
         } else {
@@ -2131,7 +2496,7 @@ impl Centro {
                 Space::new().into(),
                 (r.width * avance).max(grueso),
                 grueso,
-                p.tinta,
+                p.realce,
                 grueso / 2.0
             )]
             .width(Length::Fill)
@@ -2144,7 +2509,8 @@ impl Centro {
         // Con un navegador detrás a veces llega sin posición o sin duración
         // (visto con Firefox y YouTube; en pausa sí publica las dos). Se
         // enseña lo que haya y sin nada el hueco queda vacío, no «--:--».
-        let (ya, resta) = match s.map(|s| (s.posicion, s.duracion)) {
+        let pos_seg = self.posicion_actual().map(|p| p.floor() as u64);
+        let (ya, resta) = match s.map(|s| (pos_seg.or(s.posicion), s.duracion)) {
             Some((Some(pos), Some(d))) => (
                 medios::reloj(pos),
                 format!("-{}", medios::reloj(d.saturating_sub(pos))),
@@ -2341,7 +2707,10 @@ impl Centro {
             .push(Space::new().height(Length::Fixed(g.mandos - ocupado)))
             .push(mandos);
 
-        // La tarjeta: degradado opaco de arriba abajo, sin borde.
+        // La tarjeta: degradado opaco de arriba abajo, con el borde de 1 px
+        // que el HIG pide a un popover. Sin él, en claro y sin carátula el
+        // degradado es blanco sobre blanco y no se veía dónde acababa.
+        // modificado en la 0.2.3 -- con borde
         let degradado = iced_core::gradient::Linear::new(iced_core::Radians(std::f32::consts::PI))
             .add_stop(0.0, p.arriba)
             .add_stop(1.0, p.abajo);
@@ -2351,6 +2720,31 @@ impl Centro {
             .height(Length::Fixed(g.alto))
             .clip(true);
         let mut capas = iced_widget::stack![tarjeta];
+        // Indicador vertical estilo Apple cuando hay varias fuentes activas:
+        // una cápsula alargada en la activa y puntos discretos en las demás.
+        if self.fuentes.len() > 1 {
+            let actual = self.indice_fuente();
+            let mut puntos = column![].spacing(5.0).align_x(Horizontal::Center);
+            for i in 0..self.fuentes.len() {
+                let (h_p, color) = if i == actual {
+                    (14.0, p.tinta)
+                } else {
+                    (4.0, tema::mezclar(p.tinta2, p.medio, 0.45))
+                };
+                puntos = puntos.push(Self::caja(Space::new().into(), 4.0, h_p, color, 2.0));
+            }
+            capas = capas.push(
+                container(puntos)
+                    .width(Length::Fixed(ANCHO))
+                    .height(Length::Fixed(g.alto))
+                    .padding(iced_core::Padding {
+                        right: 7.0,
+                        ..Default::default()
+                    })
+                    .align_x(Horizontal::Right)
+                    .align_y(Vertical::Center),
+            );
+        }
         if self.menu.valor() > 0.01 {
             capas = capas.push(self.menu_salidas(&p));
         }
@@ -2361,7 +2755,8 @@ impl Centro {
                 background: Some(degradado.into()),
                 border: Border {
                     radius: tema::R_POPOVER.into(),
-                    ..Default::default()
+                    width: 1.0,
+                    color: tema::borde(),
                 },
                 ..Default::default()
             })
@@ -2647,6 +3042,9 @@ struct Paleta {
     medio: Color,
     tinta: Color,
     tinta2: Color,
+    /// La pastilla de Portada | Vídeo y lo recorrido de la barra: el color de
+    /// la carátula, no la tinta, para que se lean como parte de la canción.
+    realce: Color,
     pista: Color,
     placa: Color,
     apagado: Color,
@@ -2705,6 +3103,7 @@ struct Grande {
 
 /// Lo que suena, su carátula ya lista para pintar y el color que la resume.
 struct Lectura {
+    fuentes: Vec<Sonando>,
     sonando: Option<Sonando>,
     caratula: Option<iced_widget::image::Handle>,
     tinte: Option<Color>,
@@ -2718,7 +3117,9 @@ impl Lectura {
     /// Descodifica la carátula solo si ha cambiado de fichero: un JPEG por
     /// segundo para la misma canción sería trabajo tirado.
     // 0.1.0
-    fn nueva(sonando: Option<Sonando>, previa: Previa) -> Self {
+    // modified 0.2.4 -- recibe todas las fuentes activas
+    fn nueva(fuentes: Vec<Sonando>, previa: Previa) -> Self {
+        let sonando = fuentes.first().cloned();
         let ruta = sonando.as_ref().and_then(|s| s.caratula.as_deref());
         let (caratula, tinte) = match (ruta, previa) {
             (Some(r), Some((p, (h, c)))) if r == p => (Some(h), Some(c)),
@@ -2729,6 +3130,7 @@ impl Lectura {
             (None, _) => (None, None),
         };
         Self {
+            fuentes,
             sonando,
             caratula,
             tinte,
@@ -2759,14 +3161,14 @@ fn vigilar_medios(lectura: &Arc<Mutex<Option<Lectura>>>, mut previa: Previa) {
                 if destino.strong_count() == 0 {
                     return;
                 }
-                let sonando = match Sonando::consultar() {
-                    Ok(sonando) => sonando,
+                let fuentes = match Sonando::consultar_todos() {
+                    Ok(fuentes) => fuentes,
                     Err(error) => {
                         tracing::debug!("se conserva la tarjeta multimedia: {error}");
                         continue;
                     }
                 };
-                let mut l = Lectura::nueva(sonando, previa.take());
+                let mut l = Lectura::nueva(fuentes, previa.take());
                 // El `.desktop`, la pista y el favorito: tres `busctl` más, así
                 // que solo cuando cambian el reproductor o la canción.
                 let clave = l
@@ -2977,6 +3379,8 @@ mod tests {
             reproduciendo: true,
             posicion: Some(84),
             duracion: Some(270),
+            posicion_ms: Some(84_000),
+            duracion_ms: Some(270_000),
             calidad: Some(medios::Calidad {
                 codec: "FLAC".into(),
                 frecuencia: 96_000,
@@ -2997,7 +3401,8 @@ mod tests {
         let entregar = |c: &mut Centro, suena: bool| {
             let mut s = sonando_flac();
             s.reproduciendo = suena;
-            *c.lectura.lock().expect("sin hilos en el test") = Some(Lectura::nueva(Some(s), None));
+            *c.lectura.lock().expect("sin hilos en el test") =
+                Some(Lectura::nueva(vec![s], None));
             c.refrescar();
             c.sonando.as_ref().expect("hay música").reproduciendo
         };
@@ -3019,7 +3424,7 @@ mod tests {
         c.agarre = Agarre::Posicion;
         c.sonando.as_mut().expect("puesto arriba").posicion = Some(10);
         *c.lectura.lock().expect("sin hilos en el test") =
-            Some(Lectura::nueva(Some(sonando_flac()), None));
+            Some(Lectura::nueva(vec![sonando_flac()], None));
         c.refrescar();
         assert_eq!(c.sonando.as_ref().expect("hay música").posicion, Some(10));
     }
@@ -3045,14 +3450,20 @@ mod tests {
 
     /// Vuelca lo que suena en grande a un PNG si se pide por entorno, para
     /// mirarlo sin sesión: `BOOKOS_CENTRO_MUSICA_PNG=/tmp/x.png`.
+    /// Con `BOOKOS_CENTRO_MUSICA_TEMA=claro` sale en claro; si no, en el tema
+    /// que haya.
     fn volcar(c: Centro, sufijo: &str) {
         let Ok(ruta) = std::env::var("BOOKOS_CENTRO_MUSICA_PNG") else {
             return;
         };
         let ruta = ruta.replace(".png", &format!("-{sufijo}.png"));
-        // El shell aplica el tema de su configuración: se le pasa el que haya.
+        // El shell aplica el tema de su configuración: se le pasa el pedido.
         let config = crate::Config {
-            tema: tema::actual(),
+            tema: match std::env::var("BOOKOS_CENTRO_MUSICA_TEMA").as_deref() {
+                Ok("claro") => tema::Tema::Claro,
+                Ok("oscuro") => tema::Tema::Oscuro,
+                _ => tema::actual(),
+            },
             ..Default::default()
         };
         let mut shell = crate::Shell::con_config(1646, 1.0, config);
@@ -3078,6 +3489,21 @@ mod tests {
         c.tinte = Some(Color::from_rgb8(0x3b, 0x6f, 0xd8));
         c.musica_grande = true;
         c
+    }
+
+    /// Con vídeo sale «Portada | Vídeo»; en portada el selector se recortaba a
+    /// media cápsula y «Vídeo» no se veía.
+    #[test]
+    fn el_selector_de_video_muestra_las_dos_opciones() {
+        let mut c = grande_con_flac();
+        c.caratula_ancha = Some(iced_widget::image::Handle::from_rgba(
+            16,
+            9,
+            vec![0x80; 16 * 9 * 4],
+        ));
+        c.vista.fijar(0.0);
+        assert!(c.grande().selector.is_some());
+        volcar(c, "selector");
     }
 
     /// El bloque de calidad: el archivo a un lado y la salida al otro, sin
@@ -3224,6 +3650,9 @@ mod tests {
         c.extras.favorito = None;
         assert_eq!(c.grande_en(x, y), None);
         volcar(grande_con_flac(), "normal");
+        let mut celda = grande_con_flac();
+        celda.musica_grande = false;
+        volcar(celda, "celda");
     }
 
     #[test]
@@ -3263,5 +3692,88 @@ mod tests {
             lista[0].sink, "alsa_output.x.HiFi__Speaker__sink",
             "se queda el que está en uso"
         );
+    }
+
+    #[test]
+    fn la_celda_de_musica_mantiene_contraste_y_profundidad_con_cualquier_caratula() {
+        let caratulas = [
+            Color::WHITE,
+            Color::BLACK,
+            Color::from_rgb8(190, 160, 125), // beige cálido tipo "it boy"
+            Color::from_rgb8(255, 220, 40),  // amarillo brillante
+            Color::from_rgb8(220, 40, 50),   // rojo saturado
+            Color::from_rgb8(40, 140, 240),  // azul
+        ];
+        for c in caratulas {
+            let fondo = fondo_musica(Some(c));
+            let tinta = tema::tinta_sobre(fondo);
+            let tinta2 = tinta_secundaria_sobre(tinta, fondo);
+            assert!(
+                tema::contraste(tinta, fondo) >= 4.5,
+                "tinta principal < 4.5:1 para {c:?} sobre {fondo:?}"
+            );
+            assert!(
+                tema::contraste(tinta2, fondo) >= 4.5,
+                "tinta secundaria < 4.5:1 para {c:?} sobre {fondo:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn desplazar_cambia_entre_varias_fuentes_multimedia() {
+        let mut c = Centro::new();
+        let mut s1 = sonando_flac();
+        s1.bus = "org.mpris.MediaPlayer2.bookosplayer".into();
+        s1.titulo = "Nocturne".into();
+        let mut s2 = sonando_flac();
+        s2.bus = "org.mpris.MediaPlayer2.firefox.instance_1".into();
+        s2.titulo = "The Wild Project".into();
+        c.fuentes = vec![s1.clone(), s2.clone()];
+        c.fuente_bus = Some(s1.bus.clone());
+        c.sonando = Some(s1.clone());
+        c.musica_grande = true;
+
+        assert!(c.desplazar(60.0));
+        assert_eq!(
+            c.sonando.as_ref().map(|s| s.bus.as_str()),
+            Some(s2.bus.as_str())
+        );
+        // Un refresco posterior del hilo mantiene la fuente elegida por el usuario.
+        *c.lectura.lock().expect("sin hilos en el test") =
+            Some(Lectura::nueva(vec![s1.clone(), s2.clone()], None));
+        c.refrescar();
+        assert_eq!(
+            c.sonando.as_ref().map(|s| s.bus.as_str()),
+            Some(s2.bus.as_str())
+        );
+        // Y la flecha arriba vuelve a la primera fuente.
+        assert!(matches!(c.tecla(crate::TeclaPulsada::Arriba), Tecla::Consumida));
+        assert_eq!(
+            c.sonando.as_ref().map(|s| s.bus.as_str()),
+            Some(s1.bus.as_str())
+        );
+    }
+
+    #[test]
+    fn la_barra_de_progreso_avanza_de_forma_continua_y_se_detiene_en_pausa() {
+        let mut c = grande_con_flac();
+        c.sincronizar_reloj_avance();
+        assert!(c.barra_corriendo());
+        assert!(c.animando());
+
+        // Simulamos que han pasado 400 ms desde la lectura de MPRIS sin nueva consulta.
+        if let Some((_, _, _, desde)) = c.reloj_avance.as_mut() {
+            *desde = Instant::now() - std::time::Duration::from_millis(400);
+        }
+        let pos = c.posicion_actual().expect("hay posición");
+        assert!(
+            pos > 84.3 && pos < 85.0,
+            "debe interpolar subsegundos entre lecturas: {pos}"
+        );
+
+        // En pausa no sigue animando ni consumiendo fotogramas.
+        c.sonando.as_mut().expect("hay música").reproduciendo = false;
+        c.sincronizar_reloj_avance();
+        assert!(!c.barra_corriendo());
     }
 }

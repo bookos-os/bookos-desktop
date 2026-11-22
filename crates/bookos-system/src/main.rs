@@ -219,6 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(watch_audio(changes.clone()));
     tokio::spawn(montaje::vigilar(system.clone()));
     changes.send("all".into()).await?;
+    let mut wifi_pausado = false;
     while let Some(domain) = events.recv().await {
         // Batch notifications from the same hardware transaction.
         tokio::time::sleep(Duration::from_millis(40)).await;
@@ -234,6 +235,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         let all = domains.contains("all");
+        if all || domains.contains("network") {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(4),
+                network::priorizar_ethernet(&system, &mut wifi_pausado),
+            )
+            .await;
+        }
         let update = |d: &'static str| {
             let system = &system;
             let wanted = all || domains.contains(d);

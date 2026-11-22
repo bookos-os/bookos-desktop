@@ -201,7 +201,7 @@ pub async fn perform(op: &Operation) -> Result<(), String> {
                 return Err("Paso de volumen inválido".into());
             }
             let defecto = sink_por_defecto().await?;
-            if es_altavoz(&defecto) {
+            let ya_desilenciado = if es_altavoz(&defecto) {
                 // El paso va en la escala que se ve; sumárselo al porcentaje
                 // de PipeWire movería la OSD a saltos irregulares bajo el 50 %.
                 let sinks = list("sinks").await?;
@@ -211,6 +211,7 @@ pub async fn perform(op: &Operation) -> Result<(), String> {
                     .flatten()
                     .find(|v| v["name"] == defecto.as_str())
                     .ok_or("No hay salida de audio")?;
+                let ya_desilenciado = actual["mute"] == false;
                 let visto = de_altavoz(porcentaje_exacto(actual)).round();
                 let nuevo = (visto + *step as f64).clamp(0., 100.);
                 run(
@@ -222,6 +223,7 @@ pub async fn perform(op: &Operation) -> Result<(), String> {
                     ],
                 )
                 .await?;
+                ya_desilenciado
             } else {
                 run(
                     "wpctl",
@@ -234,8 +236,9 @@ pub async fn perform(op: &Operation) -> Result<(), String> {
                     ],
                 )
                 .await?;
-            }
-            if *step > 0 {
+                false
+            };
+            if *step > 0 && !ya_desilenciado {
                 run("pactl", &["set-sink-mute", "@DEFAULT_SINK@", "0"]).await?;
             }
         }

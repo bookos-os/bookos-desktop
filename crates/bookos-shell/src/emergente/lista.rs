@@ -336,7 +336,7 @@ pub fn fila<'a>(entrada: &'a Entrada, señalada: f32) -> PanelElement<'a> {
         let (d, g) = control::encendido();
         (d, g, tema::acento())
     } else {
-        (tema::elevado(), tema::texto(), tema::TEXTO2)
+        (tema::elevado(), tema::texto(), tema::texto2())
     };
     // Opaco a propósito: un relleno translúcido en tiny-skia cuesta ~17× más
     // y la fila se repinta en cada paso del hover.
@@ -380,13 +380,13 @@ pub fn fila<'a>(entrada: &'a Entrada, señalada: f32) -> PanelElement<'a> {
     if let Some(derecha) = &entrada.derecha {
         contenido = contenido
             .push(Space::new().width(Length::Fill))
-            .push(text(derecha.as_str()).size(12.0).color(tema::TEXTO2));
+            .push(text(derecha.as_str()).size(12.0).color(tema::texto2()));
     } else if entrada.candado
         && let Some(ic) = icono::propio_solido("bloquear")
     {
         contenido = contenido
             .push(Space::new().width(Length::Fill))
-            .push(icono::ver_teñido_propio(&ic, 13.0, tema::TEXTO2));
+            .push(icono::ver_teñido_propio(&ic, 13.0, tema::texto2()));
     }
     container(contenido)
         .width(Length::Fixed(BALDOSA))
@@ -424,12 +424,12 @@ pub fn seccion<'a>(titulo: &'a str, buscando: bool) -> PanelElement<'a> {
         text(titulo)
             .size(12.0)
             .font(control::peso(Weight::Semibold))
-            .color(tema::TEXTO2)
+            .color(tema::texto2())
     ]
     .spacing(8)
     .align_y(Vertical::Center);
     if buscando {
-        fila = fila.push(text("buscando…").size(11.0).color(tema::TEXTO2));
+        fila = fila.push(text("buscando…").size(11.0).color(tema::texto2()));
     }
     container(fila)
         .width(Length::Fixed(BALDOSA))
@@ -445,7 +445,7 @@ pub fn seccion<'a>(titulo: &'a str, buscando: bool) -> PanelElement<'a> {
 /// Un renglón cuando no hay nada que listar.
 // 0.1.0
 pub fn vacia<'a>(texto_: &str) -> PanelElement<'a> {
-    container(text(texto_.to_string()).size(13.0).color(tema::TEXTO2))
+    container(text(texto_.to_string()).size(13.0).color(tema::texto2()))
         .width(Length::Fixed(BALDOSA))
         .height(Length::Fixed(FILA))
         .center_x(Length::Fixed(BALDOSA))

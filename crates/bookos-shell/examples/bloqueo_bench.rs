@@ -36,17 +36,22 @@ fn main() {
         println!("escala {escala}: {w}×{h}, {ms:.2} ms por tecla");
 
         // Con música: el bloqueo añade el velo del color de la canción.
-        shell.bloqueo_medio(Some(bookos_shell::medios::Sonando {
-            bus: "org.mpris.MediaPlayer2.prueba".into(),
-            aplicacion: "Prueba".into(),
-            caratula: None,
-            titulo: "Cielo de invierno".into(),
-            artista: "La Habitación Roja".into(),
-            reproduciendo: true,
-            posicion: Some(78),
-            duracion: Some(214),
-            calidad: None,
-        }));
+        shell.bloqueo_medio(
+            Some(bookos_shell::medios::Sonando {
+                bus: "org.mpris.MediaPlayer2.prueba".into(),
+                aplicacion: "Prueba".into(),
+                caratula: None,
+                titulo: "Cielo de invierno".into(),
+                artista: "La Habitación Roja".into(),
+                reproduciendo: true,
+                posicion: Some(78),
+                duracion: Some(214),
+                posicion_ms: Some(78_000),
+                duracion_ms: Some(214_000),
+                calidad: None,
+            }),
+            (None, None),
+        );
         shell.draw_bloqueo_capa(Capa::Acceso, &mut buf);
         let t = Instant::now();
         for i in 0..veces {

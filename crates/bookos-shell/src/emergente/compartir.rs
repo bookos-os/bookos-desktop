@@ -246,7 +246,7 @@ impl Compartir {
             Space::new().height(6),
             text(format!("«{}» quiere ver tu pantalla.", self.app))
                 .size(tema::T_CUERPO)
-                .color(tema::TEXTO2),
+                .color(tema::texto2()),
         ];
 
         let mut celdas = row![].spacing(HUECO);
@@ -258,7 +258,7 @@ impl Compartir {
                         text("▣").size(38).color(if activa {
                             tema::acento()
                         } else {
-                            tema::TEXTO2
+                            tema::texto2()
                         }),
                         Space::new().height(8),
                         text(pantalla.nombre.clone())
@@ -266,7 +266,7 @@ impl Compartir {
                             .color(tema::texto()),
                         text(format!("{}×{}", pantalla.ancho, pantalla.alto))
                             .size(tema::T_PEQUENO)
-                            .color(tema::TEXTO2),
+                            .color(tema::texto2()),
                     ]
                     .align_x(Horizontal::Center),
                 )

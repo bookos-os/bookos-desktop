@@ -8,8 +8,24 @@
 //! **Contrato** (`org.bookos.Desktop`, en `/org/bookos/Desktop`):
 //!
 //! ```text
+//! **Quién puede llamar.** Leer está abierto. Escribir no: `ApplyConfig` y
+//! `ApplyOutputConfig` solo los acepta de Ajustes, `ApplyKeyRemaps` y
+//! `CaptureKey` de la app de teclas y de Ajustes, y `PublishActivity` /
+//! `CloseActivity` solo del programa que corresponde a ese `app_id`. El
+//! programa se saca del PID que da el bus; ver [`programa_que_llama`].
+//!
+//! GetAppearance() -> s
+//!     El aspecto resuelto en JSON: tema, acento, alto contraste, efectos
+//!     reducidos y los papeles de la paleta dinámica del tema que se pinta.
+//!     Ver [`aspecto_json`].
+//!
+//! signal AppearanceChanged(s aspecto)
+//!     Cambió cualquiera de esas cosas. Lleva el mismo JSON.
+//!
 //! ReloadConfig(s seccion) -> b
-//!     Relee `panel.conf`. Secciones: "lockscreen"/"bloqueo",
+//!     Relee `panel.conf`. "palette"/"paleta" no relee nada: Ajustes acaba
+//!     de escribir `palette.json` y se avisa con `AppearanceChanged`.
+//!     Secciones: "lockscreen"/"bloqueo",
 //!     "activities"/"actividades", "keys"/"teclas" (este, `teclas.conf`),
 //!     "brightness"/"brillo", "all". "channel"/"canal" no lee `panel.conf`
 //!     sino `bookos-update.conf`: el color del logo según el canal.
@@ -31,6 +47,18 @@
 //!     `tema_efectivo` el color que está pintado ahora mismo, ya resuelto.
 //!     El segundo es de solo lectura: `ApplyConfig` lo ignora, así que se
 //!     puede devolver el objeto entero tal como vino.
+//!
+//! Lock() -> b / Suspend() -> b
+//!     Lo mismo que el menú de energía del escritorio: suspender echa antes
+//!     el bloqueo y apaga la pantalla, así que al despertar sale el candado.
+//!     Un `systemctl suspend` desde fuera no lo hacía: el compositor no
+//!     atiende el bloqueo de logind. Solo Ajustes y Zenith.
+//!
+//! SetAppearance(s json) -> (b ok, s error)
+//!     Lo mismo que `ApplyConfig`, pero solo con las claves de `APARIENCIA`
+//!     (tema, alto contraste, efectos, luz nocturna) y abierto también a
+//!     Zenith, para «pon el modo oscuro» por voz. El resto de la
+//!     configuración sigue siendo solo de Ajustes.
 //!
 //! GetScreensaverPreview(s estilo) -> s
 //!     Miniatura SVG generada por el mismo modelo del compositor. Sin
@@ -56,7 +84,7 @@
 //!
 //! CaptureKey(b armar) -> b
 //!     Con `true`, la siguiente tecla que no sea un modificador no llega a
-//!     nadie y sale por `KeyCaptured`. No es la respuesta del método porque
+//!     nadie y sale por `KeyCaptured`, solo hacia quien armó. No es la respuesta del método porque
 //!     esperar a una persona dentro de él ocupa el ejecutor de zbus y para
 //!     el resto del bus. Con `false` se desarma: quien se canse de esperar
 //!     tiene que desarmar, o la tecla se tragaría más tarde.
@@ -66,7 +94,8 @@
 //!     se quitó un monitor—. Quien la reciba vuelve a pedir `GetOutputs`.
 //!
 //! signal KeyCaptured(u evdev, b copilot)
-//!     La tecla capturada. `copilot` si era el acorde Meta+Mayús+F23.
+//!     La tecla capturada, con destino: solo la recibe quien armó la
+//!     captura. `copilot` si era el acorde Meta+Mayús+F23.
 //! ```
 //!
 //! **Por qué el hilo de D-Bus no toca nada gráfico.** zbus atiende el bus en su
@@ -219,10 +248,22 @@ fn config_json(config: &bookos_shell::Config) -> serde_json::Value {
     // porque la macro ya está en su límite de recursión.
     json["widgets_disponibles"] = bookos_shell::WIDGETS_DISPONIBLES.into();
     json["captura_cursor"] = config.captura_cursor.into();
+    // Fuera del `json!` de arriba: con una clave más pasa el límite de recursión del macro.
+    json["texto_tamano"] = config.texto_tamano.into();
+    json["teclas_especiales"] = config.teclas_especiales.into();
+    json["teclas_lentas"] = config.teclas_lentas.into();
     json["bateria_porcentaje"] = config.bateria_porcentaje.into();
     json["bateria_tiempo"] = config.bateria_tiempo.into();
     json["bateria_colores"] = config.bateria_colores.into();
     json["captura_retardo"] = config.captura_retardo.into();
+    json["apertura_ventanas"] = config.apertura_ventanas.nombre().into();
+    json["vrr_refresco_max"] = config.vrr_refresco_max.into();
+    json["notificaciones_silenciadas"] = config.notificaciones_silenciadas.clone().into();
+    json["bajo_consumo"] = config.bajo_consumo.into();
+    json["agitar_cursor"] = config.agitar_cursor.into();
+    json["modo_concentracion"] = config.modo_concentracion.clone().into();
+    json["concentracion_auto_juego"] = config.concentracion_auto_juego.into();
+    json["concentracion_permitidas"] = serde_json::json!(config.concentracion_permitidas);
     json
 }
 
@@ -348,6 +389,14 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                             return Err(format!("«derecha» repite el widget «{nombre}»"));
                         }
                     }
+                    let en_centro =
+                        objeto.get("centro").and_then(|v| v.as_str()) == Some("privacidad");
+                    if !en_centro && !nombres.iter().any(|n| n == "privacidad") {
+                        return Err(
+                            "«derecha» debe incluir «privacidad»: los puntos de privacidad no se pueden quitar"
+                                .into(),
+                        );
+                    }
                 }
                 nombres.join(", ")
             }
@@ -389,6 +438,8 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                 }
             }
             "cursor" => entero(valor, clave, 8, 128)?,
+            "texto_tamano" => entero(valor, clave, 100, 200)?,
+            "teclas_lentas" => entero(valor, clave, 0, 2000)?,
             "escritorios" => entero(valor, clave, 1, 5)?,
             "bloqueo_inactividad"
             | "salvapantallas_inactividad"
@@ -470,7 +521,18 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
             | "bloqueo_huella"
             | "brillo_automatico_pantalla"
             | "brillo_automatico_teclado"
-            | "captura_cursor" => booleano(valor, clave)?,
+            | "teclas_especiales"
+            | "captura_cursor"
+            | "bajo_consumo"
+            | "agitar_cursor"
+            | "concentracion_auto_juego" => booleano(valor, clave)?,
+            "modo_concentracion" => {
+                let v = texto(valor, clave)?.trim().to_lowercase();
+                if v.contains('\n') || v.contains('=') {
+                    return Err("«modo_concentracion» contiene caracteres no válidos".into());
+                }
+                v
+            }
             "captura_retardo" => {
                 let n = valor
                     .as_u64()
@@ -489,6 +551,41 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                     return Err("«panel_tamano» debe ser pequeno, mediano o grande".into());
                 }
                 v
+            }
+            "apertura_ventanas" => {
+                let v = texto(valor, clave)?;
+                if bookos_shell::AperturaVentanas::desde_nombre(&v).is_none() {
+                    return Err(
+                        "«apertura_ventanas» debe ser normal, maximizada o pantalla_completa".into(),
+                    );
+                }
+                v
+            }
+            "vrr_refresco_max" => {
+                let n = valor
+                    .as_u64()
+                    .filter(|n| *n == 0 || (24..=360).contains(n))
+                    .ok_or("«vrr_refresco_max» debe ser 0 (sin límite) o entre 24 y 360 Hz")?;
+                n.to_string()
+            }
+            "notificaciones_silenciadas" => {
+                let lista = valor
+                    .as_array()
+                    .ok_or("«notificaciones_silenciadas» debe ser una lista de aplicaciones")?;
+                let mut limpias = Vec::with_capacity(lista.len());
+                for item in lista {
+                    let s = item
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty() && !s.contains(',') && !s.contains('\n'))
+                        .ok_or(
+                            "cada entrada de «notificaciones_silenciadas» debe ser texto sin comas",
+                        )?;
+                    if !limpias.iter().any(|x: &String| x.eq_ignore_ascii_case(s)) {
+                        limpias.push(s.to_string());
+                    }
+                }
+                limpias.join(", ")
             }
             "teclado_retardo" => entero(valor, clave, 150, 1500)?,
             "teclado_velocidad" => entero(valor, clave, 0, 60)?,
@@ -534,6 +631,39 @@ fn validar_config_json(json: &str) -> Result<Vec<(String, String)>, String> {
                 }
                 v
             }
+            "concentracion_permitidas" => {
+                let mapa = valor.as_object().ok_or(
+                    "«concentracion_permitidas» debe ser un objeto { modo: [apps...] }",
+                )?;
+                for (modo, apps_val) in mapa {
+                    let m = modo.trim().to_lowercase();
+                    if m.is_empty()
+                        || !m
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                    {
+                        return Err(format!("modo de concentración no válido: «{modo}»"));
+                    }
+                    let lista = apps_val.as_array().ok_or_else(|| {
+                        format!("las apps de «{modo}» deben ser una lista de cadenas")
+                    })?;
+                    let mut limpias = Vec::with_capacity(lista.len());
+                    for item in lista {
+                        let s = item
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty() && !s.contains(',') && !s.contains('\n'))
+                            .ok_or(
+                                "cada app de concentración debe ser texto no vacío sin comas",
+                            )?;
+                        if !limpias.iter().any(|x: &String| x.eq_ignore_ascii_case(s)) {
+                            limpias.push(s.to_string());
+                        }
+                    }
+                    salida.push((format!("concentracion_{m}"), limpias.join(", ")));
+                }
+                continue;
+            }
             // Derivada y de solo lectura. Se ignora en vez de rechazarse para
             // que un cliente pueda devolver tal cual el objeto que leyó de
             // `GetConfig` sin que la llamada entera falle.
@@ -570,11 +700,16 @@ pub enum Aviso {
     // añadido en la 0.2.2
     Desinhibir(u32),
     AbrirActividadPrevisualizacion(String),
-    CapturarTecla(bool),
+    /// Armar o desarmar, y el nombre único de quien lo pide.
+    // modified 0.2.2
+    CapturarTecla(bool, String),
     PrevisualizarSalvapantallas(
         bookos_shell::EstiloSalvapantallas,
         mpsc::Sender<Result<(), String>>,
     ),
+    /// Bloquear o suspender desde Zenith, por el mismo camino que el menú.
+    // añadido en la 0.2.3
+    Energia(bookos_shell::confirmacion::Energia),
 }
 
 #[derive(Deserialize)]
@@ -733,6 +868,13 @@ impl Servidor {
     }
 
     /// El censo de salidas conectadas.
+    /// El aspecto ya resuelto: tema, acento, contraste, movimiento y los
+    /// papeles de la paleta del tema que se pinta. Ver [`aspecto_json`].
+    // añadido en la 0.2.2
+    fn get_appearance(&self) -> String {
+        aspecto_json()
+    }
+
     // 0.1.0
     fn get_outputs(&self) -> Vec<Salida> {
         self.compartido.salidas()
@@ -748,8 +890,16 @@ impl Servidor {
     /// Valida y persiste una actualización parcial. Ninguna clave se escribe si
     /// una sola es inválida, de modo que Settings puede mostrar el error sin
     /// dejar el escritorio a medio configurar.
-    // 0.1.0
-    fn apply_config(&self, json: String) -> (bool, String) {
+    // modified 0.2.2 -- solo Ajustes
+    async fn apply_config(
+        &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
+        #[zbus(header)] cabecera: zbus::message::Header<'_>,
+        json: String,
+    ) -> (bool, String) {
+        if !autorizado(conexion, &cabecera, "ApplyConfig", CONFIGURAN).await {
+            return (false, "solo Ajustes puede cambiar la configuración".into());
+        }
         let valores = match validar_config_json(&json) {
             Ok(valores) => valores,
             Err(err) => return (false, err),
@@ -766,13 +916,81 @@ impl Servidor {
         (true, String::new())
     }
 
+    // añadido en la 0.2.3
+    async fn set_appearance(
+        &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
+        #[zbus(header)] cabecera: zbus::message::Header<'_>,
+        json: String,
+    ) -> (bool, String) {
+        if !autorizado(conexion, &cabecera, "SetAppearance", APARIENCIA_PERMITIDOS).await {
+            return (
+                false,
+                "solo Ajustes y Zenith pueden cambiar la apariencia".into(),
+            );
+        }
+        let valores = match validar_config_json(&json) {
+            Ok(valores) => valores,
+            Err(err) => return (false, err),
+        };
+        if let Some((clave, _)) = valores
+            .iter()
+            .find(|(c, _)| !APARIENCIA.contains(&c.as_str()))
+        {
+            return (false, format!("«{clave}» no es una clave de apariencia"));
+        }
+        if let Err(err) = bookos_shell::guardar_configuracion(&valores) {
+            return (false, format!("no se pudo guardar la configuración: {err}"));
+        }
+        if self.canal.send(Aviso::Recargar("all".into())).is_err() {
+            return (
+                false,
+                "se guardó, pero el compositor no pudo aplicarla en vivo".into(),
+            );
+        }
+        (true, String::new())
+    }
+
+    // añadido en la 0.2.3
+    async fn lock(
+        &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
+        #[zbus(header)] cabecera: zbus::message::Header<'_>,
+    ) -> bool {
+        use bookos_shell::confirmacion::Energia;
+        autorizado(conexion, &cabecera, "Lock", APARIENCIA_PERMITIDOS).await
+            && self.canal.send(Aviso::Energia(Energia::Bloquear)).is_ok()
+    }
+
+    // añadido en la 0.2.3
+    async fn suspend(
+        &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
+        #[zbus(header)] cabecera: zbus::message::Header<'_>,
+    ) -> bool {
+        use bookos_shell::confirmacion::Energia;
+        autorizado(conexion, &cabecera, "Suspend", APARIENCIA_PERMITIDOS).await
+            && self.canal.send(Aviso::Energia(Energia::Suspender)).is_ok()
+    }
+
     // 0.1.0
     fn get_key_remaps(&self) -> String {
         crate::teclas::cargar().a_json()
     }
 
-    // 0.1.0
-    fn apply_key_remaps(&self, json: String) -> (bool, String) {
+    // modified 0.2.2 -- solo la app de teclas y Ajustes
+    async fn apply_key_remaps(
+        &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
+        #[zbus(header)] cabecera: zbus::message::Header<'_>,
+        json: String,
+    ) -> (bool, String) {
+        if !autorizado(conexion, &cabecera, "ApplyKeyRemaps", TECLEAN).await {
+            return (
+                false,
+                "solo la app de teclas puede cambiar los remapeos".into(),
+            );
+        }
         let remapeos = match crate::teclas::Remapeos::desde_json(&json) {
             Ok(remapeos) => remapeos,
             Err(err) => return (false, err),
@@ -789,16 +1007,41 @@ impl Servidor {
         (true, String::new())
     }
 
-    // 0.1.0
-    fn capture_key(&self, armar: bool) -> bool {
-        self.canal.send(Aviso::CapturarTecla(armar)).is_ok()
+    /// La tecla sale solo hacia quien armó la captura (`KeyCaptured` con
+    /// destino), y solo él puede desarmarla. Antes era una señal de difusión:
+    /// cualquier proceso que escuchara el bus veía la tecla, y cualquiera podía
+    /// armar la captura en bucle y leer lo que se escribía.
+    // modified 0.2.2 -- solo la app de teclas, y la tecla va solo a ella
+    async fn capture_key(
+        &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
+        #[zbus(header)] cabecera: zbus::message::Header<'_>,
+        armar: bool,
+    ) -> bool {
+        let Some(remitente) = cabecera.sender().map(|u| u.to_string()) else {
+            return false;
+        };
+        if !autorizado(conexion, &cabecera, "CaptureKey", TECLEAN).await {
+            return false;
+        }
+        self.canal
+            .send(Aviso::CapturarTecla(armar, remitente))
+            .is_ok()
     }
 
     /// Aplica una configuración de pantallas. `(ok, error)`: `ok=false` nunca
     /// va con `error` vacío, para que la interfaz no pueda enseñar un éxito que
     /// no ocurrió.
-    // 0.1.0
-    fn apply_output_config(&self, config: Vec<Peticion>) -> (bool, String) {
+    // modified 0.2.2 -- solo Ajustes
+    async fn apply_output_config(
+        &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
+        #[zbus(header)] cabecera: zbus::message::Header<'_>,
+        config: Vec<Peticion>,
+    ) -> (bool, String) {
+        if !autorizado(conexion, &cabecera, "ApplyOutputConfig", CONFIGURAN).await {
+            return (false, "solo Ajustes puede cambiar las pantallas".into());
+        }
         let (respuesta, espera) = mpsc::channel();
         if self.canal.send(Aviso::Salidas(config, respuesta)).is_err() {
             return (false, "el compositor no está escuchando".into());
@@ -816,31 +1059,57 @@ impl Servidor {
     /// Publica una tarea viva. El identificador está en una lista cerrada: una
     /// app cualquiera no puede convertir la isla en una segunda bandeja de
     /// notificaciones.
-    // 0.1.0
-    fn publish_activity(
+    ///
+    /// Un rechazo es un error de D-Bus con el motivo, no un `false`: con el
+    /// `false` la app no sabía si fallaba el JSON, el permiso o el tipo, y el
+    /// motivo solo quedaba en el registro del compositor. Las apps que ya
+    /// existían ignoran el error o lo pasan a `Err` (revisadas el 2026-11-16).
+    // modified 0.2.2 -- el app_id tiene que corresponder al programa que llama
+    // modified 0.2.2 -- los rechazos devuelven el motivo
+    async fn publish_activity(
         &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
         #[zbus(header)] cabecera: zbus::message::Header<'_>,
         app_id: String,
         kind: String,
         state_json: String,
-    ) -> bool {
-        let Some(clase) = clase_permitida(&app_id, &kind) else {
-            tracing::warn!(app_id, kind, "publicador de actividad rechazado");
-            return false;
-        };
-        if state_json.len() > 8 * 1024 * 1024 {
-            tracing::warn!(app_id, "estado de actividad demasiado grande");
-            return false;
+    ) -> zbus::fdo::Result<bool> {
+        // Sin capturar `app_id`: se mueve al estado al final.
+        fn rechazo(motivo: String) -> zbus::fdo::Error {
+            tracing::warn!(motivo, "actividad rechazada");
+            zbus::fdo::Error::Failed(motivo)
         }
-        let Ok(json) = serde_json::from_str::<ActividadJson>(&state_json) else {
-            tracing::warn!(app_id, "estado de actividad no válido");
-            return false;
+        let Some(clase) = clase_permitida(&app_id, &kind) else {
+            return Err(rechazo(if clase_permitida(&app_id, "").is_some() {
+                format!("«{app_id}» no puede publicar actividades de tipo «{kind}»")
+            } else {
+                format!("«{app_id}» no está en la lista de apps que pueden usar la isla")
+            }));
         };
+        if !autorizado(
+            conexion,
+            &cabecera,
+            "PublishActivity",
+            programas_de(&app_id),
+        )
+        .await
+        {
+            return Err(rechazo(format!(
+                "el programa que llama no es el de «{app_id}»"
+            )));
+        }
+        if state_json.len() > 8 * 1024 * 1024 {
+            return Err(rechazo(format!("«{app_id}»: el estado pasa de 8 MB")));
+        }
+        let json = serde_json::from_str::<ActividadJson>(&state_json)
+            .map_err(|e| rechazo(format!("«{app_id}»: estado no válido: {e}")))?;
         let clase = match clase {
             bookos_shell::actividad::Clase::Asistente(_) => {
                 let Some(fase) = bookos_shell::actividad::Fase::desde(&json.fase) else {
-                    tracing::warn!(app_id, fase = json.fase, "fase del asistente desconocida");
-                    return false;
+                    return Err(rechazo(format!(
+                        "fase del asistente desconocida: «{}»",
+                        json.fase
+                    )));
                 };
                 bookos_shell::actividad::Clase::Asistente(fase)
             }
@@ -896,22 +1165,35 @@ impl Servidor {
                 .collect(),
         };
         let remitente = cabecera.sender().map(|u| u.to_string());
-        self.canal.send(Aviso::Actividad(estado, remitente)).is_ok()
+        self.canal
+            .send(Aviso::Actividad(estado, remitente))
+            .map(|_| true)
+            .map_err(|_| rechazo("el compositor no está escuchando".into()))
     }
 
-    // 0.1.0
-    fn close_activity(
+    // modified 0.2.2 -- el app_id tiene que corresponder al programa que llama
+    // modified 0.2.2 -- los rechazos devuelven el motivo
+    async fn close_activity(
         &self,
+        #[zbus(connection)] conexion: &zbus::Connection,
         #[zbus(header)] cabecera: zbus::message::Header<'_>,
         app_id: String,
-    ) -> bool {
+    ) -> zbus::fdo::Result<bool> {
         if clase_permitida(&app_id, "").is_none() {
-            return false;
+            return Err(zbus::fdo::Error::Failed(format!(
+                "«{app_id}» no está en la lista de apps que pueden usar la isla"
+            )));
+        }
+        if !autorizado(conexion, &cabecera, "CloseActivity", programas_de(&app_id)).await {
+            return Err(zbus::fdo::Error::Failed(format!(
+                "el programa que llama no es el de «{app_id}»"
+            )));
         }
         let remitente = cabecera.sender().map(|u| u.to_string());
         self.canal
             .send(Aviso::CerrarActividad(app_id, remitente))
-            .is_ok()
+            .map(|_| true)
+            .map_err(|_| zbus::fdo::Error::Failed("el compositor no está escuchando".into()))
     }
 
     /// Abre una actividad ya publicada para inspeccionarla durante el
@@ -930,6 +1212,14 @@ impl Servidor {
     #[zbus(signal)]
     // 0.1.0
     async fn outputs_changed(emisor: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
+
+    /// El aspecto cambió; lleva el mismo JSON que `GetAppearance`.
+    #[zbus(signal)]
+    // añadido en la 0.2.2
+    async fn appearance_changed(
+        emisor: &zbus::object_server::SignalEmitter<'_>,
+        aspecto: &str,
+    ) -> zbus::Result<()>;
 
     /// Orden del usuario hacia la app que publicó la actividad.
     #[zbus(signal)]
@@ -969,7 +1259,17 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
             let _ = respuesta.send(r);
         }
         Aviso::Redetectar => redetectar(state),
-        Aviso::CapturarTecla(armar) => state.captura_tecla = armar,
+        Aviso::Energia(energia) => {
+            crate::keybinds::hacer(state, bookos_shell::Accion::EnergiaConfirmada(energia))
+        }
+        Aviso::CapturarTecla(true, remitente) => state.captura_tecla = Some(remitente),
+        // Solo desarma quien armó: si no, otra app podría quitarle la captura
+        // a la de teclas mientras espera.
+        Aviso::CapturarTecla(false, remitente) => {
+            if state.captura_tecla.as_ref() == Some(&remitente) {
+                state.captura_tecla = None;
+            }
+        }
         Aviso::Actividad(estado, remitente) => {
             match remitente {
                 Some(r) => state.remitentes_actividad.insert(estado.app_id.clone(), r),
@@ -1010,6 +1310,11 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
             }
         }
         Aviso::RemitenteCaido(nombre) => {
+            // Quien armó la captura se fue sin desarmarla: la siguiente tecla
+            // se habría tragado sin que nadie la recibiera.
+            if state.captura_tecla.as_ref() == Some(&nombre) {
+                state.captura_tecla = None;
+            }
             let antes = state.inhibiciones_bus.len();
             state.inhibiciones_bus.retain(|_, r| *r != nombre);
             if state.inhibiciones_bus.len() != antes {
@@ -1069,6 +1374,113 @@ fn clase_permitida(app_id: &str, kind: &str) -> Option<bookos_shell::actividad::
     }
 }
 
+/// Los programas que pueden publicar con cada `app_id`.
+///
+/// Sin esto la lista cerrada de `clase_permitida` solo cerraba el texto: un
+/// proceso cualquiera podía decir que era `com.bookos.player` y pintar en la
+/// isla con su aspecto. Hay dos nombres donde la versión GPUI se instala con
+/// otro binario mientras se desarrolla (`cargo run` deja el del paquete).
+// añadido en la 0.2.2
+fn programas_de(app_id: &str) -> &'static [&'static str] {
+    match app_id {
+        "com.bookos.player" => &["bookos-player"],
+        "com.bookos.clock" => &["bookos-clock"],
+        "com.bookos.voicerecorder" => &["bookos-voicerecorder"],
+        // Book Share publica como Ajustes, desde su propio binario.
+        "com.bookos.settings" => &["bookos-settings", "bookos-bookshare"],
+        "com.bookos.explorer" => &["bookos-explorer"],
+        "com.bookos.calendar" => &["bookos-calendar"],
+        "com.bookos.systemmonitor" => &["bookos-system-monitor", "bookos-system-monitor-gpui"],
+        "com.bookos.buds" => &["bookos-budsd"],
+        "com.bookos.assistant" => &["bookos-assistant"],
+        _ => &[],
+    }
+}
+
+/// Quién puede cambiar la configuración del escritorio y las pantallas.
+// añadido en la 0.2.2
+const CONFIGURAN: &[&str] = &["bookos-settings"];
+/// Las claves que se pueden cambiar sin ser Ajustes. Son las del aspecto y la
+/// accesibilidad, que el usuario pide de viva voz («pon el modo oscuro»); nada
+/// de pantallas, bloqueo, teclas ni privacidad.
+// añadido en la 0.2.3
+const APARIENCIA: &[&str] = &["tema", "alto_contraste", "efectos", "luz_nocturna"];
+// añadido en la 0.2.3
+const APARIENCIA_PERMITIDOS: &[&str] = &["bookos-settings", "bookos-assistant"];
+/// Quién puede remapear teclas y capturar la siguiente pulsación.
+// añadido en la 0.2.2
+const TECLEAN: &[&str] = &["bookos-teclas", "bookos-settings"];
+
+/// El programa que hay detrás de una llamada: el nombre del ejecutable, o el
+/// del script si el ejecutable es Python (Zenith es `python3
+/// /usr/bin/bookos-assistant`).
+///
+/// No es una frontera de seguridad entre procesos del mismo usuario: uno de
+/// ellos puede lanzar ese mismo binario con `LD_PRELOAD` o escribir los
+/// ficheros de configuración a mano. Lo que sí consigue es que una app que no
+/// es del sistema no pueda usar la interfaz por accidente o a propósito sin
+/// más, y que `CaptureKey` —que entrega pulsaciones, lo único que Wayland no
+/// deja ver a otra app— no esté abierto a cualquiera.
+///
+/// El PID sale del bus (`GetConnectionUnixProcessID`), no del mensaje, que no
+/// lo lleva. Tiene que ser `async`: un método síncrono esperando al bus deja
+/// parada la conexión entera, igual que en el portal.
+// añadido en la 0.2.2
+async fn programa_que_llama(
+    conexion: &zbus::Connection,
+    cabecera: &zbus::message::Header<'_>,
+) -> Option<String> {
+    let remitente = cabecera.sender()?.to_owned();
+    let pid = zbus::fdo::DBusProxy::new(conexion)
+        .await
+        .ok()?
+        .get_connection_unix_process_id(remitente.into())
+        .await
+        .ok()?;
+    programa_de_pid(pid)
+}
+
+// añadido en la 0.2.2
+fn programa_de_pid(pid: u32) -> Option<String> {
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    // Tras actualizar el paquete el enlace apunta a «… (deleted)» hasta que
+    // la app se reinicia; sigue siendo el mismo programa.
+    let exe = exe.to_string_lossy();
+    let nombre = nombre_base(exe.strip_suffix(" (deleted)").unwrap_or(&exe));
+    if !nombre.starts_with("python") {
+        return Some(nombre.to_string());
+    }
+    let linea = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let script = linea.split(|b| *b == 0).nth(1)?;
+    Some(nombre_base(&String::from_utf8_lossy(script)).to_string())
+}
+
+// añadido en la 0.2.2
+fn nombre_base(ruta: &str) -> &str {
+    ruta.rsplit('/').next().unwrap_or(ruta)
+}
+
+/// Si quien llama está en la lista. Lo rechazado queda en el log con el
+/// programa, para que una app nueva sepa por qué no le contestan.
+// añadido en la 0.2.2
+async fn autorizado(
+    conexion: &zbus::Connection,
+    cabecera: &zbus::message::Header<'_>,
+    metodo: &str,
+    permitidos: &[&str],
+) -> bool {
+    let programa = programa_que_llama(conexion, cabecera).await;
+    let ok = programa.as_deref().is_some_and(|p| permitidos.contains(&p));
+    if !ok {
+        tracing::warn!(
+            metodo,
+            programa = programa.as_deref().unwrap_or("?"),
+            "llamada rechazada"
+        );
+    }
+    ok
+}
+
 // 0.1.0
 fn limitar(mut texto: String, max: usize) -> String {
     if texto.chars().count() > max {
@@ -1095,6 +1507,15 @@ fn decodificar_portada(valor: &str) -> Option<bookos_shell::actividad::Portada> 
 // 0.1.0
 // modified 0.1.1 -- aplica salvapantallas, atenuación y apagado propios; sin táctil retira el teclado en pantalla
 fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
+    // Ajustes acaba de escribir `palette.json`. No hay nada del compositor que
+    // releer —`tema::roles_paleta` ya lee el fichero cada vez—, pero sí que
+    // repintar y avisar a las apps, que antes no se enteraban hasta recuperar
+    // el foco.
+    if matches!(seccion, "palette" | "paleta") {
+        state.needs_redraw = true;
+        aspecto_cambiado(state.bus_ajustes.as_ref());
+        return;
+    }
     const CONOCIDAS: &[&str] = &[
         "lockscreen",
         "bloqueo",
@@ -1179,6 +1600,42 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
         crate::backend::refresh_panel(state);
     }
 
+    // Un modificador pegado al apagar las teclas especiales se suelta aquí.
+    // añadido en la 0.2.3
+    if matches!(seccion, "entrada" | "all") {
+        crate::teclas_accesibles::configurar(
+            state,
+            config.teclas_especiales,
+            config.teclas_lentas,
+        );
+    }
+    // El cursor y el texto de las aplicaciones. El cursor lo dibuja el
+    // compositor para los clientes que piden una forma por nombre; los que
+    // cargan el suyo (Qt, GTK) lo cogen de gsettings (`portal`) o al relanzarse.
+    // añadido en la 0.2.3
+    if matches!(seccion, "appearance" | "apariencia" | "all")
+        && (config.cursor != state.cursor_nominal || config.texto_tamano != state.texto_tamano)
+    {
+        let cursor_cambia = config.cursor != state.cursor_nominal;
+        state.cursor_nominal = config.cursor;
+        state.texto_tamano = config.texto_tamano;
+        if cursor_cambia {
+            let escala = state
+                .space
+                .outputs()
+                .map(|o| o.current_scale().fractional_scale())
+                .max_by(f64::total_cmp)
+                .unwrap_or(1.0);
+            state.cursor_theme = Some(crate::cursor::CursorTheme::con_tamano(
+                escala,
+                state.cursor_nominal,
+            ));
+        }
+        // `Xft.dpi` y `Xcursor.size` de XWayland salen del mismo sitio.
+        crate::xwayland::actualizar_escala(state);
+        state.needs_redraw = true;
+    }
+
     // `|` y no `||`: con el dock sin cambios el panel tiene que aplicarse igual.
     if matches!(seccion, "desktop" | "escritorio" | "all")
         && state.shell.as_mut().is_some_and(|shell| {
@@ -1201,8 +1658,17 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
         // `config.tema` ya viene resuelto contra el reloj por `Config::cargar`.
         if let Some(shell) = state.shell.as_mut() {
             shell.aplicar_apariencia(config.tema, config.acento);
+            // Ajustes avisa con esta misma sección al cambiar el estilo de iconos.
+            shell.recargar_iconos();
         }
-        crate::portal::apariencia_cambiada(state.bus_portal.as_ref());
+        // Antes de avisar al portal: este lee los efectos reducidos (para
+        // `reduced-motion` y `enable-animations`) y con el orden al revés
+        // contestaba con el valor de la vez anterior.
+        // modificado en la 0.2.3
+        if let Some(shell) = state.shell.as_mut() {
+            shell.aplicar_efectos_config(config.efectos);
+        }
+        crate::portal::apariencia_cambiada(state);
         // Y el despertar del próximo cambio, que pudo cambiar de hora o dejar
         // de existir si el modo pasó a fijo.
         crate::apariencia::programar_cambio(state);
@@ -1237,9 +1703,6 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
         }
         if matches!(seccion, "activities" | "actividades" | "all") {
             shell.aplicar_actividades_config(config.actividades);
-        }
-        if matches!(seccion, "appearance" | "apariencia" | "all") {
-            shell.aplicar_efectos_config(config.efectos);
         }
     }
     if matches!(seccion, "appearance" | "apariencia" | "all") {
@@ -1289,6 +1752,26 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
         state.sonidos_interfaz = config.sonidos_interfaz;
         state.pasos = config.pasos;
         state.genio_activo = config.genio;
+        state.apertura_ventanas = config.apertura_ventanas;
+        state.vrr_refresco_max = config.vrr_refresco_max;
+        let cambio_ahorro = state.bajo_consumo != config.bajo_consumo;
+        state.bajo_consumo = config.bajo_consumo;
+        state.agitar_cursor.habilitado = config.agitar_cursor;
+        state.modo_concentracion = config.modo_concentracion.clone();
+        state.concentracion_auto_juego = config.concentracion_auto_juego;
+        state.concentracion_permitidas = config.concentracion_permitidas.clone();
+        if let Some(shell) = state.shell.as_mut() {
+            shell.poner_apps_silenciadas(config.notificaciones_silenciadas.clone());
+            shell.poner_bajo_consumo(config.bajo_consumo);
+        }
+        if cambio_ahorro {
+            let perfil = if config.bajo_consumo {
+                "power-saver"
+            } else {
+                "balanced"
+            };
+            crate::keybinds::hacer(state, bookos_shell::Accion::PerfilEnergia(perfil));
+        }
     }
     if matches!(seccion, "brightness" | "brillo" | "all") {
         crate::brillo_auto::elegir(state, config.brillo_automatico);
@@ -1441,6 +1924,58 @@ pub fn avisar_salidas(state: &crate::state::BookosComp) {
     }
 }
 
+/// El aspecto que tiene que adoptar una app, resuelto por el escritorio para
+/// que nadie tenga que leer `palette.json`, preguntar el tema por otro lado y
+/// combinar las dos cosas con sus propios respaldos.
+///
+/// `paleta` son los papeles del tema que se está pintando, con las mismas
+/// claves que `palette.json` (sin `--`). Es `null` sin color dinámico o con
+/// alto contraste: la app usa entonces sus valores de respaldo. `version`
+/// sube solo si una clave cambia de significado; añadir claves no la cambia.
+// añadido en la 0.2.2
+pub fn aspecto_json() -> String {
+    use bookos_shell::tema;
+    let claro = tema::es_claro();
+    let acento = tema::acento();
+    let canal = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let paleta = (!tema::alto_contraste())
+        .then(|| {
+            let ruta = std::path::PathBuf::from(std::env::var_os("HOME")?)
+                .join(".config/bookos/palette.json");
+            let json: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(ruta).ok()?).ok()?;
+            json.get(if claro { "light" } else { "dark" }).cloned()
+        })
+        .flatten();
+    serde_json::json!({
+        "version": 1,
+        "tema": if claro { "claro" } else { "oscuro" },
+        "acento": format!("#{:02x}{:02x}{:02x}", canal(acento.r), canal(acento.g), canal(acento.b)),
+        "alto_contraste": tema::alto_contraste(),
+        "efectos_reducidos": tema::efectos_reducidos(),
+        "paleta": paleta,
+    })
+    .to_string()
+}
+
+/// Emite `AppearanceChanged` a quien escuche. Es información pública, la misma
+/// que da el portal: va en difusión.
+// añadido en la 0.2.2
+pub fn aspecto_cambiado(conexion: Option<&zbus::blocking::Connection>) {
+    let Some(conexion) = conexion else {
+        return;
+    };
+    if let Err(err) = conexion.emit_signal(
+        None::<&str>,
+        RUTA,
+        NOMBRE,
+        "AppearanceChanged",
+        &(aspecto_json(),),
+    ) {
+        tracing::warn!("no se pudo emitir AppearanceChanged: {err}");
+    }
+}
+
 // 0.1.0
 pub fn accion_actividad(
     state: &crate::state::BookosComp,
@@ -1460,14 +1995,23 @@ pub fn accion_actividad(
     }
 }
 
-// 0.1.0
-pub fn avisar_tecla_capturada(state: &crate::state::BookosComp, evdev: u32, copilot: bool) {
+// modified 0.2.2 -- con destino: solo lo recibe quien armó la captura
+pub fn avisar_tecla_capturada(
+    state: &crate::state::BookosComp,
+    destino: &str,
+    evdev: u32,
+    copilot: bool,
+) {
     let Some(conexion) = state.bus_ajustes.as_ref() else {
         return;
     };
-    if let Err(err) =
-        conexion.emit_signal(None::<&str>, RUTA, NOMBRE, "KeyCaptured", &(evdev, copilot))
-    {
+    if let Err(err) = conexion.emit_signal(
+        Some(destino),
+        RUTA,
+        NOMBRE,
+        "KeyCaptured",
+        &(evdev, copilot),
+    ) {
         tracing::warn!("no se pudo emitir KeyCaptured: {err}");
     }
 }
@@ -1663,17 +2207,23 @@ mod pruebas {
     #[test]
     fn los_widgets_del_panel_se_validan_por_nombre() {
         let valores = validar_config_json(
-            r#"{"centro":"reloj","derecha":["monitor","trafico","consumo","red"]}"#,
+            r#"{"centro":"reloj","derecha":["monitor","trafico","privacidad","consumo","red"]}"#,
         )
         .expect("widgets conocidos");
-        assert!(valores.contains(&("derecha".into(), "monitor, trafico, consumo, red".into())));
+        assert!(valores.contains(&(
+            "derecha".into(),
+            "monitor, trafico, privacidad, consumo, red".into()
+        )));
         assert!(valores.contains(&("centro".into(), "reloj".into())));
-        // Ocultarlos todos es una lista vacía y es válido.
-        assert!(validar_config_json(r#"{"derecha":[],"centro":null}"#).is_ok());
+        // Los puntos de privacidad se pueden mover a cualquier sitio (incluso al centro),
+        // pero no se pueden quitar.
+        assert!(validar_config_json(r#"{"derecha":["privacidad"],"centro":null}"#).is_ok());
+        assert!(validar_config_json(r#"{"derecha":[],"centro":"privacidad"}"#).is_ok());
+        assert!(validar_config_json(r#"{"derecha":[],"centro":null}"#).is_err());
 
-        assert!(validar_config_json(r#"{"derecha":["relog"]}"#).is_err());
+        assert!(validar_config_json(r#"{"derecha":["relog","privacidad"]}"#).is_err());
         assert!(validar_config_json(r#"{"centro":"relog"}"#).is_err());
-        assert!(validar_config_json(r#"{"derecha":["red","red"]}"#).is_err());
+        assert!(validar_config_json(r#"{"derecha":["red","red","privacidad"]}"#).is_err());
     }
 
     /// El cursor y la espera de la captura se validan, y la espera solo admite
@@ -1890,10 +2440,15 @@ mod pruebas {
         let config: serde_json::Value = serde_json::from_str(&config).expect("JSON de config");
         assert_eq!(config["version"], 1);
 
-        // Y una configuración imposible tiene que volver como fallo con motivo,
-        // no como un éxito silencioso. Nadie atiende el canal en el test, así
-        // que lo que se comprueba es que la llamada contesta y que `ok` es
-        // falso con un `error` no vacío.
+        let aspecto: String = proxy.call("GetAppearance", &()).expect("GetAppearance");
+        let aspecto: serde_json::Value = serde_json::from_str(&aspecto).expect("JSON de aspecto");
+        assert_eq!(aspecto["version"], 1);
+        assert!(matches!(aspecto["tema"].as_str(), Some("claro" | "oscuro")));
+        assert_eq!(aspecto["acento"].as_str().map(str::len), Some(7));
+
+        // El test no es Ajustes ni la app de teclas ni el Player: todo lo que
+        // escribe tiene que rechazarse con motivo, y sin llegar al canal (que
+        // está cerrado, así que un «no está escuchando» delataría que pasó).
         let (ok, error): (bool, String) = proxy
             .call(
                 "ApplyOutputConfig",
@@ -1901,6 +2456,81 @@ mod pruebas {
             )
             .expect("ApplyOutputConfig");
         assert!(!ok);
-        assert!(!error.is_empty());
+        assert!(error.contains("Ajustes"), "{error}");
+        let (ok, error): (bool, String) = proxy.call("ApplyConfig", &("{}",)).expect("ApplyConfig");
+        assert!(!ok);
+        assert!(error.contains("Ajustes"), "{error}");
+        let (ok, _): (bool, String) = proxy
+            .call("ApplyKeyRemaps", &("[]",))
+            .expect("ApplyKeyRemaps");
+        assert!(!ok);
+        let armada: bool = proxy.call("CaptureKey", &(true,)).expect("CaptureKey");
+        assert!(!armada, "cualquiera podía armar la captura de teclas");
+        let rechazo = proxy
+            .call::<_, _, bool>("PublishActivity", &("com.bookos.player", "player", "{}"))
+            .expect_err("cualquiera podía publicar como el Player");
+        assert!(
+            matches!(&rechazo, zbus::Error::MethodError(_, Some(m), _) if m.contains("com.bookos.player")),
+            "el rechazo dice el motivo: {rechazo}"
+        );
+    }
+
+    #[test]
+    fn el_programa_es_el_ejecutable_que_llama() {
+        let propio = std::env::current_exe().expect("ruta del test");
+        let esperado = propio
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("nombre UTF-8");
+        assert_eq!(
+            programa_de_pid(std::process::id()).as_deref(),
+            Some(esperado)
+        );
+        assert_eq!(programa_de_pid(u32::MAX), None);
+    }
+
+    /// Zenith corre como `python3 /usr/bin/bookos-assistant`: el ejecutable es
+    /// el intérprete y lo que lo identifica es el script.
+    #[test]
+    fn con_python_cuenta_el_script() {
+        let dir = std::env::temp_dir().join(format!("bookos-comp-prueba-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("carpeta temporal");
+        let script = dir.join("bookos-assistant");
+        std::fs::write(&script, "import time\ntime.sleep(30)\n").expect("script");
+        let Ok(mut hijo) = std::process::Command::new("python3").arg(&script).spawn() else {
+            // Sin Python en la máquina de compilación no hay nada que probar.
+            return;
+        };
+        // `spawn` vuelve después del `exec`, así que /proc ya muestra Python.
+        let programa = programa_de_pid(hijo.id());
+        let _ = hijo.kill();
+        let _ = hijo.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(programa.as_deref(), Some("bookos-assistant"));
+    }
+
+    #[test]
+    fn cada_app_id_de_la_isla_tiene_sus_programas() {
+        for app_id in [
+            "com.bookos.player",
+            "com.bookos.clock",
+            "com.bookos.voicerecorder",
+            "com.bookos.settings",
+            "com.bookos.explorer",
+            "com.bookos.calendar",
+            "com.bookos.systemmonitor",
+            "com.bookos.buds",
+            "com.bookos.assistant",
+        ] {
+            assert!(
+                clase_permitida(app_id, "").is_some(),
+                "{app_id} fuera de la lista"
+            );
+            assert!(
+                !programas_de(app_id).is_empty(),
+                "{app_id} sin programa: nadie podría publicar"
+            );
+        }
+        assert!(programas_de("com.ejemplo.otra").is_empty());
     }
 }

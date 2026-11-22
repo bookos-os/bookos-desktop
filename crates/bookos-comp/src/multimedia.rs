@@ -446,12 +446,13 @@ fn silenciar(destino: &str) {
 pub fn recibir_sistema(state: &mut BookosComp) {
     use bookos_system::Operation;
     let mut mostro_osd = false;
+    let mut hubo_paso_volumen = false;
+    let mut algun_paso_ok = false;
     while let Some((operation, result)) = bookos_system::take_feedback() {
-        if result.is_ok() && matches!(operation, Operation::VolumeStep { .. }) {
-            match state.chasquido {
-                Chasquido::Libre => chasquido(state),
-                Chasquido::Retenido => {}
-                Chasquido::Aplazado(_) => soltar_chasquido(state),
+        if matches!(operation, Operation::VolumeStep { .. }) {
+            hubo_paso_volumen = true;
+            if result.is_ok() {
+                algun_paso_ok = true;
             }
         }
         let osd = match result {
@@ -480,6 +481,13 @@ pub fn recibir_sistema(state: &mut BookosComp) {
             shell.mostrar_osd(icon, level, text);
             mostro_osd = true;
         }
+    }
+    if state.chasquido.confirmar_lote(
+        hubo_paso_volumen,
+        algun_paso_ok,
+        bookos_system::paso_volumen_pendiente(),
+    ) {
+        chasquido(state);
     }
     // El volumen que cambia sin pasar por aquí: el gesto de unos auriculares
     // Bluetooth (AVRCP lo lleva hasta PipeWire), u otra aplicación. Antes no
@@ -526,55 +534,101 @@ fn chasquido(state: &mut BookosComp) {
 
 /// Cuándo le toca sonar al volumen cuando se mueve con su tecla.
 ///
-/// Suena al **soltar**, una vez, y no en cada paso. Con la tecla mantenida
-/// los pasos llegan diez por segundo y sonaban todos: un tableteo que tapa
-/// justo lo que el sonido tiene que decir, a qué nivel ha quedado. Sonar en
-/// la primera pulsación tampoco vale, porque al pulsar no se sabe todavía si
-/// la tecla se va a mantener.
-#[derive(Debug)]
-pub enum Chasquido {
-    /// Nadie tiene la tecla: un cambio de volumen suena en el acto.
+/// Suena al **soltar** (o al confirmarse el último paso aún en vuelo), una sola
+/// vez, y no con un temporizador fijo que pudiera caducar antes de que
+/// PipeWire/`bookos-system` respondieran y provocar un segundo chasquido.
+#[derive(Debug, Default)]
+pub struct Chasquido {
+    estado: EstadoChasquido,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum EstadoChasquido {
+    /// Nadie tiene la tecla ni pasos en vuelo: un paso externo suena al momento.
+    #[default]
     Libre,
-    /// Tecla de volumen pulsada: los pasos se aplican callados.
-    Retenido,
-    /// Tecla soltada, a la espera del último paso.
-    Aplazado(smithay::reexports::calloop::RegistrationToken),
+    /// Tecla de volumen pulsada; `confirmado` recuerda si algún paso terminó con éxito.
+    Retenido { confirmado: bool },
+    /// Tecla soltada con al menos un `VolumeStep` aún en vuelo; sonará al cerrarse el último.
+    Esperando { confirmado: bool },
+}
+
+impl Chasquido {
+    fn retener(&mut self) {
+        self.estado = match self.estado {
+            EstadoChasquido::Libre => EstadoChasquido::Retenido { confirmado: false },
+            EstadoChasquido::Retenido { confirmado }
+            | EstadoChasquido::Esperando { confirmado } => {
+                EstadoChasquido::Retenido { confirmado }
+            }
+        };
+    }
+
+    fn soltar(&mut self, hay_pendiente: bool) -> bool {
+        match self.estado {
+            EstadoChasquido::Libre | EstadoChasquido::Esperando { .. } => false,
+            EstadoChasquido::Retenido { confirmado } => {
+                if hay_pendiente {
+                    self.estado = EstadoChasquido::Esperando { confirmado };
+                    false
+                } else {
+                    self.estado = EstadoChasquido::Libre;
+                    confirmado
+                }
+            }
+        }
+    }
+
+    fn confirmar_lote(&mut self, hubo_paso: bool, alguno_ok: bool, hay_pendiente: bool) -> bool {
+        if !hubo_paso {
+            return false;
+        }
+        match self.estado {
+            EstadoChasquido::Retenido { confirmado } => {
+                self.estado = EstadoChasquido::Retenido {
+                    confirmado: confirmado || alguno_ok,
+                };
+                false
+            }
+            EstadoChasquido::Esperando { confirmado } => {
+                let confirmado = confirmado || alguno_ok;
+                if hay_pendiente {
+                    self.estado = EstadoChasquido::Esperando { confirmado };
+                    false
+                } else {
+                    self.estado = EstadoChasquido::Libre;
+                    confirmado
+                }
+            }
+            EstadoChasquido::Libre => {
+                if !alguno_ok {
+                    false
+                } else if hay_pendiente {
+                    self.estado = EstadoChasquido::Esperando { confirmado: true };
+                    false
+                } else {
+                    true
+                }
+            }
+        }
+    }
 }
 
 /// Se pulsó una tecla de volumen.
 // 0.1.0
 pub fn retener_chasquido(state: &mut BookosComp) {
-    if let Chasquido::Aplazado(token) = std::mem::replace(&mut state.chasquido, Chasquido::Retenido)
-    {
-        state.loop_handle.remove(token);
-    }
+    state.chasquido.retener();
 }
 
-/// Se soltó la tecla, o llegó un paso con ella ya suelta: suena en cuanto
-/// dejen de llegar.
-///
-/// No suena en el mismo instante de soltar porque los pasos van por una cola
-/// a `bookos-system` y el último puede confirmarse después: se oiría el nivel
-/// anterior, o dos veces.
+/// Se soltó la tecla: suena en cuanto haya acabado el último paso en cola.
 // 0.1.0
+// modificado en la 0.2.3 -- sin temporizador de 60 ms que provocaba doble chasquido bajo carga
 pub fn soltar_chasquido(state: &mut BookosComp) {
-    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-    const MARGEN: std::time::Duration = std::time::Duration::from_millis(60);
-    match std::mem::replace(&mut state.chasquido, Chasquido::Libre) {
-        Chasquido::Libre => return,
-        Chasquido::Retenido => {}
-        Chasquido::Aplazado(token) => state.loop_handle.remove(token),
-    }
-    let token = state
-        .loop_handle
-        .insert_source(Timer::from_duration(MARGEN), |_, _, state| {
-            state.chasquido = Chasquido::Libre;
-            chasquido(state);
-            TimeoutAction::Drop
-        });
-    match token {
-        Ok(token) => state.chasquido = Chasquido::Aplazado(token),
-        Err(err) => tracing::warn!("sin sonido al soltar la tecla de volumen: {err}"),
+    if state
+        .chasquido
+        .soltar(bookos_system::paso_volumen_pendiente())
+    {
+        chasquido(state);
     }
 }
 
@@ -865,6 +919,69 @@ mod pruebas {
             .map(camara_activa)
             .collect();
         assert_eq!(lecturas, [Some(false), None, Some(true), None]);
+    }
+
+    #[test]
+    fn toque_lento_en_bookos_system_suena_una_sola_vez() {
+        let mut c = Chasquido::default();
+        c.retener();
+        // Al soltar, bookos-system todavía está ejecutando el paso.
+        assert!(!c.soltar(true));
+        // Al confirmarse el último paso pendiente, suena una única vez.
+        assert!(c.confirmar_lote(true, true, false));
+        assert_eq!(c.estado, EstadoChasquido::Libre);
+        assert!(!c.confirmar_lote(false, false, false));
+    }
+
+    #[test]
+    fn toque_ya_confirmado_antes_de_soltar_suena_al_soltar() {
+        let mut c = Chasquido::default();
+        c.retener();
+        assert!(!c.confirmar_lote(true, true, false));
+        assert!(c.soltar(false));
+        assert_eq!(c.estado, EstadoChasquido::Libre);
+    }
+
+    #[test]
+    fn mantener_y_soltar_con_dos_pasos_en_vuelo_suena_solo_al_ultimo() {
+        let mut c = Chasquido::default();
+        c.retener();
+        assert!(!c.confirmar_lote(true, true, true));
+        assert!(!c.soltar(true));
+        assert!(!c.confirmar_lote(true, true, true));
+        assert!(c.confirmar_lote(true, true, false));
+        assert_eq!(c.estado, EstadoChasquido::Libre);
+    }
+
+    #[test]
+    fn doble_toque_solapado_produce_un_unico_chasquido() {
+        let mut c = Chasquido::default();
+        c.retener();
+        assert!(!c.soltar(true));
+        c.retener();
+        assert!(!c.confirmar_lote(true, true, true));
+        assert!(!c.soltar(true));
+        assert!(c.confirmar_lote(true, true, false));
+        assert_eq!(c.estado, EstadoChasquido::Libre);
+    }
+
+    #[test]
+    fn paso_fallido_vuelve_a_libre_sin_sonar() {
+        let mut c = Chasquido::default();
+        c.retener();
+        assert!(!c.soltar(true));
+        assert!(!c.confirmar_lote(true, false, false));
+        assert_eq!(c.estado, EstadoChasquido::Libre);
+    }
+
+    #[test]
+    fn lote_libre_suena_una_sola_vez() {
+        let mut c = Chasquido::default();
+        assert!(c.confirmar_lote(true, true, false));
+        assert_eq!(c.estado, EstadoChasquido::Libre);
+        assert!(!c.confirmar_lote(true, true, true));
+        assert!(c.confirmar_lote(true, true, false));
+        assert_eq!(c.estado, EstadoChasquido::Libre);
     }
 }
 

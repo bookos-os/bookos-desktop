@@ -137,7 +137,7 @@ impl Hud {
 
         let mut cuerpo = column![cabecera].spacing(HUECO);
         if self.datos.salidas.is_empty() {
-            cuerpo = cuerpo.push(etiqueta("sin salidas activas".to_string(), tema::TEXTO2));
+            cuerpo = cuerpo.push(etiqueta("sin salidas activas".to_string(), tema::texto2()));
         }
         for salida in &self.datos.salidas {
             cuerpo = cuerpo.push(self.bloque(salida));
@@ -167,7 +167,7 @@ impl Hud {
         );
         let color = ritmo(s);
         column![
-            etiqueta(titulo, tema::TEXTO2),
+            etiqueta(titulo, tema::texto2()),
             etiqueta(
                 format!(
                     "{:.1} fps · {:.2} ms · peor {:.2} ms",
@@ -182,7 +182,7 @@ impl Hud {
                     "escena {:.2} · render {:.2} · shell {:.2} ms",
                     s.ms_escena, s.ms_render, s.shell_ms
                 ),
-                tema::TEXTO2,
+                tema::texto2(),
             ),
             etiqueta(
                 format!(
@@ -197,7 +197,7 @@ impl Hud {
                         .as_deref()
                         .map_or_else(String::new, |e| format!(" {e}"))
                 ),
-                tema::TEXTO2,
+                tema::texto2(),
             ),
         ]
         .into()

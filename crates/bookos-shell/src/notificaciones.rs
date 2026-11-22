@@ -26,6 +26,47 @@ pub struct Accion {
     pub etiqueta: String,
 }
 
+/// Los avisos con dibujo propio. Solo los manda el sistema, con las pistas
+/// `x-bookos-forma` y `x-bookos-medidas` (ver `parsear`); una app de fuera no
+/// las conoce y su aviso sale normal.
+// añadido en la 0.2.2
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Forma {
+    #[default]
+    Normal,
+    /// Los Buds: el render en el sitio del icono y un aro por pieza, con su
+    /// etiqueta y porcentaje (Izq., Dcha., Estuche).
+    Auriculares(Vec<(String, u8)>),
+    /// Batería baja: la pila con su nivel por icono y una barra debajo.
+    Bateria(u8),
+}
+
+impl Forma {
+    /// `forma` es «auriculares» o «bateria»; `medidas` es
+    /// «Izq.=80;Dcha.=76;Estuche=18» (para la batería basta «=10»). Lo que no
+    /// se entienda deja el aviso normal: es una pista opcional.
+    // añadido en la 0.2.2
+    pub fn parsear(forma: &str, medidas: &str) -> Self {
+        let pares: Vec<(String, u8)> = medidas
+            .split(';')
+            .filter_map(|par| {
+                let (etiqueta, valor) = par.split_once('=')?;
+                Some((
+                    etiqueta.trim().to_string(),
+                    valor.trim().parse::<u8>().ok()?.min(100),
+                ))
+            })
+            .collect();
+        match forma {
+            "auriculares" if !pares.is_empty() => Self::Auriculares(pares),
+            "bateria" => pares
+                .first()
+                .map_or(Self::Normal, |(_, v)| Self::Bateria(*v)),
+            _ => Self::Normal,
+        }
+    }
+}
+
 /// Una notificación tal y como la enseña el shell.
 #[derive(Clone)]
 pub struct Notificacion {
@@ -48,6 +89,8 @@ pub struct Notificacion {
     pub leida: bool,
     /// Cuándo llegó, para el «hace 3 min» de la tarjeta.
     pub llegada: Instant,
+    // añadido en la 0.2.2
+    pub forma: Forma,
 }
 
 impl Notificacion {
@@ -110,7 +153,16 @@ impl Notificacion {
             progreso_indeterminado,
             leida: false,
             llegada: Instant::now(),
+            forma: Forma::Normal,
         }
+    }
+
+    /// Sustituye el icono resuelto por uno ya decodificado (por ejemplo los
+    /// píxeles crudos de `image-data` en D-Bus).
+    // añadido en la 0.2.4
+    pub fn con_icono(mut self, icono: Icono) -> Self {
+        self.icono = Some(icono);
+        self
     }
 
     /// «ahora», «hace 3 min», «hace 2 h». Lo que se lee en la esquina de la
@@ -195,6 +247,25 @@ impl Registro {
 
 #[cfg(test)]
 mod tests {
+
+    /// Las pistas de los avisos propios: lo que no se entienda deja el aviso
+    /// normal, nunca a medias.
+    #[test]
+    fn la_forma_sale_de_las_pistas_y_si_no_se_entiende_es_normal() {
+        assert_eq!(
+            Forma::parsear("auriculares", "Izq.=80;Dcha.=76;Estuche=18"),
+            Forma::Auriculares(vec![
+                ("Izq.".into(), 80),
+                ("Dcha.".into(), 76),
+                ("Estuche".into(), 18)
+            ])
+        );
+        assert_eq!(Forma::parsear("bateria", "=10"), Forma::Bateria(10));
+        assert_eq!(Forma::parsear("bateria", "=250"), Forma::Bateria(100));
+        assert_eq!(Forma::parsear("auriculares", "basura"), Forma::Normal);
+        assert_eq!(Forma::parsear("otra", "Izq.=80"), Forma::Normal);
+    }
+
     use super::*;
 
     fn n(id: u32, resumen: &str) -> Notificacion {
@@ -210,6 +281,7 @@ mod tests {
             progreso_indeterminado: false,
             leida: false,
             llegada: Instant::now(),
+            forma: Forma::Normal,
         }
     }
 

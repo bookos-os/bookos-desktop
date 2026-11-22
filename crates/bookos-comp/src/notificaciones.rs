@@ -94,11 +94,15 @@ impl Servidor {
             .get("value")
             .and_then(|v| i32::try_from(v).ok())
             .map(|v| v.clamp(0, 100) as u8);
-        // La especificación pone `image-path` por delante de `app_icon`, y no
-        // es un caso raro: `notify-send -i` lo manda **solo** ahí, con
-        // `app_icon` vacío (visto en el servidor: llegaba `app_icon=""` y
-        // `image-path` entre las pistas). Puede ser un nombre del tema o una
-        // ruta, con o sin `file://`.
+        // Prioridad según la especificación 1.2:
+        // 1. `image-data` / `image_data` (píxeles crudos: avatares, carátulas)
+        // 2. `image-path` / `image_path` (ruta o nombre del tema)
+        // 3. `app_icon`
+        // 4. `icon_data` (legado)
+        let imagen_datos = hints
+            .get("image-data")
+            .or_else(|| hints.get("image_data"))
+            .and_then(decodificar_imagen);
         let imagen = hints
             .get("image-path")
             .or_else(|| hints.get("image_path"))
@@ -108,9 +112,27 @@ impl Servidor {
             .as_deref()
             .map(|s| s.strip_prefix("file://").unwrap_or(s))
             .unwrap_or(&app_icon);
-        let notificacion = bookos_shell::notificaciones::Notificacion::nueva_con_datos(
+        let mut notificacion = bookos_shell::notificaciones::Notificacion::nueva_con_datos(
             id, app_name, summary, body, icono, critica, acciones, progreso, false,
         );
+        if let Some(ic) = imagen_datos.or_else(|| {
+            if imagen.is_none() && app_icon.is_empty() {
+                hints.get("icon_data").and_then(decodificar_imagen)
+            } else {
+                None
+            }
+        }) {
+            notificacion = notificacion.con_icono(ic);
+        }
+        // añadido en la 0.2.2 -- avisos con dibujo propio (Buds, batería baja)
+        let texto = |clave: &str| {
+            hints
+                .get(clave)
+                .and_then(|v| String::try_from(v.try_clone().ok()?).ok())
+        };
+        if let (Some(forma), Some(medidas)) = (texto("x-bookos-forma"), texto("x-bookos-medidas")) {
+            notificacion.forma = bookos_shell::notificaciones::Forma::parsear(&forma, &medidas);
+        }
         // Si el canal está roto es que el compositor se está cerrando; se
         // contesta igual con el identificador para no dejar colgada a la
         // aplicación que llamó.
@@ -185,6 +207,24 @@ impl Servidor {
 // modified 0.1.1 -- sobre pantalla completa la notificación va a la campana sin aviso
 pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
     let completa = state.hay_pantalla_completa();
+    // Modo de concentración efectivo: el elegido a mano o, si está activado
+    // `concentracion_auto_juego`, el perfil «juego» al estar en pantalla completa.
+    let modo_foco = if !state.modo_concentracion.is_empty() {
+        Some(state.modo_concentracion.clone())
+    } else if completa && state.concentracion_auto_juego {
+        Some("juego".to_string())
+    } else {
+        None
+    };
+    let permitida_en_foco = |app: &str| -> bool {
+        let Some(modo) = modo_foco.as_deref() else {
+            return true;
+        };
+        state
+            .concentracion_permitidas
+            .get(modo)
+            .is_some_and(|lista| lista.iter().any(|a| a.eq_ignore_ascii_case(app)))
+    };
     let Some(shell) = state.shell.as_mut() else {
         return;
     };
@@ -198,10 +238,14 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
                 resumen = %notificacion.resumen,
                 "notificación"
             );
-            // Sobre un vídeo o un juego a pantalla completa el aviso tapaba
-            // justo lo que se miraba. Queda en la campana; las críticas
-            // —batería a punto de agotarse— salen igual.
-            if completa && !notificacion.critica {
+            // Sobre un vídeo o un juego a pantalla completa, en un modo de
+            // concentración (salvo apps permitidas) o si el usuario ha
+            // silenciado esa aplicación, el aviso queda en la campana sin
+            // molestar; las críticas —batería a punto de agotarse— salen igual.
+            let bloqueada_por_foco = modo_foco.is_some() && !permitida_en_foco(&notificacion.app);
+            if (completa || bloqueada_por_foco || shell.app_silenciada(&notificacion.app))
+                && !notificacion.critica
+            {
                 shell.archivar_notificacion(notificacion)
             } else {
                 shell.notificar(notificacion, caducidad)
@@ -232,7 +276,7 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
 /// pila, cada uno se va a su hora, y el despertar del primero no sirve para el
 /// segundo.
 // 0.1.0
-fn despertar_para_la_salida(state: &mut crate::state::BookosComp) {
+pub(crate) fn despertar_para_la_salida(state: &mut crate::state::BookosComp) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     let quedan = state
         .shell
@@ -327,5 +371,105 @@ pub fn respondida(conexion: Option<&zbus::blocking::Connection>, id: u32, texto:
         &(id, texto),
     ) {
         tracing::warn!(id, "no se pudo entregar la respuesta: {err}");
+    }
+}
+
+/// Decodifica la pista D-Bus `image-data` (`(iiibiiay)`) en un icono RGBA.
+///
+/// Acepta 3 canales (RGB) o 4 canales (RGBA) a 8 bits por muestra, respetando
+/// `rowstride`. Acota el tamaño a 1024×1024 para evitar asignaciones absurdas
+/// si un cliente manda una imagen desproporcionada.
+// añadido en la 0.2.4
+fn decodificar_imagen(valor: &OwnedValue) -> Option<bookos_shell::icono::Icono> {
+    let (ancho, alto, rowstride, tiene_alfa, bits, canales, datos): (
+        i32,
+        i32,
+        i32,
+        bool,
+        i32,
+        i32,
+        Vec<u8>,
+    ) = valor.try_clone().ok()?.try_into().ok()?;
+    let rgba = imagen_a_rgba(ancho, alto, rowstride, tiene_alfa, bits, canales, &datos)?;
+    bookos_shell::icono::desde_rgba(ancho as u32, alto as u32, rgba)
+}
+
+// añadido en la 0.2.4
+fn imagen_a_rgba(
+    ancho: i32,
+    alto: i32,
+    rowstride: i32,
+    tiene_alfa: bool,
+    bits: i32,
+    canales: i32,
+    datos: &[u8],
+) -> Option<Vec<u8>> {
+    const MAX_LADO: i32 = 1024;
+    if ancho <= 0 || alto <= 0 || ancho > MAX_LADO || alto > MAX_LADO {
+        return None;
+    }
+    if bits != 8 || !matches!(canales, 3 | 4) {
+        return None;
+    }
+    let w = ancho as usize;
+    let h = alto as usize;
+    let ch = canales as usize;
+    let fila_min = w.checked_mul(ch)?;
+    let paso = usize::try_from(rowstride).ok()?;
+    if paso < fila_min {
+        return None;
+    }
+    let necesario = (h - 1).checked_mul(paso)?.checked_add(fila_min)?;
+    if datos.len() < necesario {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(w.checked_mul(h)?.checked_mul(4)?);
+    for y in 0..h {
+        let inicio = y * paso;
+        let fila = &datos[inicio..inicio + fila_min];
+        if ch == 4 {
+            if tiene_alfa {
+                rgba.extend_from_slice(fila);
+            } else {
+                for px in fila.chunks_exact(4) {
+                    rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+                }
+            }
+        } else {
+            for px in fila.chunks_exact(3) {
+                rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+            }
+        }
+    }
+    Some(rgba)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_data_rgb_con_rowstride_y_padding() {
+        // 2×2 RGB con 2 bytes de relleno al final de cada fila (rowstride = 8).
+        let datos = vec![
+            10, 20, 30, 40, 50, 60, 0, 0, // fila 0
+            70, 80, 90, 100, 110, 120, 0, 0, // fila 1
+        ];
+        let rgba = imagen_a_rgba(2, 2, 8, false, 8, 3, &datos).expect("RGB válido");
+        assert_eq!(
+            rgba,
+            vec![
+                10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255
+            ]
+        );
+    }
+
+    #[test]
+    fn image_data_rgba_y_rechazos() {
+        let rgba = imagen_a_rgba(1, 1, 4, true, 8, 4, &[1, 2, 3, 128]).expect("RGBA válido");
+        assert_eq!(rgba, vec![1, 2, 3, 128]);
+        assert!(imagen_a_rgba(0, 1, 4, true, 8, 4, &[1, 2, 3, 4]).is_none());
+        assert!(imagen_a_rgba(2000, 1, 8000, true, 8, 4, &[]).is_none());
+        assert!(imagen_a_rgba(2, 1, 4, true, 8, 4, &[0; 8]).is_none());
     }
 }

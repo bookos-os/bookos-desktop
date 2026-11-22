@@ -13,10 +13,12 @@ pub use bateria::sobre_fondo as bateria_sobre_fondo;
 mod bateria_simple;
 mod bluetooth;
 mod brillo;
-mod control;
+pub(crate) mod control;
 pub(crate) mod escritorios;
 mod medidor;
 mod notificaciones;
+pub(crate) mod privacidad;
+pub use privacidad::Privacidad;
 mod red;
 mod reloj;
 pub(crate) mod volumen;
@@ -29,6 +31,7 @@ use crate::widget::Widget;
 // añadido en la 0.2.0
 pub const NOMBRES: &[&str] = &[
     "escritorios",
+    "privacidad",
     "bateria",
     "bateria-simple",
     "bluetooth",
@@ -62,6 +65,7 @@ pub fn por_nombre(nombre: &str) -> Option<Box<dyn Widget>> {
         "notificaciones" => Some(Box::new(notificaciones::Notificaciones::new())),
         "control" => Some(Box::new(control::Control::new())),
         "escritorios" => Some(Box::new(escritorios::Escritorios::new())),
+        "privacidad" => Some(Box::new(privacidad::Indicador::new())),
         "monitor" => Some(Box::new(medidor::Medidor::monitor())),
         "trafico" => Some(Box::new(medidor::Medidor::trafico())),
         "consumo" => Some(Box::new(medidor::Medidor::consumo())),

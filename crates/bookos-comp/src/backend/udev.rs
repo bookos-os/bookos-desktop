@@ -26,7 +26,7 @@ use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::drm::compositor::FrameFlags;
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode};
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmNode};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::libinput::LibinputInputBackend;
 use smithay::backend::renderer::element::default_primary_scanout_output_compare;
@@ -69,6 +69,20 @@ struct SalidaKms {
     id: String,
     en_vuelo: bool,
     pendiente: bool,
+    /// Último `queue_frame` aceptado; usado para limitar el refresco bajo VRR.
+    // añadido en la 0.2.4
+    ultimo_envio: Option<std::time::Instant>,
+    /// Ya hay un temporizador de un solo disparo armado para el próximo paso VRR.
+    // añadido en la 0.2.4
+    esperando_ritmo: bool,
+    /// Hay un commit atómico solo de `GAMMA_LUT` en vuelo (sin swapchain).
+    gamma_en_vuelo: bool,
+    /// Si la salida admite `GAMMA_LUT` atómica; pasa a `false` si cae al legado.
+    gamma_atomica: bool,
+    /// Último tinte RGB enviado, para reintentos o respaldo legado.
+    gamma_rgb: Option<[f32; 3]>,
+    /// Instante del último `SETGAMMA` legado para no bloquear 120 Hz.
+    gamma_legado_ultimo: Option<std::time::Instant>,
 }
 
 struct Udev {
@@ -101,8 +115,11 @@ impl Udev {
     /// hasta que otro evento cualquiera despertara el bucle. De ahí el segundo
     /// largo de retraso al teclear.
     // 0.1.0
+    // modified 0.2.4 -- no gira en vacío mientras una salida espera su plazo VRR
     fn hay_pendiente(&self) -> bool {
-        self.salidas.iter().any(|s| s.pendiente && !s.en_vuelo)
+        self.salidas
+            .iter()
+            .any(|s| s.pendiente && !s.en_vuelo && !s.esperando_ritmo)
     }
 }
 
@@ -244,6 +261,7 @@ pub fn run(
     ));
     state.cristal = crate::desenfoque::Cristal::new(&mut renderer);
     state.genio = crate::genio::Genio::new(&mut renderer);
+    state.esquinas = crate::esquinas::Esquinas::new(&mut renderer);
     state.contexto_gl = Some(smithay::backend::renderer::Renderer::context_id(&renderer));
     state.velo_captura = crate::captura::Velo::new(&mut renderer);
     state.banda = crate::banda::Banda::new(&mut renderer);
@@ -301,39 +319,9 @@ pub fn run(
                         .with_compositor(|compositor| compositor.clear())
                         .map_err(|err| format!("no se pudo apagar {nombre}: {err}"))?;
                     salida.en_vuelo = false;
+                    salida.gamma_en_vuelo = false;
                     salida.pendiente = false;
                 }
-            }
-            Ok(())
-        }));
-    }
-
-    // La curva de la luz nocturna, una por CRTC encendido. Cada CRTC dice
-    // cuántas entradas tiene su tabla: no hay un tamaño que valga para todos.
-    {
-        let udev = udev.clone();
-        state.aplicar_gamma = Some(Box::new(move |[r, g, b]| {
-            let u = udev
-                .try_borrow()
-                .map_err(|_| "el backend está ocupado dibujando".to_string())?;
-            if !u.activa {
-                // En otro TTY la pantalla no es nuestra: se repone al volver.
-                return Ok(());
-            }
-            let device = u.manager.device();
-            for salida in &u.salidas {
-                let crtc = salida.surface.crtc();
-                let n = device
-                    .get_crtc(crtc)
-                    .map_err(|err| format!("{}: {err}", salida.output.name()))?
-                    .gamma_length() as usize;
-                if n == 0 {
-                    return Err(format!("{} no tiene tabla de gamma", salida.output.name()));
-                }
-                let rampa = |m| crate::luz_nocturna::rampa(n, m);
-                device
-                    .set_gamma(crtc, &rampa(r), &rampa(g), &rampa(b))
-                    .map_err(|err| format!("{}: {err}", salida.output.name()))?;
             }
             Ok(())
         }));
@@ -494,49 +482,54 @@ pub fn run(
                     // Cerrar el frame anterior antes de plantearse otro: si no,
                     // el swapchain se queda sin buffers libres.
                     if let Some(salida) = u.salidas.iter_mut().find(|s| s.surface.crtc() == crtc) {
-                        match salida.surface.frame_submitted() {
-                            Ok(Some(mut feedback)) => {
-                                if let Some(metadata) = *metadata {
-                                    let mhz = salida.output.current_mode()
-                                        .map(|m| m.refresh.max(1) as u64).unwrap_or(60_000);
-                                    let periodo = Duration::from_nanos(
-                                        1_000_000_000_000u64 / mhz);
-                                    let refresh = if salida.surface
-                                        .with_compositor(|c| c.vrr_enabled()) {
-                                        Refresh::variable(periodo)
-                                    } else {
-                                        Refresh::fixed(periodo)
-                                    };
-                                    let tiempo = match metadata.time {
-                                        smithay::backend::drm::DrmEventTime::Monotonic(t) =>
-                                            smithay::utils::Time::<smithay::utils::Monotonic>::from(t),
-                                        // Un driver que da el flip en el reloj
-                                        // de pared. Se **traslada** al
-                                        // monotónico en vez de tirarlo: antes
-                                        // aquí se ponía el instante en que el
-                                        // bucle atendía el evento, que no es
-                                        // cuando la pantalla enseñó el
-                                        // fotograma, y esa diferencia es jitter
-                                        // que el cliente se come al ajustar su
-                                        // ritmo. El desfase entre los dos
-                                        // relojes se mide ahora, que es lo más
-                                        // cerca del vblank que se puede estar.
-                                        smithay::backend::drm::DrmEventTime::Realtime(t) =>
-                                            trasladar_a_monotonico(t),
-                                    };
-                                    feedback.presented(
-                                        tiempo, refresh, metadata.sequence as u64,
-                                        smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
-                                    );
+                        if salida.gamma_en_vuelo {
+                            salida.gamma_en_vuelo = false;
+                            salida.en_vuelo = false;
+                        } else {
+                            match salida.surface.frame_submitted() {
+                                Ok(Some(mut feedback)) => {
+                                    if let Some(metadata) = *metadata {
+                                        let mhz = salida.output.current_mode()
+                                            .map(|m| m.refresh.max(1) as u64).unwrap_or(60_000);
+                                        let periodo = Duration::from_nanos(
+                                            1_000_000_000_000u64 / mhz);
+                                        let refresh = if salida.surface
+                                            .with_compositor(|c| c.vrr_enabled()) {
+                                            Refresh::variable(periodo)
+                                        } else {
+                                            Refresh::fixed(periodo)
+                                        };
+                                        let tiempo = match metadata.time {
+                                            smithay::backend::drm::DrmEventTime::Monotonic(t) =>
+                                                smithay::utils::Time::<smithay::utils::Monotonic>::from(t),
+                                            // Un driver que da el flip en el reloj
+                                            // de pared. Se **traslada** al
+                                            // monotónico en vez de tirarlo: antes
+                                            // aquí se ponía el instante en que el
+                                            // bucle atendía el evento, que no es
+                                            // cuando la pantalla enseñó el
+                                            // fotograma, y esa diferencia es jitter
+                                            // que el cliente se come al ajustar su
+                                            // ritmo. El desfase entre los dos
+                                            // relojes se mide ahora, que es lo más
+                                            // cerca del vblank que se puede estar.
+                                            smithay::backend::drm::DrmEventTime::Realtime(t) =>
+                                                trasladar_a_monotonico(t),
+                                        };
+                                        feedback.presented(
+                                            tiempo, refresh, metadata.sequence as u64,
+                                            smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
+                                        );
+                                    }
                                 }
+                                Ok(None) => {}
+                                Err(err) => tracing::warn!(?crtc, "frame_submitted: {err}"),
                             }
-                            Ok(None) => {}
-                            Err(err) => tracing::warn!(?crtc, "frame_submitted: {err}"),
+                            salida.en_vuelo = false;
+                            // Contado aquí y no al encolar: esto es lo que el
+                            // hardware ha enseñado de verdad.
+                            state.metricas.presentado(&salida.output.name());
                         }
-                        salida.en_vuelo = false;
-                        // Contado aquí y no al encolar: esto es lo que el
-                        // hardware ha enseñado de verdad.
-                        state.metricas.presentado(&salida.output.name());
                     }
                     // Igual que en winit: una animación en marcha pide el
                     // siguiente fotograma aunque nadie haya marcado nada, porque
@@ -568,6 +561,8 @@ pub fn run(
                         u.activa = false;
                         for salida in &mut u.salidas {
                             salida.en_vuelo = false;
+                            salida.gamma_en_vuelo = false;
+                            salida.esperando_ritmo = false;
                         }
                     }
                     SessionEvent::ActivateSession => {
@@ -593,12 +588,10 @@ pub fn run(
                         }
                         state.dpms_encendido = true;
                         state.needs_redraw = true;
-                        dibujar_todas(state, &mut u);
-                        // El maestro del otro TTY pudo dejar la curva a su
-                        // gusto. `aplicar_gamma` toma el backend prestado, así
-                        // que va con `u` ya soltado.
-                        drop(u);
+                        // Se repone antes de dibujar para que el primer
+                        // fotograma tras volver del TTY nazca ya teñido.
                         crate::luz_nocturna::reponer(state);
+                        dibujar_todas(state, &mut u);
                     }
                 }
             })
@@ -626,8 +619,11 @@ pub fn run(
     // Primer frame: deja el escritorio pintado antes de que arranque nada más,
     // que es lo que evita el parpadeo al iniciar sesión.
     dibujar_todas(state, &mut udev.borrow_mut());
+    crate::backend::programar_precalentado(state);
     // Con el escritorio ya en pantalla, no antes: el sonido dice «ya está».
-    if !kiosko {
+    // Un relanzamiento por recuperación dentro de la misma sesión no repite el
+    // saludo de inicio de sesión.
+    if !kiosko && std::env::var_os("BOOKOS_REINICIO").is_none() {
         crate::multimedia::sonar_interfaz(state, "desktop-login");
     }
 
@@ -846,6 +842,9 @@ fn crear_salidas(
             escala, x = posicion.x, y = posicion.y, "salida multipantalla activa");
         if salidas.is_empty() {
             crate::publicar::escala_de_pantalla(escala);
+            let rango = blob_edid(manager.device(), &conector)
+                .and_then(|e| pantallas::rango_vrr_edid(&e));
+            state.pantallas.compartido.publicar_rango_vrr(rango);
         }
         salidas.push(SalidaKms {
             output,
@@ -855,6 +854,12 @@ fn crear_salidas(
             id,
             en_vuelo: false,
             pendiente: true,
+            ultimo_envio: None,
+            esperando_ritmo: false,
+            gamma_en_vuelo: false,
+            gamma_atomica: true,
+            gamma_rgb: None,
+            gamma_legado_ultimo: None,
         });
     }
 
@@ -1263,6 +1268,12 @@ fn aplicar_en_kms(
             id: pedido.id.clone(),
             en_vuelo: false,
             pendiente: true,
+            ultimo_envio: None,
+            esperando_ritmo: false,
+            gamma_en_vuelo: false,
+            gamma_atomica: true,
+            gamma_rgb: None,
+            gamma_legado_ultimo: None,
         });
     }
 
@@ -1337,6 +1348,72 @@ fn asignar_crtcs(opciones: &[Vec<crtc::Handle>]) -> Option<Vec<crtc::Handle>> {
     buscar(0, opciones, &mut usados, &mut resultado).then_some(resultado)
 }
 
+fn intervalo_vrr_salida(vrr_activo: bool, limite_hz: u32) -> Option<Duration> {
+    (vrr_activo && limite_hz > 0)
+        .then(|| Duration::from_nanos(1_000_000_000u64 / u64::from(limite_hz)))
+}
+
+fn aplicar_gamma_legado(
+    device: &DrmDevice,
+    salida: &SalidaKms,
+    [r, g, b]: [f32; 3],
+) -> Result<(), String> {
+    let crtc = salida.surface.crtc();
+    let n = device
+        .get_crtc(crtc)
+        .map_err(|err| format!("{}: {err}", salida.output.name()))?
+        .gamma_length() as usize;
+    if n == 0 {
+        return Err(format!("{} no tiene tabla de gamma", salida.output.name()));
+    }
+    let rampa = |m| crate::luz_nocturna::rampa(n, m);
+    device
+        .set_gamma(crtc, &rampa(r), &rampa(g), &rampa(b))
+        .map_err(|err| format!("{}: {err}", salida.output.name()))
+}
+
+fn aplicar_gamma_pendiente(state: &mut BookosComp, u: &mut Udev) {
+    let Some(rgb) = state.luz_nocturna.tomar_pendiente() else {
+        return;
+    };
+    let device = u.manager.device();
+    let final_anim = !state.luz_nocturna.animando();
+    let ahora = std::time::Instant::now();
+    for salida in &mut u.salidas {
+        salida.gamma_rgb = Some(rgb);
+        if salida.gamma_atomica {
+            match salida
+                .surface
+                .with_compositor(|c| c.surface().set_gamma_lut(rgb))
+            {
+                Ok(true) => continue,
+                Ok(false) => {
+                    tracing::debug!(
+                        pantalla = %salida.output.name(),
+                        "CRTC sin GAMMA_LUT atómica; usando SETGAMMA legado"
+                    );
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        pantalla = %salida.output.name(),
+                        "no se pudo preparar GAMMA_LUT atómica ({err}); usando SETGAMMA legado"
+                    );
+                }
+            }
+            salida.gamma_atomica = false;
+        }
+        let vence = salida
+            .gamma_legado_ultimo
+            .is_none_or(|t| ahora.duration_since(t) >= Duration::from_millis(40));
+        if final_anim || vence {
+            if let Err(err) = aplicar_gamma_legado(device, salida, rgb) {
+                tracing::warn!("luz nocturna (legado): {err}");
+            }
+            salida.gamma_legado_ultimo = Some(ahora);
+        }
+    }
+}
+
 /// Dibuja cada salida que esté libre. Los vblank son independientes: una
 /// pantalla a 144 Hz no espera a otra de 60 Hz y cada swapchain conserva su
 /// propio daño.
@@ -1351,11 +1428,64 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
     if !u.activa || !state.dpms_encendido {
         return;
     }
+    let animando_antes = state.hay_animacion();
+    if state.needs_redraw || animando_antes {
+        for salida in u.salidas.iter_mut() {
+            salida.pendiente = true;
+        }
+    }
+    // Si todas las salidas están ocupadas (`en_vuelo`) o frenadas por su límite
+    // VRR, no se avanza ninguna animación ni se rasteriza el shell en CPU: la
+    // entrada a 1 kHz se queda acumulada hasta el siguiente vblank real.
+    if !u.salidas.is_empty() {
+        let limite_hz = state.refresco_max_efectivo();
+        let mut hay_lista = false;
+        for salida in u.salidas.iter_mut() {
+            if salida.en_vuelo {
+                if salida.pendiente || animando_antes {
+                    state.metricas.aplazado(&salida.output.name());
+                }
+                continue;
+            }
+            if !salida.pendiente && !animando_antes {
+                continue;
+            }
+            let vrr_activo = salida.surface.with_compositor(|c| c.vrr_enabled());
+            if let Some(intervalo) = intervalo_vrr_salida(vrr_activo, limite_hz)
+                && let Some(ultimo) = salida.ultimo_envio
+            {
+                let transcurrido = ultimo.elapsed();
+                if transcurrido < intervalo {
+                    salida.pendiente = true;
+                    if !salida.esperando_ritmo {
+                        salida.esperando_ritmo = true;
+                        let espera = intervalo.saturating_sub(transcurrido);
+                        let _ = state.loop_handle.insert_source(
+                            Timer::from_duration(espera),
+                            |_, _, state| {
+                                state.needs_redraw = true;
+                                TimeoutAction::Drop
+                            },
+                        );
+                    }
+                    continue;
+                }
+            }
+            salida.esperando_ritmo = false;
+            hay_lista = true;
+        }
+        if !hay_lista {
+            state.needs_redraw = false;
+            return;
+        }
+    }
     // Antes de mirar nada: lo que se mueve solo avanza **una vez** por vuelta,
     // no una por salida. Ver `backend::avanzar_animaciones`.
     crate::backend::avanzar_animaciones(state);
+    aplicar_gamma_pendiente(state, u);
     let animando = state.hay_animacion();
     let Udev {
+        manager,
         renderer,
         salidas,
         repintado_completo,
@@ -1370,6 +1500,7 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
             salida.pendiente = true;
         }
     }
+    let device = manager.device();
     for salida in salidas {
         if *repintado_completo {
             // Edad 0 obliga a dibujar la salida entera sin reasignar buffers.
@@ -1377,7 +1508,10 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
                 .surface
                 .with_compositor(|compositor| compositor.reset_buffer_ages());
         }
-        dibujar_salida(state, renderer, salida, animando);
+        if salida.en_vuelo {
+            continue;
+        }
+        dibujar_salida(state, device, renderer, salida, animando);
     }
     state.needs_redraw = false;
 }
@@ -1385,14 +1519,12 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
 // 0.1.0
 fn dibujar_salida(
     state: &mut BookosComp,
+    device: &DrmDevice,
     renderer: &mut GlesRenderer,
     salida: &mut SalidaKms,
     animando: bool,
 ) {
     if salida.en_vuelo {
-        // Hay trabajo y el hardware todavía no ha enseñado el fotograma
-        // anterior: se apunta y se dibuja en el vblank. Contarlo es lo que
-        // distingue «el compositor va justo» de «el compositor va sobrado».
         if salida.pendiente || animando {
             state.metricas.aplazado(&salida.output.name());
         }
@@ -1400,6 +1532,32 @@ fn dibujar_salida(
     }
     if !salida.pendiente && !animando {
         return;
+    }
+    let vrr_activo = salida.surface.with_compositor(|c| c.vrr_enabled());
+    // añadido en la 0.2.4 -- límite de refresco sobre VRR (p. ej. 48 Hz en
+    // bajo consumo o fijado por el usuario): si aún no ha pasado el intervalo
+    // desde el último envío, se arma un único temporizador y el bucle vuelve a
+    // dormir en epoll (0 % CPU).
+    let limite_hz = state.refresco_max_efectivo();
+    let intervalo_vrr = intervalo_vrr_salida(vrr_activo, limite_hz);
+    if let (Some(intervalo), Some(ultimo)) = (intervalo_vrr, salida.ultimo_envio) {
+        let transcurrido = ultimo.elapsed();
+        if transcurrido < intervalo {
+            salida.pendiente = true;
+            if !salida.esperando_ritmo {
+                salida.esperando_ritmo = true;
+                let espera = intervalo.saturating_sub(transcurrido);
+                let _ = state.loop_handle.insert_source(
+                    Timer::from_duration(espera),
+                    |_, _, state| {
+                        state.needs_redraw = true;
+                        TimeoutAction::Drop
+                    },
+                );
+            }
+            return;
+        }
+        salida.esperando_ritmo = false;
     }
     // El nombre se pide aquí y no arriba porque `name()` clona la cadena, y con
     // dos monitores esta función se llama también para el que no tiene nada que
@@ -1416,17 +1574,18 @@ fn dibujar_salida(
             escala,
             // `refresh` viene en mHz.
             modo.refresh as f32 / 1000.0,
-            salida.surface.with_compositor(|c| c.vrr_enabled()),
+            vrr_activo,
         );
     }
     // Un refresco, para el umbral de los frame callbacks (ver `enviar_frames`).
     // Sin modo —no debería pasar con la salida encendida— se usan 60 Hz, que
     // solo decide cada cuánto arranca una superficie todavía sin salida
     // asignada, no el ritmo de dibujo.
-    let periodo = modo_actual
+    let periodo_modo = modo_actual
         .filter(|m| m.refresh > 0)
         .map(|m| Duration::from_nanos(1_000_000_000_000u64 / m.refresh as u64))
         .unwrap_or(Duration::from_millis(16));
+    let periodo = intervalo_vrr.map_or(periodo_modo, |v| periodo_modo.max(v));
 
     let cronometro = std::time::Instant::now();
     let elementos = crate::backend::escena(state, renderer, &salida.output);
@@ -1452,8 +1611,10 @@ fn dibujar_salida(
     let t_escena = cronometro.elapsed();
     let cronometro = std::time::Instant::now();
 
-    // `FrameFlags::DEFAULT` deja que el compositor use los planos: es lo que
-    // habilita el direct scanout y el cursor por hardware.
+    // `FrameFlags::DEFAULT | ALLOW_PRIMARY_PLANE_SCANOUT_ANY` deja que el
+    // compositor use los planos incluso cuando el cliente entrega otro formato
+    // DRM compatible (p. ej. Argb8888 / 10-bit), y el fondo negro puro permite
+    // direct scanout en vídeos 16:9 con bandas sobre pantalla 16:10.
     //
     // **Sin `SKIP_CURSOR_ONLY_UPDATES`**, aunque suene a que ahorraría trabajo
     // en el caso más común —mover el ratón—. Lo que hace ese flag es marcar el
@@ -1465,8 +1626,8 @@ fn dibujar_salida(
     let resultado = salida.surface.render_frame(
         renderer,
         &elementos,
-        [0.05, 0.05, 0.06, 1.0],
-        FrameFlags::DEFAULT,
+        [0.0, 0.0, 0.0, 1.0],
+        FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY,
     );
 
     let resultado = match resultado {
@@ -1483,6 +1644,48 @@ fn dibujar_salida(
     };
 
     if resultado.is_empty {
+        if salida.gamma_atomica
+            && salida
+                .surface
+                .with_compositor(|c| c.surface().gamma_pending() && !c.surface().commit_pending())
+        {
+            match salida
+                .surface
+                .with_compositor(|c| c.surface().commit_gamma(true))
+            {
+                Ok(true) => {
+                    salida.en_vuelo = true;
+                    salida.gamma_en_vuelo = true;
+                    salida.pendiente = false;
+                    salida.ultimo_envio = Some(std::time::Instant::now());
+                    salida.esperando_ritmo = false;
+                    enviar_frames(state, &salida.output, periodo);
+                    return;
+                }
+                Ok(false) => {}
+                Err(DrmError::Access(ref acc))
+                    if acc.source.raw_os_error() == Some(libc::EBUSY) =>
+                {
+                    salida.pendiente = true;
+                    return;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        pantalla = %nombre,
+                        "commit atómico de gamma rechazado ({err}); pasando a SETGAMMA legado"
+                    );
+                    salida.gamma_atomica = false;
+                    salida
+                        .surface
+                        .with_compositor(|c| c.surface().clear_pending_gamma());
+                    if let Some(rgb) = salida.gamma_rgb
+                        && let Err(e) = aplicar_gamma_legado(device, salida, rgb)
+                    {
+                        tracing::warn!("luz nocturna (legado): {e}");
+                    }
+                }
+            }
+        }
         // Nada cambió: no se toca la pantalla. Este es el caso normal en un
         // escritorio en reposo.
         state.metricas.saltado(&nombre);
@@ -1520,6 +1723,8 @@ fn dibujar_salida(
         Ok(()) => {
             salida.en_vuelo = true;
             salida.pendiente = false;
+            salida.ultimo_envio = Some(std::time::Instant::now());
+            salida.esperando_ritmo = false;
             // añadido en la 0.2.0 -- solo un encolado aceptado puede responder a la entrada.
             let emergente = state
                 .space
@@ -1584,14 +1789,7 @@ fn trasladar_a_monotonico(
 // 0.1.0
 fn enviar_frames(state: &mut BookosComp, output: &Output, periodo: Duration) {
     let tiempo = state.start_time.elapsed();
-    for window in state.space.elements() {
-        window.send_frame(
-            output,
-            tiempo,
-            Some(periodo),
-            surface_primary_scanout_output,
-        );
-    }
+    crate::backend::enviar_frames_ventanas(state, output, tiempo, periodo);
     crate::backend::enviar_frames_capas(output, tiempo, periodo);
     if state
         .shell

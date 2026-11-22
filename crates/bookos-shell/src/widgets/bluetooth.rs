@@ -79,7 +79,7 @@ impl Bluetooth {
     // 0.1.0
     fn color(&self) -> iced_core::Color {
         match self.estado {
-            Estado::Apagado => tema::TEXTO2,
+            Estado::Apagado => tema::texto2(),
             Estado::Conectado => tema::acento(),
             Estado::Encendido | Estado::SinAdaptador => TEXT(),
         }
@@ -90,6 +90,16 @@ impl Widget for Bluetooth {
     // 0.1.0
     fn nombre(&self) -> &'static str {
         "bluetooth"
+    }
+
+    fn accesible(&self) -> (&'static str, String) {
+        let valor = match self.estado {
+            Estado::SinAdaptador => crate::emergente::t("Sin adaptador", "No adapter"),
+            Estado::Apagado => crate::emergente::t("Apagado", "Off"),
+            Estado::Encendido => crate::emergente::t("Encendido", "On"),
+            Estado::Conectado => crate::emergente::t("Conectado", "Connected"),
+        };
+        ("Bluetooth", valor.into())
     }
 
     // 0.1.0
@@ -184,6 +194,6 @@ mod tests {
         assert_eq!(b.color(), tema::acento());
         assert_eq!(b.icono_nombre, "bluetooth-conectado");
         b.aplicar(Estado::Apagado);
-        assert_eq!(b.color(), tema::TEXTO2);
+        assert_eq!(b.color(), tema::texto2());
     }
 }

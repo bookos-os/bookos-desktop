@@ -19,7 +19,7 @@
 //! que ataba una celda a una aplicación entera.
 
 use iced_core::alignment::Horizontal;
-use iced_core::{Border, Color, Length, Rectangle};
+use iced_core::{Border, Length, Rectangle};
 use iced_widget::{Column, Row, Space, column, container, row, text};
 
 use crate::icono::{self, Icono};
@@ -52,6 +52,29 @@ const ROTULO_SEP: f32 = 12.0;
 /// número el conmutador dejaría de caber en pantalla, y una fila que se sale es
 /// peor que una lista recortada: al menos así se ve que hay más.
 pub const MAXIMO: usize = 12;
+
+/// La tarjeta de los dos conmutadores. Flota sobre cualquier ventana y, en
+/// claro, blanca y translúcida sobre una ventana blanca no tenía borde visible
+/// y dejaba leer el texto de debajo. Opaca, en claro con el gris de fondo del
+/// sistema, y con un filo de 1 px: la sombra no cabe, el búfer mide la tarjeta.
+// modificado en la 0.2.3
+fn estilo_tarjeta() -> container::Style {
+    let fondo = if tema::es_claro() {
+        tema::bg()
+    } else {
+        tema::card()
+    };
+    let filo = if tema::alto_contraste() { 1.0 } else { 0.22 };
+    container::Style {
+        background: Some(fondo.into()),
+        border: Border {
+            radius: tema::R_TARJETA.into(),
+            width: 1.0,
+            color: tema::mezclar(fondo, tema::texto(), filo),
+        },
+        ..Default::default()
+    }
+}
 
 /// Qué presenta el conmutador y, por tanto, qué significa cada celda.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,7 +286,7 @@ impl Conmutador {
             textos = textos.push(
                 text(titulo)
                     .size(tema::T_CUERPO)
-                    .color(tema::mezclar(tema::texto(), tema::TEXTO2, 0.75))
+                    .color(tema::mezclar(tema::texto(), tema::texto2(), 0.75))
                     .wrapping(iced_core::text::Wrapping::None),
             );
         }
@@ -388,20 +411,7 @@ impl Conmutador {
 
         container(contenido)
             .padding(MARGEN)
-            .style(|_theme: &iced_widget::Theme| container::Style {
-                background: Some(
-                    Color {
-                        a: 0.86,
-                        ..tema::card()
-                    }
-                    .into(),
-                ),
-                border: Border {
-                    radius: tema::R_TARJETA.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
+            .style(|_theme: &iced_widget::Theme| estilo_tarjeta())
             .into()
     }
 
@@ -473,20 +483,7 @@ impl Conmutador {
 
         container(contenido)
             .padding(MARGEN)
-            .style(|_theme: &iced_widget::Theme| container::Style {
-                background: Some(
-                    Color {
-                        a: 0.86,
-                        ..tema::card()
-                    }
-                    .into(),
-                ),
-                border: Border {
-                    radius: tema::R_TARJETA.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
+            .style(|_theme: &iced_widget::Theme| estilo_tarjeta())
             .into()
     }
 }

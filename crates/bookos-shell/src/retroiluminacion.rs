@@ -57,6 +57,19 @@ pub fn hay_sensor_luz() -> bool {
 }
 
 type Cola = (Mutex<BTreeMap<(String, String), u32>>, Condvar);
+type Escritor = Box<dyn Fn(&str, &str, u32) -> Result<(), String> + Send + Sync>;
+
+static ESCRITOR: OnceLock<Escritor> = OnceLock::new();
+
+/// Registra un escritor D-Bus persistente (p. ej. vía `zbus` desde el
+/// compositor) para evitar crear un proceso `busctl` en cada paso de rampa.
+// añadido en la 0.2.3
+pub fn instalar_escritor<F>(escritor: F)
+where
+    F: Fn(&str, &str, u32) -> Result<(), String> + Send + Sync + 'static,
+{
+    let _ = ESCRITOR.set(Box::new(escritor));
+}
 
 /// Conserva el último valor solicitado por dispositivo. Un arrastre no crea
 /// procesos en paralelo ni permite que una escritura antigua termine después.
@@ -81,29 +94,31 @@ pub fn solicitar(subsistema: &str, dispositivo: &str, nivel: u32) {
                         std::mem::take(&mut *pendientes)
                     };
                     for ((subsistema, dispositivo), nivel) in lote {
-                        let result = std::process::Command::new("busctl")
-                            .args([
-                                "--timeout=2s",
-                                "call",
-                                "org.freedesktop.login1",
-                                "/org/freedesktop/login1/session/auto",
-                                "org.freedesktop.login1.Session",
-                                "SetBrightness",
-                                "ssu",
-                                &subsistema,
-                                &dispositivo,
-                                &nivel.to_string(),
-                            ])
-                            .output();
-                        match result {
-                            Ok(out) if out.status.success() => {}
-                            Ok(out) => eprintln!(
-                                "No se pudo cambiar el brillo de {dispositivo}: {}",
-                                String::from_utf8_lossy(&out.stderr).trim()
-                            ),
-                            Err(e) => {
-                                eprintln!("No se pudo cambiar el brillo de {dispositivo}: {e}")
+                        let error = if let Some(escritor) = ESCRITOR.get() {
+                            escritor(&subsistema, &dispositivo, nivel).err()
+                        } else {
+                            let result = std::process::Command::new("busctl")
+                                .args([
+                                    "--timeout=2s",
+                                    "call",
+                                    "org.freedesktop.login1",
+                                    "/org/freedesktop/login1/session/auto",
+                                    "org.freedesktop.login1.Session",
+                                    "SetBrightness",
+                                    "ssu",
+                                    &subsistema,
+                                    &dispositivo,
+                                    &nivel.to_string(),
+                                ])
+                                .output();
+                            match result {
+                                Ok(out) if out.status.success() => None,
+                                Ok(out) => Some(String::from_utf8_lossy(&out.stderr).trim().into()),
+                                Err(e) => Some(e.to_string()),
                             }
+                        };
+                        if let Some(err) = error {
+                            eprintln!("No se pudo cambiar el brillo de {dispositivo}: {err}");
                         }
                     }
                 }

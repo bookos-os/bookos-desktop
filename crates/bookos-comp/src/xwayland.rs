@@ -138,8 +138,10 @@ pub fn actualizar_escala(state: &mut BookosComp) {
     let Some(n) = state.display_x11 else {
         return;
     };
-    // 96 es el DPI de referencia de X11: 192 equivale a escala 2.
-    let dpi = (96.0 * escala).round() as u32;
+    // 96 es el DPI de referencia de X11: 192 equivale a escala 2. El tamaño de
+    // texto de Accesibilidad va aquí y no en la escala: `Xft.dpi` solo mueve
+    // las fuentes, la geometría de las ventanas X11 no cambia.
+    let dpi = (96.0 * escala * f64::from(state.texto_tamano) / 100.0).round() as u32;
     let mut recursos = format!("Xft.dpi: {dpi}\n");
     if let Some(tema) = state.cursor_theme.as_ref() {
         let tamano = tema.tamano_logico();
@@ -282,6 +284,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     // 0.1.0
     // modified 0.1.1 -- saca la ventana de su grupo
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        let era_inhibido = self.idle_inhibido();
         if self.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
             crate::keybinds::ejecutar(self, crate::keybinds::Accion::ConmutarCancelar);
         }
@@ -293,6 +296,7 @@ impl smithay::xwayland::XwmHandler for BookosComp {
             let _ = window.set_mapped(false);
         }
         crate::keybinds::refocalizar(self);
+        crate::handlers::sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
         self.actualizar_dock();
     }
@@ -472,6 +476,13 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         let resultado = match propia {
             Some(Seleccion::Bytes(datos)) => {
                 crate::handlers::escribir_seleccion(datos, mime_type, fd);
+                return;
+            }
+            // añadido en la 0.2.3 -- archivos copiados en el escritorio.
+            Some(Seleccion::PorTipo(tipos)) => {
+                if let Some((_, datos)) = tipos.iter().find(|(t, _)| *t == mime_type) {
+                    crate::handlers::escribir_seleccion(std::sync::Arc::new(datos.clone()), mime_type, fd);
+                }
                 return;
             }
             // Que pida la suya propia no debería pasar: el gestor no reenvía

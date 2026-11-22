@@ -84,4 +84,53 @@ fn main() {
         std::thread::sleep(Duration::from_millis(400));
         guardar(&mut shell, nombre);
     }
+    // añadido en la 0.2.2 -- «@» lista a quién hablar; «bril» abre la barra y ← → la mueven.
+    for (nombre, consulta, flechas) in [
+        ("12-arroba", "@", 0),
+        ("13-arroba-zen", "@zen", 0),
+        ("14-brillo-barra", "bril", 0),
+        ("15-brillo-pendiente", "bril", -4),
+    ] {
+        shell.abrir(Emergente::buscador_en((1440.0, 900.0), Vec::new()));
+        for c in consulta.chars() {
+            shell.emergente_tecla(TeclaPulsada::Caracter(c));
+        }
+        for _ in 0..-flechas {
+            shell.emergente_tecla(TeclaPulsada::Izquierda);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        guardar(&mut shell, nombre);
+        std::thread::sleep(Duration::from_millis(400));
+        guardar(&mut shell, nombre);
+    }
+    // Intro sobre una barra movida: sello, y a los 1,2 s se cierra solo.
+    shell.abrir(Emergente::buscador_en((1440.0, 900.0), Vec::new()));
+    for c in "bril".chars() {
+        shell.emergente_tecla(TeclaPulsada::Caracter(c));
+    }
+    shell.emergente_tecla(TeclaPulsada::Izquierda);
+    let (_, accion) = shell.emergente_tecla(TeclaPulsada::Intro);
+    println!("intro: {accion:?}, abierto: {}", shell.hay_emergente());
+    std::thread::sleep(Duration::from_millis(120));
+    guardar(&mut shell, "16-confirmando");
+    std::thread::sleep(Duration::from_millis(1200));
+    shell.ajustar_emergente();
+    println!("tras 1,3 s abierto: {}", shell.hay_emergente());
+    // añadido en la 0.2.2 -- ámbitos: la sugerencia, la píldora de Zenith y la de Archivos.
+    for (nombre, consulta) in [
+        ("9-sugerencia", "busca el hig"),
+        ("10-zenith", "@zenith busca un archivo de BookOS-HIG"),
+        ("11-archivos", "archivos hig"),
+    ] {
+        shell.abrir(Emergente::buscador_en((1440.0, 900.0), Vec::new()));
+        for c in consulta.chars() {
+            shell.emergente_tecla(TeclaPulsada::Caracter(c));
+        }
+        // Los archivos llegan de un hilo y se recogen al pintar: un pintado
+        // para recogerlos y otro cuando la tarjeta ha terminado de crecer.
+        for _ in 0..6 {
+            std::thread::sleep(Duration::from_millis(400));
+            guardar(&mut shell, nombre);
+        }
+    }
 }

@@ -155,7 +155,7 @@ impl Proyeccion {
                     Space::new().height(18),
                     text("Conecta otra pantalla para elegir cómo usarla.")
                         .size(tema::T_CUERPO)
-                        .color(tema::TEXTO2)
+                        .color(tema::texto2())
                 ]
                 .align_x(Horizontal::Center),
             )
@@ -175,7 +175,7 @@ impl Proyeccion {
                         text(modo.simbolo()).size(43).color(if activa {
                             tema::acento()
                         } else {
-                            tema::TEXTO2
+                            tema::texto2()
                         }),
                         Space::new().height(10),
                         text(modo.nombre())

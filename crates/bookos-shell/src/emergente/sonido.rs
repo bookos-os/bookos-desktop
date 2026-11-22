@@ -480,7 +480,7 @@ impl Sonido {
                 .font(control::peso(Weight::Medium))
                 .color(tema::texto()),
             Space::new().width(Length::Fill),
-            container(text(canal.etiqueta()).size(12.0).color(tema::TEXTO2))
+            container(text(canal.etiqueta()).size(12.0).color(tema::texto2()))
                 .width(Length::Fixed(VALOR + 40.0))
                 .align_right(Length::Fixed(VALOR + 40.0)),
         ]
@@ -525,7 +525,7 @@ impl Sonido {
                 grueso,
                 f32::from(canal.nivel) / 100.0,
                 if canal.silenciado {
-                    tema::TEXTO2
+                    tema::texto2()
                 } else {
                     tema::acento()
                 },
@@ -555,7 +555,7 @@ impl Sonido {
             let mensaje = bookos_system::unavailable("audio")
                 .map(|_| "Servicio de audio no disponible")
                 .unwrap_or("Esperando dispositivo de audio…");
-            container(text(mensaje).size(12.0).color(tema::TEXTO2))
+            container(text(mensaje).size(12.0).color(tema::texto2()))
                 .height(Length::Fixed(FILA_BARRA))
                 .center_y(Length::Fixed(FILA_BARRA))
                 .into()

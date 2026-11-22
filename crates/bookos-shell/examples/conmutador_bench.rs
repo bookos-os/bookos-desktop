@@ -10,6 +10,7 @@ fn main() {
         (0..n)
             .map(|i| Entrada {
                 nombre: format!("Ventana {i}"),
+                app: String::new(),
                 icono: None,
             })
             .collect()

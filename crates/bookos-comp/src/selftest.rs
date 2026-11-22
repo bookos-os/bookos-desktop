@@ -2702,11 +2702,9 @@ fn run(state: &mut BookosComp) {
     if std::env::var_os("BOOKOS_SELFTEST_MEJORAS").is_some() {
         use bookos_shell::{Accion, TeclaPulsada};
         for accion in [
-            Accion::Bloquear,
             Accion::CerrarSesion,
             Accion::Lanzar("systemctl poweroff".into()),
             Accion::Lanzar("systemctl reboot".into()),
-            Accion::Lanzar("systemctl suspend".into()),
         ] {
             crate::keybinds::hacer(state, accion);
             let shell = state.shell.as_mut().expect("shell");

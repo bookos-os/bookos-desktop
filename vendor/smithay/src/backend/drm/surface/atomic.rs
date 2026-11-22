@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 #[cfg(debug_assertions)]
 use std::fmt;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsFd, AsRawFd};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex, RwLock,
@@ -161,6 +161,33 @@ impl State {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DrmColorLut {
+    red: u16,
+    green: u16,
+    blue: u16,
+    reserved: u16,
+}
+
+#[derive(Debug)]
+struct GammaBlob {
+    fd: Arc<DrmDeviceInternal>,
+    id: u64,
+}
+
+impl Drop for GammaBlob {
+    fn drop(&mut self) {
+        let _ = self.fd.destroy_property_blob(self.id);
+    }
+}
+
+#[derive(Debug, Default)]
+struct GammaState {
+    pending: Option<GammaBlob>,
+    current: Option<GammaBlob>,
+}
+
 #[derive(Debug)]
 pub struct AtomicDrmSurface {
     pub(in crate::backend::drm) fd: Arc<DrmDeviceInternal>,
@@ -171,6 +198,8 @@ pub struct AtomicDrmSurface {
     prop_mapping: Arc<RwLock<PropMapping>>,
     state: RwLock<State>,
     pending: RwLock<State>,
+    gamma_lut_size: usize,
+    gamma: Mutex<GammaState>,
     pub(super) span: tracing::Span,
 }
 
@@ -208,6 +237,31 @@ impl AtomicDrmSurface {
             connectors: connectors.iter().copied().collect(),
         };
 
+        let gamma_lut_size = {
+            let mapping = prop_mapping.read().unwrap();
+            let tiene_lut = mapping
+                .crtcs
+                .get(&crtc)
+                .is_some_and(|m| m.contains_key("GAMMA_LUT"));
+            let size_prop = mapping
+                .crtcs
+                .get(&crtc)
+                .and_then(|m| m.get("GAMMA_LUT_SIZE"))
+                .copied();
+            match (tiene_lut, size_prop, fd.get_properties(crtc)) {
+                (true, Some(prop), Ok(props)) => {
+                    let (ids, vals) = props.as_props_and_values();
+                    ids.iter()
+                        .zip(vals.iter())
+                        .find(|&(&id, _)| id == prop)
+                        .and_then(|(_, &val)| usize::try_from(val).ok())
+                        .filter(|&n| (2..=16384).contains(&n))
+                        .unwrap_or(0)
+                }
+                _ => 0,
+            }
+        };
+
         drop(_guard);
         let surface = AtomicDrmSurface {
             fd,
@@ -218,10 +272,100 @@ impl AtomicDrmSurface {
             prop_mapping,
             state: RwLock::new(state),
             pending: RwLock::new(pending),
+            gamma_lut_size,
+            gamma: Mutex::new(GammaState::default()),
             span,
         };
 
         Ok(surface)
+    }
+
+    /// Prepares an atomic `GAMMA_LUT` blob with per-channel linear scaling.
+    ///
+    /// Returns `Ok(false)` when the CRTC does not advertise atomic `GAMMA_LUT`
+    /// support so the caller can fall back cleanly.
+    pub fn set_gamma_lut(&self, multipliers: [f32; 3]) -> Result<bool, Error> {
+        let n = self.gamma_lut_size;
+        if n == 0 {
+            return Ok(false);
+        }
+        let ultimo = (n - 1).max(1) as f32;
+        let canal = |i: usize, m: f32| -> u16 {
+            ((i as f32 / ultimo) * m * 65535.0)
+                .round()
+                .clamp(0.0, 65535.0) as u16
+        };
+        let [mr, mg, mb] = multipliers;
+        let mut luts: Vec<DrmColorLut> = (0..n)
+            .map(|i| DrmColorLut {
+                red: canal(i, mr),
+                green: canal(i, mg),
+                blue: canal(i, mb),
+                reserved: 0,
+            })
+            .collect();
+        let data = unsafe {
+            std::slice::from_raw_parts_mut(
+                luts.as_mut_ptr() as *mut u8,
+                std::mem::size_of::<DrmColorLut>() * luts.len(),
+            )
+        };
+        let blob = drm_ffi::mode::create_property_blob(self.fd.device_fd().as_fd(), data).map_err(|source| {
+            Error::Access(AccessError {
+                errmsg: "Failed to create Property Blob for GAMMA_LUT",
+                dev: self.fd.dev_path(),
+                source,
+            })
+        })?;
+        let mut gamma = self.gamma.lock().unwrap();
+        gamma.pending = Some(GammaBlob {
+            fd: self.fd.clone(),
+            id: blob.blob_id as u64,
+        });
+        Ok(true)
+    }
+
+    /// Returns whether a prepared `GAMMA_LUT` blob has not yet been committed.
+    pub fn gamma_pending(&self) -> bool {
+        self.gamma.lock().unwrap().pending.is_some()
+    }
+
+    /// Discards any prepared `GAMMA_LUT` blob that has not been committed yet.
+    pub fn clear_pending_gamma(&self) {
+        self.gamma.lock().unwrap().pending = None;
+    }
+
+    /// Commits a pending `GAMMA_LUT` change atomically without blocking.
+    pub fn commit_gamma(&self, event: bool) -> Result<bool, Error> {
+        if !self.active.load(Ordering::SeqCst) {
+            return Err(Error::DeviceInactive);
+        }
+        let prop_mapping = self.prop_mapping.read().unwrap();
+        let mut gamma = self.gamma.lock().unwrap();
+        let Some(blob_id) = gamma.pending.as_ref().map(|b| b.id) else {
+            return Ok(false);
+        };
+        let gamma_prop = prop_mapping.crtc_prop_handle(self.crtc, "GAMMA_LUT")?;
+        let mut req = AtomicModeReq::new();
+        req.add_property(self.crtc, gamma_prop, property::Value::Blob(blob_id));
+        self.fd
+            .atomic_commit(
+                if event {
+                    AtomicCommitFlags::PAGE_FLIP_EVENT | AtomicCommitFlags::NONBLOCK
+                } else {
+                    AtomicCommitFlags::NONBLOCK
+                },
+                req,
+            )
+            .map_err(|source| {
+                Error::Access(AccessError {
+                    errmsg: "Gamma commit failed",
+                    dev: self.fd.dev_path(),
+                    source,
+                })
+            })?;
+        gamma.current = gamma.pending.take();
+        Ok(true)
     }
 
     // we need a framebuffer to do test commits, which we use to verify our pending state.
@@ -779,8 +923,14 @@ impl AtomicDrmSurface {
 
         // test the new config and return the request if it would be accepted by the driver.
         let prop_mapping = self.prop_mapping.read().unwrap();
+        let mut gamma = self.gamma.lock().unwrap();
+        let gamma_val = gamma
+            .pending
+            .as_ref()
+            .or(gamma.current.as_ref())
+            .map(|b| property::Value::Blob(b.id));
         let req = {
-            let req = AtomicRequest::build_request(
+            let mut req = AtomicRequest::build_request(
                 &prop_mapping,
                 self.crtc,
                 Some(pending.blob),
@@ -789,6 +939,9 @@ impl AtomicDrmSurface {
                 removed,
                 &*planes,
             )?;
+            if let Some(blob) = gamma_val {
+                req.set_gamma_lut(self.crtc, blob)?;
+            }
 
             if let Err(err) = self.fd.atomic_commit(
                 AtomicCommitFlags::ALLOW_MODESET | AtomicCommitFlags::TEST_ONLY,
@@ -838,6 +991,9 @@ impl AtomicDrmSurface {
             });
 
         if result.is_ok() {
+            if gamma.pending.is_some() {
+                gamma.current = gamma.pending.take();
+            }
             *current = pending.clone();
             for plane in planes.iter() {
                 if plane.config.is_some() {
@@ -867,7 +1023,9 @@ impl AtomicDrmSurface {
 
         // page flips work just like commits with fewer parameters..
         let prop_mapping = self.prop_mapping.read().unwrap();
-        let req = AtomicRequest::build_request(
+        let mut gamma = self.gamma.lock().unwrap();
+        let gamma_val = gamma.pending.as_ref().map(|b| property::Value::Blob(b.id));
+        let mut req = AtomicRequest::build_request(
             &prop_mapping,
             self.crtc,
             None,
@@ -876,6 +1034,9 @@ impl AtomicDrmSurface {
             [],
             &*planes,
         )?;
+        if let Some(blob) = gamma_val {
+            req.set_gamma_lut(self.crtc, blob)?;
+        }
 
         // .. and without `AtomicCommitFlags::AllowModeset`.
         // If we would set anything here, that would require a modeset, this would fail,
@@ -900,6 +1061,9 @@ impl AtomicDrmSurface {
             });
 
         if res.is_ok() {
+            if gamma.pending.is_some() {
+                gamma.current = gamma.pending.take();
+            }
             for plane in planes.iter() {
                 if plane.config.is_some() {
                     used_planes.insert(plane.handle);
@@ -1192,6 +1356,13 @@ impl<'a> AtomicRequest<'a> {
         Ok(())
     }
 
+    fn set_gamma_lut(&mut self, crtc: crtc::Handle, blob: property::Value<'static>) -> Result<(), Error> {
+        self.mapping.crtc_prop_handle(crtc, "GAMMA_LUT")?;
+        let crtc_props = self.crtc_props.entry(crtc).or_default();
+        crtc_props.insert("GAMMA_LUT", blob);
+        Ok(())
+    }
+
     fn set_plane(&mut self, crtc: crtc::Handle, plane_state: &PlaneState<'a>) -> Result<(), Error> {
         let handle = plane_state.handle;
         let plane_props = self.plane_props.entry(handle).or_default();
@@ -1404,6 +1575,12 @@ impl<'a> AtomicRequest<'a> {
             self.request
                 .add_property(crtc, prop, property::Value::Boolean(false));
         }
+        Ok(())
+    }
+
+    fn set_gamma_lut(&mut self, crtc: crtc::Handle, blob: property::Value<'static>) -> Result<(), Error> {
+        let prop = self.mapping.crtc_prop_handle(crtc, "GAMMA_LUT")?;
+        self.request.add_property(crtc, prop, blob);
         Ok(())
     }
 

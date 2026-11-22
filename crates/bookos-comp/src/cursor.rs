@@ -69,6 +69,9 @@ smithay::render_elements! {
     MemoriaEscalada=RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>,
     /// Superficie viva ajustada al hueco de Meta+Tab.
     Miniatura=CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
+    /// La misma, recortada con esquinas redondeadas: las ventanas de la vista
+    /// de escritorios. Ver [`crate::esquinas`].
+    Redondeada=crate::esquinas::Redondeada,
     /// El fondo esmerilado que va detrás del panel y del dock. Solo existe
     /// para el renderer de GLES: desenfocar necesita copiar el framebuffer, y
     /// eso es GL crudo.
@@ -99,15 +102,12 @@ struct Imagen {
     /// Sale de [`a_logico`], que va por el nominal del fichero.
     logico: (i32, i32),
     /// Tamaño real de la imagen del fichero, en píxeles.
-    ///
-    /// Hace falta para decirle a `from_buffer` qué trozo del buffer hay que
-    /// pintar. Si no se le dice, **usa el tamaño lógico como recorte**: con un
-    /// fichero de 42×48 dibujado a 24×27 lógicos salían solo los 24×27 píxeles
-    /// de la esquina superior izquierda, estirados. En pantalla era media
-    /// flecha — el borde izquierdo y el filo de arriba, sin punta ni relleno.
     pixeles: (i32, i32),
+    /// Tamaño nominal declarado en el fichero XCursor, para escalar el hotspot
+    /// cuando se carga una variante de mayor resolución.
+    del_fichero: u32,
     /// Punto "activo" dentro de la imagen: la punta de la flecha, en píxeles
-    /// físicos, que es donde se resta.
+    /// del fichero.
     hotspot: (i32, i32),
 }
 
@@ -119,11 +119,9 @@ pub struct CursorTheme {
     objetivo: u32,
     /// Cursores ya buscados. `None` recuerda los que no están, para no volver a
     /// recorrer el disco en cada fotograma preguntando por el mismo que falta.
-    ///
-    /// `RefCell` porque esto es una caché y no un cambio de estado: el frame se
-    /// dibuja con `&self` desde la escena, y pedir `&mut` allí obligaría a sacar
-    /// el tema del compositor y volver a meterlo en cada fotograma.
     cache: RefCell<HashMap<String, Option<Rc<Imagen>>>>,
+    /// Caché a alta resolución para cuando el cursor se agranda al agitar.
+    cache_grande: RefCell<HashMap<String, Option<Rc<Imagen>>>>,
     /// La flecha dibujada a mano, por si el sistema no tiene tema ninguno.
     reserva: Rc<Imagen>,
 }
@@ -147,6 +145,7 @@ impl CursorTheme {
             nominal,
             objetivo,
             cache: RefCell::new(HashMap::new()),
+            cache_grande: RefCell::new(HashMap::new()),
             reserva: Rc::new(fallback_arrow(objetivo, nominal)),
         };
         // Se comprueba al arrancar y no en el primer frame: si el tema no está
@@ -182,7 +181,24 @@ impl CursorTheme {
     /// merece la flecha de reserva o no dibujar nada.
     // 0.1.0
     fn buscar(&self, nombre: &str) -> Option<Rc<Imagen>> {
-        if let Some(hallado) = self.cache.borrow().get(nombre) {
+        self.buscar_en(&self.cache, nombre, self.objetivo)
+    }
+
+    fn buscar_grande(&self, nombre: &str) -> Option<Rc<Imagen>> {
+        let objetivo_grande =
+            (self.objetivo as f64 * f64::from(AgitarCursor::ESCALA_GRANDE))
+                .round()
+                .max(1.0) as u32;
+        self.buscar_en(&self.cache_grande, nombre, objetivo_grande)
+    }
+
+    fn buscar_en(
+        &self,
+        cache: &RefCell<HashMap<String, Option<Rc<Imagen>>>>,
+        nombre: &str,
+        objetivo: u32,
+    ) -> Option<Rc<Imagen>> {
+        if let Some(hallado) = cache.borrow().get(nombre) {
             return hallado.clone();
         }
         // Primero el nombre tal cual, después su equivalente. El tema de BookOS
@@ -190,31 +206,40 @@ impl CursorTheme {
         // piden indistintamente esos o los de X11 (`xterm`, `hand2`,
         // `sb_v_double_arrow`), según de qué toolkit vengan.
         let imagen = std::iter::once(nombre)
-            .chain(equivalente(nombre))
-            .find_map(|n| cargar(&self.nombre, n, self.objetivo, self.nominal))
+            .chain(equivalentes(nombre).iter().copied())
+            .find_map(|n| cargar(&self.nombre, n, objetivo, self.nominal))
             .map(Rc::new);
         if imagen.is_none() {
             tracing::debug!(nombre, "cursor que el tema no tiene");
         }
-        self.cache
+        cache
             .borrow_mut()
             .insert(nombre.to_string(), imagen.clone());
         imagen
     }
 
-    // 0.1.0
-    pub fn element(
+    fn element_con_calidad(
         &self,
         renderer: &mut GlesRenderer,
         location: Point<f64, Physical>,
         nombre: &str,
+        scale: f64,
+        alta_resolucion: bool,
     ) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
-        let imagen = self.buscar(nombre).unwrap_or_else(|| self.reserva.clone());
-        // El hotspot se descuenta de la posición: la punta de la flecha tiene
-        // que caer donde está el puntero, no la esquina de la imagen.
+        let imagen = if alta_resolucion {
+            self.buscar_grande(nombre)
+                .or_else(|| (nombre != "default").then(|| self.buscar_grande("default")).flatten())
+        } else {
+            self.buscar(nombre)
+                .or_else(|| (nombre != "default").then(|| self.buscar("default")).flatten())
+        }
+        .unwrap_or_else(|| self.reserva.clone());
+        // El hotspot está en píxeles del fichero; al usar una variante de mayor
+        // resolución hay que llevarlo a píxeles físicos de pantalla.
+        let factor_hotspot = (self.nominal as f64 * scale) / imagen.del_fichero.max(1) as f64;
         let location = (
-            location.x - imagen.hotspot.0 as f64,
-            location.y - imagen.hotspot.1 as f64,
+            location.x - imagen.hotspot.0 as f64 * factor_hotspot,
+            location.y - imagen.hotspot.1 as f64 * factor_hotspot,
         );
         // El `src` es el buffer entero, en sus propios píxeles: el buffer se
         // creó con escala 1, así que ahí un "lógico" es un píxel del fichero.
@@ -259,11 +284,19 @@ pub fn info() -> anyhow::Result<()> {
         "move",
         "fleur",
         "ew-resize",
+        "e-resize",
+        "w-resize",
         "sb_h_double_arrow",
         "ns-resize",
+        "n-resize",
+        "s-resize",
         "sb_v_double_arrow",
         "nwse-resize",
+        "nw-resize",
+        "se-resize",
         "nesw-resize",
+        "ne-resize",
+        "sw-resize",
         "top_left_corner",
         "help",
         "not-allowed",
@@ -278,9 +311,11 @@ pub fn info() -> anyhow::Result<()> {
     ];
     let (mut hallados, mut faltan) = (0, Vec::new());
     for nombre in USADOS {
-        let directo = xcursor::CursorTheme::load(&tema).load_icon(nombre);
-        let por_alias = equivalente(nombre)
-            .and_then(|alias| xcursor::CursorTheme::load(&tema).load_icon(alias));
+        let cargado = xcursor::CursorTheme::load(&tema);
+        let directo = cargado.load_icon(nombre);
+        let por_alias = equivalentes(nombre)
+            .iter()
+            .find_map(|alias| cargado.load_icon(alias));
         match directo.or(por_alias) {
             Some(path) => {
                 hallados += 1;
@@ -299,45 +334,84 @@ pub fn info() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// El otro nombre con el que se conoce un cursor.
+/// Otros nombres con los que distintos temas (CSS, X11, Breeze/KDE) conocen un
+/// mismo cursor.
 ///
-/// La lista no es exhaustiva a propósito: cubre los que un escritorio usa de
-/// verdad. Lo que falte cae en el `Inherits` del tema o, en último caso, en la
-/// flecha — que es mejor que un cursor invisible.
+/// La lista cubre los que los clientes Wayland (`wp_cursor_shape_v1`) y X11
+/// piden de verdad, incluidos los ocho bordes/esquinas de redimensionado
+/// (`n-resize`, `s-resize`, `e-resize`, `w-resize`, `nw-resize`, `se-resize`,
+/// `ne-resize`, `sw-resize`).
 // 0.1.0
-fn equivalente(nombre: &str) -> Option<&'static str> {
-    Some(match nombre {
-        "default" | "arrow" => "left_ptr",
-        "left_ptr" => "default",
-        "text" | "ibeam" => "xterm",
-        "xterm" => "text",
-        "pointer" | "pointing_hand" => "hand2",
-        "hand1" | "hand2" => "pointer",
-        "wait" => "watch",
-        "watch" => "wait",
-        "progress" => "left_ptr_watch",
-        "left_ptr_watch" => "progress",
-        "move" | "all-scroll" => "fleur",
-        "fleur" | "size_all" => "move",
-        "ew-resize" | "col-resize" => "sb_h_double_arrow",
-        "sb_h_double_arrow" | "h_double_arrow" => "ew-resize",
-        "ns-resize" | "row-resize" => "sb_v_double_arrow",
-        "sb_v_double_arrow" | "v_double_arrow" => "ns-resize",
-        "nwse-resize" | "size_fdiag" => "bottom_right_corner",
-        "top_left_corner" | "bottom_right_corner" => "nwse-resize",
-        "nesw-resize" | "size_bdiag" => "bottom_left_corner",
-        "top_right_corner" | "bottom_left_corner" => "nesw-resize",
-        "help" | "whats_this" => "question_arrow",
-        "question_arrow" => "help",
-        "not-allowed" | "forbidden" => "crossed_circle",
-        "crossed_circle" | "no-drop" => "not-allowed",
-        "grabbing" | "closedhand" => "grab",
-        "grab" | "openhand" => "hand1",
-        "crosshair" => "cross",
-        "cross" => "crosshair",
-        "copy" => "dnd-copy",
-        _ => return None,
-    })
+// modified 0.2.4 -- devuelve múltiples alias (CSS, X11, Breeze) y cubre los 8 bordes de redimensionado
+fn equivalentes(nombre: &str) -> &'static [&'static str] {
+    match nombre {
+        "default" | "arrow" => &["left_ptr"],
+        "left_ptr" => &["default"],
+        "text" | "ibeam" => &["xterm"],
+        "xterm" => &["text"],
+        "pointer" | "pointing_hand" => &["hand2", "hand1"],
+        "hand1" | "hand2" => &["pointer"],
+        "wait" => &["watch"],
+        "watch" => &["wait"],
+        "progress" => &["left_ptr_watch"],
+        "left_ptr_watch" => &["progress"],
+        "move" | "all-scroll" => &["fleur", "size_all"],
+        "fleur" | "size_all" => &["move", "all-scroll"],
+        "ew-resize" | "col-resize" | "e-resize" | "w-resize" | "left_side" | "right_side"
+        | "sb_h_double_arrow" | "h_double_arrow" | "size_hor" => &[
+            "ew-resize",
+            "sb_h_double_arrow",
+            "size_hor",
+            "h_double_arrow",
+            "e-resize",
+            "w-resize",
+            "left_side",
+            "right_side",
+            "col-resize",
+        ],
+        "ns-resize" | "row-resize" | "n-resize" | "s-resize" | "top_side" | "bottom_side"
+        | "sb_v_double_arrow" | "v_double_arrow" | "size_ver" => &[
+            "ns-resize",
+            "sb_v_double_arrow",
+            "size_ver",
+            "v_double_arrow",
+            "n-resize",
+            "s-resize",
+            "top_side",
+            "bottom_side",
+            "row-resize",
+        ],
+        "nwse-resize" | "nw-resize" | "se-resize" | "size_fdiag" | "fd_double_arrow"
+        | "top_left_corner" | "bottom_right_corner" => &[
+            "nwse-resize",
+            "size_fdiag",
+            "fd_double_arrow",
+            "top_left_corner",
+            "bottom_right_corner",
+            "nw-resize",
+            "se-resize",
+        ],
+        "nesw-resize" | "ne-resize" | "sw-resize" | "size_bdiag" | "bd_double_arrow"
+        | "top_right_corner" | "bottom_left_corner" => &[
+            "nesw-resize",
+            "size_bdiag",
+            "bd_double_arrow",
+            "top_right_corner",
+            "bottom_left_corner",
+            "ne-resize",
+            "sw-resize",
+        ],
+        "help" | "whats_this" => &["question_arrow"],
+        "question_arrow" => &["help"],
+        "not-allowed" | "forbidden" => &["crossed_circle", "no-drop"],
+        "crossed_circle" | "no-drop" => &["not-allowed", "forbidden"],
+        "grabbing" | "closedhand" => &["grab", "dnd-move"],
+        "grab" | "openhand" => &["hand1", "pointer"],
+        "crosshair" => &["cross", "tcross"],
+        "cross" => &["crosshair"],
+        "copy" => &["dnd-copy", "plus"],
+        _ => &[],
+    }
 }
 
 /// Saca una imagen del tema del sistema, a la resolución más cercana a la que
@@ -373,6 +447,7 @@ fn cargar(tema: &str, nombre: &str, objetivo: u32, nominal: u32) -> Option<Image
         buffer,
         logico: a_logico((image.width, image.height), image.size, nominal),
         pixeles: (image.width as i32, image.height as i32),
+        del_fichero: image.size,
         hotspot: (image.xhot as i32, image.yhot as i32),
     })
 }
@@ -434,7 +509,155 @@ fn fallback_arrow(size: u32, nominal: u32) -> Imagen {
         // "nominal de fichero" es ese mismo tamaño.
         logico: a_logico((size, size), size, nominal),
         pixeles: (size as i32, size as i32),
+        del_fichero: size,
         hotspot: (0, 0),
+    }
+}
+
+/// Detector de «agitar el ratón para encontrar el cursor» (estilo macOS).
+///
+/// Cuenta inversiones rápidas y amplias de sentido en cada eje dentro de una
+/// ventana de 650 ms. Hace falta una sacudida sostenida (≥ 7 inversiones en el
+/// mismo eje y ≥ 850 px lógicos de recorrido) para agrandar el cursor hasta
+/// 2,5× y volver suavemente a 1,0× al parar.
+// añadido en la 0.2.4
+pub struct AgitarCursor {
+    pub habilitado: bool,
+    ultima_pos: Option<(f64, f64)>,
+    dir_x: i8,
+    dir_y: i8,
+    contra_x: f64,
+    contra_y: f64,
+    inversiones: Vec<(std::time::Instant, f64, bool, bool)>,
+    hasta: Option<std::time::Instant>,
+    escala: bookos_shell::tema::Muelle,
+}
+
+impl AgitarCursor {
+    pub(crate) const ESCALA_GRANDE: f32 = 2.5;
+    const VENTANA: std::time::Duration = std::time::Duration::from_millis(650);
+    const MANTENER: std::time::Duration = std::time::Duration::from_millis(400);
+    /// Distancia mínima en sentido opuesto (lógicos) para contar una inversión
+    /// real y evitar que movimientos cortos o micro-desvíos disparen el zoom.
+    const UMBRAL_GIRO: f64 = 45.0;
+    const MIN_INVERSIONES: usize = 7;
+    const RECORRIDO_MINIMO: f64 = 850.0;
+
+    // añadido en la 0.2.4
+    pub fn nuevo(habilitado: bool) -> Self {
+        Self {
+            habilitado,
+            ultima_pos: None,
+            dir_x: 0,
+            dir_y: 0,
+            contra_x: 0.0,
+            contra_y: 0.0,
+            inversiones: Vec::new(),
+            hasta: None,
+            escala: bookos_shell::tema::Muelle::nuevo(1.0, bookos_shell::tema::M_RAPIDO),
+        }
+    }
+
+    /// Registra un movimiento del puntero en coordenadas lógicas.
+    /// Devuelve `true` si arrancó o renovó el agrandamiento.
+    // añadido en la 0.2.4
+    pub fn mover(&mut self, x: f64, y: f64, ahora: std::time::Instant) -> bool {
+        if !self.habilitado {
+            return false;
+        }
+        let Some((px, py)) = self.ultima_pos.replace((x, y)) else {
+            return false;
+        };
+        let dx = x - px;
+        let dy = y - py;
+        let dist = dx.hypot(dy);
+        if dist < 1.0 {
+            return false;
+        }
+
+        let invirtio_x = actualizar_eje(dx, &mut self.dir_x, &mut self.contra_x, Self::UMBRAL_GIRO);
+        let invirtio_y = actualizar_eje(dy, &mut self.dir_y, &mut self.contra_y, Self::UMBRAL_GIRO);
+
+        self.inversiones
+            .retain(|(t, _, _, _)| ahora.duration_since(*t) <= Self::VENTANA);
+        if invirtio_x || invirtio_y {
+            self.inversiones
+                .push((ahora, dist, invirtio_x, invirtio_y));
+        } else if let Some(ultima) = self.inversiones.last_mut() {
+            ultima.1 += dist;
+        }
+
+        let mut inv_x = 0usize;
+        let mut inv_y = 0usize;
+        let mut recorrido = 0.0f64;
+        for &(_, d, ix, iy) in &self.inversiones {
+            recorrido += d;
+            if ix {
+                inv_x += 1;
+            }
+            if iy {
+                inv_y += 1;
+            }
+        }
+        if inv_x.max(inv_y) >= Self::MIN_INVERSIONES && recorrido >= Self::RECORRIDO_MINIMO {
+            let antes = self.hasta.is_some();
+            self.hasta = Some(ahora + Self::MANTENER);
+            self.escala.poner_parametros(bookos_shell::tema::M_RAPIDO);
+            self.escala.ir_a(Self::ESCALA_GRANDE);
+            return !antes;
+        }
+        false
+    }
+
+    // añadido en la 0.2.4
+    pub fn avanzar(&mut self, ahora: std::time::Instant) {
+        if let Some(hasta) = self.hasta
+            && ahora >= hasta
+        {
+            self.hasta = None;
+            // Vuelta suave y progresiva al tamaño normal.
+            self.escala.poner_parametros(bookos_shell::tema::M_SUAVE);
+            self.escala.ir_a(1.0);
+        }
+        self.escala.avanzar(ahora);
+    }
+
+    // añadido en la 0.2.4
+    pub fn escala(&self) -> f64 {
+        f64::from(self.escala.valor()).clamp(1.0, 3.0)
+    }
+
+    // añadido en la 0.2.4
+    pub fn animando(&self) -> bool {
+        self.hasta.is_some() || !self.escala.quieto() || self.escala.valor() > 1.002
+    }
+}
+
+fn actualizar_eje(delta: f64, dir: &mut i8, contra: &mut f64, umbral: f64) -> bool {
+    if delta.abs() < 0.5 {
+        return false;
+    }
+    let signo = if delta > 0.0 { 1 } else { -1 };
+    if *dir == 0 {
+        *contra += delta.abs();
+        if *contra >= 6.0 {
+            *dir = signo;
+            *contra = 0.0;
+        }
+        return false;
+    }
+    if signo == *dir {
+        *contra = 0.0;
+        false
+    } else {
+        *contra += delta.abs();
+        if *contra >= umbral {
+            *dir = signo;
+            *contra = 0.0;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -445,16 +668,21 @@ fn fallback_arrow(size: u32, nominal: u32) -> Imagen {
 /// respetarlo es parte de comportarse como un escritorio.
 // 0.1.0
 // modified 0.1.1 -- amplía el cursor de los programas X11 a la escala de XWayland
+// modified 0.2.4 -- aplica `escala_extra` cuando se agita el ratón para localizarlo
 pub fn elements(
     renderer: &mut GlesRenderer,
     status: &smithay::input::pointer::CursorImageStatus,
     theme: Option<&CursorTheme>,
     location: Point<f64, Physical>,
     scale: f64,
+    escala_extra: f64,
 ) -> Vec<OverlayElement> {
     use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
     use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
     use smithay::wayland::compositor::with_states;
+
+    let ampliar = escala_extra > 1.002;
+    let origen_escala = location.to_i32_round();
 
     match status {
         CursorImageStatus::Hidden => Vec::new(),
@@ -463,8 +691,20 @@ pub fn elements(
         // cambiaba a la doble flecha de redimensionar y no había forma de saber
         // que ahí se podía tirar.
         CursorImageStatus::Named(nombre) => theme
-            .and_then(|theme| theme.element(renderer, location, nombre.name()))
-            .map(OverlayElement::Memory)
+            .and_then(|theme| {
+                theme.element_con_calidad(renderer, location, nombre.name(), scale, ampliar)
+            })
+            .map(|el| {
+                if ampliar {
+                    OverlayElement::MemoriaEscalada(RescaleRenderElement::from_element(
+                        el,
+                        origen_escala,
+                        escala_extra,
+                    ))
+                } else {
+                    OverlayElement::Memory(el)
+                }
+            })
             .into_iter()
             .collect(),
         CursorImageStatus::Surface(surface) => {
@@ -505,10 +745,11 @@ pub fn elements(
                     1.0,
                     Kind::Cursor,
                 );
+            let factor = escala_x11 * if ampliar { escala_extra } else { 1.0 };
             elements
                 .into_iter()
                 .map(|elemento| {
-                    if escala_x11 == 1.0 {
+                    if factor <= 1.01 {
                         OverlayElement::Surface(elemento)
                     } else {
                         // La escala de `render_elements_from_surface_tree` solo
@@ -517,13 +758,90 @@ pub fn elements(
                         // incluido el hotspot, alrededor del punto del ratón.
                         OverlayElement::Escalada(RescaleRenderElement::from_element(
                             elemento,
-                            location.to_i32_round(),
-                            escala_x11,
+                            origen_escala,
+                            factor,
                         ))
                     }
                 })
                 .collect()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests_agitar {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn agitar_agranda_y_vuelve_a_uno_al_parar() {
+        let mut ag = AgitarCursor::nuevo(true);
+        let t0 = Instant::now();
+        // Sacudida intensa: 9 puntos (8 tramos de ~130 px, 7 inversiones en X).
+        let puntos = [
+            (100.0, 100.0),
+            (230.0, 100.0),
+            (100.0, 100.0),
+            (230.0, 100.0),
+            (100.0, 100.0),
+            (230.0, 100.0),
+            (100.0, 100.0),
+            (230.0, 100.0),
+            (100.0, 100.0),
+        ];
+        for (i, (x, y)) in puntos.into_iter().enumerate() {
+            ag.mover(x, y, t0 + Duration::from_millis(i as u64 * 45));
+        }
+        assert!(ag.animando(), "agitar mucho debe disparar el agrandamiento");
+        ag.avanzar(t0 + Duration::from_millis(450));
+        assert!(ag.escala() > 1.5, "escala actual: {}", ag.escala());
+        // Pasado el tiempo de espera + asentamiento del muelle vuelve a 1.0.
+        ag.avanzar(t0 + Duration::from_secs(2));
+        ag.avanzar(t0 + Duration::from_secs(3));
+        assert!((ag.escala() - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn agitar_poco_o_mover_en_cruz_no_agranda() {
+        let mut ag = AgitarCursor::nuevo(true);
+        let t0 = Instant::now();
+        // Solo dos idas y vueltas moderadas: no debe disparar.
+        let puntos = [
+            (100.0, 100.0),
+            (180.0, 100.0),
+            (100.0, 100.0),
+            (180.0, 100.0),
+            (100.0, 100.0),
+        ];
+        for (i, (x, y)) in puntos.into_iter().enumerate() {
+            assert!(
+                !ag.mover(x, y, t0 + Duration::from_millis(i as u64 * 45)),
+                "agitar poco no debe disparar el agrandamiento"
+            );
+        }
+        assert!(!ag.animando());
+    }
+
+    #[test]
+    fn un_tiro_rapido_con_micro_desvio_no_agranda() {
+        let mut ag = AgitarCursor::nuevo(true);
+        let t0 = Instant::now();
+        // Un único deslizamiento rápido horizontal con leve temblor vertical (±6 px).
+        let puntos = [
+            (100.0, 200.0),
+            (180.0, 206.0),
+            (270.0, 200.0),
+            (360.0, 206.0),
+            (450.0, 200.0),
+            (540.0, 206.0),
+        ];
+        for (i, (x, y)) in puntos.into_iter().enumerate() {
+            assert!(
+                !ag.mover(x, y, t0 + Duration::from_millis(i as u64 * 16)),
+                "un tiro rápido no debe disparar el agrandamiento"
+            );
+        }
+        assert!(!ag.animando());
     }
 }
 
@@ -560,5 +878,33 @@ mod tests {
         // Redondear hacia abajo daría 0, y un elemento de tamaño cero no se
         // dibuja: cursor invisible.
         assert_eq!(a_logico((1, 1), 64, 8), (1, 1));
+    }
+
+    #[test]
+    fn los_ocho_bordes_de_redimensionado_tienen_alias_css_x11_y_breeze() {
+        for vertical in ["n-resize", "s-resize", "ns-resize"] {
+            let alias = equivalentes(vertical);
+            assert!(alias.contains(&"ns-resize"));
+            assert!(alias.contains(&"sb_v_double_arrow"));
+            assert!(alias.contains(&"size_ver"));
+        }
+        for horizontal in ["e-resize", "w-resize", "ew-resize"] {
+            let alias = equivalentes(horizontal);
+            assert!(alias.contains(&"ew-resize"));
+            assert!(alias.contains(&"sb_h_double_arrow"));
+            assert!(alias.contains(&"size_hor"));
+        }
+        for fdiag in ["nw-resize", "se-resize", "nwse-resize"] {
+            let alias = equivalentes(fdiag);
+            assert!(alias.contains(&"nwse-resize"));
+            assert!(alias.contains(&"size_fdiag"));
+            assert!(alias.contains(&"top_left_corner"));
+        }
+        for bdiag in ["ne-resize", "sw-resize", "nesw-resize"] {
+            let alias = equivalentes(bdiag);
+            assert!(alias.contains(&"nesw-resize"));
+            assert!(alias.contains(&"size_bdiag"));
+            assert!(alias.contains(&"top_right_corner"));
+        }
     }
 }

@@ -54,10 +54,6 @@ const RESTABLECER: f32 = 84.0;
 /// El botón de ajustes de la cabecera.
 pub(super) const AJUSTES: f32 = 32.0;
 
-/// Lo que tarda la barra en seguir un cambio que no hizo la mano. El
-/// automático sube en rampa, pero la tarjeta solo se entera de algunos pasos:
-/// sin esto la barra iría a saltos.
-const D_BARRA: std::time::Duration = std::time::Duration::from_millis(440);
 /// Desde cuánto ajuste a mano se enseña la marca del sensor. Una diferencia
 /// menor apenas la separa del final del relleno.
 const UMBRAL_AJUSTE: u8 = 4;
@@ -121,9 +117,8 @@ pub struct Brillo {
     automatico: BrilloAutomatico,
     /// El nivel que pide la luz sin el ajuste a mano, si el compositor lo sabe.
     objetivo: Option<u8>,
-    /// De qué nivel viene la barra y desde cuándo, cuando el cambio no lo hizo
-    /// la mano.
-    transicion: Option<(u8, std::time::Instant)>,
+    /// Relleno de pantalla suavizado por muelle para seguir sin saltos al sensor.
+    nivel_animado: tema::Transicion,
     icono_ajustes: Option<Icono>,
     icono_noche: Option<Icono>,
     /// El puntero encima de lo pulsable: 0 y 1 los «Auto», 2 los ajustes,
@@ -154,11 +149,12 @@ impl Brillo {
             .as_deref()
             .and_then(crate::state::backlight_max)
             .unwrap_or(0);
+        let nivel = crate::state::read_brightness().unwrap_or(0);
         let automatico = crate::retroiluminacion::automatico();
         let nocturna = crate::luz_nocturna_encendida();
         let interruptor = |v: bool| tema::Transicion::nueva(f32::from(u8::from(v)), tema::M_RAPIDO);
         Self {
-            nivel: crate::state::read_brightness().unwrap_or(0),
+            nivel,
             agarrada: Agarre::Nada,
             icono: crate::icono::propio("brillo"),
             dispositivo,
@@ -173,7 +169,7 @@ impl Brillo {
             ],
             automatico,
             objetivo: crate::retroiluminacion::objetivo_sensor(),
-            transicion: None,
+            nivel_animado: tema::Transicion::nueva(f32::from(nivel), tema::M_SUAVE),
             icono_ajustes: crate::icono::propio("preferencias"),
             icono_noche: crate::icono::propio("noche"),
             boton: tema::Realce::nuevo(),
@@ -196,8 +192,8 @@ impl Brillo {
         let automatico = crate::retroiluminacion::automatico();
         let objetivo = crate::retroiluminacion::objetivo_sensor();
         let nocturna = crate::luz_nocturna_encendida();
-        if nivel != self.nivel && !tema::efectos_reducidos() {
-            self.transicion = Some((self.nivel_visible(), std::time::Instant::now()));
+        if nivel != self.nivel {
+            self.nivel_animado.ir_a(f32::from(nivel));
         }
         let changed = self.objetivo != objetivo
             || self.dispositivo != dispositivo
@@ -232,17 +228,11 @@ impl Brillo {
         }
     }
 
-    /// El nivel que dibuja la barra: el real, o de camino hacia él.
+    /// El nivel que dibuja la barra: continuo desde el muelle para no dar saltos.
     // 0.1.0
-    fn nivel_visible(&self) -> u8 {
-        match self.transicion {
-            Some((desde, t)) if t.elapsed() < D_BARRA => {
-                let avance = tema::C_ENTRADA.eval(tema::fraccion(t.elapsed(), D_BARRA));
-                (f32::from(desde) + (f32::from(self.nivel) - f32::from(desde)) * avance).round()
-                    as u8
-            }
-            _ => self.nivel,
-        }
+    // modificado en la 0.2.3 -- transición continua en coma flotante
+    fn nivel_visible(&self) -> f32 {
+        self.nivel_animado.valor().clamp(0.0, 100.0)
     }
 
     // 0.1.0
@@ -396,7 +386,7 @@ impl Brillo {
         self.boton.animando()
             || self.grosor.animando()
             || self.interruptores.iter().any(|t| t.animando())
-            || self.transicion.is_some_and(|(_, t)| t.elapsed() < D_BARRA)
+            || self.nivel_animado.animando()
     }
 
     /// La fila de la luz nocturna: la tarjeta entera.
@@ -479,7 +469,7 @@ impl Brillo {
             return false;
         }
         // Lo mueve la mano: la barra va con el dedo, sin perseguirlo.
-        self.transicion = None;
+        self.nivel_animado.fijar(f32::from(nivel));
         self.nivel = nivel;
         let (Some(dispositivo), true) = (self.dispositivo.as_deref(), self.maximo > 0) else {
             return true;
@@ -666,7 +656,7 @@ impl Brillo {
         cabecera = cabecera
             .push(Space::new().width(Length::Fixed(ENTRE)))
             .push(
-                container(text(valor).size(12.0).color(tema::TEXTO2))
+                container(text(valor).size(12.0).color(tema::texto2()))
                     .width(Length::Fixed(VALOR))
                     .align_right(Length::Fixed(VALOR)),
             );
@@ -701,7 +691,7 @@ impl Brillo {
         let alto = Self::alto_tarjeta(ayuda.is_some());
         if let Some(ayuda) = ayuda {
             let mut linea = row![
-                text(ayuda).size(12.0).color(tema::TEXTO2),
+                text(ayuda).size(12.0).color(tema::texto2()),
                 Space::new().width(Length::Fill)
             ]
             .align_y(Vertical::Center);
@@ -757,9 +747,9 @@ impl Brillo {
         let barra_pantalla = control::barra(
             ANCHO_BARRA,
             grueso(Agarre::Pantalla),
-            f32::from(self.nivel_visible()) / 100.0,
+            self.nivel_visible() / 100.0,
             if self.dispositivo.is_none() {
-                tema::TEXTO2
+                tema::texto2()
             } else {
                 tema::acento()
             },
@@ -888,7 +878,7 @@ impl Brillo {
                         .size(14.0)
                         .font(control::peso(Weight::Medium))
                         .color(tema::texto()),
-                    text(self.estado_nocturna()).size(12.0).color(tema::TEXTO2),
+                    text(self.estado_nocturna()).size(12.0).color(tema::texto2()),
                 ],
                 Space::new().width(Length::Fill),
                 lista::interruptor(self.interruptores[2].valor()),
@@ -968,7 +958,7 @@ fn auto_interruptor<'a>(encendido: f32, realce: f32) -> PanelElement<'a> {
         ..Default::default()
     });
     let tinta = tema::mezclar(
-        tema::mezclar(tema::TEXTO2, tema::texto(), e),
+        tema::mezclar(tema::texto2(), tema::texto(), e),
         tema::texto(),
         realce * 0.5,
     );

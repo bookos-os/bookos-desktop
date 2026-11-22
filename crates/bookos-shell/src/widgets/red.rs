@@ -39,7 +39,7 @@ impl Red {
     fn color(&self) -> iced_core::Color {
         match self.dato {
             Some(red) if red.up => tema::acento(),
-            _ => tema::TEXTO2,
+            _ => tema::texto2(),
         }
     }
 }
@@ -74,6 +74,19 @@ impl Widget for Red {
     // 0.1.0
     fn nombre(&self) -> &'static str {
         "red"
+    }
+
+    fn accesible(&self) -> (&'static str, String) {
+        use crate::state::Link;
+        let valor = match self.dato {
+            Some(n) if n.up && n.kind == Link::Cable => crate::emergente::t("Cable conectado", "Wired, connected").to_string(),
+            Some(n) if n.up => match self.senal {
+                Some(s) => format!("{}, {s} %", crate::emergente::t("Conectado", "Connected")),
+                None => crate::emergente::t("Conectado", "Connected").into(),
+            },
+            _ => crate::emergente::t("Sin conexión", "Not connected").into(),
+        };
+        (crate::emergente::t("Red", "Network"), valor)
     }
 
     // 0.1.0

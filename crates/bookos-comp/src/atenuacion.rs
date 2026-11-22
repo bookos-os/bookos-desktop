@@ -56,6 +56,10 @@ pub struct Estado {
     atenuada: Option<Atenuada>,
     alarma: Option<RegistrationToken>,
     rampa: Option<RegistrationToken>,
+    /// Ya salió el aviso de batería baja de esta descarga. Se rearma con la
+    /// misma histéresis que la atenuación: al enchufar o al pasar del 15 %.
+    // añadido en la 0.2.2
+    bateria_avisada: bool,
 }
 
 impl Estado {
@@ -66,6 +70,7 @@ impl Estado {
             atenuada: None,
             alarma: None,
             rampa: None,
+            bateria_avisada: false,
         }
     }
 
@@ -210,6 +215,12 @@ pub fn actividad(state: &mut BookosComp) {
     }
 }
 
+/// Restaura la pantalla si estaba atenuada por inactividad (p. ej. al abrir o
+/// activar un vídeo en pantalla completa que inhibe el reposo).
+pub fn despertar(state: &mut BookosComp) {
+    actividad(state);
+}
+
 /// El usuario ha elegido un brillo con la tecla: lo atenuado ya no es lo que
 /// había que devolver.
 // 0.1.0
@@ -229,6 +240,13 @@ pub fn bateria(state: &mut BookosComp) {
     let Some((enchufado, porciento)) = bookos_shell::cargador() else {
         return;
     };
+    // añadido en la 0.2.2 -- el aviso de batería baja, con su pila y su barra
+    if enchufado || porciento > UMBRAL_BATERIA + HISTERESIS_BATERIA {
+        state.atenuacion.bateria_avisada = false;
+    } else if porciento <= UMBRAL_BATERIA && !state.atenuacion.bateria_avisada {
+        state.atenuacion.bateria_avisada = true;
+        avisar_bateria(state, porciento);
+    }
     let por_bateria = matches!(&state.atenuacion.atenuada, Some(a) if a.motivo == Motivo::Bateria);
     if por_bateria {
         if enchufado || porciento > UMBRAL_BATERIA + HISTERESIS_BATERIA {
@@ -237,4 +255,25 @@ pub fn bateria(state: &mut BookosComp) {
     } else if !enchufado && porciento <= UMBRAL_BATERIA {
         atenuar(state, Motivo::Bateria);
     }
+}
+
+/// Un identificador fuera del rango de las apps (que empiezan en 1 y suben):
+/// así un segundo aviso de batería sustituye al primero en vez de apilarse.
+// añadido en la 0.2.2
+const ID_AVISO_BATERIA: u32 = u32::MAX - 1;
+
+/// Crítico, para que salga también con «No molestar» y a pantalla completa:
+/// es el aviso que no conviene perderse.
+// añadido en la 0.2.2
+fn avisar_bateria(state: &mut BookosComp, porciento: u8) {
+    let mut aviso = bookos_shell::notificaciones::Notificacion::nueva(
+        ID_AVISO_BATERIA,
+        "Sistema".into(),
+        "Batería baja".into(),
+        "Conecta el cargador para seguir trabajando.".into(),
+        "",
+        true,
+    );
+    aviso.forma = bookos_shell::notificaciones::Forma::Bateria(porciento);
+    crate::notificaciones::recibir(state, crate::notificaciones::Aviso::Nueva(aviso, 10_000));
 }

@@ -205,7 +205,8 @@ impl Osd {
         if t >= ENTRADA {
             return 1.0;
         }
-        0.92 + 0.08 * tema::C_MUELLE_POPOVER.eval(tema::fraccion(t, ENTRADA))
+        // Sin movimiento con efectos reducidos: aparece ya a tamaño completo.
+        0.92 + 0.08 * tema::C_MUELLE_POPOVER.eval(tema::avance(t, ENTRADA))
     }
 
     /// ¿Hay que repintar o recomponer? Solo mientras entra y mientras la barra

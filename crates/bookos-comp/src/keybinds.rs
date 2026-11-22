@@ -51,6 +51,12 @@ pub enum Accion {
     /// Meta+Alt+B y Meta+Alt+D — alternar si la barra se aparta de las ventanas
     /// o está siempre a la vista.
     AlternarBarra(crate::shell::Barra),
+    /// El foco de teclado al panel (y de ahí, con Tab, al dock).
+    // añadido en la 0.2.2
+    EnfocarPanel,
+    /// Meta+Alt+L — encender o apagar el lector de pantalla (Orca).
+    // añadido en la 0.2.2
+    LectorPantalla,
     /// Impr, o Meta+Mayús+S — abrir la capa de captura de pantalla.
     Captura,
     /// Meta+L — echar la pantalla de bloqueo.
@@ -176,13 +182,13 @@ fn es_tecla_de_pantalla(sym: u32, codigo_xkb: u32) -> bool {
 // 0.1.0
 // modified 0.1.1 -- una celda por grupo, sin menús X11 ni ventanas minimizándose
 fn conmutar(state: &mut BookosComp, modo: bookos_shell::conmutador::Modo, sentido: i32) {
-    // La vista de escritorios ya es un selector de ventanas, y modal: abrir
-    // otro encima dejaba dos a la vez, cada uno con su idea de cuál es la
-    // ventana elegida.
+    // La vista de escritorios y el launchpad son modales a pantalla completa:
+    // abrir el conmutador encima dejaba dos selectores a la vez o cambiaba de
+    // ventana detrás del launchpad.
     if state
         .shell
         .as_ref()
-        .is_some_and(|s| s.vista_escritorios_abierta())
+        .is_some_and(|s| s.vista_escritorios_abierta() || s.emergente_tapa_la_pantalla())
     {
         return;
     }
@@ -222,6 +228,7 @@ fn conmutar(state: &mut BookosComp, modo: bookos_shell::conmutador::Modo, sentid
         .elements()
         .filter(|w| w.alive() && !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
         .filter(|w| !state.minimizando.iter().any(|(m, _)| m == *w))
+        .filter(|w| !crate::escritorios::saliendo(state, w))
         .cloned()
         .collect();
     let sellos: Vec<_> = ventanas.iter().map(crate::ventanas::enfocada_en).collect();
@@ -546,6 +553,12 @@ pub fn resolver(
             keysyms::KEY_d | keysyms::KEY_D => {
                 return Some(Accion::AlternarBarra(crate::shell::Barra::Dock));
             }
+            // P de panel, como en Plasma. Sin esto el panel y el dock solo se
+            // usaban con el puntero (HIG §11, teclado).
+            keysyms::KEY_p | keysyms::KEY_P => return Some(Accion::EnfocarPanel),
+            // L de lector. Tiene que estar aquí: si no, Meta+Alt+L cae al
+            // brazo de Meta a secas y es Meta+L, que bloquea la pantalla.
+            keysyms::KEY_l | keysyms::KEY_L => return Some(Accion::LectorPantalla),
             // F de fotogramas. Va en el brazo de Meta+Alt, así que no le quita
             // nada a Meta+F, que sigue maximizando.
             keysyms::KEY_f | keysyms::KEY_F => return Some(Accion::Diagnostico),
@@ -769,6 +782,12 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
         Accion::Emojis => crate::emojis::alternar(state),
         Accion::Cuentagotas => crate::cuentagotas::alternar(state),
         Accion::VistaEscritorios => alternar_vista_escritorios(state),
+        Accion::EnfocarPanel => {
+            if state.shell.as_mut().is_some_and(|s| s.enfocar_panel()) {
+                state.needs_redraw = true;
+            }
+        }
+        Accion::LectorPantalla => alternar_lector(state),
         Accion::AlternarBarra(cual) => {
             let modo = state.shell.as_mut().map(|s| s.alternar_visibilidad(cual));
             if let Some(modo) = modo {
@@ -991,11 +1010,14 @@ pub(crate) fn liberar_puntero_para_capa(state: &mut BookosComp) {
 // modified 0.1.1 -- suspender sin sonido doble, emojis, iconos y color del escritorio, grupos, orden del dock y cerrar también minimizadas
 pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
     if let Some(energia) = bookos_shell::confirmacion::Energia::de_accion(&accion) {
-        if let Some(shell) = state.shell.as_mut() {
-            shell.confirmar_energia(energia);
+        if energia.pide_confirmacion() {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.confirmar_energia(energia);
+            }
+            state.needs_redraw = true;
+            return;
         }
-        state.needs_redraw = true;
-        return;
+        return hacer(state, bookos_shell::Accion::EnergiaConfirmada(energia));
     }
     match accion {
         bookos_shell::Accion::CerrarEmergente => {
@@ -1140,7 +1162,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             crate::apariencia::programar_cambio(state);
             // Y las aplicaciones de fuera se enteran por el portal: sin esto,
             // una ventana GTK ya abierta se queda con el tema de antes.
-            crate::portal::apariencia_cambiada(state.bus_portal.as_ref());
+            crate::portal::apariencia_cambiada(state);
             state.needs_redraw = true;
         }
         bookos_shell::Accion::Capturar {
@@ -1221,13 +1243,19 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
             state.needs_redraw = true;
         }
-        bookos_shell::Accion::PerfilEnergia(perfil) => lanzar(
-            state,
-            &format!(
-                "busctl --system set-property net.hadess.PowerProfiles \
-                 /net/hadess/PowerProfiles net.hadess.PowerProfiles ActiveProfile s {perfil}",
-            ),
-        ),
+        bookos_shell::Accion::PerfilEnergia(perfil) => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.poner_perfil_ahorro(perfil == "power-saver");
+            }
+            lanzar(
+                state,
+                &format!(
+                    "busctl --system set-property net.hadess.PowerProfiles \
+                     /net/hadess/PowerProfiles net.hadess.PowerProfiles ActiveProfile s {perfil}",
+                ),
+            );
+            state.needs_redraw = true;
+        }
         bookos_shell::Accion::MantenerDespierto => {
             state.idle_notifier_state.set_is_inhibited(
                 state.idle_inhibido() || bookos_shell::mantener_despierto(),
@@ -1281,6 +1309,85 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
             state.needs_redraw = true;
         }
+        // añadido en la 0.2.3 -- el menú contextual nuevo del escritorio.
+        bookos_shell::Accion::EscritorioCopiar => crate::archivos::copiar(state),
+        bookos_shell::Accion::EscritorioCopiarRuta => crate::archivos::copiar_ruta(state),
+        bookos_shell::Accion::EscritorioPegar => crate::archivos::pegar(state),
+        bookos_shell::Accion::EscritorioPegarComo(acceso) => {
+            crate::archivos::pegar_como(state, acceso);
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioComprimir => crate::archivos::comprimir(state),
+        bookos_shell::Accion::EscritorioTerminal => crate::archivos::terminal(state),
+        bookos_shell::Accion::EscritorioAgrupar => {
+            crate::archivos::agrupar(state);
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioRenombrar => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.abrir_renombrar();
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioRenombrarA(nombre) => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.renombrar_a(&nombre);
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioInformacion => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.abrir_dialogo_escritorio(|s| s.abrir_informacion());
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioVistaRapida => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.abrir_dialogo_escritorio(|s| s.abrir_vista_rapida());
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioEjecutable(si) => crate::archivos::ejecutable(state, si),
+        bookos_shell::Accion::EscritorioAbrirCon(exec) => crate::archivos::abrir_con(state, &exec),
+        bookos_shell::Accion::EscritorioMostrarOriginal => crate::archivos::mostrar_original(state),
+        bookos_shell::Accion::EscritorioOrdenar(orden) => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.escritorio_reordenar(|e, _, _| {
+                    e.ordenar(orden);
+                    true
+                });
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioAlinear => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.escritorio_reordenar(|e, _, _| {
+                    e.juntar();
+                    true
+                });
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::EscritorioTamano(tamano) => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.escritorio_reordenar(|e, alto, pantalla| e.cambiar_tamano(tamano, alto, pantalla));
+            }
+            if let Err(err) = bookos_shell::guardar_tamano_iconos(tamano) {
+                tracing::warn!("no se pudo guardar el tamaño de los iconos: {err}");
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::VentanaDeApp { app_id, n } => {
+            if let Some(ventana) = state.ventanas_de_app(&app_id).get(n).cloned() {
+                state.enfocar(&ventana);
+            }
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::AbrirAlIniciar { app_id, abrir } => {
+            if let Err(err) = bookos_shell::poner_al_iniciar(&app_id, abrir) {
+                tracing::warn!(app_id, abrir, "no se pudo cambiar el inicio de sesión: {err}");
+            }
+        }
         bookos_shell::Accion::AlternarEfectos => {
             let Some(shell) = state.shell.as_mut() else {
                 return;
@@ -1297,7 +1404,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             );
             // Las aplicaciones de fuera lo leen como `reduced-motion`, así que
             // calmar el escritorio también calma sus animaciones.
-            crate::portal::apariencia_cambiada(state.bus_portal.as_ref());
+            crate::portal::apariencia_cambiada(state);
             crate::backend::programar_fondo_animado(state);
             // No hace falta repintar el panel ni el dock: su buffer lleva su
             // color y el cristal es un elemento aparte de la escena. Basta con
@@ -1336,6 +1443,23 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
             state.needs_redraw = true;
         }
+        bookos_shell::Accion::SilenciarAppNotificaciones { app, silenciar } => {
+            let mut lista = bookos_shell::Config::cargar().notificaciones_silenciadas;
+            lista.retain(|s| !s.eq_ignore_ascii_case(&app));
+            if silenciar {
+                lista.push(app.clone());
+            }
+            if let Err(err) = bookos_shell::guardar_notificaciones_silenciadas(&lista) {
+                tracing::warn!(%app, "no se pudo guardar el silencio de notificaciones: {err}");
+            }
+            if let Some(config) = state.config.as_mut() {
+                config.notificaciones_silenciadas = lista.clone();
+            }
+            if let Some(shell) = state.shell.as_mut() {
+                shell.poner_apps_silenciadas(lista);
+            }
+            state.needs_redraw = true;
+        }
         // «Responder» no es una acción que la app atienda al pulsarla: pide
         // texto primero. La notificación se queda hasta que se envíe.
         bookos_shell::Accion::NotificacionAccion { id, clave } if clave == "inline-reply" => {
@@ -1346,6 +1470,9 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
         }
         bookos_shell::Accion::NotificacionRespuesta { id, texto } => {
             crate::notificaciones::respondida(state.bus_notificaciones.as_ref(), id, &texto);
+            if let Some(shell) = state.shell.as_mut() {
+                shell.confirmar_respuesta(id, &texto);
+            }
             if state
                 .shell
                 .as_mut()
@@ -1358,6 +1485,8 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                 );
             }
             state.needs_redraw = true;
+            // La confirmación cambia cuándo caduca el aviso.
+            crate::notificaciones::despertar_para_la_salida(state);
         }
         bookos_shell::Accion::NotificacionAccion { id, clave } => {
             crate::notificaciones::accion_invocada(state.bus_notificaciones.as_ref(), id, &clave);
@@ -1376,6 +1505,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                 );
             }
             state.needs_redraw = true;
+            crate::notificaciones::despertar_para_la_salida(state);
         }
         bookos_shell::Accion::BorrarNotificaciones => {
             let ids = state
@@ -1953,6 +2083,60 @@ pub(crate) fn cerrar(window: &smithay::desktop::Window) {
 /// Treinta segundos es lo que tarda en arrancar la peor de esta máquina.
 pub const VALE_VALIDO: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Enciende Orca si no corre y lo apaga si corre. Se mira el proceso y no
+/// una bandera propia: Orca se puede arrancar o cerrar desde fuera (su
+/// propio atajo, la terminal) y una bandera se desfasaría. También se guarda
+/// en `screen-reader-enabled`, que es lo que lee el arranque de la sesión
+/// para encenderlo solo la próxima vez.
+// añadido en la 0.2.2
+fn proceso_activo(nombre_objetivo: &str) -> bool {
+    let Ok(proc_dir) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in proc_dir.flatten() {
+        let nombre = entry.file_name();
+        if !nombre
+            .to_str()
+            .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
+        {
+            continue;
+        }
+        if let Ok(comm) = std::fs::read_to_string(entry.path().join("comm"))
+            && comm.trim() == nombre_objetivo
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn alternar_lector(state: &mut BookosComp) {
+    let corriendo = proceso_activo("orca");
+    let encender = !corriendo;
+    // Sin `lanzar`: apuntaría `pkill` y `gsettings` como usos del launchpad.
+    // Se recogen con los demás hijos para que no queden zombis.
+    let ordenes = [
+        if corriendo { "pkill -x orca" } else { "orca --replace" }.to_string(),
+        format!("gsettings set org.gnome.desktop.a11y.applications screen-reader-enabled {encender}"),
+    ];
+    for cmd in ordenes {
+        match orden(state, &cmd).spawn() {
+            Ok(hijo) => state.hijos.push(hijo),
+            Err(err) => tracing::error!(cmd, "no se pudo lanzar: {err}"),
+        }
+    }
+    tracing::info!(encender, "lector de pantalla");
+    if let Some(shell) = state.shell.as_mut() {
+        let texto = if encender {
+            "Lector de pantalla activado"
+        } else {
+            "Lector de pantalla desactivado"
+        };
+        shell.mostrar_osd("ojo", None, Some(texto.into()));
+    }
+    state.needs_redraw = true;
+}
+
 // 0.1.0
 // modified 0.1.1 -- el entorno del hijo sale de orden(); avisa al dock y apunta el uso para el launchpad
 pub fn lanzar(state: &mut BookosComp, cmd: &str) {
@@ -2084,6 +2268,12 @@ pub fn orden(state: &mut BookosComp, cmd: &str) -> std::process::Command {
         // La de X11, que es la misma idea con otro nombre. XWayland la traduce,
         // así que una aplicación X11 lanzada del dock también llega enfocada.
         .env("DESKTOP_STARTUP_ID", &vale);
+    // Qt 6 saca el tamaño de las fuentes de aquí. Al 100 % no se pone: así las
+    // aplicaciones Qt siguen con el DPI de la pantalla, como hasta ahora.
+    // añadido en la 0.2.3
+    if state.texto_tamano != 100 {
+        orden.env("QT_FONT_DPI", (96 * state.texto_tamano / 100).to_string());
+    }
     // DISPLAY solo si XWayland ya contestó. Ponerlo antes es peor que no
     // ponerlo: una aplicación que sabe hablar los dos protocolos prefiere X11
     // en cuanto ve un DISPLAY, y acabaría yendo por el camino largo hacia un
@@ -2259,24 +2449,70 @@ fn echar_bloqueo(state: &mut BookosComp) -> bool {
     // lento nunca puede retrasar la barrera de seguridad ni el primer frame.
     state.bloqueo_generacion = state.bloqueo_generacion.wrapping_add(1);
     comprobar_huella(state);
+    leer_medios_bloqueo(state);
+    // modificado en la 0.2.3 -- se relee cada segundo: la barra y los tiempos
+    // se quedaban en lo que sonaba al bloquear.
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    const CADA_MEDIOS: std::time::Duration = std::time::Duration::from_secs(1);
+    let generacion = state.bloqueo_generacion;
+    let _ = state
+        .loop_handle
+        .insert_source(
+            Timer::from_duration(CADA_MEDIOS),
+            move |_, _, state: &mut BookosComp| {
+                if state.bloqueo_generacion != generacion
+                    || !state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
+                {
+                    return TimeoutAction::Drop;
+                }
+                // Con el panel apagado nadie la ve: sin esto serían varios
+                // `busctl` por segundo toda la noche.
+                if state.dpms_encendido {
+                    leer_medios_bloqueo(state);
+                }
+                TimeoutAction::ToDuration(CADA_MEDIOS)
+            },
+        )
+        .inspect_err(|err| tracing::warn!("sin relectura de la música del bloqueo: {err}"));
+    tracing::info!("bloqueo echado");
+    crate::backend::programar_dpms_bloqueo(state);
+    crate::backend::programar_suspension_inactividad(state);
+    state.needs_redraw = true;
+    true
+}
+
+/// Lee MPRIS en un hilo y entrega el resultado al bloqueo por el canal. Una
+/// lectura son varios `busctl`; si la anterior aún no ha vuelto (un
+/// reproductor que tarda en contestar) no se lanza otra encima.
+// añadido en la 0.2.3
+fn leer_medios_bloqueo(state: &BookosComp) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static LEYENDO: AtomicBool = AtomicBool::new(false);
+    if LEYENDO.swap(true, Ordering::AcqRel) {
+        return;
+    }
     let generacion = state.bloqueo_generacion;
     let canal = state.medios_bloqueo.clone();
-    std::thread::Builder::new()
+    let lanzado = std::thread::Builder::new()
         .name("bookos-lock-media".into())
         .spawn(move || {
             // Un móvil pausado se queda en el bus indefinidamente y la tarjeta
             // salía en cada bloqueo con la canción de hace horas.
             let sonando = bookos_shell::medios::Sonando::leer()
                 .filter(|s| s.reproduciendo || !s.es_de_movil());
-            let _ = canal.send((generacion, sonando));
-        })
-        .inspect_err(|err| tracing::warn!("no se pudo consultar MPRIS para el bloqueo: {err}"))
-        .ok();
-    tracing::info!("bloqueo echado");
-    crate::backend::programar_dpms_bloqueo(state);
-    crate::backend::programar_suspension_inactividad(state);
-    state.needs_redraw = true;
-    true
+            // Solo BookOS Player: con otro reproductor la tarjeta lleva los
+            // tres mandos, y serían dos `busctl` más por segundo para nada.
+            let modos = sonando
+                .as_ref()
+                .filter(|s| s.bus == "org.mpris.MediaPlayer2.bookosplayer")
+                .map_or((None, None), |s| bookos_shell::medios::modos(&s.bus));
+            LEYENDO.store(false, Ordering::Release);
+            let _ = canal.send((generacion, (sonando, modos)));
+        });
+    if let Err(err) = lanzado {
+        LEYENDO.store(false, Ordering::Release);
+        tracing::warn!("no se pudo consultar MPRIS para el bloqueo: {err}");
+    }
 }
 
 /// Da el foco de teclado a la ventana que quede más arriba.
@@ -2412,5 +2648,10 @@ mod tests {
         assert_eq!(demora_reintento(5), 4);
         assert_eq!(demora_reintento(8), 30);
         assert_eq!(demora_reintento(u32::MAX), 30);
+    }
+
+    #[test]
+    fn detectar_proceso_inexistente_devuelve_false() {
+        assert!(!proceso_activo("__bookos_inexistente__"));
     }
 }

@@ -94,6 +94,7 @@ static CACHE: OnceLock<RwLock<State>> = OnceLock::new();
 #[derive(Default)]
 struct Lane {
     queue: std::sync::Mutex<std::collections::VecDeque<Operation>>,
+    in_flight_volume_step: std::sync::atomic::AtomicBool,
     ready: Notify,
 }
 impl Lane {
@@ -130,17 +131,53 @@ impl Lane {
     // 0.1.0
     async fn next(&self) -> Operation {
         loop {
-            if let Some(op) = self
-                .queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .pop_front()
             {
-                return op;
+                let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(op) = queue.pop_front() {
+                    if matches!(op, Operation::VolumeStep { .. }) {
+                        self.in_flight_volume_step
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    return op;
+                }
             }
             self.ready.notified().await;
         }
     }
+    fn finish_volume_step(&self) {
+        self.in_flight_volume_step
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Indica si queda algún `VolumeStep` por confirmar (en cola, en ejecución o
+/// con aviso pendiente de recoger). El orden estricto cola -> en vuelo ->
+/// feedback evita perder pasos entre hilos sin bloquear el bucle de renderizado.
+// añadido en la 0.2.3
+pub fn paso_volumen_pendiente() -> bool {
+    if let Some(lanes) = SEND.get() {
+        let lane = &lanes[2];
+        if lane
+            .queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|op| matches!(op, Operation::VolumeStep { .. }))
+        {
+            return true;
+        }
+        if lane
+            .in_flight_volume_step
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return true;
+        }
+    }
+    FEEDBACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|(op, _)| matches!(op, Operation::VolumeStep { .. }))
 }
 
 // 0.1.0
@@ -213,6 +250,7 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) {
                 workers.push(tokio::spawn(async move {
                     loop {
                         let op = lane.next().await;
+                        let era_paso_volumen = matches!(op, Operation::VolumeStep { .. });
                         let result = call(&op).await;
                         if result.is_ok()
                             && let Ok(c) = zbus::Connection::session().await
@@ -227,6 +265,9 @@ pub fn start(wake: impl Fn() + Send + Sync + 'static) {
                         }
                         queue.push_back((op, result));
                         drop(queue);
+                        if era_paso_volumen {
+                            lane.finish_volume_step();
+                        }
                         wake();
                     }
                 }));
@@ -390,6 +431,23 @@ mod tests {
             lane.next().await,
             Operation::VolumeStep { step: -5 }
         ));
+    }
+    #[tokio::test]
+    async fn lane_marca_paso_volumen_en_vuelo() {
+        use std::sync::atomic::Ordering;
+        let lane = Lane::default();
+        assert!(!lane.in_flight_volume_step.load(Ordering::SeqCst));
+        assert!(lane.push(Operation::VolumeStep { step: 5 }));
+        let _ = lane.next().await;
+        assert!(lane.in_flight_volume_step.load(Ordering::SeqCst));
+        lane.finish_volume_step();
+        assert!(!lane.in_flight_volume_step.load(Ordering::SeqCst));
+        assert!(lane.push(Operation::Mute {
+            target: "output".into(),
+            muted: None
+        }));
+        let _ = lane.next().await;
+        assert!(!lane.in_flight_volume_step.load(Ordering::SeqCst));
     }
     #[test]
     fn names_are_data() {

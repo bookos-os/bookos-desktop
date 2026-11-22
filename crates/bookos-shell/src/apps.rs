@@ -12,7 +12,10 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
+#[derive(Clone)]
 pub struct App {
     pub nombre: String,
     /// Ya limpio de los códigos `%f`, `%u`… de la especificación.
@@ -21,6 +24,18 @@ pub struct App {
     /// El nombre en minúsculas y sin acentos, para buscar sin repetir el
     /// trabajo en cada pulsación de tecla.
     pub(crate) normalizado: String,
+}
+
+type CacheApps = (Vec<(PathBuf, Option<SystemTime>)>, Vec<App>);
+static CACHE_APPS: OnceLock<Mutex<Option<CacheApps>>> = OnceLock::new();
+
+fn huella_directorios(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
+    dirs.iter()
+        .map(|d| {
+            let mtime = std::fs::metadata(d).and_then(|m| m.modified()).ok();
+            (d.clone(), mtime)
+        })
+        .collect()
 }
 
 /// Dónde busca la especificación de freedesktop, de más prioritario a menos.
@@ -37,12 +52,26 @@ fn directorios() -> Vec<PathBuf> {
 }
 
 /// Todas las aplicaciones visibles, ordenadas por nombre.
+///
+/// Cachea el catálogo por la fecha de modificación de los directorios de
+/// aplicaciones (4 `stat()` en lugar de releer cientos de `.desktop` al abrir el
+/// Buscador o Launchpad).
 // 0.1.0
 pub fn leer() -> Vec<App> {
+    let dirs = directorios();
+    let huella = huella_directorios(&dirs);
+    let cache = CACHE_APPS.get_or_init(Default::default);
+    if let Ok(guard) = cache.lock()
+        && let Some((prev_huella, apps)) = guard.as_ref()
+        && *prev_huella == huella
+    {
+        return apps.clone();
+    }
+
     let mut vistos = HashSet::new();
     let mut apps = Vec::new();
 
-    for dir in directorios() {
+    for dir in dirs {
         let Ok(entradas) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -67,6 +96,9 @@ pub fn leer() -> Vec<App> {
     }
 
     apps.sort_by(|a, b| a.normalizado.cmp(&b.normalizado));
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((huella, apps.clone()));
+    }
     apps
 }
 
@@ -373,6 +405,15 @@ mod tests {
     }
 
     #[test]
+    fn leer_cachea_catalogo_entre_llamadas_consecutivas() {
+        let primera = leer();
+        let segunda = leer();
+        let nombres1: Vec<&str> = primera.iter().map(|a| a.nombre.as_str()).collect();
+        let nombres2: Vec<&str> = segunda.iter().map(|a| a.nombre.as_str()).collect();
+        assert_eq!(nombres1, nombres2);
+    }
+
+    #[test]
     fn la_puntuacion_ordena_como_se_espera() {
         let firefox = app("Firefox");
         let navegador = app("Navegador Web");
@@ -448,4 +489,268 @@ mod tests {
                      [Desktop Action Otra]\nStartupWMClass=Incorrecta\n";
         assert_eq!(startup_wm_class(texto), Some("VirtualBox Manager"));
     }
+}
+
+/// El tipo MIME de un archivo por su extensión, con la tabla de
+/// shared-mime-info (`globs2`). Sin abrir el fichero ni lanzar `xdg-mime`
+/// (unos 20 ms por llamada, y el menú se arma al hacer clic): para elegir
+/// con qué se abre basta con lo que dice el nombre.
+// añadido en la 0.2.3
+pub fn mime_de(ruta: &std::path::Path) -> Option<String> {
+    static GLOBS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    if ruta.is_dir() {
+        return Some("inode/directory".into());
+    }
+    let nombre = ruta.file_name()?.to_string_lossy().to_lowercase();
+    let globs = GLOBS.get_or_init(|| {
+        let mut tabla: Vec<(u32, String, String)> = ["/usr/share/mime/globs2", "/usr/local/share/mime/globs2"]
+            .iter()
+            .filter_map(|r| std::fs::read_to_string(r).ok())
+            .flat_map(|texto| {
+                texto
+                    .lines()
+                    .filter(|l| !l.starts_with('#'))
+                    .filter_map(|l| {
+                        let mut partes = l.splitn(3, ':');
+                        let peso = partes.next()?.parse().ok()?;
+                        let mime = partes.next()?.to_string();
+                        // Solo los de sufijo: `*.pdf`. Los nombres exactos
+                        // (`Makefile`) no aparecen en un escritorio.
+                        let sufijo = partes.next()?.strip_prefix('*')?.to_lowercase();
+                        (!sufijo.contains(['*', '?', '['])).then_some((peso, mime, sufijo))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        // El sufijo más largo gana (`.tar.gz` antes que `.gz`), y a igual
+        // largo, el de más peso.
+        tabla.sort_by(|a, b| b.2.len().cmp(&a.2.len()).then(b.0.cmp(&a.0)));
+        tabla.into_iter().map(|(_, m, s)| (s, m)).collect()
+    });
+    globs
+        .iter()
+        .find(|(sufijo, _)| nombre.ends_with(sufijo.as_str()))
+        .map(|(_, mime)| mime.clone())
+}
+
+/// Las aplicaciones que dicen abrir ese tipo (`MimeType=`), con la
+/// predeterminada de `mimeapps.list` la primera. Como mucho `max`.
+// añadido en la 0.2.3
+pub fn para_tipo(mime: &str, max: usize) -> Vec<App> {
+    let predeterminada = predeterminada(mime);
+    let mut vistos = HashSet::new();
+    let mut apps: Vec<(bool, App)> = Vec::new();
+    for dir in directorios() {
+        let Ok(entradas) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for ruta in entradas.filter_map(|e| e.ok()).map(|e| e.path()) {
+            let Some(id) = ruta.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            if !id.ends_with(".desktop") || !vistos.insert(id.clone()) {
+                continue;
+            }
+            let Ok(texto) = std::fs::read_to_string(&ruta) else {
+                continue;
+            };
+            let abre = texto
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("MimeType="))
+                .is_some_and(|tipos| tipos.split(';').any(|t| t.trim() == mime));
+            if abre && let Some(app) = leer_una(&ruta) {
+                apps.push((predeterminada.as_deref() == Some(id.as_str()), app));
+            }
+        }
+    }
+    apps.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.normalizado.cmp(&b.1.normalizado)));
+    apps.into_iter().take(max).map(|(_, app)| app).collect()
+}
+
+/// El `.desktop` predeterminado para un tipo, de `~/.config/mimeapps.list`
+/// y luego del del sistema.
+// añadido en la 0.2.3
+fn predeterminada(mime: &str) -> Option<String> {
+    let mut rutas = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        rutas.push(PathBuf::from(home).join(".config/mimeapps.list"));
+    }
+    rutas.push(PathBuf::from("/usr/share/applications/mimeapps.list"));
+    rutas.iter().find_map(|ruta| {
+        let texto = std::fs::read_to_string(ruta).ok()?;
+        let mut en_grupo = false;
+        texto.lines().map(str::trim).find_map(|linea| {
+            if linea.starts_with('[') {
+                en_grupo = linea == "[Default Applications]";
+                return None;
+            }
+            let valor = linea.strip_prefix(mime)?.strip_prefix('=')?;
+            en_grupo
+                .then(|| valor.split(';').next().map(str::to_string))
+                .flatten()
+        })
+    })
+}
+
+/// Las acciones propias de una app (`[Desktop Action …]` de su `.desktop`):
+/// «Nueva ventana privada» del navegador. `(nombre, exec)`.
+// añadido en la 0.2.3
+pub fn acciones(app_id: &str) -> Vec<(String, String)> {
+    let cola = app_id.rsplit('.').next().unwrap_or(app_id);
+    let Some(texto) = directorios().iter().find_map(|dir| {
+        [app_id, cola]
+            .iter()
+            .find_map(|n| std::fs::read_to_string(dir.join(format!("{n}.desktop"))).ok())
+    }) else {
+        return Vec::new();
+    };
+    let es = std::env::var("LANG").unwrap_or_default().starts_with("es");
+    let mut acciones = Vec::new();
+    let (mut en_accion, mut nombre, mut nombre_es, mut exec) = (false, None, None, None);
+    let mut cerrar = |nombre: &mut Option<String>, nombre_es: &mut Option<String>, exec: &mut Option<String>| {
+        let elegido = if es { nombre_es.take().or(nombre.take()) } else { nombre.take() };
+        if let (Some(n), Some(e)) = (elegido, exec.take()) {
+            acciones.push((n, e));
+        }
+        *nombre = None;
+        *nombre_es = None;
+    };
+    for linea in texto.lines().map(str::trim) {
+        if linea.starts_with('[') {
+            if en_accion {
+                cerrar(&mut nombre, &mut nombre_es, &mut exec);
+            }
+            en_accion = linea.starts_with("[Desktop Action ");
+            continue;
+        }
+        if !en_accion {
+            continue;
+        }
+        match linea.split_once('=') {
+            Some(("Name", v)) => nombre = Some(v.trim().to_string()),
+            Some(("Name[es]", v)) => nombre_es = Some(v.trim().to_string()),
+            Some(("Exec", v)) => exec = Some(limpiar_exec(v.trim())),
+            _ => {}
+        }
+    }
+    if en_accion {
+        cerrar(&mut nombre, &mut nombre_es, &mut exec);
+    }
+    acciones
+}
+
+/// Los archivos que esa app abrió hace poco, del registro común de
+/// freedesktop (`recently-used.xbel`, lo escriben GTK y KDE). Lo más reciente
+/// primero, solo lo que sigue existiendo, como mucho `max`.
+///
+/// Se casa por el **programa** del `exec` y no por el nombre: el registro
+/// guarda `name=""` para Dolphin, pero siempre lleva la orden.
+// añadido en la 0.2.3
+pub fn recientes(exec: &str, max: usize) -> Vec<PathBuf> {
+    let programa = |orden: &str| {
+        orden
+            .trim_matches('\'')
+            .split_whitespace()
+            .next()
+            .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+    };
+    let Some(suyo) = programa(exec) else {
+        return Vec::new();
+    };
+    let Some(ruta) = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .map(|d| d.join("recently-used.xbel"))
+    else {
+        return Vec::new();
+    };
+    let Ok(texto) = std::fs::read_to_string(ruta) else {
+        return Vec::new();
+    };
+    let mut hallados: Vec<(String, PathBuf)> = texto
+        .split("<bookmark ")
+        .skip(1)
+        .filter_map(|bloque| {
+            let atributo = |nombre: &str, en: &str| {
+                let resto = en.split_once(&format!("{nombre}=\""))?.1;
+                Some(resto.split_once('"')?.0.to_string())
+            };
+            let href = atributo("href", bloque)?;
+            let fecha = atributo("modified", bloque).unwrap_or_default();
+            let es_suyo = bloque.split("<bookmark:application ").skip(1).any(|app| {
+                atributo("exec", app).and_then(|e| programa(&e)).as_deref() == Some(suyo.as_str())
+            });
+            let ruta = PathBuf::from(desescapar_uri(href.strip_prefix("file://")?));
+            (es_suyo && ruta.exists()).then_some((fecha, ruta))
+        })
+        .collect();
+    // La fecha va en ISO 8601: ordenar el texto es ordenar el tiempo.
+    hallados.sort_by(|a, b| b.0.cmp(&a.0));
+    hallados.into_iter().map(|(_, r)| r).take(max).collect()
+}
+
+/// `%20` y compañía de vuelta a bytes. Lo que no sea un escape válido se deja.
+// añadido en la 0.2.3
+fn desescapar_uri(uri: &str) -> String {
+    let bytes = uri.as_bytes();
+    let mut salida = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], hex) {
+            (b'%', Some(b)) => {
+                salida.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                salida.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&salida).into_owned()
+}
+
+/// La ruta del lanzador de inicio de sesión de una app.
+// añadido en la 0.2.3
+fn ruta_autostart(app_id: &str) -> Option<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(config.join("autostart").join(format!("{app_id}.desktop")))
+}
+
+/// ¿Se abre al iniciar sesión? Lo que manda es `~/.config/autostart`, que es
+/// lo que leen todos los escritorios (y también la sesión de BookUI).
+// añadido en la 0.2.3
+pub fn abre_al_iniciar(app_id: &str) -> bool {
+    ruta_autostart(app_id).is_some_and(|r| r.exists())
+}
+
+/// Pone o quita la app del inicio de sesión. Se copia su `.desktop` tal cual:
+/// un autostart es un lanzador normal en otra carpeta.
+// añadido en la 0.2.3
+pub fn poner_al_iniciar(app_id: &str, abrir: bool) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    let destino = ruta_autostart(app_id)
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "sin HOME ni XDG_CONFIG_HOME"))?;
+    if !abrir {
+        return match std::fs::remove_file(&destino) {
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+            otro => otro,
+        };
+    }
+    let cola = app_id.rsplit('.').next().unwrap_or(app_id);
+    let origen = directorios()
+        .iter()
+        .flat_map(|d| [d.join(format!("{app_id}.desktop")), d.join(format!("{cola}.desktop"))])
+        .find(|r| r.exists())
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "la app no tiene .desktop"))?;
+    if let Some(dir) = destino.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::copy(origen, destino).map(|_| ())
 }

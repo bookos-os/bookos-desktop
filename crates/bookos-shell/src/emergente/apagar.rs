@@ -1,51 +1,65 @@
 //! El diálogo del botón de encendido: dormir, bloquear, salir, reiniciar,
 //! apagar.
 //!
-//! Sale con la tecla de encendido del portátil y con `Meta+Esc`. Es la versión
-//! de una pantalla del bloque de energía del menú de BookOS: las mismas cinco
-//! acciones y los mismos comandos, para que hagan lo mismo se llegue por donde
-//! se llegue.
+//! Sale con la tecla de encendido del portátil y con `Meta+Esc`. Las cinco
+//! acciones se ordenan de reversible a destructiva; al confirmar una acción con
+//! cierre de aplicaciones, pasa en el sitio a [`crate::confirmacion::Confirmacion`].
 //!
-//! **Por qué un diálogo y no apagar directamente.** El botón de encendido de un
-//! portátil se roza con la mano al cerrar la tapa y al buscar el enchufe, y
-//! apagar sin preguntar es la clase de error que cuesta el trabajo sin guardar.
-//! Preguntar cuesta una tecla más —Intro sobre lo que ya está señalado— y
-//! convierte un accidente en un Esc.
-//!
-//! La opción señalada al abrirse es **Dormir**, que es lo que quiere quien
-//! toca el botón de encendido nueve de cada diez veces, y además es lo único de
-//! la fila que no pierde nada si se pulsa sin querer.
+//! La opción señalada al abrirse es **Dormir**, que es reversible y segura si
+//! el botón se pulsa por accidente.
 
 use iced_core::alignment::{Horizontal, Vertical};
-use iced_core::{Border, Color, Length};
+use iced_core::font::Weight;
+use iced_core::{Border, Color, Font, Length};
 use iced_widget::{Space, column, container, row, text};
 
 use crate::Accion;
 use crate::tema::{self, Realce};
 use crate::view::PanelElement;
 
-use super::{Ancla, Tecla};
+use super::{Ancla, FilaAccesible, Tecla, t};
 
 const ANCHO: f32 = 468.0;
 const MARGEN: f32 = 24.0;
-/// Alto del renglón del título.
-const TITULO: f32 = 30.0;
+const MARGEN_INF: f32 = 18.0;
+/// Alto del renglón del título (17/700, lh 1,3).
+const TITULO: f32 = 24.0;
 /// Aire entre el título y la fila de botones.
-const HUECO_TITULO: f32 = 14.0;
-/// Medidas de un botón: la celda entera, el disco del icono y el icono.
-const BOTON_ANCHO: f32 = 82.0;
-const BOTON_ALTO: f32 = 100.0;
-const HUECO: f32 = 8.0;
+const HUECO_TITULO: f32 = 16.0;
+/// Medidas de un botón: celda, disco y glifo.
+const BOTON_ANCHO: f32 = 80.0;
+const BOTON_ALTO: f32 = 86.0;
+const HUECO: f32 = 5.0;
 const DISCO: f32 = 52.0;
-const ICONO: f32 = 24.0;
+const ANILLO: f32 = 60.0;
+const ICONO: f32 = 22.0;
+/// Pie del paso 1: separador y botón «Cancelar».
+const HUECO_SEP: f32 = 14.0;
+const SEP: f32 = 1.0;
+const HUECO_PIE: f32 = 10.0;
+const PIE_ALTO: f32 = 44.0;
+const R_DIALOGO_CIRCULAR: f32 = 34.0;
 
 /// Una opción del diálogo.
 struct Opcion {
-    etiqueta: &'static str,
+    etiqueta_es: &'static str,
+    etiqueta_en: &'static str,
+    accesible_es: &'static str,
+    accesible_en: &'static str,
     icono: &'static str,
-    /// Si es de las que no tienen vuelta atrás, para pintarla en rojo.
+    /// Si cierra sesión o apaga el equipo (semántica destructiva).
     grave: bool,
     accion: fn() -> Accion,
+}
+
+impl Opcion {
+    fn etiqueta(&self) -> &'static str {
+        t(self.etiqueta_es, self.etiqueta_en)
+    }
+
+    fn nombre_accesible(&self) -> &'static str {
+        t(self.accesible_es, self.accesible_en)
+    }
 }
 
 /// Las cinco, en orden de menos a más definitivo: es el orden en que se leen y
@@ -54,37 +68,46 @@ struct Opcion {
 fn opciones() -> [Opcion; 5] {
     [
         Opcion {
-            etiqueta: "Dormir",
+            etiqueta_es: "Dormir",
+            etiqueta_en: "Sleep",
+            accesible_es: "Dormir",
+            accesible_en: "Sleep",
             icono: "dormir",
             grave: false,
-            // logind decide si hay un inhibidor válido antes de suspender.
             accion: || Accion::Lanzar("systemctl suspend".into()),
         },
         Opcion {
-            etiqueta: "Bloquear",
+            etiqueta_es: "Bloquear",
+            etiqueta_en: "Lock",
+            accesible_es: "Bloquear",
+            accesible_en: "Lock",
             icono: "bloquear",
             grave: false,
-            // La pantalla de bloqueo es la del propio compositor, no la de
-            // KDE: el menú todavía llama a `qdbus org.freedesktop.ScreenSaver`
-            // porque se escribió antes de que existiera la de aquí, y llamar
-            // fuera cuando la tenemos dentro es pedirle a otro escritorio que
-            // tape el nuestro.
             accion: || Accion::Bloquear,
         },
         Opcion {
-            etiqueta: "Cerrar sesión",
+            etiqueta_es: "Salir",
+            etiqueta_en: "Log out",
+            accesible_es: "Cerrar sesión",
+            accesible_en: "Log out",
             icono: "salir",
-            grave: true,
+            grave: false,
             accion: || Accion::CerrarSesion,
         },
         Opcion {
-            etiqueta: "Reiniciar",
+            etiqueta_es: "Reiniciar",
+            etiqueta_en: "Restart",
+            accesible_es: "Reiniciar",
+            accesible_en: "Restart",
             icono: "reiniciar",
-            grave: true,
+            grave: false,
             accion: || Accion::Lanzar("systemctl reboot".into()),
         },
         Opcion {
-            etiqueta: "Apagar",
+            etiqueta_es: "Apagar",
+            etiqueta_en: "Shut down",
+            accesible_es: "Apagar",
+            accesible_en: "Shut down",
             icono: "apagar",
             grave: true,
             accion: || Accion::Lanzar("systemctl poweroff".into()),
@@ -92,25 +115,33 @@ fn opciones() -> [Opcion; 5] {
     ]
 }
 
-/// La que sale señalada al abrirse. Ver la cabecera del módulo.
+/// La que sale señalada al abrirse.
 const INICIAL: usize = 0;
 
 pub struct Apagar {
     opciones: [Opcion; 5],
-    /// La señalada, con su realce entrando y saliendo. Es la misma para el
-    /// ratón y para el teclado: mover el ratón mueve la selección, así que
-    /// Intro hace siempre lo que está resaltado.
+    /// La opción señalada, compartida entre puntero y teclado.
     señalada: Realce,
+    /// Si el foco de teclado está en el botón inferior «Cancelar».
+    foco_cancelar: bool,
+    /// Si el puntero está sobre el botón inferior «Cancelar».
+    cancelar_señalado: bool,
     confirmar: Option<crate::confirmacion::Confirmacion>,
 }
 
 impl Apagar {
     // 0.1.0
     pub fn confirmar(accion: crate::confirmacion::Energia) -> Self {
+        Self::confirmar_con(crate::confirmacion::Confirmacion::new(accion))
+    }
+
+    // añadido en la 0.2.3
+    pub fn confirmar_con(confirmacion: crate::confirmacion::Confirmacion) -> Self {
         let mut dialogo = Self::new();
-        dialogo.confirmar = Some(crate::confirmacion::Confirmacion::new(accion));
+        dialogo.confirmar = Some(confirmacion);
         dialogo
     }
+
     // 0.1.0
     pub fn new() -> Self {
         let mut señalada = Realce::nuevo();
@@ -119,19 +150,18 @@ impl Apagar {
         Self {
             opciones: opciones(),
             señalada,
+            foco_cancelar: false,
+            cancelar_señalado: false,
             confirmar: None,
         }
     }
 
     // 0.1.0
     pub fn size(&self) -> (f32, f32) {
-        if self.confirmar.is_some() {
-            return (
-                crate::confirmacion::Confirmacion::ANCHO,
-                crate::confirmacion::Confirmacion::ALTO,
-            );
+        if let Some(c) = &self.confirmar {
+            return c.size();
         }
-        (ANCHO, MARGEN * 2.0 + TITULO + HUECO_TITULO + BOTON_ALTO)
+        (ANCHO, self.y_cancelar() + PIE_ALTO + MARGEN_INF)
     }
 
     // 0.1.0
@@ -139,8 +169,7 @@ impl Apagar {
         Ancla::Centrada
     }
 
-    /// El velo de detrás. Es un diálogo: lo de debajo se apaga porque hay que
-    /// contestar antes de seguir.
+    /// El velo de detrás. Es un diálogo modal: 0,45 del HIG §6.
     // 0.1.0
     pub fn velo(&self) -> Color {
         Color {
@@ -151,11 +180,10 @@ impl Apagar {
 
     // 0.1.0
     pub fn animando(&self) -> bool {
-        self.señalada.animando()
+        self.confirmar.is_none() && self.señalada.animando()
     }
 
-    /// `x` del borde izquierdo del botón `i`. Los cinco van centrados, con el
-    /// sobrante repartido a los lados.
+    /// `x` del borde izquierdo del botón `i`. Los cinco van centrados.
     // 0.1.0
     fn x_boton(&self, i: usize) -> f32 {
         let fila = BOTON_ANCHO * 5.0 + HUECO * 4.0;
@@ -165,6 +193,15 @@ impl Apagar {
     // 0.1.0
     fn y_botones(&self) -> f32 {
         MARGEN + TITULO + HUECO_TITULO
+    }
+
+    fn y_cancelar(&self) -> f32 {
+        self.y_botones() + BOTON_ALTO + HUECO_SEP + SEP + HUECO_PIE
+    }
+
+    fn en_cancelar(&self, x: f32, y: f32) -> bool {
+        let y0 = self.y_cancelar();
+        (MARGEN..=ANCHO - MARGEN).contains(&x) && (y0..=y0 + PIE_ALTO).contains(&y)
     }
 
     // 0.1.0
@@ -181,16 +218,27 @@ impl Apagar {
 
     // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
-        if self.confirmar.is_some() {
-            return false;
+        if let Some(c) = &mut self.confirmar {
+            return c.puntero(punto);
         }
-        // Salir del diálogo **no** apaga la selección: hay que dejar siempre
-        // una señalada para que Intro tenga qué hacer. Solo la cambia pasar por
-        // encima de otra.
-        let Some(nueva) = punto.and_then(|(x, y)| self.boton_en(x, y)) else {
-            return false;
-        };
-        self.señalada.señalar(Some(nueva))
+        if let Some((x, y)) = punto {
+            if let Some(nueva) = self.boton_en(x, y) {
+                let c1 = self.cancelar_señalado;
+                self.cancelar_señalado = false;
+                self.foco_cancelar = false;
+                return self.señalada.señalar(Some(nueva)) || c1;
+            }
+            if self.en_cancelar(x, y) {
+                let antes = self.cancelar_señalado;
+                self.cancelar_señalado = true;
+                return !antes;
+            }
+        }
+        // Salir del diálogo **no** apaga la selección circular: Intro tiene que
+        // seguir teniendo qué hacer. Solo apaga el hover de «Cancelar».
+        let antes = self.cancelar_señalado;
+        self.cancelar_señalado = false;
+        antes
     }
 
     // 0.1.0
@@ -201,6 +249,9 @@ impl Apagar {
                 Some(false) => Some(Accion::CerrarEmergente),
                 None => None,
             };
+        }
+        if self.en_cancelar(x, y) {
+            return Some(Accion::CerrarEmergente);
         }
         let i = self.boton_en(x, y)?;
         Some((self.opciones[i].accion)())
@@ -220,9 +271,25 @@ impl Apagar {
             T::Escape => Tecla::Cerrar,
             T::Izquierda => self.mover(-1),
             T::Derecha => self.mover(1),
-            T::Intro => {
-                let i = self.señalada.actual().unwrap_or(INICIAL);
-                Tecla::Hacer((self.opciones[i].accion)())
+            T::Abajo => {
+                self.foco_cancelar = true;
+                Tecla::Consumida
+            }
+            T::Arriba => {
+                self.foco_cancelar = false;
+                Tecla::Consumida
+            }
+            T::Tabulador => {
+                self.foco_cancelar = !self.foco_cancelar;
+                Tecla::Consumida
+            }
+            T::Intro | T::Caracter(' ') => {
+                if self.foco_cancelar {
+                    Tecla::Cerrar
+                } else {
+                    let i = self.señalada.actual().unwrap_or(INICIAL);
+                    Tecla::Hacer((self.opciones[i].accion)())
+                }
             }
             _ => Tecla::Ignorada,
         }
@@ -233,6 +300,7 @@ impl Apagar {
     /// donde el último elemento apaga el equipo.
     // 0.1.0
     fn mover(&mut self, paso: isize) -> Tecla {
+        self.foco_cancelar = false;
         let n = self.opciones.len() as isize;
         let actual = self.señalada.actual().unwrap_or(INICIAL) as isize;
         let siguiente = (actual + paso).clamp(0, n - 1) as usize;
@@ -241,7 +309,41 @@ impl Apagar {
         Tecla::Consumida
     }
 
+    /// Controles expuestos a AT-SPI2 / Orca.
+    // añadido en la 0.2.3
+    pub fn accesible(&self) -> Vec<FilaAccesible> {
+        if let Some(c) = &self.confirmar {
+            return c.accesible();
+        }
+        let y0 = self.y_botones();
+        let mut items: Vec<FilaAccesible> = self
+            .opciones
+            .iter()
+            .enumerate()
+            .map(|(i, o)| FilaAccesible {
+                id: format!("apagar:{}", o.icono),
+                rol: accesskit::Role::RadioButton,
+                nombre: o.nombre_accesible().into(),
+                valor: String::new(),
+                rect: (self.x_boton(i), y0, BOTON_ANCHO, BOTON_ALTO),
+                marcada: Some(!self.foco_cancelar && self.señalada.actual() == Some(i)),
+                seleccionada: !self.foco_cancelar && self.señalada.actual() == Some(i),
+            })
+            .collect();
+        items.push(FilaAccesible {
+            id: "apagar:cancelar".into(),
+            rol: accesskit::Role::Button,
+            nombre: t("Cancelar", "Cancel").into(),
+            valor: String::new(),
+            rect: (MARGEN, self.y_cancelar(), ANCHO - MARGEN * 2.0, PIE_ALTO),
+            marcada: None,
+            seleccionada: self.foco_cancelar,
+        });
+        items
+    }
+
     // 0.1.0
+    // modified 0.2.3 -- radio 26, título 17/700, discos opacos accesibles y pie Cancelar
     pub fn view(&self) -> PanelElement<'_> {
         if let Some(c) = &self.confirmar {
             return c.view();
@@ -251,13 +353,76 @@ impl Apagar {
             if i > 0 {
                 fila = fila.push(Space::new().width(Length::Fixed(HUECO)));
             }
-            fila = fila.push(boton(opcion, self.señalada.intensidad(i)));
+            let intensidad = if self.foco_cancelar {
+                0.0
+            } else {
+                self.señalada.intensidad(i)
+            };
+            let foco = !self.foco_cancelar && self.señalada.actual() == Some(i);
+            fila = fila.push(boton(opcion, intensidad, foco));
         }
+
+        let pie_fondo = if self.cancelar_señalado || self.foco_cancelar {
+            tema::mezclar(tema::superficie_en_tarjeta(), tema::tinta(), 0.08)
+        } else {
+            tema::superficie_en_tarjeta()
+        };
+        let pie_interior = container(
+            text(t("Cancelar", "Cancel"))
+                .size(14)
+                .font(Font {
+                    weight: Weight::Semibold,
+                    ..Font::DEFAULT
+                })
+                .color(tema::texto()),
+        )
+        .width(Length::Fixed(ANCHO - MARGEN * 2.0 - 8.0))
+        .height(Length::Fixed(PIE_ALTO - 8.0))
+        .center_x(Length::Fixed(ANCHO - MARGEN * 2.0 - 8.0))
+        .center_y(Length::Fixed(PIE_ALTO - 8.0))
+        .style(move |_| container::Style {
+            background: Some(pie_fondo.into()),
+            border: Border {
+                radius: tema::R_PILL.into(),
+                width: if !self.foco_cancelar && tema::alto_contraste() {
+                    1.0
+                } else {
+                    0.0
+                },
+                color: tema::borde(),
+            },
+            ..Default::default()
+        });
+
+        let pie = container(pie_interior)
+            .width(Length::Fill)
+            .height(Length::Fixed(PIE_ALTO))
+            .center_x(Length::Fill)
+            .center_y(Length::Fixed(PIE_ALTO))
+            .style(move |_| container::Style {
+                border: Border {
+                    radius: tema::R_PILL.into(),
+                    width: if self.foco_cancelar { 2.0 } else { 0.0 },
+                    color: tema::texto(),
+                },
+                ..Default::default()
+            });
+
+        let divisor = container(Space::new().height(Length::Fixed(SEP)))
+            .width(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(tema::divisor().into()),
+                ..Default::default()
+            });
 
         let contenido = column![
             container(
-                text("¿Qué quieres hacer?")
-                    .size(tema::T_TITULO)
+                text(t("¿Qué quieres hacer?", "What do you want to do?"))
+                    .size(17)
+                    .font(Font {
+                        weight: Weight::Bold,
+                        ..Font::DEFAULT
+                    })
                     .color(tema::texto())
             )
             .width(Length::Fill)
@@ -266,27 +431,56 @@ impl Apagar {
             .center_y(Length::Fixed(TITULO)),
             Space::new().height(Length::Fixed(HUECO_TITULO)),
             container(fila).width(Length::Fill).center_x(Length::Fill),
+            Space::new().height(Length::Fixed(HUECO_SEP)),
+            divisor,
+            Space::new().height(Length::Fixed(HUECO_PIE)),
+            pie,
         ];
 
-        super::control::tarjeta(contenido.into(), ANCHO, MARGEN)
+        let borde_tarjeta = if tema::alto_contraste() { 1.5 } else { 1.0 };
+
+        container(contenido)
+            .padding(iced_core::Padding {
+                top: MARGEN,
+                right: MARGEN,
+                bottom: MARGEN_INF,
+                left: MARGEN,
+            })
+            .width(Length::Fixed(ANCHO))
+            .clip(true)
+            .style(move |_| container::Style {
+                background: Some(tema::card().into()),
+                border: Border {
+                    radius: R_DIALOGO_CIRCULAR.into(),
+                    width: borde_tarjeta,
+                    color: tema::borde(),
+                },
+                ..Default::default()
+            })
+            .into()
     }
 }
 
-/// Un botón: disco con el icono arriba y su etiqueta debajo.
+/// Un botón: disco opaco con el icono arriba y su etiqueta legible debajo.
 // 0.1.0
-fn boton<'a>(opcion: &'a Opcion, señalado: f32) -> PanelElement<'a> {
-    // La señalada se rellena del acento —o del rojo de peligro, si es de las
-    // que no tienen vuelta atrás— y su icono pasa a la tinta que se lea encima.
-    // Las demás se quedan en el relleno tenue de siempre.
-    let lleno = if opcion.grave {
-        tema::rojo()
+fn boton<'a>(opcion: &'a Opcion, señalado: f32, foco: bool) -> PanelElement<'a> {
+    let reposo_fondo = tema::superficie_en_tarjeta();
+    let reposo_tinta = if opcion.grave {
+        tema::rojo_en(reposo_fondo)
     } else {
-        tema::acento()
+        tema::texto()
     };
-    let fondo = tema::mezclar(tema::alfa(tema::tinta(), 0.08), lleno, señalado);
-    let tinta = tema::mezclar(tema::texto(), tema::tinta_sobre(lleno), señalado);
 
-    let dibujo: PanelElement<'a> = match crate::icono::propio(opcion.icono) {
+    let (lleno, sobre_lleno) = if opcion.grave {
+        tema::pareja_destructiva()
+    } else {
+        (tema::acento(), tema::sobre_acento())
+    };
+
+    let fondo = tema::mezclar(reposo_fondo, lleno, señalado);
+    let tinta = tema::mezclar(reposo_tinta, sobre_lleno, señalado);
+
+    let dibujo: PanelElement<'a> = match crate::icono::propio_firme(opcion.icono) {
         Some(ic) => crate::icono::ver_teñido_propio(&ic, ICONO, tinta),
         None => Space::new().width(Length::Fixed(ICONO)).into(),
     };
@@ -299,20 +493,44 @@ fn boton<'a>(opcion: &'a Opcion, señalado: f32) -> PanelElement<'a> {
             background: Some(fondo.into()),
             border: Border {
                 radius: tema::R_PILL.into(),
-                ..Default::default()
+                width: if foco { 0.0 } else { 1.0 },
+                color: tema::borde(),
             },
             ..Default::default()
         });
 
+    // Anillo de foco exterior con 2 px de separación del disco (como `outline-offset`).
+    let aro = container(disco)
+        .width(Length::Fixed(ANILLO))
+        .height(Length::Fixed(ANILLO))
+        .center_x(Length::Fixed(ANILLO))
+        .center_y(Length::Fixed(ANILLO))
+        .style(move |_| container::Style {
+            border: Border {
+                radius: tema::R_PILL.into(),
+                width: if foco { 2.0 } else { 0.0 },
+                color: tema::texto(),
+            },
+            ..Default::default()
+        });
+
+    let peso = if foco || señalado > 0.5 {
+        Weight::Semibold
+    } else {
+        Weight::Medium
+    };
+
     container(
         column![
-            disco,
-            Space::new().height(Length::Fixed(8.0)),
-            text(opcion.etiqueta)
+            aro,
+            Space::new().height(Length::Fixed(6.0)),
+            text(opcion.etiqueta())
                 .size(tema::T_PEQUENO)
-                // La etiqueta sube de gris a tinta con el realce: es lo que
-                // dice cuál se va a ejecutar al pulsar Intro.
-                .color(tema::mezclar(tema::TEXTO2, tema::texto(), señalado)),
+                .font(Font {
+                    weight: peso,
+                    ..Font::DEFAULT
+                })
+                .color(tema::mezclar(tema::texto2(), tema::texto(), señalado)),
         ]
         .align_x(Horizontal::Center),
     )
@@ -340,6 +558,7 @@ mod tests {
         assert_eq!(a.boton_en(2.0, y), None, "el margen no es de nadie");
         assert_eq!(a.boton_en(ANCHO / 2.0, 4.0), None, "el título tampoco");
         assert!(a.y_botones() + BOTON_ALTO <= a.size().1);
+        assert!(a.en_cancelar(ANCHO / 2.0, a.y_cancelar() + PIE_ALTO / 2.0));
     }
 
     /// Arranca en «Dormir» y las flechas no dan la vuelta: llegar a «Apagar»
@@ -381,6 +600,19 @@ mod tests {
         // Y pulsar «Apagar» pide apagar.
         let accion = a.pulsar(a.x_boton(4) + 4.0, y);
         assert!(matches!(accion, Some(Accion::Lanzar(cmd)) if cmd.contains("poweroff")));
+        // Pulsar «Cancelar» cierra.
+        assert!(matches!(
+            a.pulsar(ANCHO / 2.0, a.y_cancelar() + PIE_ALTO / 2.0),
+            Some(Accion::CerrarEmergente)
+        ));
+    }
+
+    #[test]
+    fn tab_y_flechas_alcanzan_cancelar() {
+        let mut a = Apagar::new();
+        a.tecla(crate::TeclaPulsada::Tabulador);
+        assert!(a.foco_cancelar);
+        assert!(matches!(a.tecla(crate::TeclaPulsada::Intro), Tecla::Cerrar));
     }
 
     /// Salir del diálogo con el ratón no puede dejarlo sin selección: Intro

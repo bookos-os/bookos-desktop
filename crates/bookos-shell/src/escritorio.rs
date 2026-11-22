@@ -66,6 +66,9 @@ pub struct Elemento {
     /// El color puesto a mano a una carpeta, el mismo que guarda
     /// bookos-explorer. `None` es el automático por nombre.
     color: Option<String>,
+    /// Si es un acceso directo (un enlace simbólico) y si su original sigue ahí.
+    // añadido en la 0.2.3
+    pub acceso: Acceso,
     /// Columna y fila que ocupa. Es lo que se guarda en disco, no los píxeles:
     /// así una posición sobrevive a cambiar de resolución.
     celda: (i32, i32),
@@ -102,8 +105,90 @@ impl NuevoElemento {
     }
 }
 
+impl Elemento {
+    // añadido en la 0.2.3
+    pub fn icono(&self) -> Option<&Icono> {
+        self.icono.as_ref()
+    }
+
+    /// Lo que se ejecuta al abrirlo.
+    // añadido en la 0.2.3
+    pub fn orden(&self) -> &str {
+        &self.orden
+    }
+}
+
+/// Un icono que es un enlace simbólico se dibuja con la marca de acceso
+/// directo; si su original ya no está, apagado y con aviso.
+// añadido en la 0.2.3
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acceso {
+    No,
+    Si,
+    Roto,
+}
+
+/// Por qué se ordena con «Ordenar por».
+// añadido en la 0.2.3
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orden {
+    Nombre,
+    Tipo,
+    Fecha,
+    Tamano,
+}
+
+/// Tamaño de los iconos del escritorio. Escala la celda entera: un icono
+/// grande en una celda de las de siempre se comería el nombre del vecino.
+// añadido en la 0.2.3
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tamano {
+    Pequeno,
+    #[default]
+    Mediano,
+    Grande,
+}
+
+impl Tamano {
+    // añadido en la 0.2.3
+    pub fn escala(self) -> f32 {
+        match self {
+            // 0,8 deja la celda en 77 px: lo justo para dos renglones de 11
+            // con «Documentos» entero; por debajo el nombre ya no cabe.
+            Self::Pequeno => 0.8,
+            Self::Mediano => 1.0,
+            Self::Grande => 1.25,
+        }
+    }
+
+    // añadido en la 0.2.3
+    pub fn clave(self) -> &'static str {
+        match self {
+            Self::Pequeno => "pequeno",
+            Self::Mediano => "mediano",
+            Self::Grande => "grande",
+        }
+    }
+
+    // añadido en la 0.2.3
+    pub fn de_clave(clave: &str) -> Option<Self> {
+        match clave {
+            "pequeno" => Some(Self::Pequeno),
+            "mediano" => Some(Self::Mediano),
+            "grande" => Some(Self::Grande),
+            _ => None,
+        }
+    }
+}
+
 pub struct Escritorio {
     elementos: Vec<Elemento>,
+    // añadido en la 0.2.3
+    tamano: Tamano,
+    /// El último «Ordenar por», para marcarlo en el menú. Mover un icono a
+    /// mano lo borra: ya no están en ese orden.
+    // añadido en la 0.2.3
+    orden: Option<Orden>,
     /// La zona de la rejilla en lógicos: `(x, y, ancho, alto)`. Empieza bajo el
     /// panel y acaba antes del dock.
     zona: (f32, f32, f32, f32),
@@ -122,9 +207,12 @@ impl Escritorio {
     /// `alto_panel` y `pantalla` van en píxeles lógicos.
     // 0.1.0
     // modified 0.1.1 -- puede nacer con los iconos ocultos
-    pub fn new(alto_panel: f32, pantalla: (f32, f32), visible: bool) -> Self {
+    // modified 0.2.3 -- con tamaño de icono
+    pub fn new(alto_panel: f32, pantalla: (f32, f32), visible: bool, tamano: Tamano) -> Self {
         let mut escritorio = Self {
             elementos: if visible { leer() } else { Vec::new() },
+            tamano,
+            orden: None,
             zona: (0.0, 0.0, 0.0, 0.0),
             filas: 1,
             columnas: 1,
@@ -140,15 +228,147 @@ impl Escritorio {
     /// hueco libre, que es mejor que dejarlo fuera de la pantalla.
     // 0.1.0
     pub fn recolocar(&mut self, alto_panel: f32, (ancho, alto): (f32, f32)) {
+        let celda = self.celda();
         self.zona = (
             MARGEN_X,
             alto_panel + MARGEN_Y,
-            (ancho - MARGEN_X * 2.0).max(CELDA.0),
-            (alto - alto_panel - MARGEN_Y - RESERVA_DOCK).max(CELDA.1),
+            (ancho - MARGEN_X * 2.0).max(celda.0),
+            (alto - alto_panel - MARGEN_Y - RESERVA_DOCK).max(celda.1),
         );
-        self.columnas = (self.zona.2 / CELDA.0).floor().max(1.0) as i32;
-        self.filas = (self.zona.3 / CELDA.1).floor().max(1.0) as i32;
+        self.columnas = (self.zona.2 / celda.0).floor().max(1.0) as i32;
+        self.filas = (self.zona.3 / celda.1).floor().max(1.0) as i32;
         self.asignar_celdas();
+    }
+
+    /// Lado de la celda con el tamaño de icono elegido.
+    // añadido en la 0.2.3
+    pub fn celda(&self) -> (f32, f32) {
+        let e = self.tamano.escala();
+        (CELDA.0 * e, CELDA.1 * e)
+    }
+
+    // añadido en la 0.2.3
+    pub fn tamano(&self) -> Tamano {
+        self.tamano
+    }
+
+    /// Cambia el tamaño de los iconos. `true` si cambió. La rejilla se rehace
+    /// conservando columna y fila de cada uno, como al cambiar de resolución.
+    // añadido en la 0.2.3
+    pub fn cambiar_tamano(&mut self, tamano: Tamano, alto_panel: f32, pantalla: (f32, f32)) -> bool {
+        if self.tamano == tamano {
+            return false;
+        }
+        self.tamano = tamano;
+        self.recolocar(alto_panel, pantalla);
+        true
+    }
+
+    /// Recoloca todos los iconos por columnas, de arriba abajo, en ese orden.
+    /// Las carpetas van siempre primero, como en el explorador. La fecha y el
+    /// tamaño van de mayor a menor: lo reciente y lo grande es lo que se busca.
+    // añadido en la 0.2.3
+    pub fn ordenar(&mut self, orden: Orden) {
+        let clave_tipo = |e: &Elemento| {
+            e.ruta
+                .extension()
+                .map(|x| x.to_string_lossy().to_lowercase())
+                .unwrap_or_default()
+        };
+        let meta = |e: &Elemento| std::fs::metadata(&e.ruta).ok();
+        self.elementos.sort_by(|a, b| {
+            let carpetas = b.ruta.is_dir().cmp(&a.ruta.is_dir());
+            let nombre = || a.nombre.to_lowercase().cmp(&b.nombre.to_lowercase());
+            carpetas.then_with(|| match orden {
+                Orden::Nombre => nombre(),
+                Orden::Tipo => clave_tipo(a).cmp(&clave_tipo(b)).then_with(nombre),
+                Orden::Fecha => {
+                    let f = |e| meta(e).and_then(|m| m.modified().ok());
+                    f(b).cmp(&f(a)).then_with(nombre)
+                }
+                Orden::Tamano => {
+                    let t = |e| meta(e).map_or(0, |m| m.len());
+                    t(b).cmp(&t(a)).then_with(nombre)
+                }
+            })
+        });
+        let mut ocupadas = Vec::new();
+        for elemento in &mut self.elementos {
+            elemento.celda = primer_hueco(&ocupadas, self.columnas, self.filas);
+            ocupadas.push(elemento.celda);
+        }
+        self.orden = Some(orden);
+        self.guardar_posiciones();
+    }
+
+    // añadido en la 0.2.3
+    pub fn orden(&self) -> Option<Orden> {
+        self.orden
+    }
+
+    /// Quita los huecos: cada icono pasa al primer sitio libre en el orden en
+    /// que se ven ahora (por columnas). Es el «Limpiar» de macOS; aquí no hace
+    /// falta encajar en la rejilla porque un icono nunca sale de ella.
+    // añadido en la 0.2.3
+    pub fn juntar(&mut self) {
+        let mut orden: Vec<usize> = (0..self.elementos.len()).collect();
+        orden.sort_by_key(|&i| self.elementos[i].celda);
+        let mut ocupadas = Vec::new();
+        for i in orden {
+            let celda = primer_hueco(&ocupadas, self.columnas, self.filas);
+            self.elementos[i].celda = celda;
+            ocupadas.push(celda);
+        }
+        self.guardar_posiciones();
+    }
+
+    /// Renombra lo seleccionado (uno solo) y conserva su sitio. `Err` con el
+    /// motivo en palabras, para decirlo en el diálogo.
+    // añadido en la 0.2.3
+    pub fn renombrar(&mut self, nuevo: &str) -> Result<(), &'static str> {
+        let nuevo = nuevo.trim();
+        if nuevo.is_empty() || nuevo == "." || nuevo == ".." || nuevo.contains('/') {
+            return Err(crate::t("Ese nombre no vale", "That name isn't valid"));
+        }
+        let mut seleccion = self.elementos.iter_mut().filter(|e| e.seleccionado);
+        let (Some(elemento), None) = (seleccion.next(), seleccion.next()) else {
+            return Err(crate::t("Elige un solo elemento", "Select a single item"));
+        };
+        let destino = elemento.ruta.with_file_name(nuevo);
+        if destino == elemento.ruta {
+            return Ok(());
+        }
+        // `exists` sigue enlaces: uno roto con ese nombre también cuenta.
+        if destino.exists() || std::fs::symlink_metadata(&destino).is_ok() {
+            return Err(crate::t("Ya hay algo con ese nombre", "That name is taken"));
+        }
+        std::fs::rename(&elemento.ruta, &destino)
+            .map_err(|_| crate::t("No se pudo renombrar", "Couldn't rename"))?;
+        // Se cambia aquí y no releyendo: releer lo mandaría al primer hueco,
+        // porque la posición guardada va por nombre.
+        elemento.ruta = destino;
+        elemento.nombre = nuevo.to_string();
+        // Un lanzador sigue ejecutando su `Exec`; lo demás se abre por ruta.
+        if elemento.ruta.extension().is_none_or(|e| e != "desktop") {
+            elemento.orden = format!("xdg-open {}", entrecomillar(&elemento.ruta));
+        }
+        self.guardar_posiciones();
+        Ok(())
+    }
+
+    /// Selecciona solo el que se llama así. Lo usa «Agrupar» para dejar
+    /// lista la carpeta nueva.
+    // añadido en la 0.2.3
+    pub fn seleccionar_nombre(&mut self, nombre: &str) {
+        for e in &mut self.elementos {
+            e.seleccionado = e.nombre == nombre;
+        }
+    }
+
+    /// Lo seleccionado, en orden.
+    // añadido en la 0.2.3
+    pub fn seleccionados(&self) -> impl Iterator<Item = &Elemento> {
+        self.elementos.iter().filter(|e| e.seleccionado)
     }
 
     /// Reparte las celdas: primero las guardadas que siguen cabiendo, y el
@@ -414,10 +634,10 @@ impl Escritorio {
             _ => (0.0, 0.0),
         };
         Some((
-            self.zona.0 + elemento.celda.0 as f32 * CELDA.0 + dx,
-            self.zona.1 + elemento.celda.1 as f32 * CELDA.1 + dy,
-            CELDA.0,
-            CELDA.1,
+            self.zona.0 + elemento.celda.0 as f32 * self.celda().0 + dx,
+            self.zona.1 + elemento.celda.1 as f32 * self.celda().1 + dy,
+            self.celda().0,
+            self.celda().1,
         ))
     }
 
@@ -462,11 +682,12 @@ impl Escritorio {
     // 0.1.0
     pub fn banda(&mut self, rect: (f32, f32, f32, f32), previa: &[bool]) -> bool {
         let (bx, by, bw, bh) = rect;
+        let celda = self.celda();
         let mut cambio = false;
         for (n, elemento) in self.elementos.iter_mut().enumerate() {
-            let ex = self.zona.0 + elemento.celda.0 as f32 * CELDA.0;
-            let ey = self.zona.1 + elemento.celda.1 as f32 * CELDA.1;
-            let toca = bx < ex + CELDA.0 && bx + bw > ex && by < ey + CELDA.1 && by + bh > ey;
+            let ex = self.zona.0 + elemento.celda.0 as f32 * celda.0;
+            let ey = self.zona.1 + elemento.celda.1 as f32 * celda.1;
+            let toca = bx < ex + celda.0 && bx + bw > ex && by < ey + celda.1 && by + bh > ey;
             // Lo que ya estaba seleccionado antes de empezar la banda se
             // conserva: sin esto, Ctrl+banda deseleccionaría lo anterior.
             let quiero = toca || previa.get(n).copied().unwrap_or(false);
@@ -500,10 +721,12 @@ impl Escritorio {
         let Some((dx, dy)) = self.arrastre.take() else {
             return false;
         };
-        let paso = ((dx / CELDA.0).round() as i32, (dy / CELDA.1).round() as i32);
+        let celda = self.celda();
+        let paso = ((dx / celda.0).round() as i32, (dy / celda.1).round() as i32);
         if paso == (0, 0) {
             return false;
         }
+        self.orden = None;
         // Las celdas de los que **no** se mueven son las que hay que respetar;
         // entre los arrastrados se resuelven los choques por orden.
         let mut ocupadas: Vec<(i32, i32)> = self
@@ -555,10 +778,13 @@ impl Escritorio {
         let Some(elemento) = self.elementos.get(i) else {
             return Space::new().into();
         };
+        let celda = self.celda();
+        let lado = ICONO * self.tamano.escala();
         let dibujo: PanelElement<'_> = match &elemento.icono {
-            Some(ic) => crate::icono::ver(ic, ICONO, ICONO),
-            None => Space::new().width(Length::Fixed(ICONO)).into(),
+            Some(ic) => crate::icono::ver(ic, lado, lado),
+            None => Space::new().width(Length::Fixed(lado)).into(),
         };
+        let dibujo = con_marca(dibujo, lado, elemento.acceso);
         // El nombre va partido en **dos renglones exactos**, hechos aquí y con
         // el ajuste de iced apagado. Dejarle partir a él no vale: no sabe
         // cuándo parar, y «captura de pantalla 2026-08-20.png» salía en tres
@@ -567,7 +793,7 @@ impl Escritorio {
         //
         // El ancho útil son los 96 de la celda menos los 4+4 de su relleno y
         // los 4+4 de la pastilla: con 80 el nombre se salía por los dos lados.
-        let ancho_texto = CELDA.0 - 24.0;
+        let ancho_texto = celda.0 - 24.0;
         let nombre = dos_lineas(&elemento.nombre, ancho_texto, TAMANO_NOMBRE);
         // Blanco sobre pastilla oscura, y no los colores del tema: aquí debajo
         // no hay una tarjeta sino el fondo de pantalla, que puede ser
@@ -603,13 +829,13 @@ impl Escritorio {
             ..Default::default()
         });
 
-        let celda = column![dibujo, etiqueta]
+        let contenido = column![dibujo, etiqueta]
             .spacing(4)
             .align_x(Horizontal::Center);
 
-        container(celda)
-            .width(Length::Fixed(CELDA.0))
-            .height(Length::Fixed(CELDA.1))
+        container(contenido)
+            .width(Length::Fixed(celda.0))
+            .height(Length::Fixed(celda.1))
             .padding([6, 4])
             .align_x(Horizontal::Center)
             .style(move |_theme: &iced_widget::Theme| container::Style {
@@ -624,6 +850,89 @@ impl Escritorio {
             })
             .into()
     }
+}
+
+/// Lo que ocupa una ruta: el archivo, o todo lo de dentro de una carpeta.
+///
+/// Con tope de 20 000 entradas: esto se calcula al abrir un diálogo, y una
+/// carpeta con un `node_modules` dentro tardaría segundos en recorrerse. Por
+/// encima del tope la cifra se queda corta, que para «ocupa unos 3 GB» basta.
+// añadido en la 0.2.3
+pub fn peso(ruta: &Path) -> u64 {
+    let mut pendientes = vec![ruta.to_path_buf()];
+    let (mut total, mut vistas) = (0u64, 0usize);
+    while let Some(r) = pendientes.pop() {
+        vistas += 1;
+        if vistas > 20_000 {
+            break;
+        }
+        // `symlink_metadata`: un enlace cuenta lo que ocupa él, no lo que
+        // apunta (y así un enlace a la carpeta de arriba no da vueltas).
+        let Ok(meta) = std::fs::symlink_metadata(&r) else { continue };
+        if meta.is_dir() {
+            if let Ok(d) = std::fs::read_dir(&r) {
+                pendientes.extend(d.filter_map(Result::ok).map(|e| e.path()));
+            }
+        } else {
+            total += meta.len();
+        }
+    }
+    total
+}
+
+/// El icono con la marca de acceso directo abajo a la izquierda, como el
+/// alias de macOS: un círculo blanco con la flecha. Roto, el icono se apaga y
+/// la marca pasa a un aviso naranja.
+///
+/// Blanco y negro fijos y no del tema: va sobre el fondo de pantalla, igual
+/// que la pastilla del nombre (ver [`Escritorio::ver`]).
+// añadido en la 0.2.3
+fn con_marca(dibujo: PanelElement<'_>, lado: f32, acceso: Acceso) -> PanelElement<'_> {
+    let (fondo, glifo) = match acceso {
+        Acceso::No => return dibujo,
+        Acceso::Si => (Color::WHITE, "enlace-flecha"),
+        // El naranja de aviso del HIG, fijo: va sobre el fondo de pantalla.
+        Acceso::Roto => (Color::from_rgb8(0xFF, 0x9F, 0x0A), "aviso"),
+    };
+    // 18 a tamaño medio: legible sin tapar media carpeta.
+    let marca = (lado * 0.375).round();
+    let glifo = match crate::icono::propio(glifo) {
+        Some(ic) => crate::icono::ver_teñido_propio(&ic, marca * 0.6, Color::BLACK),
+        None => Space::new().into(),
+    };
+    iced_widget::stack![
+        container(dibujo)
+            .width(Length::Fixed(lado))
+            .height(Length::Fixed(lado)),
+        container(
+            container(glifo)
+                .width(Length::Fixed(marca))
+                .height(Length::Fixed(marca))
+                .center_x(Length::Fixed(marca))
+                .center_y(Length::Fixed(marca))
+                .style(move |_| container::Style {
+                    background: Some(fondo.into()),
+                    border: Border {
+                        radius: (marca / 2.0).into(),
+                        ..Default::default()
+                    },
+                    shadow: iced_core::Shadow {
+                        color: Color {
+                            a: 0.35,
+                            ..Color::BLACK
+                        },
+                        offset: iced_core::Vector::new(0.0, 1.0),
+                        blur_radius: 3.0,
+                    },
+                    ..Default::default()
+                })
+        )
+        .width(Length::Fixed(lado))
+        .height(Length::Fixed(lado))
+        .align_left(Length::Fixed(lado))
+        .align_bottom(Length::Fixed(lado)),
+    ]
+    .into()
 }
 
 /// Parte un nombre en como mucho dos renglones que quepan en `ancho`.
@@ -764,6 +1073,13 @@ impl Elemento {
     // modified 0.1.1 -- carpetas con su color y lanzadores sin icono con el de fichero
     fn leer(ruta: &Path, colores: &HashMap<String, String>) -> Option<Self> {
         let nombre_fichero = ruta.file_name()?.to_string_lossy().into_owned();
+        // `symlink_metadata` no sigue el enlace: es la única forma de saber
+        // que lo es. Si sigue roto, `exists` (que sí lo sigue) dice que no.
+        let acceso = match std::fs::symlink_metadata(ruta).map(|m| m.file_type().is_symlink()) {
+            Ok(true) if ruta.exists() => Acceso::Si,
+            Ok(true) => Acceso::Roto,
+            _ => Acceso::No,
+        };
         // Un `.desktop` en el escritorio es un lanzador, no un fichero de
         // texto: enseña su `Name` y su icono, y al abrirlo se ejecuta su
         // `Exec`. Es lo único que distingue un escritorio de un listado.
@@ -778,6 +1094,7 @@ impl Elemento {
                 // en blanco: se le pone el de fichero, como a cualquier otro.
                 icono: crate::icono::cargar(&app.icono).or_else(|| Some(icono_fichero(ruta))),
                 color: None,
+                acceso,
                 celda: (-1, -1),
                 seleccionado: false,
             });
@@ -787,9 +1104,12 @@ impl Elemento {
             .then(|| colores.get(ruta.to_string_lossy().as_ref()).cloned())
             .flatten()
             .filter(|c| hex_valido(c));
-        let icono = match carpeta {
-            true => icono_carpeta(&nombre_fichero, color.as_deref()),
-            false => icono_fichero(ruta),
+        // Un acceso directo roto no tiene a qué parecerse: una hoja gris
+        // sin extensión dice «aquí había algo» sin fingir lo que era.
+        let icono = match (acceso, carpeta) {
+            (Acceso::Roto, _) => icono_fichero(Path::new("")),
+            (_, true) => icono_carpeta(&nombre_fichero, color.as_deref()),
+            (_, false) => icono_fichero(ruta),
         };
         Some(Self {
             nombre: nombre_fichero,
@@ -797,6 +1117,7 @@ impl Elemento {
             orden: format!("xdg-open {}", entrecomillar(ruta)),
             icono: Some(icono),
             color,
+            acceso,
             celda: (-1, -1),
             seleccionado: false,
         })
@@ -950,7 +1271,7 @@ fn guardar_colores(rutas: &[String], color: Option<&str>) -> std::io::Result<()>
 /// Entrecomilla una ruta para `sh -c`: es lo que ejecuta el compositor, y un
 /// nombre con espacios o con `;` no puede acabar siendo dos órdenes.
 // 0.1.0
-fn entrecomillar(ruta: &Path) -> String {
+pub fn entrecomillar(ruta: &Path) -> String {
     format!("'{}'", ruta.to_string_lossy().replace('\'', r"'\''"))
 }
 
@@ -1098,7 +1419,7 @@ fn civil_desde_dias(dias: i64) -> (i64, u32, u32) {
 }
 
 // 0.1.0
-fn carpeta_escritorio() -> Option<PathBuf> {
+pub fn carpeta_escritorio() -> Option<PathBuf> {
     // La escotilla es para la previsualización y para las pruebas: apuntar a
     // una carpeta de mentira es la única forma de mirar la rejilla sin
     // ensuciar el escritorio de verdad de quien ejecuta el ejemplo.
@@ -1154,10 +1475,13 @@ mod tests {
                     orden: String::new(),
                     icono: None,
                     color: None,
+                    acceso: Acceso::No,
                     celda: (-1, -1),
                     seleccionado: false,
                 })
                 .collect(),
+            tamano: Tamano::Mediano,
+            orden: None,
             zona: (0.0, 0.0, 0.0, 0.0),
             filas: 1,
             columnas: 1,
@@ -1307,7 +1631,7 @@ mod tests {
             std::env::set_var("XDG_DATA_HOME", &datos_tmp);
         }
 
-        let mut e = Escritorio::new(32.0, (1440.0, 900.0), true);
+        let mut e = Escritorio::new(32.0, (1440.0, 900.0), true, Tamano::Mediano);
         assert_eq!(e.cuantos(), 0, "el directorio de prueba nace vacío");
 
         assert!(e.crear_nuevo(NuevoElemento::Carpeta, 32.0, (1440.0, 900.0)));

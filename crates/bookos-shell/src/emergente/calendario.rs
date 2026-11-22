@@ -269,7 +269,7 @@ impl Calendario {
         );
         let flecha = |nombre: &str| -> PanelElement<'static> {
             container(match icono::propio(nombre) {
-                Some(ic) => icono::ver_teñido_propio(&ic, 16.0, tema::TEXTO2),
+                Some(ic) => icono::ver_teñido_propio(&ic, 16.0, tema::texto2()),
                 None => Space::new().width(Length::Fixed(16.0)).into(),
             })
             .width(Length::Fixed(FLECHA))
@@ -302,7 +302,7 @@ impl Calendario {
                     text(nombre)
                         .size(12)
                         .font(control::peso(Weight::Medium))
-                        .color(tema::TEXTO2),
+                        .color(tema::texto2()),
                 )
                 .width(Length::FillPortion(1))
                 .align_x(Horizontal::Center),

@@ -37,6 +37,10 @@ pub struct Sonando {
     /// Posición y duración en segundos, si el reproductor las publica.
     pub posicion: Option<u64>,
     pub duracion: Option<u64>,
+    /// Posición y duración en milisegundos, para avanzar la barra de progreso
+    /// con suavidad entre lecturas de MPRIS.
+    pub posicion_ms: Option<u64>,
+    pub duracion_ms: Option<u64>,
     /// Códec, frecuencia y bits del fichero. Solo lo publica BookOS Player, en
     /// claves `bookos:*`: MPRIS no tiene ninguna para esto.
     // añadido en la 0.2.0
@@ -208,11 +212,29 @@ impl Sonando {
         })
     }
 
+    /// Todas las fuentes multimedia activas, primero las que están
+    /// reproduciendo y después las pausadas.
+    // añadido en la 0.2.4
+    pub fn leer_todos() -> Vec<Self> {
+        Self::consultar_todos().unwrap_or_else(|error| {
+            tracing::debug!("no se pudieron consultar los reproductores: {error}");
+            Vec::new()
+        })
+    }
+
     /// Una lectura fallida no confirma que se haya cerrado el reproductor.
     /// El centro conserva su última tarjeta en ese caso.
     // 0.1.0
     pub fn consultar() -> Result<Option<Self>, String> {
-        let mut pausado = None;
+        Self::consultar_todos().map(|lista| lista.into_iter().next())
+    }
+
+    /// Consulta todos los reproductores MPRIS válidos: los que están
+    /// reproduciendo primero y los pausados después.
+    // añadido en la 0.2.4
+    pub fn consultar_todos() -> Result<Vec<Self>, String> {
+        let mut reproduciendo = Vec::new();
+        let mut pausados = Vec::new();
         let mut fallo = None;
         for bus in reproductores()? {
             let lectura =
@@ -228,22 +250,30 @@ impl Sonando {
                     continue;
                 }
             };
-            let posicion = propiedad(&bus, "Position")
-                .and_then(|s| numero(&s))
-                .map(|us| us / 1_000_000);
-            let Some(actual) = Self::desde_mpris(bus, &estado, &metadatos, posicion) else {
+            let posicion_us = propiedad(&bus, "Position").and_then(|s| numero(&s));
+            let Some(actual) = Self::desde_mpris(bus, &estado, &metadatos, posicion_us) else {
                 continue;
             };
-            if actual.reproduciendo {
-                return Ok(Some(actual));
+            // El `<audio>` del Player hace que WebKit publique su propia sesión
+            // con el título de la ventana («BookOS Player») y sin carátula. Lo
+            // de verdad va por `bookosplayer`; si ese falta, mejor sin tarjeta
+            // que una tarjeta vacía. Visto en el bloqueo el 2026-11-18.
+            if actual.bus.contains(".org.webkit.app-") && actual.aplicacion == "bookos-player" {
+                continue;
             }
-            pausado.get_or_insert(actual);
+            if actual.reproduciendo {
+                reproduciendo.push(actual);
+            } else {
+                pausados.push(actual);
+            }
         }
-        match (pausado, fallo) {
-            (Some(actual), _) => Ok(Some(actual)),
-            (None, Some(error)) => Err(error),
-            (None, None) => Ok(None),
+        reproduciendo.extend(pausados);
+        if reproduciendo.is_empty()
+            && let Some(error) = fallo
+        {
+            return Err(error);
         }
+        Ok(reproduciendo)
     }
 
     // 0.1.0
@@ -251,14 +281,21 @@ impl Sonando {
         bus: String,
         estado: &str,
         metadatos: &str,
-        posicion: Option<u64>,
+        posicion_us: Option<u64>,
     ) -> Option<Self> {
         if es_imagen(&bus, metadatos) {
             return None;
         }
         let titulo = campo(metadatos, "xesam:title")?;
         let reproduciendo = estado.contains("Playing");
-        let duracion = campo_numero(metadatos, "mpris:length").map(|us| us / 1_000_000);
+        let duracion_us = campo_numero(metadatos, "mpris:length");
+        let duracion_ms = duracion_us.map(|us| us / 1_000);
+        let duracion = duracion_us.map(|us| us / 1_000_000);
+        let posicion_ms = match (posicion_us.map(|us| us / 1_000), duracion_ms) {
+            (Some(p), Some(d)) if d > 0 => Some(p.min(d)),
+            (p, _) => p,
+        };
+        let posicion = posicion_ms.map(|ms| ms / 1_000);
         // KDE Connect extrapola la posición; un desfase no prueba que se haya
         // cerrado la sesión ni autoriza a ocultar sus controles.
         if posicion.is_none() || duracion.is_none() {
@@ -294,6 +331,8 @@ impl Sonando {
             reproduciendo,
             posicion,
             duracion,
+            posicion_ms,
+            duracion_ms,
             calidad: campo(metadatos, "bookos:codec").map(|codec| Calidad {
                 codec,
                 frecuencia: campo_numero(metadatos, "bookos:samplerate").unwrap_or(0) as u32,
@@ -339,12 +378,26 @@ impl Sonando {
         self.bus.contains(".kdeconnect.")
     }
 
+    /// Posición en segundos con precisión de milisegundos si está disponible.
+    pub fn posicion_seg(&self) -> Option<f64> {
+        self.posicion_ms
+            .map(|ms| ms as f64 / 1000.0)
+            .or_else(|| self.posicion.map(|s| s as f64))
+    }
+
+    /// Duración en segundos con precisión de milisegundos si está disponible.
+    pub fn duracion_seg(&self) -> Option<f64> {
+        self.duracion_ms
+            .map(|ms| ms as f64 / 1000.0)
+            .or_else(|| self.duracion.map(|s| s as f64))
+    }
+
     /// De 0 a 1, para la barra de progreso. `None` si el reproductor no publica
     /// las dos cosas —los navegadores a menudo no dan `Position`—.
     // 0.1.0
     pub fn avance(&self) -> Option<f32> {
-        let (p, d) = (self.posicion?, self.duracion?);
-        (d > 0).then(|| (p as f32 / d as f32).clamp(0.0, 1.0))
+        let (p, d) = (self.posicion_seg()?, self.duracion_seg()?);
+        (d > 0.0).then(|| (p / d).clamp(0.0, 1.0) as f32)
     }
 }
 
@@ -513,6 +566,10 @@ fn llamar(bus: &str, metodo: &[&str]) -> bool {
         .args([
             "--user",
             "call",
+            // Sin esto un `Seek` hacia atrás no llegaba nunca: busctl leía
+            // «-5000000» como una opción («invalid option -- '5'») y el error
+            // se perdía en el stderr nulo.
+            "--",
             bus,
             "/org/mpris/MediaPlayer2",
             "org.mpris.MediaPlayer2.Player",
@@ -800,7 +857,7 @@ mod tests {
             "org.mpris.MediaPlayer2.prueba".into(),
             "Playing",
             VOLCADO,
-            Some(6411),
+            Some(6_411_000_000),
         )
         .expect("el desfase no elimina una sesión con título");
         assert_eq!(actual.posicion, Some(253));
@@ -817,7 +874,7 @@ mod tests {
             "org.mpris.MediaPlayer2.prueba".into(),
             "Paused",
             VOLCADO,
-            Some(6411),
+            Some(6_411_000_000),
         )
         .expect("la pausa sigue siendo una sesión");
         assert!(!pausa.reproduciendo);
@@ -826,7 +883,7 @@ mod tests {
             "org.mpris.MediaPlayer2.prueba".into(),
             "Playing",
             r#""xesam:title" s "Directo""#,
-            Some(6411),
+            Some(6_411_000_000),
         )
         .expect("el directo no necesita duración");
         assert_eq!(directo.posicion, Some(6411));

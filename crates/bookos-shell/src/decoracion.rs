@@ -220,7 +220,7 @@ pub fn vista(estado: &Estado, ancho: f32) -> PanelElement<'static> {
     let color = if estado.activa {
         tema::alfa(tema::texto(), 0.85)
     } else {
-        tema::TEXTO2
+        tema::texto2()
     };
     let rotulo: PanelElement<'static> = container(
         text(titulo)
@@ -245,7 +245,7 @@ pub fn vista(estado: &Estado, ancho: f32) -> PanelElement<'static> {
                 container(text(titulo).size(tema::T_PEQUENO).color(if activa {
                     tema::texto()
                 } else {
-                    tema::TEXTO2
+                    tema::texto2()
                 }))
                 .width(Length::Fixed(ancho_pestana))
                 .height(Length::Fill)

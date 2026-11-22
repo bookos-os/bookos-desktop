@@ -34,7 +34,7 @@ use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement};
 use smithay::backend::renderer::gles::{
     GlesError, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, ffi,
 };
-use smithay::backend::renderer::utils::CommitCounter;
+use smithay::backend::renderer::utils::{CommitCounter, OpaqueRegions};
 use smithay::utils::{Buffer as BufferCoords, Physical, Rectangle, Scale, Transform};
 
 /// El shader del desenfoque.
@@ -83,25 +83,28 @@ float dist_caja(vec2 p, vec2 medio, float r) {
 }
 
 void main() {
-    // Nueve muestras: el centro pesa cuatro, las cuatro en cruz dos y las
-    // diagonales una. Es un gaussiano de 3x3 sobre un nivel que el hardware ya
-    // ha promediado, que es de donde sale el radio grande casi gratis.
-    vec4 c = texture2D(tex, v_coords) * 4.0;
-    c += texture2D(tex, v_coords + vec2( paso.x, 0.0)) * 2.0;
-    c += texture2D(tex, v_coords + vec2(-paso.x, 0.0)) * 2.0;
-    c += texture2D(tex, v_coords + vec2( 0.0, paso.y)) * 2.0;
-    c += texture2D(tex, v_coords + vec2( 0.0,-paso.y)) * 2.0;
-    c += texture2D(tex, v_coords + vec2( paso.x, paso.y));
-    c += texture2D(tex, v_coords + vec2(-paso.x, paso.y));
-    c += texture2D(tex, v_coords + vec2( paso.x,-paso.y));
-    c += texture2D(tex, v_coords + vec2(-paso.x,-paso.y));
-    c /= 16.0;
+    // Si hay redondeo, descartar las esquinas antes de muestrear la textura
+    // ahorra lecturas y mezcla en los píxeles completamente transparentes.
+    // Sin redondeo (panel, launchpad), `dentro` es 1 exacto sin calcular SDF.
+    float dentro = 1.0;
+    if (radio > 0.0) {
+        vec2 p = (v_coords - uv0) / uv_tam * tamano;
+        float d = dist_caja(p - tamano * 0.5, tamano * 0.5, radio);
+        dentro = 1.0 - smoothstep(-1.0, 0.0, d);
+        if (dentro <= 0.0) {
+            discard;
+        }
+    }
 
-    // El borde se difumina en un píxel: cortar en seco deja las esquinas
-    // dentadas, que es lo primero que delata un redondeo hecho a mano.
-    vec2 p = (v_coords - uv0) / uv_tam * tamano;
-    float d = dist_caja(p - tamano * 0.5, tamano * 0.5, radio);
-    float dentro = 1.0 - smoothstep(-1.0, 0.0, d);
+    // Cuatro muestras bilineales en ±paso/2 aprovechan el filtro GL_LINEAR del
+    // hardware para reproducir el núcleo gaussiano 3×3 (4-2-1 / 16) con menos
+    // de la mitad de lecturas de textura (4 en lugar de 9 por píxel).
+    vec2 medio = paso * 0.5;
+    vec4 c = texture2D(tex, v_coords + vec2( medio.x,  medio.y));
+    c +=     texture2D(tex, v_coords + vec2(-medio.x,  medio.y));
+    c +=     texture2D(tex, v_coords + vec2( medio.x, -medio.y));
+    c +=     texture2D(tex, v_coords + vec2(-medio.x, -medio.y));
+    c *= 0.25;
 
     gl_FragColor = vec4(c.rgb * tinte, 1.0) * alpha * dentro;
 }
@@ -140,14 +143,19 @@ const TINTE: f32 = 0.85;
 /// entre frames.
 pub struct Cristal {
     programa: GlesTexProgram,
-    /// El fondo del escritorio ya reducido a [`NIVEL`] y subido con mipmaps,
-    /// del que sale el desenfoque, junto al tamaño **original** del fondo: las
-    /// cuentas de qué trozo queda detrás de cada zona se hacen en ese tamaño.
+    /// El fondo del escritorio ya reducido a [`NIVEL`] (1/8 de lado), del que
+    /// sale el desenfoque de dock y emergentes, junto al tamaño **original**
+    /// del fondo: las cuentas de qué trozo queda detrás de cada zona se hacen
+    /// en ese tamaño.
     ///
     /// Se guarda el `GlesTexture` y no el identificador crudo porque Smithay
     /// libera la textura cuando el último `GlesTexture` que la envuelve se
     /// suelta: quedándonos con uno, sobrevive mientras haya escritorio.
     fondo: Option<(GlesTexture, (i32, i32))>,
+    /// Versión aún más reducida (1/16 de lado) y pre-suavizada para zonas a
+    /// pantalla completa como el launchpad (`fuerza > 1.5`): evita que separar
+    /// las 4 muestras bilineales en el shader produzca doble imagen.
+    fondo_suave: Option<GlesTexture>,
 }
 
 impl Cristal {
@@ -192,6 +200,7 @@ impl Cristal {
             Ok(programa) => Some(Rc::new(RefCell::new(Self {
                 programa,
                 fondo: None,
+                fondo_suave: None,
             }))),
             Err(err) => {
                 tracing::warn!("sin desenfoque, el driver no compiló el shader: {err}");
@@ -210,40 +219,54 @@ impl Cristal {
             tracing::warn!("el fondo no tiene los píxeles que dice su tamaño");
             return;
         }
-        let (reducido, tam_reducido) = reducir(rgba, tam);
+        let (reducido, tam_reducido) = reducir_rgba(rgba, tam);
+        self.subir_reducido(renderer, &reducido, tam_reducido, tam);
+    }
+
+    /// Sube un fondo ya reducido en un hilo aparte, evitando recorrer los 20 MB
+    /// del original en el hilo del compositor.
+    // added 0.2.3
+    pub fn subir_reducido(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        reducido: &[u8],
+        tam_reducido: (i32, i32),
+        tam: (i32, i32),
+    ) {
+        if reducido.len() < (tam_reducido.0 * tam_reducido.1 * 4) as usize {
+            return;
+        }
+        let (suave, tam_suave) = suavizar_para_pantalla(reducido, tam_reducido);
         if let Some((ref tex, tam_actual)) = self.fondo
             && tam_actual == tam
+            && actualizar_textura(renderer, tex, reducido, tam_reducido)
         {
-            let tex_id = tex.tex_id();
-            if renderer
-                .with_context(|gl| unsafe {
-                    gl.BindTexture(ffi::TEXTURE_2D, tex_id);
-                    gl.TexSubImage2D(
-                        ffi::TEXTURE_2D,
-                        0,
-                        0,
-                        0,
-                        tam_reducido.0,
-                        tam_reducido.1,
-                        ffi::RGBA,
-                        ffi::UNSIGNED_BYTE,
-                        reducido.as_ptr() as *const _,
-                    );
-                    gl.GenerateMipmap(ffi::TEXTURE_2D);
-                    gl.BindTexture(ffi::TEXTURE_2D, 0);
-                })
-                .is_ok()
+            if let Some(ref tex_suave) = self.fondo_suave
+                && tex_suave.size() == (tam_suave.0, tam_suave.1).into()
+                && actualizar_textura(renderer, tex_suave, &suave, tam_suave)
             {
                 return;
             }
+            self.fondo_suave = crear_textura(renderer, &suave, tam_suave);
+            return;
         }
-        self.fondo = crear_textura(renderer, &reducido, tam_reducido).map(|t| (t, tam));
+        self.fondo = crear_textura(renderer, reducido, tam_reducido).map(|t| (t, tam));
+        self.fondo_suave = crear_textura(renderer, &suave, tam_suave);
     }
 
-    /// La textura del fondo, si ya está subida.
+    /// La textura del fondo adecuada para `fuerza` y el multiplicador efectivo
+    /// del paso en el shader. Para el launchpad (`fuerza > 1.5`) devuelve la
+    /// versión 1/16 pre-suavizada con paso 1.0, evitando doble imagen.
     // 0.1.0
-    pub fn textura(&self) -> Option<(GlesTexture, (i32, i32))> {
-        self.fondo.clone()
+    // modified 0.2.4 -- selecciona la textura pre-suavizada cuando la fuerza es alta
+    pub fn textura_para(&self, fuerza: f32) -> Option<(GlesTexture, (i32, i32), f32)> {
+        let (tex, tam) = self.fondo.as_ref()?;
+        if fuerza > 1.5
+            && let Some(suave) = self.fondo_suave.as_ref()
+        {
+            return Some((suave.clone(), *tam, 1.0));
+        }
+        Some((tex.clone(), *tam, fuerza))
     }
 
     // 0.1.0
@@ -257,45 +280,164 @@ impl Cristal {
 /// Los bordes de bloque se reparten sobre la imagen entera para que un lado
 /// que no es múltiplo de ocho siga cubriendo el fondo completo.
 // añadido en la 0.2.0
-fn reducir(rgba: &[u8], tam: (i32, i32)) -> (Vec<u8>, (i32, i32)) {
-    let (ancho, alto) = (tam.0 as usize, tam.1 as usize);
+// modified 0.2.3 -- indexado directo por bloques de 4 bytes y pública en el crate para correr fuera del hilo principal
+pub(crate) fn reducir_rgba(rgba: &[u8], tam: (i32, i32)) -> (Vec<u8>, (i32, i32)) {
+    let (ancho, alto) = (tam.0.max(1) as usize, tam.1.max(1) as usize);
     let (ancho_r, alto_r) = ((ancho >> NIVEL).max(1), (alto >> NIVEL).max(1));
+    let pixeles = rgba.as_chunks::<4>().0;
+    if pixeles.len() < ancho * alto {
+        return (vec![0u8; ancho_r * alto_r * 4], (ancho_r as i32, alto_r as i32));
+    }
     let columnas: Vec<(usize, usize)> = (0..ancho_r)
         .map(|x| (x * ancho / ancho_r, (x + 1) * ancho / ancho_r))
         .collect();
     let mut salida = vec![0u8; ancho_r * alto_r * 4];
-    let mut suma = vec![0u32; ancho_r * 4];
+    let mut suma = vec![[0u32; 4]; ancho_r];
     for (y, fila_salida) in salida.chunks_exact_mut(ancho_r * 4).enumerate() {
         let (y0, y1) = (y * alto / alto_r, (y + 1) * alto / alto_r);
-        suma.fill(0);
-        for fila in rgba[y0 * ancho * 4..y1 * ancho * 4].chunks_exact(ancho * 4) {
-            for (acumulado, &(x0, x1)) in suma.chunks_exact_mut(4).zip(&columnas) {
-                for pixel in fila[x0 * 4..x1 * 4].chunks_exact(4) {
-                    for (a, &c) in acumulado.iter_mut().zip(pixel) {
-                        *a += c as u32;
-                    }
+        suma.fill([0; 4]);
+        for sy in y0..y1 {
+            let fila = &pixeles[sy * ancho..(sy + 1) * ancho];
+            for (bx, &(x0, x1)) in columnas.iter().enumerate() {
+                let mut acc = suma[bx];
+                for &p in &fila[x0..x1] {
+                    acc[0] += p[0] as u32;
+                    acc[1] += p[1] as u32;
+                    acc[2] += p[2] as u32;
+                    acc[3] += p[3] as u32;
                 }
+                suma[bx] = acc;
             }
         }
-        for ((destino, acumulado), &(x0, x1)) in fila_salida
-            .chunks_exact_mut(4)
-            .zip(suma.chunks_exact(4))
-            .zip(&columnas)
-        {
-            let n = ((y1 - y0) * (x1 - x0)) as u32;
-            for (d, &a) in destino.iter_mut().zip(acumulado) {
-                *d = ((a + n / 2) / n) as u8;
-            }
+        let filas = (y1 - y0) as u32;
+        for (bx, &(x0, x1)) in columnas.iter().enumerate() {
+            let n = (filas * (x1 - x0) as u32).max(1);
+            let mitad = n / 2;
+            let acc = suma[bx];
+            let dst = &mut fila_salida[bx * 4..bx * 4 + 4];
+            dst[0] = ((acc[0] + mitad) / n) as u8;
+            dst[1] = ((acc[1] + mitad) / n) as u8;
+            dst[2] = ((acc[2] + mitad) / n) as u8;
+            dst[3] = ((acc[3] + mitad) / n) as u8;
         }
     }
     (salida, (ancho_r as i32, alto_r as i32))
 }
 
-/// Sube el fondo ya reducido a una textura con mipmaps. Los mipmaps siguen
-/// haciendo falta aunque casi siempre se magnifique: con `LINEAR_MIPMAP_LINEAR`
-/// una textura sin la cadena entera está incompleta y GLES la lee negra.
+/// Reduce un nivel más (de 1/8 a 1/16) y aplica dos pasadas de filtro
+/// gaussiano separable `[1, 2, 1] / 4` en CPU. Sobre ~180×112 píxeles cuesta
+/// decenas de microsegundos y solo corre al cambiar el fondo, eliminando por
+/// completo la doble imagen en el launchpad sin añadir lecturas en GPU.
+// añadido en la 0.2.4
+fn suavizar_para_pantalla(rgba: &[u8], tam: (i32, i32)) -> (Vec<u8>, (i32, i32)) {
+    let (w, h) = (tam.0.max(1) as usize, tam.1.max(1) as usize);
+    let (wr, hr) = ((w >> 1).max(1), (h >> 1).max(1));
+    let src = rgba.as_chunks::<4>().0;
+    if src.len() < w * h {
+        return (vec![0u8; wr * hr * 4], (wr as i32, hr as i32));
+    }
+    let mut a = vec![[0u8; 4]; wr * hr];
+    for y in 0..hr {
+        let (y0, y1) = (y * h / hr, ((y + 1) * h / hr).max(y * h / hr + 1));
+        for x in 0..wr {
+            let (x0, x1) = (x * w / wr, ((x + 1) * w / wr).max(x * w / wr + 1));
+            let mut acc = [0u32; 4];
+            let mut n = 0u32;
+            for sy in y0..y1 {
+                let fila = &src[sy * w..(sy + 1) * w];
+                for &p in &fila[x0..x1] {
+                    acc[0] += p[0] as u32;
+                    acc[1] += p[1] as u32;
+                    acc[2] += p[2] as u32;
+                    acc[3] += p[3] as u32;
+                    n += 1;
+                }
+            }
+            let mitad = n / 2;
+            a[y * wr + x] = [
+                ((acc[0] + mitad) / n) as u8,
+                ((acc[1] + mitad) / n) as u8,
+                ((acc[2] + mitad) / n) as u8,
+                ((acc[3] + mitad) / n) as u8,
+            ];
+        }
+    }
+    let mut b = vec![[0u8; 4]; wr * hr];
+    for _ in 0..2 {
+        // Pasada horizontal [1, 2, 1] / 4
+        for y in 0..hr {
+            let fila = y * wr;
+            for x in 0..wr {
+                let l = a[fila + x.saturating_sub(1)];
+                let c = a[fila + x];
+                let r = a[fila + (x + 1).min(wr - 1)];
+                b[fila + x] = [
+                    ((l[0] as u16 + (c[0] as u16) * 2 + r[0] as u16 + 2) >> 2) as u8,
+                    ((l[1] as u16 + (c[1] as u16) * 2 + r[1] as u16 + 2) >> 2) as u8,
+                    ((l[2] as u16 + (c[2] as u16) * 2 + r[2] as u16 + 2) >> 2) as u8,
+                    ((l[3] as u16 + (c[3] as u16) * 2 + r[3] as u16 + 2) >> 2) as u8,
+                ];
+            }
+        }
+        // Pasada vertical [1, 2, 1] / 4
+        for y in 0..hr {
+            let u = y.saturating_sub(1) * wr;
+            let c = y * wr;
+            let d = (y + 1).min(hr - 1) * wr;
+            for x in 0..wr {
+                let pu = b[u + x];
+                let pc = b[c + x];
+                let pd = b[d + x];
+                a[c + x] = [
+                    ((pu[0] as u16 + (pc[0] as u16) * 2 + pd[0] as u16 + 2) >> 2) as u8,
+                    ((pu[1] as u16 + (pc[1] as u16) * 2 + pd[1] as u16 + 2) >> 2) as u8,
+                    ((pu[2] as u16 + (pc[2] as u16) * 2 + pd[2] as u16 + 2) >> 2) as u8,
+                    ((pu[3] as u16 + (pc[3] as u16) * 2 + pd[3] as u16 + 2) >> 2) as u8,
+                ];
+            }
+        }
+    }
+    let salida = a.into_iter().flatten().collect();
+    (salida, (wr as i32, hr as i32))
+}
+
+fn actualizar_textura(
+    renderer: &mut GlesRenderer,
+    tex: &GlesTexture,
+    rgba: &[u8],
+    tam: (i32, i32),
+) -> bool {
+    let tex_id = tex.tex_id();
+    renderer
+        .with_context(|gl| unsafe {
+            gl.BindTexture(ffi::TEXTURE_2D, tex_id);
+            gl.TexSubImage2D(
+                ffi::TEXTURE_2D,
+                0,
+                0,
+                0,
+                tam.0,
+                tam.1,
+                ffi::RGBA,
+                ffi::UNSIGNED_BYTE,
+                rgba.as_ptr() as *const _,
+            );
+            gl.BindTexture(ffi::TEXTURE_2D, 0);
+        })
+        .is_ok()
+}
+
+#[cfg(test)]
+fn reducir(rgba: &[u8], tam: (i32, i32)) -> (Vec<u8>, (i32, i32)) {
+    reducir_rgba(rgba, tam)
+}
+
+/// Sube el fondo ya reducido a una textura sin mipmaps: al estar ya a 1/8 de
+/// lado siempre se magnifica al dibujarse, así que `GL_LINEAR` evita generar
+/// una cadena de mipmaps que no se lee y ahorra ~33 % de VRAM/GTT.
 // 0.1.0
 // modified 0.2.0 -- recibe el fondo ya reducido y no fija el nivel base
+// modified 0.2.4 -- usa GL_LINEAR sin mipmaps en la textura reducida
 fn crear_textura(renderer: &mut GlesRenderer, rgba: &[u8], tam: (i32, i32)) -> Option<GlesTexture> {
     if rgba.len() < (tam.0 * tam.1 * 4) as usize {
         tracing::warn!("el fondo no tiene los píxeles que dice su tamaño");
@@ -306,11 +448,7 @@ fn crear_textura(renderer: &mut GlesRenderer, rgba: &[u8], tam: (i32, i32)) -> O
             let mut id = 0;
             gl.GenTextures(1, &mut id);
             gl.BindTexture(ffi::TEXTURE_2D, id);
-            gl.TexParameteri(
-                ffi::TEXTURE_2D,
-                ffi::TEXTURE_MIN_FILTER,
-                ffi::LINEAR_MIPMAP_LINEAR as i32,
-            );
+            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
             gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
             // Sin esto, las muestras del borde traen el color del lado contrario
             // y el cristal sale con una raya de otro color en cada canto.
@@ -335,7 +473,6 @@ fn crear_textura(renderer: &mut GlesRenderer, rgba: &[u8], tam: (i32, i32)) -> O
                 ffi::UNSIGNED_BYTE,
                 rgba.as_ptr() as *const _,
             );
-            gl.GenerateMipmap(ffi::TEXTURE_2D);
             gl.BindTexture(ffi::TEXTURE_2D, 0);
             id
         })
@@ -441,10 +578,46 @@ impl Element for Desenfoque {
         Transform::Normal
     }
 
+    // añadido en la 0.2.4 -- permite occlusion culling en Smithay (evita pintar
+    // ventanas y fondo tapados detrás del launchpad, panel o interior del dock)
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        regiones_opacas_rect(self.rect.size, self.radio)
+    }
+
     // 0.1.0
     fn kind(&self) -> Kind {
         Kind::Unspecified
     }
+}
+
+/// Rectángulos 100 % opacos (en coordenadas relativas al elemento) de una zona
+/// de cristal. Sin redondeo cubre todo el rectángulo; con redondeo deja fuera
+/// el suavizado de los bordes y las cuatro esquinas.
+fn regiones_opacas_rect(
+    size: smithay::utils::Size<i32, Physical>,
+    radio: f32,
+) -> OpaqueRegions<i32, Physical> {
+    if size.w <= 0 || size.h <= 0 {
+        return OpaqueRegions::default();
+    }
+    if radio <= 0.0 {
+        return OpaqueRegions::from_slice(&[Rectangle::from_size(size)]);
+    }
+    // 2 px de margen en los bordes rectos absorbe el `smoothstep(-1, 0, d)` y
+    // cualquier imprecisión `mediump` en GLES2.
+    let borde = 2;
+    let esquina = radio.ceil().max(0.0) as i32 + borde;
+    let mut regiones = [Rectangle::default(); 2];
+    let mut n = 0;
+    if size.w > borde * 2 && size.h > esquina * 2 {
+        regiones[n] = Rectangle::new((borde, esquina).into(), (size.w - borde * 2, size.h - esquina * 2).into());
+        n += 1;
+    }
+    if size.w > esquina * 2 && size.h > borde * 2 {
+        regiones[n] = Rectangle::new((esquina, borde).into(), (size.w - esquina * 2, size.h - borde * 2).into());
+        n += 1;
+    }
+    OpaqueRegions::from_slice(&regiones[..n])
 }
 
 impl RenderElement<GlesRenderer> for Desenfoque {
@@ -496,14 +669,13 @@ impl RenderElement<GlesRenderer> for Desenfoque {
             1.0,
             Some(cristal.programa()),
             &[
-                // De texels del nivel base a coordenadas de textura. Las
-                // coordenadas siguen siendo las de la textura completa, así que
-                // un texel del nivel 3 son ocho de la original.
+                // De texels de la textura reducida (1/8 o 1/16) a coordenadas
+                // de textura normalizadas [0, 1].
                 Uniform::new(
                     "paso",
                     (
-                        PASO * self.fuerza * (1 << NIVEL) as f32 / ancho_fondo as f32,
-                        PASO * self.fuerza * (1 << NIVEL) as f32 / alto_fondo as f32,
+                        PASO * self.fuerza / reducida.w.max(1) as f32,
+                        PASO * self.fuerza / reducida.h.max(1) as f32,
                     ),
                 ),
                 Uniform::new("tinte", TINTE),
@@ -563,5 +735,43 @@ mod tests {
         let (salida, tam) = reducir(&rgba, (ancho as i32, alto as i32));
         assert_eq!(tam, (170, 1));
         assert!(salida.chunks_exact(4).all(|p| p == [10, 20, 30, 255]));
+    }
+
+    // añadido en la 0.2.4
+    #[test]
+    fn regiones_opacas_sin_radio_cubren_todo_el_rectangulo() {
+        let r = regiones_opacas_rect((2880, 1800).into(), 0.0);
+        let rects: Vec<_> = r.into_iter().collect();
+        assert_eq!(rects, vec![Rectangle::from_size((2880, 1800).into())]);
+    }
+
+    // añadido en la 0.2.4
+    #[test]
+    fn regiones_opacas_con_radio_dejan_fuera_esquinas_y_borde() {
+        let r = regiones_opacas_rect((400, 80).into(), 18.0);
+        let rects: Vec<_> = r.into_iter().collect();
+        assert_eq!(
+            rects,
+            vec![
+                Rectangle::new((2, 20).into(), (396, 40).into()),
+                Rectangle::new((20, 2).into(), (360, 76).into()),
+            ]
+        );
+    }
+
+    // añadido en la 0.2.4
+    #[test]
+    fn regiones_opacas_vacias_si_no_cabe_el_radio() {
+        let r = regiones_opacas_rect((10, 10).into(), 12.0);
+        assert_eq!(r.into_iter().count(), 0);
+    }
+
+    // añadido en la 0.2.4
+    #[test]
+    fn suavizar_para_pantalla_reduce_y_conserva_color_uniforme() {
+        let rgba = [40u8, 80, 120, 255].repeat(32 * 16);
+        let (salida, tam) = suavizar_para_pantalla(&rgba, (32, 16));
+        assert_eq!(tam, (16, 8));
+        assert!(salida.chunks_exact(4).all(|p| p == [40, 80, 120, 255]));
     }
 }

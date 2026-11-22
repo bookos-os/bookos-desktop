@@ -44,9 +44,6 @@ const APP_ID: &str = "com.bookos.buds";
 
 /// Lo que se ve la batería en la isla al sacar los Buds.
 const ISLA_VISIBLE: Duration = Duration::from_secs(6);
-/// Si vuelven antes de esto desde que se guardaron, no se avisa: sacarlos un
-/// momento para recolocarlos no es una novedad.
-const RECIENTE: Duration = Duration::from_secs(5 * 60);
 /// El umbral de batería baja que ya usaba Ajustes.
 const BATERIA_BAJA: u8 = 20;
 /// Pausas entre los tres intentos de abrir el canal. La primera es corta para
@@ -61,8 +58,12 @@ struct Estado {
     /// de qué aparato.
     suelto: BudsStatus,
     conectando: bool,
-    /// Cuándo se desconectó el audio de cada MAC.
-    guardados: HashMap<String, Instant>,
+    /// El id del último aviso de conexión, para reemplazarlo en vez de apilar
+    /// otro igual cuando el Bluetooth parpadea.
+    // añadido en la 0.2.3
+    ultimo_aviso: u32,
+    /// La escucha de los botones del último aviso de conexión.
+    botones: Option<tokio::task::JoinHandle<()>>,
     /// La MAC que acaba de conectar audio: su primer estado va a la isla.
     isla_pendiente: Option<String>,
     baja_avisada: bool,
@@ -502,6 +503,77 @@ where
     }
 }
 
+/// El aviso de «conectados» con la batería de cada pieza. Va por el servidor
+/// de notificaciones normal, con las pistas que el escritorio sabe dibujar
+/// como aros (`x-bookos-forma`); en otro escritorio sale como un aviso de
+/// texto corriente, que también vale.
+// añadido en la 0.2.2
+async fn avisar_conexion(svc: &Servicio, sesion: &Connection, s: &BudsStatus) {
+    let es = en_castellano();
+    let mut medidas = vec![
+        format!("{}={}", if es { "Izq." } else { "L" }, s.battery_l),
+        format!("{}={}", if es { "Dcha." } else { "R" }, s.battery_r),
+    ];
+    // Como en la isla: un estuche a 0 es «no informa», no «vacío».
+    if s.battery_case > 0 {
+        medidas.push(format!(
+            "{}={}",
+            if es { "Estuche" } else { "Case" },
+            s.battery_case
+        ));
+    }
+    let mut pistas: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
+        std::collections::HashMap::new();
+    pistas.insert("x-bookos-forma", "auriculares".into());
+    pistas.insert("x-bookos-medidas", medidas.join(";").into());
+    let resumen = if es {
+        format!("{} conectados", s.model)
+    } else {
+        format!("{} connected", s.model)
+    };
+    let cuerpo = if es {
+        "El audio sale por los auriculares"
+    } else {
+        "Audio is playing through your earbuds"
+    };
+    // Los botones salen al señalar el aviso, como en el diseño.
+    // Un `Vec` y no un `[&str; 4]`: zvariant serializa el array de tamaño fijo
+    // como estructura `(ssss)` y `Notify` pide `as`, así que rechazaba el aviso.
+    let acciones = if es {
+        vec!["sonido", "Ajustes de sonido", "desconectar", "Desconectar"]
+    } else {
+        vec!["sonido", "Sound settings", "desconectar", "Disconnect"]
+    };
+    let respuesta = sesion
+        .call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &cuerpo_notify(
+                svc.estado().ultimo_aviso,
+                resumen.as_str(),
+                cuerpo,
+                acciones,
+                pistas,
+            ),
+        )
+        .await;
+    match respuesta.map(|r| r.body().deserialize::<u32>()) {
+        Ok(Ok(id)) => {
+            svc.estado().ultimo_aviso = id;
+            // Un aviso que caduca sigue en la lista sin cerrarse: sin soltar
+            // el anterior quedaría una escucha viva por cada conexión.
+            let escucha = tokio::spawn(atender_botones(sesion.clone(), svc.clone(), id));
+            if let Some(anterior) = svc.estado().botones.replace(escucha) {
+                anterior.abort();
+            }
+        }
+        Ok(Err(e)) => eprintln!("budsd: Notify: {e}"),
+        Err(e) => eprintln!("budsd: Notify: {e}"),
+    }
+}
+
 // 0.1.0
 async fn publicar_isla(svc: &Servicio, sesion: &Connection, s: &BudsStatus) {
     let es = en_castellano();
@@ -592,16 +664,132 @@ async fn escuchar_isla(sesion: Connection, svc: Servicio) {
         }
         svc.estado().publicacion += 1;
         llamar_isla(&sesion, "CloseActivity", &(APP_ID,)).await;
-        // Si Ajustes ya está abierto, esta segunda copia le pasa la página por
-        // su socket y sale.
-        match tokio::process::Command::new("bookos-settings")
-            .args(["--page", "buds"])
-            .spawn()
-        {
-            Ok(mut hijo) => {
-                tokio::spawn(async move { hijo.wait().await });
+        abrir_ajustes();
+    }
+}
+
+/// Abre Ajustes en la página de los Buds. Si ya está abierto, esta segunda
+/// copia le pasa la página por su socket y sale.
+// añadido en la 0.2.2
+fn abrir_ajustes() {
+    match tokio::process::Command::new("bookos-settings")
+        .args(["--page", "buds"])
+        .spawn()
+    {
+        Ok(mut hijo) => {
+            tokio::spawn(async move { hijo.wait().await });
+        }
+        Err(e) => eprintln!("budsd: no se pudo abrir Ajustes: {e}"),
+    }
+}
+
+type ArgumentosNotify<'a> = (
+    &'static str,
+    u32,
+    &'static str,
+    &'a str,
+    &'a str,
+    Vec<&'a str>,
+    HashMap<&'a str, zbus::zvariant::Value<'a>>,
+    i32,
+);
+
+/// Los argumentos de `Notify`, aparte para poder comprobar su firma en un test:
+/// un tipo equivocado compila y solo falla contra el servidor de avisos.
+// añadido en la 0.2.3
+fn cuerpo_notify<'a>(
+    reemplaza: u32,
+    resumen: &'a str,
+    cuerpo: &'a str,
+    acciones: Vec<&'a str>,
+    pistas: HashMap<&'a str, zbus::zvariant::Value<'a>>,
+) -> ArgumentosNotify<'a> {
+    (
+        "Bluetooth",
+        reemplaza,
+        "bluetooth",
+        resumen,
+        cuerpo,
+        acciones,
+        pistas,
+        4000,
+    )
+}
+
+/// Atiende los dos botones del aviso de conexión. Termina con la primera
+/// acción o cuando el aviso se cierra: `ActionInvoked` y `NotificationClosed`
+/// los emite el servidor sin destinatario, así que se oyen por regla.
+// añadido en la 0.2.2
+async fn atender_botones(sesion: Connection, svc: Servicio, id: u32) {
+    let regla = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.Notifications")
+        .expect("interfaz fija y válida")
+        .build();
+    let Ok(mut flujo) = zbus::MessageStream::for_match_rule(regla, &sesion, Some(8)).await else {
+        return;
+    };
+    while let Some(Ok(mensaje)) = flujo.next().await {
+        match senal_de_aviso(&mensaje, id) {
+            Some(SenalAviso::Accion(accion)) => {
+                match accion.as_str() {
+                    "sonido" => abrir_ajustes(),
+                    "desconectar" => desconectar_audio(&svc.sistema).await,
+                    otra => eprintln!("budsd: acción de aviso desconocida: {otra}"),
+                }
+                return;
             }
-            Err(e) => eprintln!("budsd: no se pudo abrir Ajustes: {e}"),
+            Some(SenalAviso::Cerrado) => return,
+            None => {}
+        }
+    }
+}
+
+/// Lo que dice el servidor de notificaciones sobre un aviso nuestro.
+#[derive(Debug, PartialEq, Eq)]
+enum SenalAviso {
+    Accion(String),
+    Cerrado,
+}
+
+/// Cada señal se lee con su firma: `ActionInvoked` es `us` y
+/// `NotificationClosed` es `uu`. Un `(u32, Value)` común pide `uv` y zvariant
+/// rechaza las dos.
+// añadido en la 0.2.3
+fn senal_de_aviso(mensaje: &zbus::Message, id: u32) -> Option<SenalAviso> {
+    let cabecera = mensaje.header();
+    let cuerpo = mensaje.body();
+    match cabecera.member()?.as_str() {
+        "ActionInvoked" => {
+            let (este, accion) = cuerpo.deserialize::<(u32, String)>().ok()?;
+            (este == id).then_some(SenalAviso::Accion(accion))
+        }
+        "NotificationClosed" => {
+            let (este, _) = cuerpo.deserialize::<(u32, u32)>().ok()?;
+            (este == id).then_some(SenalAviso::Cerrado)
+        }
+        _ => None,
+    }
+}
+
+/// Corta el audio de los Buds por BlueZ; el cierre del canal de control lo
+/// hace `escuchar_bluez` al ver `Connected=false`.
+// añadido en la 0.2.2
+async fn desconectar_audio(sistema: &Connection) {
+    for ruta in buds_conectados(sistema).await {
+        let es_buds = conexion::aparato(sistema, ruta.clone())
+            .await
+            .is_ok_and(|a| a.buds);
+        if !es_buds {
+            continue;
+        }
+        let Ok(dispositivo) =
+            zbus::Proxy::new(sistema, "org.bluez", ruta, "org.bluez.Device1").await
+        else {
+            continue;
+        };
+        if let Err(e) = dispositivo.call_method("Disconnect", &()).await {
+            eprintln!("budsd: Disconnect: {e}");
         }
     }
 }
@@ -629,7 +817,6 @@ async fn supervisar(svc: Servicio, sesion: Connection, mut avisos: mpsc::Unbound
                 } else {
                     eprintln!("budsd: audio desconectado de {}", aparato.mac);
                     svc.soltar(&aparato.mac);
-                    svc.estado().guardados.insert(aparato.mac, Instant::now());
                 }
             }
             Aviso::Estado(mac) => {
@@ -644,21 +831,24 @@ async fn supervisar(svc: Servicio, sesion: Connection, mut avisos: mpsc::Unbound
                         continue;
                     };
                     let es_baja = baja(&s);
-                    let mostrar = if e.isla_pendiente.as_deref() == Some(mac.as_str()) {
-                        e.isla_pendiente = None;
-                        let reciente = e
-                            .guardados
-                            .get(&mac)
-                            .is_some_and(|t| t.elapsed() < RECIENTE);
-                        !reciente || es_baja
-                    } else {
-                        es_baja && !e.baja_avisada
-                    };
+                    // modificado en la 0.2.2 -- al conectarse sale un aviso con los aros; la isla queda para la batería baja
+                    let (mostrar, conexion_nueva) =
+                        if e.isla_pendiente.as_deref() == Some(mac.as_str()) {
+                            // Siempre: lo pidió Evelyn. Un parpadeo del Bluetooth
+                            // no apila avisos porque el nuevo reemplaza al anterior.
+                            // modificado en la 0.2.3
+                            e.isla_pendiente = None;
+                            (true, true)
+                        } else {
+                            (es_baja && !e.baja_avisada, false)
+                        };
                     e.baja_avisada = es_baja;
-                    mostrar.then_some(s)
+                    mostrar.then_some((s, conexion_nueva))
                 };
-                if let Some(s) = publicar {
-                    publicar_isla(&svc, &sesion, &s).await;
+                match publicar {
+                    Some((s, true)) => avisar_conexion(&svc, &sesion, &s).await,
+                    Some((s, false)) => publicar_isla(&svc, &sesion, &s).await,
+                    None => {}
                 }
             }
             Aviso::Caido(mac) => {
@@ -710,4 +900,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(escuchar_isla(sesion.clone(), svc.clone()));
     supervisar(svc, sesion, rx).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod pruebas_aviso {
+    use super::*;
+
+    fn senal<B>(miembro: &str, cuerpo: &B) -> zbus::Message
+    where
+        B: serde::Serialize + zbus::zvariant::DynamicType,
+    {
+        zbus::Message::signal(
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            miembro,
+        )
+        .expect("nombres fijos y válidos")
+        .build(cuerpo)
+        .expect("cuerpo serializable")
+    }
+
+    #[test]
+    fn notify_lleva_la_firma_que_pide_la_especificacion() {
+        let mensaje = senal(
+            "Notify",
+            &cuerpo_notify(0, "r", "c", vec!["a", "b"], HashMap::new()),
+        );
+        // Con paréntesis: es como zbus escribe la firma del cuerpo entero, y la
+        // que el compositor dijo esperar en el log.
+        assert_eq!(mensaje.body().signature().to_string(), "(susssasa{sv}i)");
+    }
+
+    #[test]
+    fn se_leen_las_senales_del_aviso_propio_y_no_las_ajenas() {
+        let accion = senal("ActionInvoked", &(7u32, "desconectar"));
+        assert_eq!(
+            senal_de_aviso(&accion, 7),
+            Some(SenalAviso::Accion("desconectar".into()))
+        );
+        assert_eq!(senal_de_aviso(&accion, 8), None);
+        let cerrado = senal("NotificationClosed", &(7u32, 2u32));
+        assert_eq!(senal_de_aviso(&cerrado, 7), Some(SenalAviso::Cerrado));
+        assert_eq!(senal_de_aviso(&cerrado, 8), None);
+    }
 }

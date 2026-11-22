@@ -247,6 +247,9 @@ pub type AplicarDpms = Box<dyn FnMut(bool) -> Result<(), String>>;
 pub struct BookosComp {
     pub display_handle: DisplayHandle,
     pub loop_handle: LoopHandle<'static, BookosComp>,
+    /// Lo de copiar y pegar archivos en el escritorio.
+    // añadido en la 0.2.3
+    pub archivos: crate::archivos::Estado,
     pub loop_signal: LoopSignal,
     pub start_time: Instant,
     pub socket_name: OsString,
@@ -315,6 +318,14 @@ pub struct BookosComp {
     /// Qué cursor toca pintar: el del tema, o una superficie del cliente.
     pub cursor_status: smithay::input::pointer::CursorImageStatus,
     pub cursor_theme: Option<crate::cursor::CursorTheme>,
+    /// La imagen que el cliente pone bajo el cursor mientras arrastra algo
+    /// (`wl_data_device.start_drag`), y cuánto se ha desplazado del punto del
+    /// ratón con los `attach` del cliente.
+    // añadido en la 0.2.3
+    pub icono_arrastre: Option<(
+        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        smithay::utils::Point<i32, smithay::utils::Logical>,
+    )>,
     /// El fondo del escritorio, ya subido a textura. `None` si no se encontró
     /// ninguno: entonces se ve el color liso de siempre.
     pub fondo: Option<crate::fondo::Fondo>,
@@ -393,8 +404,10 @@ pub struct BookosComp {
     /// Los remapeos de `teclas.conf`. Se releen con `ReloadConfig("teclas")`.
     pub teclas: crate::teclas::Remapeos,
     pub traductor: crate::teclas::Traductor,
-    /// La app de teclas espera la próxima tecla (`CaptureKey`).
-    pub captura_tecla: bool,
+    /// La app de teclas espera la próxima tecla (`CaptureKey`): su nombre
+    /// único en el bus, que es el único destino de `KeyCaptured`.
+    // modified 0.2.2
+    pub captura_tecla: Option<String>,
     /// Meta+Alt+C: el siguiente clic coge el color de debajo del puntero.
     pub cuentagotas: bool,
     /// La lupa que sigue al puntero mientras el cuentagotas está puesto.
@@ -408,6 +421,9 @@ pub struct BookosComp {
     /// El shader del «magic lamp», compilado al arrancar el backend. `None` si
     /// el driver no lo acepta: entonces el minimizar encoge sin deformar.
     pub genio: Option<crate::genio::Genio>,
+    /// Recorte redondeado de las ventanas en la vista de escritorios.
+    // añadido en la 0.2.3
+    pub esquinas: Option<crate::esquinas::Esquinas>,
     /// El shader del velo de la captura, compilado al arrancar el backend.
     /// `None` si el driver no lo acepta: el velo sale con esquinas rectas.
     pub velo_captura: Option<crate::captura::Velo>,
@@ -493,6 +509,37 @@ pub struct BookosComp {
     pub sonidos_interfaz: bool,
     /// `genio` de `panel.conf`: el shader sigue compilado, esto solo decide si se usa.
     pub genio_activo: bool,
+    /// Cómo se abren las ventanas principales nuevas (`normal`, `maximizada` o
+    /// `pantalla_completa`).
+    // añadido en la 0.2.4
+    pub apertura_ventanas: bookos_shell::AperturaVentanas,
+    /// Límite de refresco en Hz cuando VRR está activo (0 = sin límite).
+    // añadido en la 0.2.4
+    pub vrr_refresco_max: u32,
+    /// Modo de bajo consumo unificado (48 Hz VRR + power-saver + efectos reducidos).
+    // añadido en la 0.2.4
+    pub bajo_consumo: bool,
+    /// Detector de «agitar el ratón para encontrar el cursor».
+    // añadido en la 0.2.4
+    pub agitar_cursor: crate::cursor::AgitarCursor,
+    /// Miniatura flotante de la última captura en la esquina inferior derecha.
+    // añadido en la 0.2.4
+    pub miniatura_captura: Option<crate::miniatura_captura::Miniatura>,
+    /// Modo de concentración activo (`""` = ninguno, `"trabajo"`, `"juego"`…).
+    // añadido en la 0.2.4
+    pub modo_concentracion: String,
+    // añadido en la 0.2.4
+    pub concentracion_auto_juego: bool,
+    // añadido en la 0.2.4
+    pub concentracion_permitidas: std::collections::HashMap<String, Vec<String>>,
+    /// Último frame de cortesía (1 Hz) enviado a ventanas en App Nap.
+    // añadido en la 0.2.4
+    pub ultimo_app_nap: std::time::Instant,
+    /// Último estado de indicadores de privacidad enviado al panel.
+    // añadido en la 0.2.4
+    pub privacidad: bookos_shell::Privacidad,
+    /// Monitor en segundo plano para cámara y micrófono.
+    pub privacidad_monitor: Option<crate::backend::MonitorPrivacidad>,
     /// Si estaba enchufado en el último aviso de `power_supply`, para sonar
     /// solo cuando cambia. Ver `multimedia::cargador`.
     pub enchufado: Option<bool>,
@@ -544,6 +591,17 @@ pub struct BookosComp {
     /// se ve desde aquí. El backend la consulta en su punto de dibujo, donde
     /// sí lo tiene.
     pub recargar_fondo: bool,
+    /// Contador de peticiones de carga asíncrona del fondo: descarta una imagen
+    /// que termine después de que el usuario ya haya pedido otra.
+    // added 0.2.3
+    pub fondo_generacion: u64,
+    /// Fondo ya decodificado y reducido en segundo plano, listo para subir en
+    /// el siguiente fotograma sin bloquear las animaciones.
+    // added 0.2.3
+    pub fondo_cargado: Option<(crate::fondo::Fondo, (Vec<u8>, (i32, i32)))>,
+    // added 0.2.3
+    pub fondo_envio:
+        smithay::reexports::calloop::channel::Sender<(u64, Option<crate::fondo::FondoListo>)>,
     /// Despertar del próximo fotograma WebP. No existe con fondos estáticos
     /// ni con movimiento reducido.
     pub tick_fondo: Option<smithay::reexports::calloop::RegistrationToken>,
@@ -571,13 +629,17 @@ pub struct BookosComp {
     pub tick_tema: Option<smithay::reexports::calloop::RegistrationToken>,
     /// La luz nocturna: lo configurado, lo que hay puesto y sus despertares.
     pub luz_nocturna: crate::luz_nocturna::Estado,
-    /// Cómo poner la curva de gamma en las pantallas. Solo la rellena el
-    /// backend real: anidado no hay curva que tocar.
-    pub aplicar_gamma: Option<crate::luz_nocturna::AplicarGamma>,
     /// Tamaño lógico del cursor. Copia de la configuración por lo mismo que
     /// `escala_forzada`: el tema se vuelve a cargar cada vez que cambia la
     /// escala, y para entonces la `Config` ya se la llevó el shell.
     pub cursor_nominal: u32,
+    /// Tamaño del texto de las aplicaciones, en %. Lo leen XWayland (`Xft.dpi`)
+    /// y lo que se lanza desde aquí (`QT_FONT_DPI`).
+    // añadido en la 0.2.3
+    pub texto_tamano: u32,
+    /// Teclas especiales y lentas (Accesibilidad).
+    // añadido en la 0.2.3
+    pub teclas_accesibles: crate::teclas_accesibles::Estado,
     /// Cuándo y dónde fue la última pulsación del botón izquierdo, para poder
     /// reconocer el doble clic. Se guarda el punto además del instante porque
     /// dos clics seguidos en sitios distintos son dos clics, no uno doble.
@@ -657,7 +719,7 @@ pub struct BookosComp {
     /// Lleva una generación para que una consulta lenta de un bloqueo anterior
     /// no aparezca en el siguiente.
     pub medios_bloqueo:
-        smithay::reexports::calloop::channel::Sender<(u64, Option<bookos_shell::medios::Sonando>)>,
+        smithay::reexports::calloop::channel::Sender<(u64, crate::shell::MediosBloqueo)>,
     pub bloqueo_generacion: u64,
     /// `wp_fractional_scale` + `wp_viewporter`: la pareja que permite a un
     /// cliente dibujar a 1,75× y decirle al compositor "recórtame a este
@@ -756,6 +818,9 @@ pub struct BookosComp {
     /// nombre único de quien la pidió. Ver `inhibir.rs`.
     // añadido en la 0.2.2
     pub inhibiciones_bus: std::collections::HashMap<u32, String>,
+    /// El shell en AT-SPI2 para Orca; `None` en modo quiosco o si no arrancó.
+    // añadido en la 0.2.2
+    pub accesibilidad: Option<crate::accesibilidad::Accesibilidad>,
     /// `ext_idle_notifier_v1`: permite que salvapantallas y agentes de sesión
     /// conozcan el idle sin sondear dispositivos ni despertar el proceso.
     pub idle_notifier_state: IdleNotifierState<Self>,
@@ -862,7 +927,9 @@ impl BookosComp {
     /// de Wayland o por `org.freedesktop.ScreenSaver`.
     // añadido en la 0.2.2
     pub fn idle_inhibido(&self) -> bool {
-        !self.idle_inhibidores.is_empty() || !self.inhibiciones_bus.is_empty()
+        !self.idle_inhibidores.is_empty()
+            || !self.inhibiciones_bus.is_empty()
+            || self.hay_pantalla_completa()
     }
 
     /// ¿Hay alguna animación en marcha?
@@ -892,6 +959,10 @@ impl BookosComp {
             // El fundido entre dos fondos: sin esto el bucle se dormiría a
             // mitad y el fondo nuevo se quedaría a medio aparecer.
             || self.fondo_saliente.is_some()
+            // Y el fundido de 450 ms entre el tema claro y el oscuro, también
+            // cuando el fondo es fijo o mientras llega del hilo de carga.
+            // added 0.2.3
+            || self.fundido.as_ref().is_some_and(|f| !f.terminado())
             // El recuadro de la captura se mueve con el ratón: sin esto el
             // bucle se dormiría a mitad del arrastre.
             || self.shell.as_ref().is_some_and(|s| s.captura_animando())
@@ -912,6 +983,40 @@ impl BookosComp {
             || self.conmutador_salida.is_some()
             // añadido en la 0.2.0 -- el brillo de Zenith respira y se funde al irse.
             || (!self.brillo.is_empty() && !bookos_shell::tema::efectos_reducidos())
+            // añadido en la 0.2.4 -- agrandamiento al agitar cursor, miniatura de captura y luz nocturna.
+            || self.agitar_cursor.animando()
+            || self.miniatura_captura.as_ref().is_some_and(|m| m.animando())
+            || self.luz_nocturna.animando()
+    }
+
+    /// ¿Está activo el modo de bajo consumo unificado (manual, por perfil
+    /// `power-saver` o por batería ≤ 20 % sin cargador)?
+    // añadido en la 0.2.4
+    pub fn bajo_consumo_efectivo(&self) -> bool {
+        self.bajo_consumo
+            || self
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.bajo_consumo_efectivo())
+    }
+
+    /// Límite efectivo de refresco en Hz bajo VRR. En bajo consumo aplica
+    /// 48 Hz; en batería tras 1,5 s sin entrada ni animaciones ni pantalla
+    /// completa baja a 60 Hz estilo ProMotion.
+    // añadido en la 0.2.4
+    pub fn refresco_max_efectivo(&self) -> u32 {
+        let en_bateria = self.enchufado == Some(false);
+        let inactivo = self
+            .last_input
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_millis(1500));
+        refresco_vrr_objetivo(
+            self.bajo_consumo_efectivo(),
+            self.vrr_refresco_max,
+            en_bateria,
+            inactivo,
+            self.hay_animacion(),
+            self.hay_pantalla_completa(),
+        )
     }
 
     // 0.1.0
@@ -1072,11 +1177,17 @@ impl BookosComp {
         if modo.kiosko() {
             crate::locale1::escuchar(&loop_handle);
         }
+        let accesibilidad = match modo {
+            Modo::Escritorio => crate::accesibilidad::arrancar(&loop_handle),
+            Modo::Kiosko { .. } => None,
+        };
         crate::ajustes::vigilar_nombres(
             [
                 (bus_notificaciones.clone(), crate::notificaciones::INTERFAZ),
                 (bus_ajustes.clone(), crate::ajustes::NOMBRE),
                 (bus_ajustes.clone(), crate::inhibir::NOMBRE),
+                (bus_ajustes.clone(), crate::inhibir::NOMBRE_POWER),
+                (bus_ajustes.clone(), crate::inhibir::NOMBRE_GNOME),
                 (bus_portal.clone(), crate::portal::NOMBRE),
             ]
             .into_iter()
@@ -1091,21 +1202,71 @@ impl BookosComp {
         loop_handle
             .insert_source(fuente_medios, |evento, _, state| {
                 use smithay::reexports::calloop::channel::Event;
-                if let Event::Msg((generacion, sonando)) = evento
+                if let Event::Msg((generacion, lectura)) = evento
                     && generacion == state.bloqueo_generacion
                     && let Some(shell) = state.shell.as_mut()
                 {
-                    shell.bloqueo_medio(sonando);
+                    shell.bloqueo_medio(lectura);
                     state.needs_redraw = true;
                 }
             })
             .map_err(|err| anyhow::anyhow!("insert_source(medios bloqueo): {err}"))?;
+
+        let (priv_tx, priv_rx) = smithay::reexports::calloop::channel::channel();
+        loop_handle
+            .insert_source(priv_rx, |evento, _, state| {
+                if let smithay::reexports::calloop::channel::Event::Msg((camara, microfono)) =
+                    evento
+                {
+                    crate::backend::aplicar_privacidad_sensores(state, camara, microfono);
+                }
+            })
+            .map_err(|err| anyhow::anyhow!("insert_source(privacidad): {err}"))?;
+        let privacidad_monitor = if modo.kiosko() {
+            None
+        } else {
+            let monitor = crate::backend::arrancar_monitor_privacidad(priv_tx);
+            if let Some(ref m) = monitor {
+                m.solicitar();
+            }
+            monitor
+        };
+
+        // Decodificar un PNG de 2880×1800 y reducirlo cuesta decenas de ms: va
+        // en un hilo corto y vuelve por aquí para que la píldora de Apariencia
+        // y el fundido del escritorio arranquen en el primer fotograma.
+        // added 0.2.3
+        let (fondo_envio, fuente_fondo) =
+            smithay::reexports::calloop::channel::channel::<(u64, Option<crate::fondo::FondoListo>)>();
+        loop_handle
+            .insert_source(fuente_fondo, |evento, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                if let Event::Msg((generacion, listo)) = evento
+                    && generacion == state.fondo_generacion
+                {
+                    match listo.and_then(crate::fondo::Fondo::desde_listo) {
+                        Some(preparado) => {
+                            state.fondo_cargado = Some(preparado);
+                            state.needs_redraw = true;
+                        }
+                        None => {
+                            tracing::warn!("no se encontró ningún fondo: se deja el que estaba");
+                        }
+                    }
+                }
+            })
+            .map_err(|err| anyhow::anyhow!("insert_source(fondo): {err}"))?;
 
         let brillo_auto =
             crate::brillo_auto::Estado::arrancar(&loop_handle, config.brillo_automatico)?;
 
         let entrada = std::mem::take(&mut config.entrada);
         let cursor_nominal = config.cursor;
+        let texto_tamano = config.texto_tamano;
+        let teclas_accesibles = crate::teclas_accesibles::Estado::nuevo(
+            config.teclas_especiales,
+            config.teclas_lentas,
+        );
         let bloqueo_inactividad = std::time::Duration::from_secs(config.bloqueo_inactividad);
         let suspension_inactividad = std::time::Duration::from_secs(config.suspension_inactividad);
         let modo_tema = config.modo_tema;
@@ -1121,6 +1282,7 @@ impl BookosComp {
         Ok(Self {
             display_handle: dh,
             loop_handle,
+            archivos: crate::archivos::Estado::default(),
             loop_signal: event_loop.get_signal(),
             start_time: Instant::now(),
             socket_name,
@@ -1157,6 +1319,7 @@ impl BookosComp {
             seat,
             pointer,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
+            icono_arrastre: None,
             cursor_theme: None,
             fondo: None,
             cristal: None,
@@ -1195,7 +1358,7 @@ impl BookosComp {
                 Modo::Kiosko { .. } => Default::default(),
             },
             traductor: Default::default(),
-            captura_tecla: false,
+            captura_tecla: None,
             cuentagotas: false,
             cuentagotas_lupa: None,
             brillo: Default::default(),
@@ -1205,6 +1368,7 @@ impl BookosComp {
             exposicion_gesto: None,
             conmutador_salida: None,
             genio: None,
+            esquinas: None,
             velo_captura: None,
             banda: None,
             capturas: Vec::new(),
@@ -1222,6 +1386,17 @@ impl BookosComp {
             sonido_volumen: config.sonido_volumen,
             sonidos_interfaz: config.sonidos_interfaz,
             genio_activo: config.genio,
+            apertura_ventanas: config.apertura_ventanas,
+            vrr_refresco_max: config.vrr_refresco_max,
+            bajo_consumo: config.bajo_consumo,
+            agitar_cursor: crate::cursor::AgitarCursor::nuevo(config.agitar_cursor),
+            miniatura_captura: None,
+            modo_concentracion: config.modo_concentracion.clone(),
+            concentracion_auto_juego: config.concentracion_auto_juego,
+            concentracion_permitidas: config.concentracion_permitidas.clone(),
+            ultimo_app_nap: std::time::Instant::now(),
+            privacidad: bookos_shell::Privacidad::default(),
+            privacidad_monitor,
             // Leído al arrancar: entrar en la sesión con el cargador puesto no
             // es «conectarlo».
             enchufado: bookos_shell::cargador().map(|(e, _)| e),
@@ -1235,13 +1410,18 @@ impl BookosComp {
             teclado_repeticion,
             pasos,
             repeticion_multimedia: None,
-            chasquido: crate::multimedia::Chasquido::Libre,
+            chasquido: crate::multimedia::Chasquido::default(),
             volumen_visto: None,
             aplicar_leds: None,
             leds: Default::default(),
             cursor_nominal,
+            texto_tamano,
+            teclas_accesibles,
             fondo_config,
             recargar_fondo: false,
+            fondo_generacion: 0,
+            fondo_cargado: None,
+            fondo_envio,
             tick_fondo: None,
             fondo_cristal_pendiente: false,
             fondo_saliente: None,
@@ -1249,7 +1429,6 @@ impl BookosComp {
             horas_tema,
             tick_tema: None,
             luz_nocturna,
-            aplicar_gamma: None,
             arrastre: None,
             arrastre_escritorio: None,
             ultimo_clic: None,
@@ -1294,6 +1473,7 @@ impl BookosComp {
             idle_inhibit_state,
             idle_inhibidores: Vec::new(),
             inhibiciones_bus: std::collections::HashMap::new(),
+            accesibilidad,
             idle_notifier_state,
             pointer_constraints_state,
             relative_pointer_state,
@@ -1645,5 +1825,50 @@ impl ClientData for ClientState {
     // 0.1.0
     fn disconnected(&self, id: ClientId, reason: DisconnectReason) {
         tracing::debug!(?id, ?reason, "cliente desconectado");
+    }
+}
+
+pub(crate) fn refresco_vrr_objetivo(
+    bajo_consumo: bool,
+    vrr_refresco_max: u32,
+    en_bateria: bool,
+    inactivo: bool,
+    animando: bool,
+    pantalla_completa: bool,
+) -> u32 {
+    let topar = |techo: u32| {
+        if vrr_refresco_max > 0 {
+            vrr_refresco_max.min(techo)
+        } else {
+            techo
+        }
+    };
+    if bajo_consumo {
+        topar(48)
+    } else if en_bateria && inactivo && !animando && !pantalla_completa {
+        topar(60)
+    } else {
+        vrr_refresco_max
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refresco_vrr_objetivo;
+
+    #[test]
+    fn vrr_adaptativo_baja_en_reposo_con_bateria_y_sube_al_interactuar() {
+        // En CA o interactuando: sin límite adicional.
+        assert_eq!(refresco_vrr_objetivo(false, 0, false, true, false, false), 0);
+        assert_eq!(refresco_vrr_objetivo(false, 0, true, false, false, false), 0);
+        // En batería, inactivo y sin animaciones ni pantalla completa: 60 Hz.
+        assert_eq!(refresco_vrr_objetivo(false, 0, true, true, false, false), 60);
+        // Animando o en pantalla completa recupera el refresco completo.
+        assert_eq!(refresco_vrr_objetivo(false, 0, true, true, true, false), 0);
+        assert_eq!(refresco_vrr_objetivo(false, 0, true, true, false, true), 0);
+        // Respeta un límite manual más bajo y el modo bajo consumo (48 Hz).
+        assert_eq!(refresco_vrr_objetivo(false, 50, true, true, false, false), 50);
+        assert_eq!(refresco_vrr_objetivo(true, 0, false, false, true, true), 48);
+        assert_eq!(refresco_vrr_objetivo(true, 36, true, true, false, false), 36);
     }
 }

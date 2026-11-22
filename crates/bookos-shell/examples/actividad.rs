@@ -224,6 +224,9 @@ fn pinta_varias_a_escala(
     }
     for (x, y) in clics {
         shell.actividad_pulsar(*x, *y);
+        // Cambiar de vista estira la caja con el muelle: se pinta ya llegada.
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        shell.avanzar_relevo_actividad();
     }
     let Some((w, h)) = shell.actividad_buffer_size() else {
         println!("{nombre}: la isla no se publicó");
@@ -232,6 +235,74 @@ fn pinta_varias_a_escala(
     let mut buf = vec![0u8; (w * h * 4) as usize];
     shell.draw_actividad(&mut buf);
     volcar(nombre, &buf, w, h);
+}
+
+/// La isla abierta con dos actividades, y el paso de una a otra pintado a
+/// 0, 100, 200 y 300 ms.
+fn relevo(etiqueta: &str, tema: bookos_shell::tema::Tema) {
+    let config = Config {
+        tema,
+        ..Config::default()
+    };
+    let mut shell = Shell::con_config(1646, ESCALA, config);
+    shell.publicar_actividad(base(Clase::Monitor));
+    shell.publicar_actividad(base(Clase::Player));
+    for (nombre, abrir) in [("pildora", false), ("abierta", true)] {
+        relevo_en(&mut shell, &format!("{nombre}-{etiqueta}"), abrir);
+    }
+}
+
+fn relevo_en(shell: &mut Shell, nombre: &str, abrir: bool) {
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    shell.avanzar_relevo_actividad();
+    let (w, h) = shell.actividad_logical_size().expect("hay isla");
+    if abrir && !shell.actividad_abierta() {
+        shell.actividad_pulsar(w / 2.0, h / 2.0);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    shell.actividad_pasar(1);
+    for ms in [0u64, 100, 200, 300] {
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let Some((w, h)) = shell.actividad_buffer_size() else {
+            return;
+        };
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        let t = std::time::Instant::now();
+        shell.draw_actividad(&mut buf);
+        println!("relevo {ms} ms: pintado en {:?}", t.elapsed());
+        volcar(&format!("relevo-{nombre}-{ms:03}"), &buf, w, h);
+    }
+}
+
+/// Abrir la píldora del reproductor: la caja crece desde la píldora en su
+/// sitio, sin volver a nacer. Fotogramas a 0, 80, 160 y 240 ms.
+fn abrir(etiqueta: &str, tema: bookos_shell::tema::Tema) {
+    let config = Config {
+        tema,
+        ..Config::default()
+    };
+    let mut shell = Shell::con_config(1646, ESCALA, config);
+    shell.publicar_actividad(base(Clase::Player));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let (w, h) = shell.actividad_logical_size().expect("hay isla");
+    shell.actividad_pulsar(w / 2.0, h / 2.0);
+    for ms in [0u64, 80, 160, 240] {
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        let (w, h) = shell.actividad_buffer_size().expect("hay isla");
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        let t = std::time::Instant::now();
+        shell.draw_actividad(&mut buf);
+        println!(
+            "abrir {ms} ms: pintado en {:?}, entrada {:?}",
+            t.elapsed(),
+            shell.actividad_entrada()
+        );
+        volcar(&format!("abrir-{etiqueta}-{ms:03}"), &buf, w, h);
+    }
 }
 
 fn main() {
@@ -251,6 +322,16 @@ fn main() {
             &format!("player-abierto-{etiqueta}"),
             tema,
             base(Clase::Player),
+            &[(180.0, 55.0)],
+        );
+        // Pasar de una a otra con la rueda: fotogramas a mitad del relevo.
+        relevo(etiqueta, tema);
+        abrir(etiqueta, tema);
+        // Con otra actividad viva, la abierta lleva la columna a la derecha.
+        pinta_varias(
+            &format!("player-columna-{etiqueta}"),
+            tema,
+            vec![base(Clase::Monitor), base(Clase::Player)],
             &[(180.0, 55.0)],
         );
         pinta(

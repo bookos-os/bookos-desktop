@@ -1474,6 +1474,7 @@ impl Launchpad {
         }
         self.pagina = destino as usize;
         self.seleccion = None;
+        self.animar(Transicion::Pagina(hacia as f32));
         self.preparar_pagina();
         self.paso_por_borde = Some(std::time::Instant::now());
         true
@@ -1584,7 +1585,9 @@ impl Launchpad {
         // Pulsar un punto lleva a su página, como en macOS.
         if let Some(pagina) = self.punto_en(x, y) {
             if pagina != self.pagina {
+                let hacia = if pagina > self.pagina { 1.0 } else { -1.0 };
                 self.pagina = pagina;
+                self.animar(Transicion::Pagina(hacia));
                 self.preparar_pagina();
             }
             return None;
@@ -1879,6 +1882,7 @@ impl Launchpad {
             return false;
         }
         self.pagina = destino as usize;
+        self.animar(Transicion::Pagina(hacia as f32));
         self.preparar_pagina();
         self.gesto_gastado = Some(ahora);
         true
@@ -2009,7 +2013,9 @@ impl Launchpad {
         if destino < 0 || destino >= self.paginas() as isize {
             return Tecla::Consumida;
         }
+        let hacia_f = if destino > self.pagina as isize { 1.0 } else { -1.0 };
         self.pagina = destino as usize;
+        self.animar(Transicion::Pagina(hacia_f));
         if self.seleccion.is_some() {
             let primera = self.pagina * self.por_pagina();
             self.seleccion = Some(primera.min(self.visibles.len().saturating_sub(1)));
@@ -2028,7 +2034,12 @@ impl Launchpad {
         self.seleccion = Some(nuevo);
         // Salirse de la página la pasa: la selección manda sobre la página, no
         // al revés.
-        self.pagina = nuevo / self.por_pagina();
+        let nueva_pagina = nuevo / self.por_pagina();
+        if nueva_pagina != self.pagina {
+            let hacia = if nueva_pagina > self.pagina { 1.0 } else { -1.0 };
+            self.pagina = nueva_pagina;
+            self.animar(Transicion::Pagina(hacia));
+        }
         self.preparar_pagina();
         Tecla::Consumida
     }
@@ -2047,7 +2058,7 @@ impl Launchpad {
         } else {
             text(t("Buscar aplicaciones…", "Search apps…"))
                 .size(15)
-                .color(tema::TEXTO2)
+                .color(tema::texto2())
         };
         // La lupa dice para qué es el campo sin gastar una palabra, y es lo que
         // permite que el borde deje de gritarlo.
@@ -2058,7 +2069,7 @@ impl Launchpad {
                 if escribiendo {
                     tema::acento()
                 } else {
-                    tema::TEXTO2
+                    tema::texto2()
                 },
             ),
             None => Space::new().into(),
@@ -2075,7 +2086,7 @@ impl Launchpad {
             // limpiar, y vacía no tendría nada que hacer.
             fila = fila.push(Space::new().width(Length::Fill));
             if let Some(ic) = icono::propio("cerrar") {
-                fila = fila.push(icono::ver_teñido_propio(&ic, 14.0, tema::TEXTO2));
+                fila = fila.push(icono::ver_teñido_propio(&ic, 14.0, tema::texto2()));
             }
         }
         let busqueda = container(
@@ -2296,7 +2307,7 @@ impl Launchpad {
         let cabecera = row![
             column![
                 text(nombre).size(20).color(tema::texto()),
-                text(pista).size(11).color(tema::TEXTO2),
+                text(pista).size(11).color(tema::texto2()),
             ],
             Space::new().width(Length::Fill),
             self.chip_color_view(carpeta),
@@ -3370,5 +3381,30 @@ mod tests {
             l.tecla(T::Izquierda);
         }
         assert_eq!(l.seleccion, Some(0), "ni del primero");
+    }
+
+    #[test]
+    fn cambiar_de_pagina_pide_transicion_y_mantiene_el_tamano() {
+        use crate::TeclaPulsada as T;
+        let nombres: Vec<String> = (0..40).map(|i| format!("App {i}")).collect();
+        let refs: Vec<&str> = nombres.iter().map(String::as_str).collect();
+        let mut l = con_apps(&refs);
+        let tam_inicial = l.size();
+
+        assert!(l.desplazar(40.0, 0.0));
+        assert_eq!(l.tomar_transicion(), Some(Transicion::Pagina(1.0)));
+        assert_eq!(l.size(), tam_inicial);
+
+        l.tecla(T::PaginaArriba);
+        assert_eq!(l.tomar_transicion(), Some(Transicion::Pagina(-1.0)));
+        assert_eq!(l.size(), tam_inicial);
+
+        // Pulsar el segundo punto también anima hacia delante.
+        let (ancho, alto) = l.size();
+        let x0 = (ancho - l.paginas() as f32 * 28.0) / 2.0;
+        l.pulsar(x0 + 28.0 + 14.0, alto - PUNTOS / 2.0);
+        assert_eq!(l.pagina, 1);
+        assert_eq!(l.tomar_transicion(), Some(Transicion::Pagina(1.0)));
+        assert_eq!(l.size(), tam_inicial);
     }
 }

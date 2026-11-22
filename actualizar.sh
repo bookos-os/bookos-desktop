@@ -55,5 +55,9 @@ if [ "$greeter" -eq 1 ]; then
     comprobar bookos-greeter /usr/local/libexec/bookos-greeter
 fi
 
+# El servicio de los Buds vive en el gestor de usuario y sobrevive a cerrar
+# sesión: sin esto seguía corriendo el binario anterior durante horas.
+systemctl --user try-restart bookos-budsd.service
+
 echo
 echo "Listo. Cierra sesión y vuelve a entrar para usar la versión nueva."

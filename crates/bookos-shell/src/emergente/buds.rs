@@ -23,25 +23,33 @@ pub struct Estado {
     pub estuche: u8,
 }
 
-/// El control de ruido. El adaptativo de los Buds3 Pro no se ofrece: en el
-/// escritorio se elige entre quitar el ruido, dejar pasar el ambiente o nada,
-/// y el cuarto estado de budsd se conserva al leerlo como «Cancelación».
+/// El control de ruido, en el orden del selector: de dejar pasar todo a
+/// quitar todo, como lo ordena Evelyn para sus Buds3 Pro.
+// modificado en la 0.2.3 -- con el adaptativo, que budsd ya sabía poner (3)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Modo {
-    Cancelacion,
-    Ambiente,
     Apagado,
+    Ambiente,
+    Adaptativo,
+    Cancelacion,
 }
 
 impl Modo {
-    pub const TODOS: [Modo; 3] = [Modo::Cancelacion, Modo::Ambiente, Modo::Apagado];
+    pub const TODOS: [Modo; 4] = [
+        Modo::Apagado,
+        Modo::Ambiente,
+        Modo::Adaptativo,
+        Modo::Cancelacion,
+    ];
 
-    /// El número de `SetAnc`: 0 apagado, 1 cancelación, 2 ambiente.
+    /// El número de `SetAnc`: 0 apagado, 1 cancelación, 2 ambiente, 3
+    /// adaptativo.
     fn numero(self) -> u8 {
         match self {
             Modo::Apagado => 0,
             Modo::Cancelacion => 1,
             Modo::Ambiente => 2,
+            Modo::Adaptativo => 3,
         }
     }
 
@@ -49,16 +57,27 @@ impl Modo {
         match numero {
             0 => Modo::Apagado,
             2 => Modo::Ambiente,
+            3 => Modo::Adaptativo,
             _ => Modo::Cancelacion,
         }
     }
 
+    /// Cortas porque caben cuatro en 65 px: «Cancelación» no entraba.
     pub fn etiqueta(self) -> &'static str {
         match self {
-            Modo::Cancelacion => "Cancelación",
+            Modo::Apagado => "Sin AC",
             Modo::Ambiente => "Ambiente",
-            Modo::Apagado => "No",
+            Modo::Adaptativo => "Adaptativo",
+            Modo::Cancelacion => "AC",
         }
+    }
+
+    // añadido en la 0.2.3
+    pub fn indice(self) -> usize {
+        Self::TODOS
+            .iter()
+            .position(|m| *m == self)
+            .expect("todo modo está en TODOS")
     }
 }
 
@@ -179,12 +198,15 @@ mod tests {
         assert_eq!(interpretar("no es json"), None);
     }
 
-    /// El modo adaptativo (3) se muestra como cancelación en vez de dejar el
-    /// selector sin nada marcado.
+    /// Cada modo va y vuelve por su número de budsd, y el orden es el del
+    /// selector.
     #[test]
-    fn el_adaptativo_se_lee_como_cancelacion() {
-        assert_eq!(Modo::de(3), Modo::Cancelacion);
-        assert_eq!(Modo::Cancelacion.numero(), 1);
-        assert_eq!(Modo::Apagado.numero(), 0);
+    fn los_cuatro_modos_van_y_vuelven() {
+        for m in Modo::TODOS {
+            assert_eq!(Modo::de(m.numero() as u64), m);
+        }
+        assert_eq!(Modo::Adaptativo.numero(), 3);
+        assert_eq!(Modo::TODOS[0], Modo::Apagado);
+        assert_eq!(Modo::Cancelacion.indice(), 3);
     }
 }

@@ -117,6 +117,7 @@ enum Menu {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Opcion {
     Abrir,
+    Silenciar,
     Ajustes,
     Borrar,
 }
@@ -188,6 +189,9 @@ pub struct Notificaciones {
     menu: Option<Menu>,
     /// Lo que se ha subido la lista, en píxeles.
     desplazamiento: f32,
+    /// Aplicaciones cuyos avisos no críticos están silenciados.
+    // añadido en la 0.2.4
+    silenciadas: Vec<String>,
 }
 
 impl Notificaciones {
@@ -210,7 +214,21 @@ impl Notificaciones {
             todos: Vec::new(),
             menu: None,
             desplazamiento: 0.0,
+            silenciadas: Vec::new(),
         }
+    }
+
+    /// Actualiza la lista de apps silenciadas que enseña el menú ⋯.
+    // añadido en la 0.2.4
+    pub fn poner_silenciadas(&mut self, apps: Vec<String>) {
+        self.silenciadas = apps;
+    }
+
+    // añadido en la 0.2.4
+    fn app_silenciada(&self, app: &str) -> bool {
+        self.silenciadas
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(app))
     }
 
     /// La tarjeta con el silencio que ya hubiera puesto el shell.
@@ -537,9 +555,9 @@ impl Notificaciones {
             .find(|n| n.app == app && Self::tiene_default(n))
     }
 
-    /// Las opciones del menú y su texto. «Silenciar esta app» no está: haría
-    /// falta una lista de apps silenciadas en el compositor.
+    /// Las opciones del menú y su texto.
     // añadido en la 0.2.1
+    // modified 0.2.4 -- añade «Silenciar / Activar avisos de <app>»
     fn items_menu(&self, menu: &Menu) -> Vec<(Opcion, String)> {
         let (app, borrar) = match menu {
             Menu::Aviso(id) => (
@@ -547,33 +565,63 @@ impl Notificaciones {
                     .iter()
                     .find(|n| n.id == *id)
                     .map_or("", |n| n.app.as_str()),
-                "Borrar".to_string(),
+                super::t("Borrar", "Clear").to_string(),
             ),
-            Menu::Pila(app) => (
-                app.as_str(),
-                format!(
-                    "Borrar los {} avisos",
-                    self.lista.iter().filter(|n| n.app == *app).count()
-                ),
-            ),
+            Menu::Pila(app) => {
+                let n = self.lista.iter().filter(|n| n.app == *app).count();
+                let texto = if super::t("es", "en") == "es" {
+                    format!("Borrar los {n} avisos")
+                } else {
+                    format!("Clear all {n}")
+                };
+                (app.as_str(), texto)
+            }
         };
         let mut items = Vec::new();
         if self.con_default_de(app).is_some() {
-            items.push((Opcion::Abrir, format!("Abrir {app}")));
+            items.push((Opcion::Abrir, format!("{} {app}", super::t("Abrir", "Open"))));
         }
-        items.push((Opcion::Ajustes, "Ajustes de notificaciones…".into()));
+        if !app.is_empty() {
+            let texto = if self.app_silenciada(app) {
+                if super::t("es", "en") == "es" {
+                    format!("Activar avisos de {app}")
+                } else {
+                    format!("Unmute {app}")
+                }
+            } else {
+                format!("{} {app}", super::t("Silenciar", "Mute"))
+            };
+            items.push((Opcion::Silenciar, texto));
+        }
+        items.push((
+            Opcion::Ajustes,
+            super::t("Ajustes de notificaciones…", "Notification settings…").into(),
+        ));
         items.push((Opcion::Borrar, borrar));
         items
     }
 
     /// Lo que hace una opción del menú.
     // añadido en la 0.2.1
+    // modified 0.2.4 -- silenciar o reactivar una aplicación desde el menú ⋯
     fn hacer_opcion(&mut self, menu: &Menu, opcion: Opcion) -> Option<Accion> {
         self.menu = None;
         match (menu, opcion) {
             (_, Opcion::Ajustes) => Some(Accion::Lanzar(
                 "bookos-settings --page notificaciones".into(),
             )),
+            (Menu::Aviso(id), Opcion::Silenciar) => {
+                let app = self.lista.iter().find(|n| n.id == *id)?.app.clone();
+                let silenciar = !self.app_silenciada(&app);
+                Some(Accion::SilenciarAppNotificaciones { app, silenciar })
+            }
+            (Menu::Pila(app), Opcion::Silenciar) => {
+                let silenciar = !self.app_silenciada(app);
+                Some(Accion::SilenciarAppNotificaciones {
+                    app: app.clone(),
+                    silenciar,
+                })
+            }
             (Menu::Aviso(id), Opcion::Borrar) => Some(Accion::CerrarNotificacion(*id)),
             (Menu::Pila(app), Opcion::Borrar) => Some(Accion::CerrarNotificaciones(
                 self.lista
@@ -1163,7 +1211,7 @@ impl Notificaciones {
                     }),
                 );
             }
-            fila.push(text(notif.hace()).size(11.0).color(tema::TEXTO2))
+            fila.push(text(notif.hace()).size(11.0).color(tema::texto2()))
                 .into()
         };
         container(contenido)
@@ -1252,13 +1300,37 @@ impl Notificaciones {
                     }),
             );
         }
-        let ancho_app = ANCHO_TEXTO - ESQUINA - 8.0 - if notif.critica { 60.0 } else { 0.0 };
+        let silenciada = self.app_silenciada(&notif.app);
+        let ancho_app = ANCHO_TEXTO
+            - ESQUINA
+            - 8.0
+            - if notif.critica { 60.0 } else { 0.0 }
+            - if silenciada { 66.0 } else { 0.0 };
         cabecera = cabecera.push(
             text(lista::recortar(&notif.app, ancho_app, 11.0))
                 .size(11.0)
                 .font(control::peso(Weight::Medium))
-                .color(tema::TEXTO2),
+                .color(tema::texto2()),
         );
+        if silenciada {
+            cabecera = cabecera.push(
+                container(
+                    text(super::t("Silenciada", "Muted"))
+                        .size(10.0)
+                        .font(control::peso(Weight::Medium))
+                        .color(tema::texto2()),
+                )
+                .padding([1, 6])
+                .style(|_: &iced_widget::Theme| container::Style {
+                    background: Some(tema::elevado().into()),
+                    border: Border {
+                        radius: 6.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
         if notif.critica {
             cabecera = cabecera.push(
                 row![
@@ -1303,7 +1375,7 @@ impl Notificaciones {
         ];
         for linea in Self::lineas(notif, abierta) {
             textos = textos.push(
-                container(text(linea).size(12.0).color(tema::TEXTO2)).height(Length::Fixed(LINEA)),
+                container(text(linea).size(12.0).color(tema::texto2())).height(Length::Fixed(LINEA)),
             );
         }
         if Self::con_progreso(notif) {
@@ -1416,17 +1488,17 @@ impl Notificaciones {
                     text(app.to_string())
                         .size(12.0)
                         .font(control::peso(Weight::Semibold))
-                        .color(tema::TEXTO2),
-                    Self::glifo("abrir", 11.0, tema::TEXTO2),
+                        .color(tema::texto2()),
+                    Self::glifo("abrir", 11.0, tema::texto2()),
                 ]
                 .spacing(4)
                 .align_y(Vertical::Center)
             )
             .padding(Padding::ZERO.left(8.0)),
             Space::new().width(Length::Fill),
-            text("Mostrar menos").size(12.0).color(tema::TEXTO2),
+            text("Mostrar menos").size(12.0).color(tema::texto2()),
             Space::new().width(Length::Fixed(4.0)),
-            container(Self::glifo("cerrar", 11.0, tema::TEXTO2))
+            container(Self::glifo("cerrar", 11.0, tema::texto2()))
                 .width(Length::Fixed(BTN))
                 .height(Length::Fixed(BTN))
                 .center_x(Length::Fixed(BTN))
@@ -1562,7 +1634,7 @@ impl Notificaciones {
                         .color(tema::texto()),
                     text(lista::recortar(&estado, ANCHO_ESTADO, 11.0))
                         .size(11.0)
-                        .color(tema::TEXTO2),
+                        .color(tema::texto2()),
                 ])
                 .width(Length::Fixed(ANCHO_ESTADO)),
                 Space::new().width(Length::Fill),
@@ -1606,7 +1678,7 @@ impl Notificaciones {
         // el título. Con la lista vacía se apaga en vez de desaparecer.
         let borrar = {
             let (fondo, tinta) = if vacia {
-                (tema::superficie_en_tarjeta(), tema::alfa(tema::TEXTO2, 0.6))
+                (tema::superficie_en_tarjeta(), tema::alfa(tema::texto2(), 0.6))
             } else {
                 (
                     tema::mezclar(
@@ -1663,7 +1735,7 @@ impl Notificaciones {
                         "Estás al día."
                     })
                     .size(12.0)
-                    .color(tema::TEXTO2),
+                    .color(tema::texto2()),
                 ]
                 .spacing(6)
                 .align_x(Horizontal::Center),
@@ -1710,7 +1782,7 @@ impl Notificaciones {
                             text(format!("Mostrar {resto} más"))
                                 .size(12.0)
                                 .font(control::peso(Weight::Medium))
-                                .color(tema::TEXTO2),
+                                .color(tema::texto2()),
                         )
                         .width(Length::Fixed(ANCHO_TARJETA))
                         .height(Length::Fixed(MAS))
@@ -1755,7 +1827,7 @@ impl Notificaciones {
                     container(
                         text("Las urgentes siguen sonando.")
                             .size(11.0)
-                            .color(tema::TEXTO2),
+                            .color(tema::texto2()),
                     )
                     .padding([0, 4])
                     .height(Length::Fixed(18.0))
@@ -2057,7 +2129,12 @@ mod tests {
             .collect();
         assert_eq!(
             etiquetas,
-            ["Abrir Chat", "Ajustes de notificaciones…", "Borrar"]
+            [
+                "Abrir Chat",
+                "Silenciar Chat",
+                "Ajustes de notificaciones…",
+                "Borrar"
+            ]
         );
         let (xm, ym) = centro(&n, Fila::Menu);
         // El primer renglón del menú es «Abrir».
@@ -2235,5 +2312,23 @@ mod tests {
                 .expect("se escribe el PNG");
             }
         }
+    }
+
+    #[test]
+    fn menu_ofrece_silenciar_y_reactivar_app() {
+        let mut notif = Notificaciones::new();
+        let menu = Menu::Pila("Discord".into());
+        let antes = notif.items_menu(&menu);
+        assert!(antes.iter().any(|(op, t)| *op == Opcion::Silenciar && t.contains("Discord")));
+        assert!(antes.iter().any(|(_, t)| t.starts_with("Silenciar") || t.starts_with("Mute")));
+
+        notif.poner_silenciadas(vec!["discord".into()]);
+        assert!(notif.app_silenciada("Discord"));
+        let despues = notif.items_menu(&menu);
+        assert!(
+            despues
+                .iter()
+                .any(|(op, t)| *op == Opcion::Silenciar && (t.contains("Activar") || t.contains("Unmute")))
+        );
     }
 }

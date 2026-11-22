@@ -20,6 +20,23 @@ pub enum Icono {
     Raster(iced_image::Handle),
 }
 
+/// Construye un icono raster desde píxeles RGBA contiguos (`image-data` de
+/// notificaciones, por ejemplo). Devuelve `None` si el tamaño es cero o los
+/// bytes no cuadran con `ancho × alto × 4`.
+// añadido en la 0.2.4
+pub fn desde_rgba(ancho: u32, alto: u32, rgba: Vec<u8>) -> Option<Icono> {
+    if ancho == 0 || alto == 0 {
+        return None;
+    }
+    let esperado = (ancho as usize).checked_mul(alto as usize)?.checked_mul(4)?;
+    if rgba.len() != esperado {
+        return None;
+    }
+    Some(Icono::Raster(iced_image::Handle::from_rgba(
+        ancho, alto, rgba,
+    )))
+}
+
 /// El icono como elemento, al tamaño y con el color que se le pidan.
 ///
 /// Son SVG, que resvg rasteriza al tamaño que se le pida: por eso da igual que
@@ -273,6 +290,27 @@ const PROPIOS: &[(&str, &[u8])] = &[
     ("fondo", include_bytes!("../assets/iconos/fondo.svg")),
     ("pantalla", include_bytes!("../assets/iconos/pantalla.svg")),
     ("monitor", include_bytes!("../assets/iconos/monitor.svg")),
+    // añadido en la 0.2.3 -- los del menú contextual nuevo y sus diálogos.
+    (
+        "informacion",
+        include_bytes!("../assets/iconos/informacion.svg"),
+    ),
+    ("comprimir", include_bytes!("../assets/iconos/comprimir.svg")),
+    ("enlace", include_bytes!("../assets/iconos/enlace.svg")),
+    ("pegar", include_bytes!("../assets/iconos/pegar.svg")),
+    ("ordenar", include_bytes!("../assets/iconos/ordenar.svg")),
+    ("rejilla", include_bytes!("../assets/iconos/rejilla.svg")),
+    ("ventana", include_bytes!("../assets/iconos/ventana.svg")),
+    ("documento", include_bytes!("../assets/iconos/documento.svg")),
+    ("carpeta", include_bytes!("../assets/iconos/carpeta.svg")),
+    ("mas", include_bytes!("../assets/iconos/mas.svg")),
+    (
+        "enlace-flecha",
+        include_bytes!("../assets/iconos/enlace-flecha.svg"),
+    ),
+    // El «!» de la marca de acceso roto: el trazo de exclamation-circle sin
+    // el círculo, que ya lo pone la propia marca.
+    ("aviso", include_bytes!("../assets/iconos/aviso.svg")),
     (
         "brillo-bajo",
         include_bytes!("../assets/iconos/brillo-bajo.svg"),
@@ -596,6 +634,22 @@ pub fn propio(nombre: &str) -> Option<Icono> {
     con_cache(nombre, || propio_sin_cache(nombre))
 }
 
+/// Variante de [`propio`] con trazo `2` (HIG §10) para iconos de diálogo.
+// añadido en la 0.2.3
+pub fn propio_firme(nombre: &str) -> Option<Icono> {
+    let clave = format!("firme/{nombre}");
+    con_cache(&clave, || {
+        let bytes = PROPIOS
+            .iter()
+            .find(|(n, _)| *n == nombre)
+            .map(|(_, b)| *b)?;
+        let svg = std::str::from_utf8(bytes)
+            .ok()?
+            .replace(r#"stroke-width="1.5""#, r#"stroke-width="2""#);
+        Some(Icono::Svg(svg::Handle::from_memory(svg.into_bytes())))
+    })
+}
+
 /// La variante maciza de [`propio`], o el de siempre si no la tiene. Ver
 /// [`SOLIDOS`].
 // 0.1.1
@@ -620,7 +674,7 @@ pub fn insignia(nombre: &str) -> Option<Icono> {
     let color = match nombre {
         // Conexiones, aplicaciones y actualizaciones.
         "wifi" | "red" | "sin-red" | "bluetooth" | "launchpad" | "reiniciar"
-        | "perfil-equilibrado" => "#2F75FF",
+        | "perfil-equilibrado" | "monitor" => "#2F75FF",
         // Batería y accesibilidad.
         "bateria-0" | "bateria-50" | "bateria-100" | "bateria-carga" | "ojo" | "mantener"
         | "perfil-ahorro" => "#86C100",
@@ -704,10 +758,19 @@ fn propio_sin_cache(nombre: &str) -> Option<Icono> {
         .map(|(_, bytes)| Icono::Svg(svg::Handle::from_memory(*bytes)))
 }
 
+/// Caché aparte para los pictogramas propios incrustados (`PROPIOS`, `SOLIDOS`,
+/// `insignia`): no dependen del tema de iconos del sistema y conservar su
+/// `Handle` evita que `recargar_tema` obligue a resvg a re-rasterizarlos.
+// added 0.2.3
+static CACHE_PROPIOS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, Option<Icono>>>,
+> = std::sync::OnceLock::new();
+
 /// Lo que ya hubiera guardado con esa clave, o lo que devuelva `construir`.
 // 0.1.0
+// modified 0.2.3 -- caché propia inmutable frente a recargar_tema
 fn con_cache(clave: &str, construir: impl FnOnce() -> Option<Icono>) -> Option<Icono> {
-    let cache = CACHE.get_or_init(Default::default);
+    let cache = CACHE_PROPIOS.get_or_init(Default::default);
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(icono) = cache.get(clave) {
         return icono.clone();
@@ -1100,6 +1163,19 @@ pub fn recargar_tema() {
     *DIRS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if let Some(cache) = CACHE.get() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+/// Descarta únicamente el icono de respaldo del launchpad, cuya variante de
+/// serie cambia entre claro y oscuro sin necesidad de releer `gsettings` ni los
+/// directorios de temas de iconos.
+// added 0.2.3
+pub fn refrescar_segun_tema() {
+    if let Some(cache) = CACHE.get() {
+        cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(LAUNCHPAD);
     }
 }
 

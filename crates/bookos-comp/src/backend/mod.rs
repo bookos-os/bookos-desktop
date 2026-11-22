@@ -32,6 +32,13 @@ use smithay::wayland::shell::wlr_layer::Layer;
 use crate::cursor::OverlayElement;
 use crate::state::BookosComp;
 
+/// Devuelve si el perfilado detallado (`BOOKOS_PERFIL`) está activo, leyendo la
+/// variable de entorno una única vez.
+pub fn perfil_activo() -> bool {
+    static ACTIVO: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ACTIVO.get_or_init(|| std::env::var_os("BOOKOS_PERFIL").is_some())
+}
+
 /// Arma la lista de elementos de un frame, de arriba abajo: cursor, shell y
 /// ventanas.
 /// Ya no es genérica sobre el renderer: los dos backends componen con GLES y
@@ -129,6 +136,19 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
             state.needs_redraw = true;
         }
     }
+    // añadido en la 0.2.4 -- muelle del cursor agitado y miniatura de captura.
+    let ahora_anim = std::time::Instant::now();
+    if state.agitar_cursor.animando() {
+        state.agitar_cursor.avanzar(ahora_anim);
+    }
+    if let Some(mini) = state.miniatura_captura.as_mut()
+        && mini.avanzar(ahora_anim)
+    {
+        state.miniatura_captura = None;
+        state.needs_redraw = true;
+    }
+    crate::luz_nocturna::avanzar(state);
+    crate::accesibilidad::actualizar(state);
     // añadido en la 0.2.0 -- la salida resuelve su acción al reposar, sin temporizador de duración fija.
     if state.exposicion_gesto.is_none() {
         if let Some(muelle) = state.conmutador_entrada.as_mut() {
@@ -173,6 +193,10 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
     if minimizando || restaurando {
         state.genio_commit.increment();
     }
+    if state.fundido.as_ref().is_some_and(|f| f.terminado()) {
+        state.fundido = None;
+        state.needs_redraw = true;
+    }
     // modificado en la 0.2.0 -- terminar un escritorio o una minimización cambia el dock en esta misma vuelta.
     if let Some(shell) = state.shell.as_mut() {
         shell.animar_dock();
@@ -183,6 +207,30 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
 // 0.1.0
 // modified 0.1.1 -- con el salvapantallas puesto solo se dibuja él
 // modificado en la 0.2.0 -- la lupa del cuentagotas, delante de todo
+/// Dónde queda la ventana dentro de `destino` con `Fit` centrado: lo mismo que
+/// hace `constrain_space_element`, para recortar justo su contorno.
+// añadido en la 0.2.3
+fn encajada(
+    window: &smithay::desktop::Window,
+    destino: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let geo = window.geometry().size;
+    let f = (destino.size.w as f64 / geo.w.max(1) as f64)
+        .min(destino.size.h as f64 / geo.h.max(1) as f64);
+    let (w, h) = (
+        (geo.w as f64 * f).round() as i32,
+        (geo.h as f64 * f).round() as i32,
+    );
+    Rectangle::new(
+        (
+            destino.loc.x + (destino.size.w - w) / 2,
+            destino.loc.y + (destino.size.h - h) / 2,
+        )
+            .into(),
+        (w, h).into(),
+    )
+}
+
 pub fn escena(
     state: &mut BookosComp,
     renderer: &mut GlesRenderer,
@@ -191,29 +239,45 @@ pub fn escena(
     if state.salvapantallas.activo() {
         return state.salvapantallas.elementos(renderer, output);
     }
-    // Si se acaba de pasar de claro a oscuro, antes de pintar el tema nuevo se
-    // vuelve un instante al viejo para fotografiar la pantalla tal como está.
-    // Ver `crate::fundido`.
+    // Si se acaba de pasar de claro a oscuro, las superficies de panel, dock y
+    // escritorio conservan todavía el dibujo del tema viejo: basta reponer un
+    // instante los atómicos para fotografiarlas tal como están (sin repintar el
+    // shell cuatro veces) y pintar después una sola vez el tema nuevo.
+    // modified 0.2.3 -- foto directa sobre los buffers previos, sin ping-pong de 4 repintados
     if let Some((tema, acento)) = state.shell.as_mut().and_then(|s| s.tema_anterior.take()) {
         let nuevo = (
             bookos_shell::tema::actual(),
             bookos_shell::tema::acento_actual(),
         );
+        state.fundido = None;
+        bookos_shell::tema::aplicar(tema);
+        bookos_shell::tema::aplicar_acento(acento);
         if let Some(shell) = state.shell.as_mut() {
-            shell.aplicar_apariencia(tema, acento);
-            shell.animar_dock();
+            shell.foto_sin_emergente = true;
         }
         let viejos = componer(state, renderer, output);
-        state.fundido = crate::fundido::Fundido::fotografiar(renderer, &viejos, output);
         if let Some(shell) = state.shell.as_mut() {
-            shell.aplicar_apariencia(nuevo.0, nuevo.1);
+            shell.foto_sin_emergente = false;
+        }
+        state.fundido = crate::fundido::Fundido::fotografiar(renderer, &viejos, output);
+        bookos_shell::tema::aplicar(nuevo.0);
+        bookos_shell::tema::aplicar_acento(nuevo.1);
+        if let Some(shell) = state.shell.as_mut() {
+            shell.pintar_apariencia_diferida();
             shell.animar_dock();
-            // Reponer el nuevo lo vuelve a apuntar como un cambio: ya está
-            // fotografiado.
-            shell.tema_anterior = None;
         }
     }
+    if state.fundido.as_ref().is_some_and(|f| f.terminado()) {
+        state.fundido = None;
+    }
+    let con_fundido = state.fundido.is_some() && state.contexto_gl.is_some();
+    if con_fundido && let Some(shell) = state.shell.as_mut() {
+        shell.foto_sin_emergente = true;
+    }
     let mut elementos = componer(state, renderer, output);
+    if con_fundido && let Some(shell) = state.shell.as_mut() {
+        shell.foto_sin_emergente = false;
+    }
     // Delante de todo, cursor incluido. Solo en la principal, de donde sale la
     // muestra: ver `servir_captura_propia`.
     if output.current_location() == (0, 0).into()
@@ -221,12 +285,6 @@ pub fn escena(
             crate::cuentagotas::elemento(state, renderer, output.current_scale().fractional_scale())
     {
         elementos.insert(0, OverlayElement::Memory(lupa));
-    }
-    if state.fundido.as_ref().is_some_and(|f| f.terminado()) {
-        state.fundido = None;
-    }
-    if let (Some(fundido), Some(contexto)) = (state.fundido.as_ref(), state.contexto_gl.as_ref()) {
-        elementos.insert(0, OverlayElement::Textura(fundido.elemento(contexto)));
     }
     elementos
 }
@@ -263,7 +321,53 @@ fn componer(
         state.cursor_theme.as_ref(),
         cursor_en,
         scale,
+        state.agitar_cursor.escala(),
     );
+    // añadido en la 0.2.4 -- miniatura flotante de la última captura en la
+    // esquina inferior derecha de la salida principal, justo debajo del cursor.
+    if state
+        .space
+        .output_geometry(output)
+        .is_some_and(|g| g.loc == (0, 0).into())
+        && let Some(mini) = state.miniatura_captura.as_ref()
+        && let Some(el) = mini.elemento(renderer, state.pantalla(), scale)
+    {
+        elementos.push(el);
+    }
+    // El icono de arrastre, justo debajo del cursor. Su origen es el punto del
+    // ratón más lo que el cliente lo haya desplazado.
+    if let Some((icono, desfase)) = state.icono_arrastre.as_ref() {
+        let origen = smithay::utils::Point::<f64, smithay::utils::Physical>::from((
+            cursor_en.x + desfase.x as f64 * scale,
+            cursor_en.y + desfase.y as f64 * scale,
+        ));
+        let icono: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+            smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                renderer,
+                icono,
+                origen.to_i32_round(),
+                scale,
+                1.0,
+                smithay::backend::renderer::element::Kind::Unspecified,
+            );
+        elementos.extend(icono.into_iter().map(OverlayElement::Surface));
+    }
+    // Durante el fundido de tema, la emergente activa (con el tema nuevo) y la
+    // foto saliente van justo detrás del cursor: así el puntero nunca queda
+    // oculto por la tarjeta ni la tarjeta se compone dos veces detrás de la foto.
+    // modified 0.2.3 -- detrás del cursor y sin copia duplicada detrás del fundido
+    if let (Some(fundido), Some(contexto)) = (state.fundido.as_ref(), state.contexto_gl.as_ref()) {
+        if let Some(shell) = state.shell.as_ref() {
+            let delante = shell.elements(
+                renderer,
+                false,
+                crate::shell::CapaShell::SoloEmergente,
+                scale,
+            );
+            elementos.extend(delante.into_iter().map(OverlayElement::Memory));
+        }
+        elementos.push(OverlayElement::Textura(fundido.elemento(contexto)));
+    }
 
     let t_cursor = _t.elapsed();
     let _t = std::time::Instant::now();
@@ -386,6 +490,9 @@ fn componer(
     // en su sitio de antes la barra de modos y el «guardar / copiar» quedaban
     // tapados por las ventanas.
     if let Some(shell) = state.shell.as_ref() {
+        // El anillo de foco del teclado, delante de todo lo del shell: nada
+        // puede taparlo (HIG §11, foco).
+        elementos.extend(shell.anillo_foco().into_iter().map(OverlayElement::Color));
         elementos.extend(
             shell
                 .captura_elements(renderer)
@@ -405,15 +512,9 @@ fn componer(
         }
     }
 
-    // La isla, por lo mismo: desplegada cuelga sobre las miniaturas.
-    if vista_escritorios && let Some(shell) = state.shell.as_ref() {
-        elementos.extend(
-            shell
-                .elements(renderer, false, crate::shell::CapaShell::SoloIsla, scale)
-                .into_iter()
-                .map(OverlayElement::Memory),
-        );
-    }
+    // modificado en la 0.2.3 -- la isla ya no se pinta sobre la vista de
+    // escritorios: desplegada tapaba las miniaturas, y la capa de debajo ya
+    // va `SinIsla`, así que se va en cuanto arranca el gesto.
 
     // La vista de escritorios compone las mismas superficies Wayland, no
     // capturas. También las apartadas conservan su buffer vivo, de modo que una
@@ -469,7 +570,7 @@ fn componer(
                 if arrastrada.as_ref().is_some_and(|(w, _)| w == window) {
                     continue;
                 }
-                elementos.extend(constrain_space_element::<GlesRenderer, _, OverlayElement>(
+                let ajustadas = constrain_space_element::<GlesRenderer, _, crate::esquinas::Ajustada>(
                     renderer,
                     window,
                     destino.loc,
@@ -481,7 +582,25 @@ fn componer(
                         behavior: ConstrainScaleBehavior::Fit,
                         align: ConstrainAlign::CENTER,
                     },
-                ));
+                );
+                // añadido en la 0.2.3 -- con el radio de la miniatura: una
+                // ventana maximizada no trae esquinas propias y asomaba en
+                // pico. Sin shader, como antes.
+                match state.esquinas.as_ref() {
+                    Some(esquinas) => {
+                        let recorte = encajada(window, *destino)
+                            .to_f64()
+                            .to_physical_precise_round(scale);
+                        let radio =
+                            (bookos_shell::RADIO_MINIATURA_ESCRITORIO as f64 * scale) as f32;
+                        elementos.extend(ajustadas.into_iter().map(|e| {
+                            OverlayElement::Redondeada(crate::esquinas::Redondeada::new(
+                                e, esquinas, recorte, radio,
+                            ))
+                        }));
+                    }
+                    None => elementos.extend(ajustadas.into_iter().map(OverlayElement::Miniatura)),
+                }
             }
             // Y detrás de sus ventanas, el fondo de pantalla: es lo que hace
             // que un escritorio vacío se vea como un escritorio y no como un
@@ -696,17 +815,9 @@ fn componer(
     );
 
     // El cristal va detrás del panel, del dock y del velo, y delante de las
-    // ventanas: se dibuja cuando estas ya están en el framebuffer, que es de
-    // donde copia lo que desenfoca.
-    //
-    // Detrás del velo y no delante porque el launchpad desenfoca la pantalla
-    // entera: con el cristal por delante, el velo quedaba tapado y el
+    // ventanas. Detrás del velo y no delante porque el launchpad desenfoca la
+    // pantalla entera: con el cristal por delante, el velo quedaba tapado y el
     // escritorio se veía nítido y sin apagar debajo de los iconos.
-    //
-    // El commit sube en cada frame a propósito. El desenfoque depende de lo que
-    // haya debajo, así que cualquier cambio en la escena lo invalida; llevar la
-    // cuenta de qué zonas de debajo cambiaron sería lo suyo, pero hoy el
-    // compositor solo dibuja cuando algo cambió, y en reposo no dibuja nada.
     let (ancho_pantalla, alto_pantalla) = output
         .current_mode()
         .map(|m| (m.size.w, m.size.h))
@@ -724,9 +835,7 @@ fn componer(
         // se encarga el propio rectángulo del elemento.
         // Sin fondo subido no hay nada que desenfocar: el panel y el dock
         // se dibujan con su color, que es lo que hacían antes del cristal.
-        if let (Some((textura, fondo_tam)), Some(fondo)) =
-            (cristal.borrow().textura(), state.fondo.as_ref())
-        {
+        if let Some(fondo) = state.fondo.as_ref() {
             let pantalla = (ancho_pantalla, alto_pantalla);
             let encuadre = fondo.encuadre(pantalla);
             for (i, (rect, radio, fuerza)) in zonas.into_iter().enumerate() {
@@ -738,6 +847,11 @@ fn componer(
                 }) {
                     continue;
                 }
+                let Some((textura, fondo_tam, fuerza_efectiva)) =
+                    cristal.borrow().textura_para(fuerza)
+                else {
+                    break;
+                };
                 elementos.push(OverlayElement::Cristal(crate::desenfoque::Desenfoque::new(
                     id_cristal(i),
                     state.cristal_commit,
@@ -746,9 +860,9 @@ fn componer(
                     fondo_tam,
                     pantalla,
                     encuadre,
-                    textura.clone(),
+                    textura,
                     cristal.clone(),
-                    fuerza,
+                    fuerza_efectiva,
                 )));
             }
         }
@@ -984,7 +1098,7 @@ fn componer(
             elementos.extend(superficies.into_iter().map(OverlayElement::Surface));
             continue;
         }
-        if std::env::var_os("BOOKOS_PERFIL").is_some() {
+        if perfil_activo() {
             // La animación de una ventana no se puede capturar con las
             // herramientas del sistema —en Wayland puro no hay `import -window
             // root`—, así que la forma de comprobar que de verdad se dibujan
@@ -1162,7 +1276,7 @@ fn componer(
         }
     }
 
-    if std::env::var_os("BOOKOS_PERFIL").is_some() {
+    if perfil_activo() {
         let t_ventanas = _t.elapsed();
         if t_cursor.as_millis() > 1 || t_shell.as_millis() > 1 || t_ventanas.as_millis() > 1 {
             tracing::info!(
@@ -1224,6 +1338,471 @@ pub fn enviar_frames_capas(
             smithay::desktop::utils::surface_primary_scanout_output,
         );
     }
+}
+
+/// «App Nap» desde el compositor: envía `wl_surface.frame` a las ventanas
+/// visibles y reduce a 1 Hz las ventanas 100 % cubiertas por una ventana
+/// superior en pantalla completa o maximizada (y las pausa con el bloqueo).
+///
+/// Las ventanas minimizadas o en otro escritorio ya no están en `Space`, así
+/// que no reciben frames; esto cubre además las tapadas en el escritorio actual.
+// añadido en la 0.2.4
+pub fn enviar_frames_ventanas(
+    state: &mut BookosComp,
+    output: &Output,
+    tiempo: std::time::Duration,
+    periodo: std::time::Duration,
+) {
+    use smithay::desktop::utils::surface_primary_scanout_output;
+
+    // Con el bloqueo echado las ventanas no son visibles.
+    if state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()) {
+        return;
+    }
+    let vista_abierta = state.emisiones.hay()
+        || state.conmutador_pegado
+        || state.conmutador_entrada.is_some()
+        || state
+            .shell
+            .as_ref()
+            .is_some_and(|s| s.vista_escritorios_abierta());
+    let ahora = std::time::Instant::now();
+    let latido_nap = ahora.duration_since(state.ultimo_app_nap) >= std::time::Duration::from_secs(1);
+    if latido_nap {
+        state.ultimo_app_nap = ahora;
+    }
+
+    // Recorremos de delante hacia atrás (arriba a abajo en el Z-order).
+    let mut oclusores: Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>> = Vec::new();
+    let ventanas: Vec<smithay::desktop::Window> = state.space.elements().rev().cloned().collect();
+    for window in ventanas {
+        let geo = state.space.element_geometry(&window);
+        let oculta = !vista_abierta
+            && geo.is_some_and(|g| {
+                oclusores.iter().any(|oc| {
+                    oc.loc.x <= g.loc.x
+                        && oc.loc.y <= g.loc.y
+                        && oc.loc.x + oc.size.w >= g.loc.x + g.size.w
+                        && oc.loc.y + oc.size.h >= g.loc.y + g.size.h
+                })
+            });
+        if !oculta || latido_nap {
+            let p = if oculta {
+                std::time::Duration::from_secs(1)
+            } else {
+                periodo
+            };
+            window.send_frame(output, tiempo, Some(p), surface_primary_scanout_output);
+        }
+        if !vista_abierta
+            && (crate::ventanas::completa(&window) || crate::ventanas::maximizada(&window))
+            && let Some(g) = geo
+        {
+            oclusores.push(g);
+        }
+    }
+}
+
+/// Handle RAII para el monitor en segundo plano de cámara y micrófono.
+///
+/// Escucha eventos de PipeWire en tiempo real (`Video/Source` y `Audio/Source`
+/// en estado `Running`) y usa como respaldo el escaneo de `/proc` y
+/// `/proc/asound` cuando PipeWire no está disponible o para clientes directos.
+pub struct MonitorPrivacidad {
+    pw: pipewire::channel::Sender<OrdenPrivacidad>,
+    sondeo: std::sync::mpsc::SyncSender<()>,
+    usar_pw: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+enum OrdenPrivacidad {
+    Revisar,
+    Parar,
+}
+
+impl MonitorPrivacidad {
+    pub fn solicitar(&self) {
+        if self.usar_pw.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = self.pw.send(OrdenPrivacidad::Revisar);
+        } else {
+            let _ = self.sondeo.try_send(());
+        }
+    }
+}
+
+impl Drop for MonitorPrivacidad {
+    fn drop(&mut self) {
+        let _ = self.pw.send(OrdenPrivacidad::Parar);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TipoSensor {
+    Camara,
+    Microfono,
+}
+
+fn clasificar_nodo_pw(
+    media_class: Option<&str>,
+    media_role: Option<&str>,
+    node_name: Option<&str>,
+) -> Option<TipoSensor> {
+    match media_class? {
+        "Video/Source" => {
+            if media_role == Some("Screen")
+                || node_name
+                    .is_some_and(|n| n == "bookos-screencast" || n.starts_with("xdg-desktop-portal"))
+            {
+                None
+            } else {
+                Some(TipoSensor::Camara)
+            }
+        }
+        "Audio/Source" | "Audio/Source/Virtual" => Some(TipoSensor::Microfono),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct NodoSensor {
+    _nodo: Option<pipewire::node::Node>,
+    _oyente: Option<pipewire::node::NodeListener>,
+    tipo: Option<TipoSensor>,
+    activo: bool,
+}
+
+fn estado_sensores_pw(
+    nodos: &std::collections::HashMap<u32, NodoSensor>,
+    incluir_respaldo: bool,
+) -> (bool, bool) {
+    let mut camara = nodos
+        .values()
+        .any(|n| n.activo && n.tipo == Some(TipoSensor::Camara));
+    let mut microfono = nodos
+        .values()
+        .any(|n| n.activo && n.tipo == Some(TipoSensor::Microfono));
+    if incluir_respaldo {
+        if !camara {
+            camara = camara_en_uso(true);
+        }
+        if !microfono {
+            microfono = microfono_en_uso();
+        }
+    }
+    (camara, microfono)
+}
+
+fn notificar_sensores(
+    aviso: &smithay::reexports::calloop::channel::Sender<(bool, bool)>,
+    ultimo: &mut Option<(bool, bool)>,
+    estado: (bool, bool),
+) {
+    let cambio = match *ultimo {
+        Some(prev) => prev != estado,
+        None => estado != (false, false),
+    };
+    *ultimo = Some(estado);
+    if cambio {
+        let _ = aviso.send(estado);
+    }
+}
+
+fn bucle_privacidad_pw(
+    aviso: smithay::reexports::calloop::channel::Sender<(bool, bool)>,
+    receptor: pipewire::channel::Receiver<OrdenPrivacidad>,
+    usar_pw: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
+    use pipewire as pw;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    pw::init();
+    let bucle = pw::main_loop::MainLoopRc::new(None)?;
+    let contexto = pw::context::ContextRc::new(&bucle, None)?;
+    let core = contexto.connect_rc(None)?;
+    let registry = core.get_registry_rc()?;
+
+    let nodos: Rc<RefCell<HashMap<u32, NodoSensor>>> = Rc::new(RefCell::new(HashMap::new()));
+    let ultimo: Rc<RefCell<Option<(bool, bool)>>> = Rc::new(RefCell::new(None));
+
+    let _reg_oyente = {
+        let nodos_add = nodos.clone();
+        let ultimo_add = ultimo.clone();
+        let aviso_add = aviso.clone();
+        let registry_bind = registry.clone();
+        let nodos_rm = nodos.clone();
+        let ultimo_rm = ultimo.clone();
+        let aviso_rm = aviso.clone();
+        registry
+            .add_listener_local()
+            .global(move |obj| {
+                if obj.type_ != pw::types::ObjectType::Node {
+                    return;
+                }
+                let Some(props) = obj.props else {
+                    return;
+                };
+                let Some(tipo) = clasificar_nodo_pw(
+                    props.get("media.class"),
+                    props.get("media.role"),
+                    props.get("node.name"),
+                ) else {
+                    return;
+                };
+                let Ok(nodo) = registry_bind.bind::<pw::node::Node, _>(obj) else {
+                    return;
+                };
+                let id = obj.id;
+                let nodos_info = nodos_add.clone();
+                let ultimo_info = ultimo_add.clone();
+                let aviso_info = aviso_add.clone();
+                let oyente = nodo
+                    .add_listener_local()
+                    .info(move |info| {
+                        let activo = matches!(info.state(), pw::node::NodeState::Running);
+                        let estado = {
+                            let mut mapa = nodos_info.borrow_mut();
+                            if let Some(entrada) = mapa.get_mut(&id) {
+                                entrada.activo = activo;
+                            }
+                            estado_sensores_pw(&mapa, false)
+                        };
+                        notificar_sensores(&aviso_info, &mut ultimo_info.borrow_mut(), estado);
+                    })
+                    .register();
+                nodos_add.borrow_mut().insert(
+                    id,
+                    NodoSensor {
+                        _nodo: Some(nodo),
+                        _oyente: Some(oyente),
+                        tipo: Some(tipo),
+                        activo: false,
+                    },
+                );
+            })
+            .global_remove(move |id| {
+                let mut mapa = nodos_rm.borrow_mut();
+                if mapa.remove(&id).is_some() {
+                    let estado = estado_sensores_pw(&mapa, false);
+                    notificar_sensores(&aviso_rm, &mut ultimo_rm.borrow_mut(), estado);
+                }
+            })
+            .register()
+    };
+
+    let _rx = {
+        let bucle_rx = bucle.clone();
+        let nodos_rx = nodos.clone();
+        let ultimo_rx = ultimo.clone();
+        let aviso_rx = aviso.clone();
+        receptor.attach(bucle.loop_(), move |orden| match orden {
+            OrdenPrivacidad::Parar => bucle_rx.quit(),
+            OrdenPrivacidad::Revisar => {
+                let estado = estado_sensores_pw(&nodos_rx.borrow(), true);
+                notificar_sensores(&aviso_rx, &mut ultimo_rx.borrow_mut(), estado);
+            }
+        })
+    };
+
+    usar_pw.store(true, std::sync::atomic::Ordering::Relaxed);
+    bucle.run();
+    Ok(())
+}
+
+/// Arranca el monitor en segundo plano de cámara y micrófono.
+pub fn arrancar_monitor_privacidad(
+    aviso: smithay::reexports::calloop::channel::Sender<(bool, bool)>,
+) -> Option<MonitorPrivacidad> {
+    let (pw_tx, pw_rx) = pipewire::channel::channel::<OrdenPrivacidad>();
+    let (sondeo_tx, sondeo_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let usar_pw = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let usar_pw_hilo = usar_pw.clone();
+
+    match std::thread::Builder::new()
+        .name("bookos-privacidad".into())
+        .spawn(move || {
+            if let Err(err) = bucle_privacidad_pw(aviso.clone(), pw_rx, usar_pw_hilo.clone()) {
+                tracing::debug!("monitor de privacidad sin PipeWire, usando respaldo: {err}");
+                usar_pw_hilo.store(false, std::sync::atomic::Ordering::Relaxed);
+                let mut ultimo: Option<(bool, bool)> = None;
+                while sondeo_rx.recv().is_ok() {
+                    let estado = (camara_en_uso(false), microfono_en_uso());
+                    let cambio = match ultimo {
+                        Some(prev) => prev != estado,
+                        None => estado != (false, false),
+                    };
+                    ultimo = Some(estado);
+                    if cambio && aviso.send(estado).is_err() {
+                        break;
+                    }
+                }
+            }
+        }) {
+        Ok(_) => Some(MonitorPrivacidad {
+            pw: pw_tx,
+            sondeo: sondeo_tx,
+            usar_pw,
+        }),
+        Err(err) => {
+            tracing::warn!("no se pudo arrancar el monitor de privacidad: {err}");
+            None
+        }
+    }
+}
+
+fn aplicar_privacidad(state: &mut BookosComp, nuevo: bookos_shell::Privacidad) {
+    if nuevo != state.privacidad {
+        state.privacidad = nuevo;
+        if let Some(shell) = state.shell.as_mut()
+            && shell.poner_privacidad(nuevo)
+        {
+            state.needs_redraw = true;
+        }
+    }
+}
+
+/// Recibe desde el hilo de privacidad el estado de cámara y micrófono.
+pub fn aplicar_privacidad_sensores(state: &mut BookosComp, camara: bool, microfono: bool) {
+    let nuevo = bookos_shell::Privacidad {
+        microfono,
+        camara,
+        pantalla: state.privacidad.pantalla,
+    };
+    aplicar_privacidad(state, nuevo);
+}
+
+/// Actualiza los puntos de privacidad en el panel.
+///
+/// La compartición de pantalla se aplica al instante en memoria y la comprobación
+/// de cámara y micrófono se delega al monitor en segundo plano sin bloquear el
+/// bucle del compositor.
+// añadido en la 0.2.4
+pub fn actualizar_privacidad(state: &mut BookosComp) {
+    let nuevo = bookos_shell::Privacidad {
+        microfono: state.privacidad.microfono,
+        camara: state.privacidad.camara,
+        pantalla: state.emisiones.hay(),
+    };
+    aplicar_privacidad(state, nuevo);
+    if let Some(monitor) = state.privacidad_monitor.as_ref() {
+        monitor.solicitar();
+    }
+}
+
+// añadido en la 0.2.4
+fn camara_en_uso(ignorar_pipewire: bool) -> bool {
+    let Ok(proc_dir) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in proc_dir.flatten() {
+        let nombre = entry.file_name();
+        if !nombre
+            .to_str()
+            .is_some_and(|s| s.bytes().all(|b| b.is_ascii_digit()))
+        {
+            continue;
+        }
+        // Los gestores de sesión/dispositivos (WirePlumber, v4l2-relayd, udev)
+        // mantienen abiertos nodos `/dev/video*` para vigilar eventos aunque
+        // ninguna aplicación esté grabando.
+        if let Ok(comm) = std::fs::read_to_string(entry.path().join("comm"))
+            && es_daemon_camara(comm.trim(), ignorar_pipewire)
+        {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            if let Ok(destino) = std::fs::read_link(fd.path())
+                && destino
+                    .to_str()
+                    .is_some_and(|p| p.starts_with("/dev/video"))
+                && fd_abre_para_captura(&entry.path(), &fd.file_name())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn es_daemon_camara(comm: &str, ignorar_pipewire: bool) -> bool {
+    matches!(
+        comm,
+        "wireplumber" | "v4l2-relayd" | "systemd-udevd" | "udevd"
+    ) || comm.starts_with("pipewire-media")
+        || (ignorar_pipewire && comm == "pipewire")
+}
+
+/// Programa el precalentado de catálogos e iconos en segundo plano tras arrancar
+/// la sesión para que la primera apertura de tarjetas pesadas entre en 1 frame.
+pub fn programar_precalentado(state: &mut BookosComp) {
+    if state.modo.kiosko() {
+        return;
+    }
+    let _ = state.loop_handle.insert_source(
+        Timer::from_duration(std::time::Duration::from_millis(400)),
+        |_, _, _| {
+            let _ = std::thread::Builder::new()
+                .name("bookos-precalentar".into())
+                .spawn(bookos_shell::precalentar);
+            TimeoutAction::Drop
+        },
+    );
+}
+
+/// Comprueba si el descriptor está abierto con escritura (`O_WRONLY` o `O_RDWR`).
+/// Consultar capacidades o suscribirse a eventos V4L2 solo requiere `O_RDONLY`,
+/// mientras que la captura real (`VIDIOC_REQBUFS` / `VIDIOC_STREAMON`) abre en
+/// lectura/escritura.
+fn fd_abre_para_captura(proc_path: &std::path::Path, fd_name: &std::ffi::OsStr) -> bool {
+    let Ok(info) = std::fs::read_to_string(proc_path.join("fdinfo").join(fd_name)) else {
+        return false;
+    };
+    flags_son_captura(&info)
+}
+
+fn flags_son_captura(fdinfo: &str) -> bool {
+    for linea in fdinfo.lines() {
+        if let Some(valor) = linea.strip_prefix("flags:")
+            && let Ok(flags) = u32::from_str_radix(valor.trim(), 8)
+        {
+            return (flags & 0o3) != 0;
+        }
+    }
+    false
+}
+
+// añadido en la 0.2.4
+fn microfono_en_uso() -> bool {
+    let Ok(audio) = std::fs::read_dir("/proc/asound") else {
+        return false;
+    };
+    for card in audio.flatten() {
+        let nombre = card.file_name();
+        if !nombre.to_str().is_some_and(|s| s.starts_with("card")) {
+            continue;
+        }
+        let Ok(pcms) = std::fs::read_dir(card.path()) else {
+            continue;
+        };
+        for pcm in pcms.flatten() {
+            let pnombre = pcm.file_name();
+            if !pnombre
+                .to_str()
+                .is_some_and(|s| s.starts_with("pcm") && s.ends_with('c'))
+            {
+                continue;
+            }
+            if let Ok(sub) = std::fs::read_to_string(pcm.path().join("sub0/status"))
+                && sub.contains("RUNNING")
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// El identificador estable de cada zona de cristal.
@@ -1593,6 +2172,7 @@ pub fn servir_captura_propia(state: &mut BookosComp, renderer: &mut GlesRenderer
                             .file_name()
                             .map(|n| n.to_string_lossy().into_owned())
                             .unwrap_or_default();
+                        mostrar_miniatura_captura(state, &rgba, w, h, escala, Some(ruta));
                         notificar_captura(state, "Captura guardada", &nombre);
                     }
                 }
@@ -1613,6 +2193,7 @@ pub fn servir_captura_propia(state: &mut BookosComp, renderer: &mut GlesRenderer
                 let bytes = png.len();
                 al_portapapeles(state, png);
                 tracing::info!(w, h, bytes, "captura al portapapeles");
+                mostrar_miniatura_captura(state, &rgba, w, h, escala, None);
                 notificar_captura(state, "Captura copiada", "Ya se puede pegar");
             }
             Err(err) => {
@@ -1622,6 +2203,29 @@ pub fn servir_captura_propia(state: &mut BookosComp, renderer: &mut GlesRenderer
         },
     }
     state.needs_redraw = true;
+}
+
+/// Muestra la miniatura flotante de la captura y programa su retirada tras 5 s.
+// añadido en la 0.2.4
+fn mostrar_miniatura_captura(
+    state: &mut BookosComp,
+    rgba: &[u8],
+    w: u32,
+    h: u32,
+    escala: f64,
+    ruta: Option<std::path::PathBuf>,
+) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    state.miniatura_captura = crate::miniatura_captura::Miniatura::nueva(rgba, w, h, escala, ruta);
+    if state.miniatura_captura.is_some() {
+        let _ = state.loop_handle.insert_source(
+            Timer::from_duration(crate::miniatura_captura::DURACION),
+            |_, _, state| {
+                state.needs_redraw = true;
+                TimeoutAction::Drop
+            },
+        );
+    }
 }
 
 /// Pone la captura en el portapapeles.
@@ -1656,6 +2260,23 @@ pub fn texto_al_portapapeles(state: &mut BookosComp, texto: &str) {
 
 // 0.1.1
 fn poner_seleccion(state: &mut BookosComp, tipos: Vec<String>, bytes: Vec<u8>) {
+    poner_seleccion_con(
+        state,
+        tipos,
+        crate::handlers::Seleccion::Bytes(std::sync::Arc::new(bytes)),
+    );
+}
+
+/// Pone una selección propia con los datos que sean.
+// añadido en la 0.2.3
+pub(crate) fn poner_seleccion_con(
+    state: &mut BookosComp,
+    tipos: Vec<String>,
+    datos: crate::handlers::Seleccion,
+) {
+    // Smithay tampoco avisa a `new_selection` de esta: los tipos se apuntan
+    // a mano para que «Pegar» sepa si hay archivos.
+    state.archivos.tipos = tipos.clone();
     use smithay::wayland::selection::data_device::set_data_device_selection;
     // Smithay no avisa a `SelectionHandler::new_selection` cuando la pone el
     // propio compositor, así que a X11 se le dice aquí.
@@ -1667,12 +2288,7 @@ fn poner_seleccion(state: &mut BookosComp, tipos: Vec<String>, bytes: Vec<u8>) {
     {
         tracing::warn!("no se pudo ofrecer el portapapeles a X11: {err}");
     }
-    set_data_device_selection(
-        &state.display_handle,
-        &state.seat,
-        tipos,
-        crate::handlers::Seleccion::Bytes(std::sync::Arc::new(bytes)),
-    );
+    set_data_device_selection(&state.display_handle, &state.seat, tipos, datos);
 }
 
 // 0.1.0
@@ -1731,19 +2347,34 @@ fn ventana_de_actividad(actividad: &str, foco: &str) -> bool {
 
 // 0.1.0
 // modified 0.1.1 -- recalcula el acento a partir del fondo nuevo
+// modified 0.2.3 -- decodifica y reduce el fondo en un hilo aparte para no detener la animación de Apariencia
 pub fn recargar_fondo(state: &mut BookosComp, renderer: &mut GlesRenderer) {
-    if !std::mem::take(&mut state.recargar_fondo) {
-        return;
+    if std::mem::take(&mut state.recargar_fondo) {
+        state.fondo_generacion = state.fondo_generacion.wrapping_add(1);
+        let generacion = state.fondo_generacion;
+        let eleccion = state.fondo_config.clone();
+        let claro = bookos_shell::tema::es_claro();
+        let envio = state.fondo_envio.clone();
+        if let Err(err) = std::thread::Builder::new()
+            .name("fondo-carga".into())
+            .spawn(move || {
+                let listo = crate::fondo::cargar_en_hilo(&eleccion, claro);
+                let _ = envio.send((generacion, listo));
+            })
+        {
+            tracing::warn!("no se pudo lanzar el hilo del fondo, cargando en línea: {err}");
+            state.fondo_cargado = crate::fondo::cargar_en_hilo(&state.fondo_config, claro)
+                .and_then(crate::fondo::Fondo::desde_listo);
+        }
     }
-    let Some(fondo) = crate::fondo::Fondo::cargar(&state.fondo_config) else {
-        // Sin imagen se deja la que había: quedarse sin fondo por no encontrar
-        // la nueva es peor que seguir con la anterior.
-        tracing::warn!("no se encontró ningún fondo: se deja el que estaba");
+    let Some((fondo, (cristal_rgba, cristal_tam))) = state.fondo_cargado.take() else {
         return;
     };
     if let Some(cristal) = state.cristal.as_ref() {
-        let (rgba, tam) = fondo.rgba();
-        cristal.borrow_mut().preparar(renderer, rgba, tam);
+        cristal
+            .borrow_mut()
+            .subir_reducido(renderer, &cristal_rgba, cristal_tam, fondo.rgba().1);
+        state.cristal_commit.increment();
     }
     // El que había se queda para fundirse con el nuevo. **El cristal no se
     // funde**: el desenfoque muestrea una sola textura y mezclar dos pediría
@@ -1764,6 +2395,7 @@ pub fn recargar_fondo(state: &mut BookosComp, renderer: &mut GlesRenderer) {
 }
 
 // 0.1.1
+// modified 0.2.3 -- solo repinta el escritorio entero si el acento activo es Automático
 pub fn actualizar_acento_del_fondo(state: &mut BookosComp) {
     let Some(fondo) = state.fondo.as_ref() else {
         return;
@@ -1771,11 +2403,13 @@ pub fn actualizar_acento_del_fondo(state: &mut BookosComp) {
     let cambio = bookos_shell::tema::actualizar_acento_del_fondo(fondo.rgba().0);
     if cambio {
         let acento = bookos_shell::tema::acento_actual();
-        if let Some(shell) = state.shell.as_mut() {
-            shell.aplicar_apariencia(bookos_shell::tema::actual(), acento);
-        }
         if acento == bookos_shell::tema::Acento::Automatico {
-            crate::portal::apariencia_cambiada(state.bus_portal.as_ref());
+            if let Some(shell) = state.shell.as_mut() {
+                shell.aplicar_apariencia(bookos_shell::tema::actual(), acento);
+            }
+            crate::portal::apariencia_cambiada(state);
+        } else if let Some(shell) = state.shell.as_mut() {
+            shell.invalidar_apariencia();
         }
         state.needs_redraw = true;
     }
@@ -2007,6 +2641,7 @@ pub fn schedule_panel_tick(state: &mut BookosComp) {
             // Antes de refrescar: si el refresco reprograma, no tiene que
             // quitar esta fuente, que es la que está corriendo.
             state.tick_panel = None;
+            actualizar_privacidad(state);
             refresh_panel(state);
             schedule_panel_tick(state);
             TimeoutAction::Drop
@@ -2473,6 +3108,66 @@ mod tests {
                 assert!((1.0..=3.0).contains(&e));
             }
         }
+    }
+
+    #[test]
+    fn deteccion_camara_ignora_daemons_y_solo_lectura() {
+        assert!(super::es_daemon_camara("wireplumber", false));
+        assert!(super::es_daemon_camara("v4l2-relayd", false));
+        assert!(super::es_daemon_camara("pipewire-media-", false));
+        assert!(!super::es_daemon_camara("firefox", true));
+        assert!(!super::es_daemon_camara("pipewire", false));
+        assert!(super::es_daemon_camara("pipewire", true));
+
+        // O_RDONLY | O_NONBLOCK (02004000) -> solo sondeo, no captura
+        assert!(!super::flags_son_captura("pos:\t0\nflags:\t02004000\n"));
+        // O_RDWR | O_NONBLOCK (02004002) -> captura real
+        assert!(super::flags_son_captura("pos:\t0\nflags:\t02004002\n"));
+        assert!(!super::flags_son_captura(""));
+    }
+
+    #[test]
+    fn clasificacion_nodos_pipewire() {
+        use super::{TipoSensor, clasificar_nodo_pw};
+        assert_eq!(
+            clasificar_nodo_pw(Some("Video/Source"), None, Some("v4l2_input.pci")),
+            Some(TipoSensor::Camara)
+        );
+        // La compartición de pantalla también anuncia Video/Source, pero no es cámara.
+        assert_eq!(
+            clasificar_nodo_pw(Some("Video/Source"), Some("Screen"), Some("bookos-screencast")),
+            None
+        );
+        assert_eq!(
+            clasificar_nodo_pw(Some("Video/Source"), None, Some("xdg-desktop-portal-1")),
+            None
+        );
+        assert_eq!(
+            clasificar_nodo_pw(Some("Audio/Source"), None, Some("alsa_input.pci")),
+            Some(TipoSensor::Microfono)
+        );
+        assert_eq!(
+            clasificar_nodo_pw(Some("Audio/Source/Virtual"), None, None),
+            Some(TipoSensor::Microfono)
+        );
+        assert_eq!(
+            clasificar_nodo_pw(Some("Audio/Sink"), None, None),
+            None
+        );
+        assert_eq!(
+            clasificar_nodo_pw(Some("Stream/Output/Audio"), None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn monitor_privacidad_fusiona_peticiones_y_cierra_al_soltar() {
+        let (tx, _rx) = smithay::reexports::calloop::channel::channel();
+        let monitor = super::arrancar_monitor_privacidad(tx).expect("arranca hilo");
+        // Varias peticiones seguidas no deben bloquear aunque el canal esté lleno.
+        monitor.solicitar();
+        monitor.solicitar();
+        drop(monitor);
     }
 }
 

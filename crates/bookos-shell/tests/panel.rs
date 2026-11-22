@@ -622,11 +622,14 @@ fn el_clic_derecho_del_dock_abre_su_menu() {
     // El primero es el launchpad, que no tiene menú; el segundo sí.
     let x_launchpad = bookos_shell::DOCK_PAD + bookos_shell::DOCK_ICON / 2.0;
     assert!(
-        !shell.dock_menu(x_launchpad, centro_y),
+        !shell.dock_menu(x_launchpad, centro_y, &[]),
         "el launchpad no debe tener menú contextual"
     );
     let x = x_launchpad + 2.0 * (bookos_shell::DOCK_ICON + 14.0);
-    assert!(shell.dock_menu(x, centro_y), "no abrió el menú del dock");
+    assert!(
+        shell.dock_menu(x, centro_y, &[("org.kde.dolphin".into(), "Descargas".into(), true)]),
+        "no abrió el menú del dock"
+    );
 
     let (w, h) = shell.emergente_buffer_size().expect("tiene superficie");
     let mut buf = vec![0u8; (w * h * 4) as usize];
@@ -1157,6 +1160,7 @@ fn el_bloqueo_se_pinta_con_reloj_avatar_y_campo() {
             posicion: Some(37),
             duracion: Some(185),
             reproduciendo: true,
+            calidad: None,
         });
     }
     let mut buf2 = vec![0u8; (w * h * 4) as usize];
@@ -2209,6 +2213,7 @@ fn el_bloqueo_no_se_solapa_a_1280x800() {
             posicion: Some(13),
             duracion: Some(52),
             reproduciendo: false,
+            calidad: None,
         });
     }
     assert_eq!(

@@ -36,7 +36,7 @@
 //! que publica la actividad, en su idioma.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use iced_core::alignment::{Horizontal, Vertical};
 use iced_core::font::{Font, Weight};
@@ -98,6 +98,64 @@ const ASIS_ONDA_W: f32 = 27.0;
 /// bajo: la tarjeta es grande y más amplitud la despegaba de la barra.
 const D_SACUDIDA: std::time::Duration = std::time::Duration::from_millis(360);
 const SACUDIDA_PX: f32 = 10.0;
+thread_local! {
+    /// Se está pintando el contenido de un relevo: la caja común pone el fondo
+    /// y la sombra, y las tarjetas de dentro no deben traer los suyos o su
+    /// sombra se vería dentro del recorte. Como `tema::pintando_isla_clara`,
+    /// es estado del pintado y no de la actividad.
+    // añadido en la 0.2.3
+    static SIN_FONDO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// añadido en la 0.2.3
+fn sin_fondo() -> bool {
+    SIN_FONDO.with(std::cell::Cell::get)
+}
+
+/// El paso de una actividad a otra con la rueda o las flechas.
+///
+/// Antes la tarjeta cambiaba de tamaño y de contenido de un fotograma a otro,
+/// con un empujón de escala encima: un salto, y el HIG (§8) pide continuidad,
+/// cambios de forma con `M_ISLA` y nunca saltar. Ahora la caja va del tamaño
+/// de la anterior al de la nueva con el muelle de la isla, y el contenido se
+/// relee como en la maqueta de la isla (artifact de diseño, `.cap`): el viejo
+/// se apaga en [`RELEVO_SALE`] y el nuevo entra cuando la forma ya casi ha
+/// llegado, tras [`RELEVO_ESPERA`].
+// añadido en la 0.2.3
+// modified 0.2.3 -- fundido escalonado en vez de desplazar en vertical: con
+// el contenido moviéndose a la vez que la caja se leían dos movimientos.
+struct Relevo {
+    /// `None` cuando es la misma actividad cambiando de vista (abrir, cola,
+    /// menú ⋯): solo cambia la caja, el contenido nuevo no se desplaza.
+    // modificado en la 0.2.3
+    previa: Option<Box<Actividad>>,
+    desde: Instant,
+    /// Tamaño de la tarjeta (sin el margen de sombra) y radio de donde parte.
+    tam0: (f32, f32),
+    radio0: f32,
+    /// `true` cuando la misma tarjeta solo se extiende o recoge (p. ej. abrir o
+    /// cerrar la cola «A continuación»): el contenido superior permanece
+    /// visible sin apagarse ni fundirse, recortado por el alto actual.
+    // añadido en la 0.2.4
+    extender: bool,
+}
+
+/// Lo que tarda en apagarse el contenido que se va (maqueta: `.cap`, 100 ms).
+// added 0.2.3
+const RELEVO_SALE: Duration = Duration::from_millis(100);
+/// Cuándo empieza a entrar el nuevo: a los 190 ms la caja de `D_ISLA` lleva
+/// ~85 % del recorrido y el contenido ya no aparece recortado por ella.
+// added 0.2.3
+const RELEVO_ESPERA: Duration = Duration::from_millis(190);
+/// Lo que tarda en encenderse el contenido nuevo (maqueta: 200 ms).
+// added 0.2.3
+const RELEVO_ENTRA: Duration = Duration::from_millis(200);
+/// El empujón al pasar de actividad (maqueta: `paso`, 260 ms): baja 2 px y
+/// crece un 3 % hasta el 40 % del tiempo y vuelve. Dice «otra» sin mover el
+/// contenido.
+// added 0.2.3
+const PASO: Duration = Duration::from_millis(260);
+
 /// Constante de tiempo con que la onda y el brillo siguen la voz. Zenith manda
 /// el nivel unas siete veces por segundo; sin suavizar, cada aviso era un
 /// escalón. 90 ms lo alcanza antes del siguiente sin parecer que llega tarde.
@@ -128,11 +186,15 @@ const PLAYER_COMPACTO_H: f32 = crate::PANEL_HEIGHT as f32 - ARRIBA * 2.0;
 /// radio se leía como un botón de cápsula. 10 es el radio de «botón pequeño» de
 /// la tabla del HIG, y a estos 26 px de alto deja esquinas claramente cuadradas.
 const RADIO_COMPACTO: f32 = 10.0;
-/// La superficie de la isla: negra en los dos temas, como un notch. Excepción
-/// registrada en el HIG (§17, «Isla dinámica»); su texto es el del tema oscuro,
-/// que el shell fuerza mientras la pinta (`Shell::draw_actividad`).
-// añadido en la 0.2.0
-const ISLA: Color = Color::BLACK;
+/// La superficie de la isla, en el tono de control del tema (maqueta «Panel e
+/// isla»): en oscuro es `card()` (`#1C1C1E`: sobre el panel negro ya se ve
+/// dónde pulsar, y el negro puro desaparecía); en claro, `#D8D8DD`, un gris
+/// que la separa del panel blanco sin filo. Antes era negra en los dos temas y
+/// su texto el del tema oscuro, forzado al pintar (`Shell::draw_actividad`).
+// modificado en la 0.2.3
+fn isla() -> Color {
+    tema::card()
+}
 /// Radio de la tarjeta abierta con su columna: el de diálogo, el mayor de la
 /// tabla del HIG (§4).
 const RADIO_ABIERTO_ISLA: f32 = tema::R_DIALOGO;
@@ -486,6 +548,9 @@ pub struct Actividad {
     nivel_desde: (f32, Instant),
     // añadido en la 0.2.0
     entrada: Entrada,
+    /// La actividad de la que se viene, mientras se desplaza. Ver [`Relevo`].
+    // añadido en la 0.2.3
+    relevo: Option<Relevo>,
     /// El nombre de la aplicación para la cabecera, sacado de su `.desktop`
     /// una vez al nacer: leerlo en cada pintado son `stat` por fotograma.
     // añadido en la 0.2.2
@@ -514,6 +579,7 @@ impl Actividad {
             sacudida: None,
             nivel_desde: (0.0, Instant::now()),
             entrada: Entrada::Nueva,
+            relevo: None,
             app_nombre: String::new(),
         };
         a.app_nombre = nombre_app(&a.estado);
@@ -597,6 +663,98 @@ impl Actividad {
         }
         if cambia && self.animaciones && self.estado.clase == Clase::Asistente(Fase::Error) {
             self.sacudida = Some(Instant::now());
+        }
+    }
+
+    /// Esta actividad ocupa el sitio de otra que la rueda acaba de pasar: es
+    /// la misma isla con otro contenido, no una nueva. Hereda cómo iba la
+    /// entrada de la anterior (si ya había llegado, sigue llegada) y se queda
+    /// con ella para el [`Relevo`]. Sin esto nacía otra vez del 60 % y
+    /// transparente. Una que se estaba yendo no se hereda: esa sí es el relevo
+    /// de una que terminó.
+    // añadido en la 0.2.3
+    // modificado en la 0.2.3 -- se queda la anterior para desplazar el contenido
+    pub fn continuar_de(&mut self, mut anterior: Actividad) {
+        if anterior.saliendo.is_some() {
+            return;
+        }
+        self.desde = anterior.desde;
+        self.entrada = anterior.entrada;
+        // Sale de donde está ahora, aunque fuera a mitad de otro relevo: si
+        // se pasan varias seguidas, la caja no vuelve atrás de golpe.
+        let (tam0, radio0) = (anterior.tam_visible(), anterior.radio_visible());
+        anterior.relevo = None;
+        if self.animaciones && !tema::efectos_reducidos() {
+            self.relevo = Some(Relevo {
+                previa: Some(Box::new(anterior)),
+                desde: Instant::now(),
+                tam0,
+                radio0,
+                extender: false,
+            });
+        }
+    }
+
+    /// Lo que va del relevo, en la curva del muelle de la isla. `None` sin
+    /// relevo o terminado.
+    // añadido en la 0.2.3
+    fn avance_relevo(&self) -> Option<(&Relevo, f32)> {
+        let r = self.relevo.as_ref()?;
+        let t = tema::fraccion(r.desde.elapsed(), tema::D_ISLA);
+        (t < 1.0).then(|| (r, tema::C_MUELLE_ISLA.eval(t)))
+    }
+
+    /// Si hay que repintar el lienzo: el relevo mueve contenido, no solo la
+    /// textura, así que no basta con lo que hace el compositor.
+    // añadido en la 0.2.3
+    pub fn animando_relevo(&self) -> bool {
+        self.relevo.is_some()
+    }
+
+    /// Suelta la anterior cuando el relevo ha terminado. `true` si cambia el
+    /// tamaño del lienzo (vuelve al de esta actividad sola).
+    // añadido en la 0.2.3
+    pub fn terminar_relevo(&mut self) -> bool {
+        if self.relevo.is_some() && self.avance_relevo().is_none() {
+            self.relevo = None;
+            return true;
+        }
+        false
+    }
+
+    /// El tamaño de la tarjeta tal como se ve ahora, sin el margen de sombra.
+    // añadido en la 0.2.3
+    fn tam_visible(&self) -> (f32, f32) {
+        let (w, h) = self.size_propio();
+        let fin = (w - MARGEN_SOMBRA * 2.0, h - MARGEN_SOMBRA * 2.0);
+        match self.avance_relevo() {
+            // Sin pasarse: el lienzo mide lo mayor de los dos y un rebote de
+            // la caja se saldría de él.
+            Some((r, p)) => {
+                let p = p.clamp(0.0, 1.0);
+                (
+                    r.tam0.0 + (fin.0 - r.tam0.0) * p,
+                    r.tam0.1 + (fin.1 - r.tam0.1) * p,
+                )
+            }
+            None => fin,
+        }
+    }
+
+    // añadido en la 0.2.3
+    fn radio_propio(&self) -> f32 {
+        match self.vista {
+            Vista::Compacta => RADIO_COMPACTO,
+            _ if self.con_columna() => RADIO_ABIERTO_ISLA,
+            _ => RADIO,
+        }
+    }
+
+    // añadido en la 0.2.3
+    fn radio_visible(&self) -> f32 {
+        match self.avance_relevo() {
+            Some((r, p)) => r.radio0 + (self.radio_propio() - r.radio0) * p.clamp(0.0, 1.0),
+            None => self.radio_propio(),
         }
     }
 
@@ -688,6 +846,13 @@ impl Actividad {
         self.vista != Vista::Compacta
     }
 
+    /// Título y subtítulo tal como los publicó la app, para el lector de
+    /// pantalla.
+    // añadido en la 0.2.2
+    pub fn rotulos(&self) -> (&str, &str) {
+        (&self.estado.titulo, &self.estado.subtitulo)
+    }
+
     // 0.1.0
     pub fn app_id(&self) -> &str {
         &self.estado.app_id
@@ -708,9 +873,25 @@ impl Actividad {
         if self.vista != Vista::Compacta {
             return false;
         }
-        self.vista = Vista::Abierta;
-        self.desde = Instant::now();
+        self.cambiar_vista(Vista::Abierta);
         true
+    }
+
+    /// Abre la tarjeta en su sitio, como continuación de otra que ya estaba
+    /// abierta: pasar de una actividad a otra con la rueda creaba la nueva
+    /// recogida y la isla se cerraba en medio del gesto. El asistente no: su
+    /// vista la manda la fase.
+    // añadido en la 0.2.2
+    pub fn seguir_desplegada(&mut self) {
+        if matches!(self.estado.clase, Clase::Asistente(_)) || self.vista != Vista::Compacta {
+            return;
+        }
+        self.vista = Vista::Abierta;
+        // Con relevo, abrirse lo cuenta la caja que crece: el encogido de
+        // `OtraVista` encima era el tirón que se veía al pasar.
+        if self.relevo.is_none() {
+            self.entrada = Entrada::OtraVista;
+        }
     }
 
     /// Abre la tarjeta compacta o recoge la abierta, con la misma transición
@@ -726,9 +907,20 @@ impl Actividad {
         }
     }
 
+    /// Tramo de la cola que se muestra en «A continuación»: empieza por la
+    /// canción que está sonando (`actual`) y sigue con las que vienen después,
+    /// hasta [`COLA_MAX`] filas. Si ninguna viene marcada como actual, empieza
+    /// desde el principio.
+    // añadido en la 0.2.4
+    fn cola_visible(&self) -> &[ItemCola] {
+        let inicio = self.estado.cola.iter().position(|i| i.actual).unwrap_or(0);
+        let fin = (inicio + COLA_MAX).min(self.estado.cola.len());
+        &self.estado.cola[inicio..fin]
+    }
+
     // 0.1.0
     fn filas_cola(&self) -> usize {
-        self.estado.cola.len().min(COLA_MAX)
+        self.cola_visible().len()
     }
 
     /// Alto del panel de la cola colgando del reproductor, incluida su
@@ -798,7 +990,7 @@ impl Actividad {
     /// tarjeta. Centrada en el alto de la tarjeta.
     // añadido en la 0.2.0
     fn columna(&self) -> Vec<(f32, f32)> {
-        let (_, h) = self.size();
+        let (_, h) = self.size_propio();
         let h = h - MARGEN_SOMBRA * 2.0;
         let lados: Vec<f32> = self
             .burbujas
@@ -828,9 +1020,11 @@ impl Actividad {
     /// coordenadas de la tarjeta. El hueco simétrico de la izquierda no es de
     /// nadie: si el compositor lo contara, se tragaría clics del panel.
     // 0.1.0
+    // modificado en la 0.2.3 -- durante un relevo, la caja centrada del lienzo
     pub fn zona(&self) -> (f32, f32) {
         let (w, _) = self.size();
-        (0.0, w - MARGEN_SOMBRA * 2.0)
+        let (visible, _) = self.tam_visible();
+        ((w - MARGEN_SOMBRA * 2.0 - visible) / 2.0, visible)
     }
 
     /// El `app_id` del icono de la columna bajo el punto, en coordenadas del
@@ -853,8 +1047,24 @@ impl Actividad {
             .map(|(_, b)| b.app_id.as_str())
     }
 
+    /// El lienzo: mientras dura un relevo, lo bastante grande para la caja
+    /// de partida y la de llegada, para no rehacerlo en cada fotograma.
     // 0.1.0
+    // modificado en la 0.2.3 -- cabe el relevo
     pub fn size(&self) -> (f32, f32) {
+        let (w, h) = self.size_propio();
+        match &self.relevo {
+            Some(r) => (
+                w.max(r.tam0.0 + MARGEN_SOMBRA * 2.0),
+                h.max(r.tam0.1 + MARGEN_SOMBRA * 2.0),
+            ),
+            None => (w, h),
+        }
+    }
+
+    /// Lo que mide esta actividad sola, con el margen de sombra.
+    // 0.1.0
+    fn size_propio(&self) -> (f32, f32) {
         let (w, h) = match self.vista {
             Vista::Compacta => (self.ancho_pildora(), self.alto_pildora()),
             Vista::Menu => (
@@ -895,6 +1105,7 @@ impl Actividad {
             && (self.desde.elapsed() < tema::D_ISLA
                 || self.saliendo.is_some()
                 || self.cambio.is_some_and(|t| t.elapsed() < tema::D_ISLA)
+                || self.relevo.is_some()
                 || self
                     .sacudida
                     .is_some_and(|t| t.elapsed() < tema::D_ISLA + D_SACUDIDA)
@@ -954,7 +1165,9 @@ impl Actividad {
     // 0.1.0
     // modificado en la 0.2.0 -- desplazamiento horizontal para la sacudida del error
     pub fn entrada(&self) -> (f32, f32, f32, f32) {
-        if !self.animaciones {
+        // Los efectos reducidos van por el mismo camino que apagar las
+        // animaciones de la isla: sin zoom, sin sacudida y sin respirar con la voz.
+        if !self.animaciones || tema::efectos_reducidos() {
             return (1.0, 1.0, 0.0, 0.0);
         }
         let p = tema::C_MUELLE_ISLA.eval(tema::fraccion(self.desde.elapsed(), tema::D_ISLA));
@@ -973,6 +1186,16 @@ impl Actividad {
         if let Some(t) = self.cambio {
             let c = tema::C_MUELLE_ISLA.eval(tema::fraccion(t.elapsed(), tema::D_ISLA));
             zoom *= 0.94 + 0.06 * c;
+        }
+        // added 0.2.3 -- empujón al pasar de actividad, como `paso` de la maqueta
+        let mut dy_paso = 0.0;
+        if let Some(r) = self.relevo.as_ref().filter(|r| r.previa.is_some()) {
+            let f = tema::fraccion(r.desde.elapsed(), PASO);
+            if f < 1.0 {
+                let b = tema::C_SUAVE.eval(if f < 0.4 { f / 0.4 } else { (1.0 - f) / 0.6 });
+                zoom *= 1.0 + 0.03 * b;
+                dy_paso = 2.0 * b;
+            }
         }
         // Se va hacia la barra de la que salió, más deprisa de lo que entra.
         if let Some(t) = self.saliendo {
@@ -995,22 +1218,27 @@ impl Actividad {
             SACUDIDA_PX * (1.0 - f) * (f * 2.5 * std::f32::consts::TAU).sin()
         });
         let (_, h) = self.size();
-        (alfa, zoom, dx, -(h / 2.0 - MARGEN_SOMBRA) * (1.0 - zoom))
+        (alfa, zoom, dx, -(h / 2.0 - MARGEN_SOMBRA) * (1.0 - zoom) + dy_paso)
     }
 
     // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let x = x - MARGEN_SOMBRA;
         let y = y - MARGEN_SOMBRA;
-        if x < 0.0 || y < 0.0 || self.saliendo.is_some() {
+        // Durante el relevo lo que hay bajo el dedo se está moviendo: son
+        // 420 ms, y un clic ahí caería en la tarjeta que se va.
+        // Un cambio de vista no mueve el contenido: ese sí atiende.
+        let moviendose = self
+            .avance_relevo()
+            .is_some_and(|(r, _)| r.previa.is_some());
+        if x < 0.0 || y < 0.0 || self.saliendo.is_some() || moviendose {
             return None;
         }
         if let Clase::Asistente(fase) = self.estado.clase {
             return self.pulsar_asistente(fase, x, y);
         }
         if self.vista == Vista::Compacta {
-            self.vista = Vista::Abierta;
-            self.desde = Instant::now();
+            self.cambiar_vista(Vista::Abierta);
             return None;
         }
         if x >= ABIERTO_W {
@@ -1036,8 +1264,7 @@ impl Actividad {
                 3 => ISLA_AJUSTES,
                 _ => return None,
             };
-            self.vista = Vista::Abierta;
-            self.desde = Instant::now();
+            self.cambiar_vista(Vista::Abierta);
             return Some(self.accion(nombre, String::new()));
         }
         let y = y - CAB_EXTRA;
@@ -1138,7 +1365,7 @@ impl Actividad {
     }
 
     fn pulsar_asistente(&mut self, fase: Fase, x: f32, y: f32) -> Option<Accion> {
-        let (w, h) = self.size();
+        let (w, h) = self.size_propio();
         if !(0.0..w - MARGEN_SOMBRA * 2.0).contains(&x)
             || !(0.0..h - MARGEN_SOMBRA * 2.0).contains(&y)
         {
@@ -1197,12 +1424,11 @@ impl Actividad {
         if matches!(self.estado.clase, Clase::Asistente(_)) || self.saliendo.is_some() {
             return false;
         }
-        self.vista = if self.vista == Vista::Menu {
+        self.cambiar_vista(if self.vista == Vista::Menu {
             Vista::Abierta
         } else {
             Vista::Menu
-        };
-        self.desde = Instant::now();
+        });
         true
     }
 
@@ -1231,9 +1457,36 @@ impl Actividad {
             + 10.0
     }
 
+    // modificado en la 0.2.3 -- con cambiar_vista
     fn colapsar(&mut self) {
-        self.vista = Vista::Compacta;
-        self.desde = Instant::now();
+        self.cambiar_vista(Vista::Compacta);
+    }
+
+    /// Otra vista de la misma actividad: la caja se estira o encoge desde
+    /// donde está con el muelle de la isla. Antes se reiniciaba `desde` con
+    /// `entrada` en `Nueva`, y abrir el menú ⋯ o la cola la hacía nacer otra
+    /// vez del 60 % y transparente, como si llegara una actividad nueva.
+    // añadido en la 0.2.3
+    fn cambiar_vista(&mut self, vista: Vista) {
+        if self.vista == vista {
+            return;
+        }
+        let antes = self.vista;
+        let (tam0, radio0) = (self.tam_visible(), self.radio_visible());
+        self.vista = vista;
+        let extender = matches!(
+            (antes, vista),
+            (Vista::Abierta, Vista::Cola) | (Vista::Cola, Vista::Abierta)
+        );
+        if self.animaciones && !tema::efectos_reducidos() {
+            self.relevo = Some(Relevo {
+                previa: None,
+                desde: Instant::now(),
+                tam0,
+                radio0,
+                extender,
+            });
+        }
     }
 
     // 0.1.0
@@ -1290,12 +1543,11 @@ impl Actividad {
                 if self.filas_cola() == 0 {
                     return None;
                 }
-                self.vista = if self.vista == Vista::Cola {
+                self.cambiar_vista(if self.vista == Vista::Cola {
                     Vista::Abierta
                 } else {
                     Vista::Cola
-                };
-                self.desde = Instant::now();
+                });
                 return None;
             }
             // El icono del altavoz no es parte de la pista: un clic en él
@@ -1317,7 +1569,7 @@ impl Actividad {
             return None;
         }
         let i = (y / COLA_FILA_H) as usize;
-        let item = self.estado.cola.get(i)?;
+        let item = self.cola_visible().get(i)?;
         let id = item.id.clone();
         let nombre = if x > ABIERTO_W - COLA_PAD - 40.0 {
             "favorite"
@@ -1350,17 +1602,124 @@ impl Actividad {
     // ── Vista ────────────────────────────────────────────────────────────
 
     // 0.1.0
+    // modificado en la 0.2.3 -- el relevo desplaza el contenido
     pub fn view(&self) -> PanelElement<'_> {
         let (w, h) = self.size();
-        let tarjeta = match self.vista {
-            Vista::Compacta => self.compacta(),
-            _ if self.con_columna() => self.con_su_columna(),
-            _ => self.abierta(),
-        };
-        container(tarjeta)
+        if let Some((r, _)) = self.avance_relevo() {
+            return self.view_relevo(r, w, h);
+        }
+        container(self.tarjeta())
             .width(Length::Fixed(w))
             .height(Length::Fixed(h))
             .padding(MARGEN_SOMBRA)
+            .into()
+    }
+
+    // añadido en la 0.2.3
+    fn tarjeta(&self) -> PanelElement<'_> {
+        match self.vista {
+            Vista::Compacta => self.compacta(),
+            _ if self.con_columna() => self.con_su_columna(),
+            _ => self.abierta(),
+        }
+    }
+
+    /// Una caja con el tamaño y el radio de este momento, y dentro la tarjeta
+    /// que se va o la que llega, sin fondo y recortadas por ella. Ninguna se
+    /// mueve: se tapan con un velo del color de la isla, que es como iced
+    /// puede fundir un árbol de widgets (no hay opacidad por capa).
+    // añadido en la 0.2.3
+    // modified 0.2.3 -- velos temporizados como la maqueta, sin desplazar
+    fn view_relevo<'a>(&'a self, r: &'a Relevo, w: f32, h: f32) -> PanelElement<'a> {
+        let (cw, ch) = self.tam_visible();
+        let radio = self.radio_visible();
+        let pasado = r.desde.elapsed();
+        let colocar = |tarjeta: PanelElement<'a>| -> PanelElement<'a> {
+            crate::recorte::Recorte::new(
+                container(tarjeta)
+                    .width(Length::Fixed(cw))
+                    .align_x(Horizontal::Center),
+                cw,
+                ch,
+                0.0,
+            )
+            .into()
+        };
+        // La tarjeta lleva su propio margen de sombra fuera: `tarjeta()` es
+        // solo la caja, así que entra tal cual.
+        SIN_FONDO.with(|c| c.set(true));
+        let sale = tema::C_SUAVE.eval(tema::fraccion(pasado, RELEVO_SALE));
+        let entra = tema::C_SUAVE.eval(tema::fraccion(
+            pasado.saturating_sub(RELEVO_ESPERA),
+            RELEVO_ENTRA,
+        ));
+        let mut capas = stack![];
+        // Con `previa` en `None` (otra vista de la misma) la vista vieja ya no
+        // se puede construir; en la maqueta se apaga en 100 ms, así que lo
+        // que se pierde es un destello.
+        // Las dos nunca se ven a la vez (una acaba a los 100 ms y la otra
+        // empieza a los 190), así que basta un velo.
+        let mut velo = 0.0;
+        if r.extender {
+            // Al desplegar o recoger la cola, el reproductor superior se queda
+            // intacto sin apagarse: `Recorte` descubre u oculta la cola al ritmo
+            // del alto actual de la caja.
+            capas = capas.push(colocar(self.tarjeta()));
+        } else {
+            if let Some(previa) = r.previa.as_ref().filter(|_| sale < 1.0) {
+                capas = capas.push(colocar(previa.tarjeta()));
+                velo = sale;
+            }
+            if entra > 0.0 {
+                capas = capas.push(colocar(self.tarjeta()));
+                velo = 1.0 - entra;
+            }
+        }
+        SIN_FONDO.with(|c| c.set(false));
+        let caja = container(capas)
+            .width(Length::Fixed(cw))
+            .height(Length::Fixed(ch))
+            .style(move |_| container::Style {
+                background: Some(isla().into()),
+                border: Border {
+                    radius: radio.into(),
+                    ..Default::default()
+                },
+                // Sin sombra mientras se mueve: la de iced es un SDF por
+                // píxel y repintarla en cada fotograma llevaba el relevo
+                // abierto de 3–8 ms a ~55 ms (debug, example actividad).
+                // La tarjeta en reposo la vuelve a llevar.
+                ..Default::default()
+            });
+        // Encima de la caja y fuera del `Recorte`: dentro de su capa el
+        // relleno translúcido pasaba por la máscara del recorte y la tarjeta
+        // abierta costaba 18–43 ms por fotograma; aquí, ver la medida en el
+        // ejemplo `actividad`. A 0 o a 1 no se pinta: el alfa 0 también se
+        // rasteriza.
+        let caja: PanelElement<'a> = if velo > 0.0 && velo < 1.0 {
+            stack![
+                caja,
+                container(Space::new())
+                    .width(Length::Fixed(cw))
+                    .height(Length::Fixed(ch))
+                    .style(move |_| container::Style {
+                        background: Some(tema::alfa(isla(), velo).into()),
+                        border: Border {
+                            radius: radio.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+            ]
+            .into()
+        } else {
+            caja.into()
+        };
+        container(caja)
+            .width(Length::Fixed(w))
+            .height(Length::Fixed(h))
+            .padding(MARGEN_SOMBRA)
+            .align_x(Horizontal::Center)
             .into()
     }
 
@@ -1369,7 +1728,7 @@ impl Actividad {
     /// Las dos sobre el mismo negro: la junta no se ve.
     // añadido en la 0.2.0
     fn con_su_columna(&self) -> PanelElement<'_> {
-        let (_, h) = self.size();
+        let (_, h) = self.size_propio();
         let h = h - MARGEN_SOMBRA * 2.0;
         let mut col = column![];
         let mut y = 0.0;
@@ -1379,6 +1738,7 @@ impl Actividad {
                 .push(icono_columna(b, lado));
             y = c + lado / 2.0;
         }
+        let con_fondo = !sin_fondo();
         container(row![
             self.abierta(),
             container(col)
@@ -1386,14 +1746,19 @@ impl Actividad {
                 .height(Length::Fixed(h))
                 .align_x(Horizontal::Center),
         ])
-        .style(|_| container::Style {
-            background: Some(ISLA.into()),
-            border: Border {
-                radius: RADIO_ABIERTO_ISLA.into(),
+        .style(move |_| {
+            if !con_fondo {
+                return container::Style::default();
+            }
+            container::Style {
+                background: Some(isla().into()),
+                border: Border {
+                    radius: RADIO_ABIERTO_ISLA.into(),
+                    ..Default::default()
+                },
+                shadow: tema::sombra_popover(),
                 ..Default::default()
-            },
-            shadow: tema::sombra_popover(),
-            ..Default::default()
+            }
         })
         .into()
     }
@@ -1589,7 +1954,7 @@ impl Actividad {
             return self.abierta_asistente(fase);
         }
         let color = self.color();
-        let (w, h) = self.size();
+        let (w, h) = self.size_propio();
         // La tarjeta en sí no incluye la columna: va al lado, en `view`.
         let columna = if self.con_columna() { COLUMNA } else { 0.0 };
         let (w, h) = (w - MARGEN_SOMBRA * 2.0 - columna, h - MARGEN_SOMBRA * 2.0);
@@ -1599,7 +1964,9 @@ impl Actividad {
         }
         let cuerpo: PanelElement<'_> = match self.estado.clase {
             Clase::Player => {
-                let con_cola = self.vista == Vista::Cola && self.filas_cola() > 0;
+                let extendiendo_cola = self.avance_relevo().is_some_and(|(r, _)| r.extender);
+                let con_cola =
+                    (self.vista == Vista::Cola || extendiendo_cola) && self.filas_cola() > 0;
                 let mut cuerpo = column![
                     container(self.cabecera_player()).height(Length::Fixed(CAB_H)),
                     Space::new().height(Length::Fixed(CTRL_Y - PAD - CAB_H)),
@@ -1616,7 +1983,12 @@ impl Actividad {
                         .push(Space::new().height(Length::Fixed(COLA_SEP + PAD)))
                         .push(self.panel_cola(color));
                 }
-                return self.con_cabecera(cuerpo.into(), w, h);
+                let h_cuerpo = if con_cola && self.vista != Vista::Cola {
+                    h + self.alto_cola()
+                } else {
+                    h
+                };
+                return self.con_cabecera(cuerpo.into(), w, h_cuerpo);
             }
             Clase::Timer => {
                 let vencido = self.estado.restante_ms < 0;
@@ -1901,12 +2273,28 @@ impl Actividad {
 
     /// La tarjeta con su franja de cabecera encima del contenido.
     // añadido en la 0.2.2
+    // modificado en la 0.2.3 -- con columna, sin fondo ni sombra propios
     fn con_cabecera<'a>(&'a self, cuerpo: PanelElement<'a>, w: f32, h: f32) -> PanelElement<'a> {
-        stack![
-            tarjeta_v(cuerpo, w, h, RADIO, [PAD + CAB_EXTRA, PAD, PAD, PAD]),
-            self.cabecera_app(w),
-        ]
-        .into()
+        let relleno = [PAD + CAB_EXTRA, PAD, PAD, PAD];
+        // Con la columna al lado, el fondo y la sombra los pone
+        // `con_su_columna` para las dos. Si la tarjeta trae los suyos, su
+        // sombra cae sobre la columna y su esquina redonda se ve encima: dos
+        // piezas superpuestas en vez de una.
+        let tarjeta = if self.con_columna() {
+            container(cuerpo)
+                .width(Length::Fixed(w))
+                .height(Length::Fixed(h))
+                .padding(iced_core::Padding {
+                    top: relleno[0],
+                    right: relleno[1],
+                    bottom: relleno[2],
+                    left: relleno[3],
+                })
+                .into()
+        } else {
+            tarjeta_v(cuerpo, w, h, RADIO, relleno)
+        };
+        stack![tarjeta, self.cabecera_app(w)].into()
     }
 
     /// «App ›» y ⋯. Sin placa: en la isla no hay puntero que la encienda, y
@@ -2176,11 +2564,7 @@ impl Actividad {
                 Fondo::Tenue,
             ));
         }
-        let fondo = if tema::es_claro() {
-            tema::card()
-        } else {
-            Color::BLACK
-        };
+        let fondo = isla();
         let cuerpo = container(contenido)
             .width(ASIS_COMPACTO_W - ASIS_CANTO * 2.0)
             .height(ASIS_COMPACTO_H - ASIS_CANTO * 2.0)
@@ -2354,13 +2738,14 @@ impl Actividad {
         container(
             row![
                 icono_teñido(icono_inline(ALEATORIO), 20.0, plano(self.estado.aleatorio)),
-                // Como la referencia: solo el play lleva placa, y es blanca con
-                // el glifo negro (la isla siempre es negra). Los saltos, sueltos.
+                // Como la referencia: solo el play lleva placa, del color de la
+                // tinta del tema (blanca con el glifo oscuro en oscuro, como
+                // siempre; oscura en claro). Los saltos, sueltos.
                 redondo(icono_inline(ANTERIOR), CTRL_LADO, Fondo::Sin),
                 redondo(
                     icono_inline(central),
                     CTRL_PLAY,
-                    Fondo::Solido(Color::WHITE)
+                    Fondo::Solido(tema::texto())
                 ),
                 redondo(icono_inline(SIGUIENTE), CTRL_LADO, Fondo::Sin),
                 self.favorita_actual(plano),
@@ -2471,7 +2856,7 @@ impl Actividad {
             .height(Length::Fixed(COLA_CAB_H))
             .align_y(Vertical::Center),
         ];
-        for item in self.estado.cola.iter().take(COLA_MAX) {
+        for item in self.cola_visible() {
             let actual = item.actual;
             filas = filas.push(
                 container(
@@ -2603,6 +2988,9 @@ fn tarjeta_v<'a>(
     radio: f32,
     padding: [f32; 4],
 ) -> PanelElement<'a> {
+    // Se lee al construir: el estilo se evalúa al pintar, con la bandera ya
+    // devuelta a su sitio.
+    let con_fondo = !sin_fondo();
     container(contenido)
         .width(Length::Fixed(w))
         .height(Length::Fixed(h))
@@ -2614,14 +3002,19 @@ fn tarjeta_v<'a>(
             bottom: padding[2],
             left: padding[3],
         })
-        .style(move |_| container::Style {
-            background: Some(ISLA.into()),
-            border: Border {
-                radius: radio.into(),
+        .style(move |_| {
+            if !con_fondo {
+                return container::Style::default();
+            }
+            container::Style {
+                background: Some(isla().into()),
+                border: Border {
+                    radius: radio.into(),
+                    ..Default::default()
+                },
+                shadow: tema::sombra_popover(),
                 ..Default::default()
-            },
-            shadow: tema::sombra_popover(),
-            ..Default::default()
+            }
         })
         .into()
 }
@@ -3095,12 +3488,12 @@ fn icono_columna(b: &Burbuja, lado: f32) -> PanelElement<'static> {
     let fondo = if b.actual {
         b.color
     } else {
-        tema::mezclar(ISLA, b.color, 0.32)
+        tema::mezclar(isla(), b.color, 0.32)
     };
     let tinta = if b.actual {
         Color::WHITE
     } else {
-        tema::mezclar(ISLA, Color::WHITE, 0.45)
+        tema::mezclar(isla(), Color::WHITE, 0.45)
     };
     let px = lado * 0.55;
     let dentro: PanelElement<'static> = match b.clase {
@@ -3298,7 +3691,7 @@ const CALENDARIO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
 /// Un `Handle` por foto para todo el proceso: `from_bytes` le da un id nuevo
 /// en cada llamada, y crearlo en la vista volvía a decodificar el PNG en cada
 /// repintado.
-static FOTOS_BUDS: std::sync::LazyLock<[image::Handle; 5]> = std::sync::LazyLock::new(|| {
+pub(crate) static FOTOS_BUDS: std::sync::LazyLock<[image::Handle; 5]> = std::sync::LazyLock::new(|| {
     [
         include_bytes!("../assets/buds/izquierdo.png").as_slice(),
         include_bytes!("../assets/buds/derecho.png").as_slice(),
@@ -3733,6 +4126,44 @@ mod tests {
     }
 
     #[test]
+    fn pasar_a_otra_actividad_desplaza_el_contenido_sin_reiniciar_la_entrada() {
+        let vieja = Actividad::nueva(estado(Clase::Player), true);
+        // La anterior ya llegó: una isla nueva empezaría en el 60 % y sin alfa.
+        std::thread::sleep(tema::D_ISLA);
+        assert!(vieja.entrada().0 > 0.99);
+        let (w0, _) = vieja.size();
+        let mut nueva = Actividad::nueva(estado(Clase::Timer), true);
+        let (w1, _) = nueva.size();
+        nueva.continuar_de(vieja);
+        let (alfa, zoom, _, _) = nueva.entrada();
+        assert!(alfa > 0.99 && (zoom - 1.0).abs() < 0.01, "alfa {alfa}, zoom {zoom}");
+        // Arranca con la caja de la anterior y el lienzo cabe las dos.
+        assert!((nueva.zona().1 - (w0 - MARGEN_SOMBRA * 2.0)).abs() < 2.0);
+        assert!(nueva.size().0 >= w0.max(w1));
+        assert!(nueva.animando() && nueva.animando_relevo());
+        assert!(nueva.pulsar(MARGEN_SOMBRA + 10.0, MARGEN_SOMBRA + 10.0).is_none());
+        std::thread::sleep(tema::D_ISLA);
+        assert!(nueva.terminar_relevo());
+        assert_eq!(nueva.size().0, w1);
+        assert_eq!(nueva.zona(), (0.0, w1 - MARGEN_SOMBRA * 2.0));
+        // La que se estaba yendo no se hereda: esa es la que termina y deja paso.
+        let mut saliente = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), true);
+        std::thread::sleep(tema::D_ISLA);
+        assert!(saliente.salir());
+        let mut relevo = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), true);
+        relevo.continuar_de(saliente);
+        assert!(!relevo.animando_relevo());
+        // Nace de la barra: lejos de la entrada terminada (alfa 1) aunque
+        // con la máquina cargada ya haya avanzado algo.
+        assert!(relevo.entrada().0 < 0.5);
+        // Sin animaciones, sin relevo: el destino directo.
+        let quieta = Actividad::nueva(estado(Clase::Player), false);
+        let mut directa = Actividad::nueva(estado(Clase::Timer), false);
+        directa.continuar_de(quieta);
+        assert!(!directa.animando_relevo());
+    }
+
+    #[test]
     fn zenith_se_despliega_sin_parpadear_y_minimizado_nace_en_su_sitio() {
         let mut a = Actividad::nueva(estado(Clase::Asistente(Fase::Pensando)), true);
         std::thread::sleep(tema::D_ISLA);
@@ -3996,6 +4427,29 @@ mod tests {
             .unwrap();
         assert_eq!(corazon.nombre, "favorite");
         assert_eq!(corazon.valor, "id2");
+    }
+
+    #[test]
+    fn la_cola_empieza_por_la_cancion_actual() {
+        let mut e = estado(Clase::Player);
+        e.cola = cola(5);
+        for item in &mut e.cola {
+            item.actual = false;
+        }
+        e.cola[2].actual = true;
+        let mut a = Actividad::nueva(e, false);
+        a.vista = Vista::Cola;
+        // La actual (id2) ocupa la primera fila y la siguiente (id3) la segunda.
+        let y0 = PLAYER_H + COLA_SEP + COLA_PAD + COLA_CAB_H + COLA_FILA_H * 0.5;
+        let y1 = y0 + COLA_FILA_H;
+        let primera = a
+            .pulsar(MARGEN_SOMBRA + ABIERTO_W / 2.0, MARGEN_SOMBRA + y0)
+            .unwrap();
+        let segunda = a
+            .pulsar(MARGEN_SOMBRA + ABIERTO_W / 2.0, MARGEN_SOMBRA + y1)
+            .unwrap();
+        assert_eq!(primera.valor, "id2");
+        assert_eq!(segunda.valor, "id3");
     }
 
     /// Pulsar en la cabecera cierra la tarjeta: es lo que queda por descubrir

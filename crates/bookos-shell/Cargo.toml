@@ -38,6 +38,7 @@ serde_json = "1"
 # `statvfs` para el espacio libre en «Acerca de este equipo». No es nuevo en el
 # proyecto: el compositor, budsd y pam-huella ya lo usan (misma versión).
 libc = "0.2"
+accesskit = "0.25.2"
 
 [dev-dependencies]
 bookos-system = { path = "../bookos-system", features = ["test-fixtures"] }

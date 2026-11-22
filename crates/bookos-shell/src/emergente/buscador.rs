@@ -13,6 +13,20 @@
 //!   ahí mismo en vez de abrir la tarjeta del panel, que es lo que hace que
 //!   preguntar sea más rápido que ir a mirarlo.
 //!
+//! ## Ámbitos: Zenith y archivos
+//!
+//! Como las acciones de Spotlight en macOS 26: escribir el nombre de quien
+//! tiene que atender y un espacio (o Tab sobre su sugerencia) lo convierte en
+//! una píldora delante del texto, y desde ahí lo escrito es para él. A la
+//! derecha va la app que hará lo elegido: «Zenith · busca un archivo llamado
+//! BookOS-HIG · Explorador». Retroceso con el campo vacío quita la píldora.
+//!
+//! Los archivos salen del índice de `plocate`, en un hilo: filtrar la carpeta
+//! personal sin lo oculto tarda 120-130 ms (medido con «hig» y con una
+//! palabra que no está), y en el hilo del shell eso son ocho fotogramas
+//! congelados por tecla. Mientras llegan, `animando()` mantiene el repintado
+//! y `recoger()` los mete al pintar.
+//!
 //! ## Por qué no hay un catálogo de «runners»
 //!
 //! KRunner tiene plugins porque los carga de fuera. Aquí las tres fuentes están
@@ -35,6 +49,7 @@ use crate::tema;
 use crate::view::PanelElement;
 use crate::{Accion, PanelData, apps};
 
+use super::control::{self, ENTRE_BARRA, ICONO_BARRA};
 use super::{Ancla, Tecla, t};
 
 /// Ancho de referencia del diálogo. El valor real se adapta a la pantalla
@@ -62,6 +77,16 @@ const SEPARACION: f32 = 8.0;
 const MAXIMO: usize = 6;
 /// Lado del icono de una fila.
 const ICONO: f32 = 30.0;
+/// Lo que se abre bajo la fila elegida de brillo o volumen: la barra de las
+/// tarjetas (`control::FILA_BARRA`) y 10 de aire. Medido sobre el diseño:
+/// 54 de fila + 28 de barra + 10 = 92.
+// añadido en la 0.2.2
+const BARRA_EXTRA: f32 = control::FILA_BARRA + 10.0;
+/// Dónde empieza el texto de una fila, y su margen derecho: de ahí salen el
+/// primer y último punto de la barra.
+// añadido en la 0.2.2
+const X_TEXTO: f32 = MARGEN + (18.0 - MARGEN) + ICONO + 14.0;
+const DERECHA_FILA: f32 = MARGEN + 14.0;
 /// Cuántas aplicaciones se sugieren con el campo vacío.
 const SUGERENCIAS: usize = 4;
 
@@ -82,7 +107,7 @@ impl Colores {
         let respaldo = Self {
             tarjeta: tema::card(),
             texto: tema::texto(),
-            secundario: tema::TEXTO2,
+            secundario: tema::texto2(),
             divisor: tema::divisor(),
             borde: tema::borde(),
             hover: tema::hover(),
@@ -117,6 +142,63 @@ impl Colores {
     }
 }
 
+/// A quién va lo escrito. Ver «Ámbitos» arriba.
+// añadido en la 0.2.2
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ambito {
+    Todo,
+    Zenith,
+    Archivos,
+}
+
+impl Ambito {
+    // añadido en la 0.2.2
+    fn nombre(self) -> &'static str {
+        match self {
+            Self::Todo => "",
+            Self::Zenith => "Zenith",
+            Self::Archivos => t("Archivos", "Files"),
+        }
+    }
+
+    /// La palabra que, escrita delante, abre el ámbito.
+    // añadido en la 0.2.2
+    fn por_palabra(palabra: &str) -> Option<Self> {
+        // modificado en la 0.2.2 -- también con @ delante, como las menciones de Raycast
+        match palabra.trim_start_matches('@').to_lowercase().as_str() {
+            "zenith" => Some(Self::Zenith),
+            "archivos" | "archivo" | "explorador" | "files" => Some(Self::Archivos),
+            _ => None,
+        }
+    }
+}
+
+/// Qué ajuste lleva la barra de una fila de nivel.
+// añadido en la 0.2.2
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Que {
+    Brillo,
+    Volumen,
+}
+
+impl Que {
+    /// Brillo no baja de 5: a cero no se ve ni la pantalla con la que volver
+    /// a subirlo (el mismo suelo que el deslizador y las teclas).
+    fn minimo(self) -> u8 {
+        match self {
+            Self::Brillo => 5,
+            Self::Volumen => 0,
+        }
+    }
+
+    fn accion(self, nivel: u8) -> Accion {
+        match self {
+            Self::Brillo => Accion::Brillo(nivel),
+            Self::Volumen => Accion::Volumen(nivel),
+        }
+    }
+}
+
 /// Lo que se puede encontrar.
 pub enum Resultado {
     /// Una aplicación instalada.
@@ -139,6 +221,49 @@ pub enum Resultado {
         icono: Option<Icono>,
         accion: Accion,
     },
+    /// Un archivo o carpeta del índice de `plocate`. Se abre en el
+    /// Explorador, que selecciona el archivo dentro de su carpeta.
+    // añadido en la 0.2.2
+    Archivo {
+        ruta: std::path::PathBuf,
+        icono: Option<Icono>,
+    },
+    /// Lo que contesta Zenith en el propio buscador: dónde está lo que se le
+    /// pidió. Intro copia la ruta, que es lo que se quiere al preguntar
+    /// «dónde está»; abrirlo es la fila de debajo, el mismo archivo.
+    // añadido en la 0.2.2
+    Respuesta {
+        titulo: String,
+        ruta: std::path::PathBuf,
+        icono: Option<Icono>,
+    },
+    /// Llevar lo escrito a otro ámbito. Intro sobre Zenith pregunta ya; Tab
+    /// (o Intro sobre Archivos) entra en el ámbito con el texto puesto.
+    // añadido en la 0.2.2
+    Ambito {
+        ambito: Ambito,
+        texto: String,
+        icono: Option<Icono>,
+    },
+    /// «@» a secas o con el principio de un nombre: a quién se le puede
+    /// hablar. Intro, Tab o un clic ponen su píldora.
+    // añadido en la 0.2.2
+    Mencion {
+        ambito: Ambito,
+        detalle: &'static str,
+        icono: Option<Icono>,
+    },
+    /// Brillo o volumen con su barra: la elegida se abre hacia abajo. Lo que
+    /// se mueve queda pendiente en el buscador y Intro lo aplica.
+    // añadido en la 0.2.2
+    Nivel {
+        que: Que,
+        valor: u8,
+        mudo: bool,
+        icono: Option<Icono>,
+        /// El dibujo de los extremos de la barra, sin la insignia de color.
+        glifo: Option<Icono>,
+    },
     /// Una respuesta que se lee aquí mismo: no hay nada que lanzar.
     Dato {
         titulo: String,
@@ -154,7 +279,33 @@ impl Resultado {
             Self::App { nombre, .. } => nombre,
             Self::Comando(orden) => orden,
             Self::Accion { nombre, .. } => nombre,
-            Self::Dato { titulo, .. } => titulo,
+            Self::Dato { titulo, .. } | Self::Respuesta { titulo, .. } => titulo,
+            Self::Archivo { ruta, .. } => ruta
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default(),
+            Self::Ambito { ambito, .. } => match ambito {
+                Ambito::Zenith => t("Preguntar a Zenith", "Ask Zenith"),
+                Ambito::Archivos | Ambito::Todo => t("Buscar en archivos", "Search files"),
+            },
+            Self::Mencion { ambito, .. } => match ambito {
+                Ambito::Zenith => "@zenith",
+                Ambito::Archivos | Ambito::Todo => t("@archivos", "@files"),
+            },
+            Self::Nivel { que, .. } => match que {
+                Que::Brillo => t("Brillo", "Brightness"),
+                Que::Volumen => t("Volumen", "Volume"),
+            },
+        }
+    }
+
+    /// La app que hará lo elegido, para la píldora de la derecha. Las apps no
+    /// la llevan: su nombre ya es la fila.
+    // añadido en la 0.2.2
+    fn destino(&self) -> Option<&'static str> {
+        match self {
+            Self::Archivo { .. } => Some(t("Explorador", "Explorer")),
+            _ => None,
         }
     }
 
@@ -170,6 +321,36 @@ impl Resultado {
             Self::Comando(_) => "Ejecutar orden".to_string(),
             Self::Accion { detalle, .. } => detalle.clone(),
             Self::Dato { valor, .. } => valor.clone(),
+            Self::Archivo { ruta, .. } => ruta.parent().map(con_tilde).unwrap_or_default(),
+            Self::Respuesta { ruta, .. } => format!(
+                "{} · {}",
+                con_tilde(ruta),
+                t("Intro copia la ruta", "Enter copies the path")
+            ),
+            Self::Ambito { texto, .. } => format!(
+                "«{texto}» · {}",
+                t("Tab para seguir aquí", "Tab to continue here")
+            ),
+            Self::Mencion { detalle, .. } => (*detalle).to_string(),
+            Self::Nivel {
+                que: Que::Brillo,
+                valor,
+                ..
+            } => format!("{} · {valor} %", t("Pantalla integrada", "Built-in display")),
+            Self::Nivel {
+                que: Que::Volumen,
+                valor,
+                mudo,
+                ..
+            } => format!(
+                "{} · {}",
+                t("Altavoces", "Speakers"),
+                if *mudo {
+                    t("Silenciado", "Muted").to_string()
+                } else {
+                    format!("{valor} %")
+                }
+            ),
         }
     }
 
@@ -178,7 +359,12 @@ impl Resultado {
         match self {
             Self::App { icono, .. } | Self::Dato { icono, .. } => icono.as_ref(),
             Self::Comando(_) => None,
-            Self::Accion { icono, .. } => icono.as_ref(),
+            Self::Accion { icono, .. }
+            | Self::Archivo { icono, .. }
+            | Self::Respuesta { icono, .. }
+            | Self::Mencion { icono, .. }
+            | Self::Nivel { icono, .. }
+            | Self::Ambito { icono, .. } => icono.as_ref(),
         }
     }
 
@@ -199,8 +385,47 @@ impl Resultado {
             Self::Comando(orden) => Some(Accion::Lanzar(orden.clone())),
             Self::Accion { accion, .. } => Some(accion.clone()),
             Self::Dato { .. } => None,
+            Self::Respuesta { ruta, .. } => {
+                Some(Accion::CopiarTexto(ruta.to_string_lossy().into_owned()))
+            }
+            Self::Archivo { ruta, .. } => Some(Accion::Lanzar(format!(
+                "bookos-explorer {}",
+                crate::escritorio::entrecomillar(ruta)
+            ))),
+            Self::Ambito {
+                ambito: Ambito::Zenith,
+                texto,
+                ..
+            } => Some(preguntar_a_zenith(texto)),
+            Self::Ambito { .. } | Self::Mencion { .. } => None,
+            // Lo decide el buscador, que es quien guarda lo pendiente.
+            Self::Nivel { .. } => None,
         }
     }
+}
+
+/// `bookos-assistant --preguntar` se lo pasa por su socket a la instancia que
+/// ya corre, que lo trata como una orden dicha: misma isla, mismas acciones.
+// añadido en la 0.2.2
+fn preguntar_a_zenith(texto: &str) -> Accion {
+    Accion::Lanzar(format!(
+        "bookos-assistant --preguntar {}",
+        crate::escritorio::entrecomillar(std::path::Path::new(texto))
+    ))
+}
+
+/// La ruta con `~` en vez de la carpeta personal: es como se lee y se dice.
+// añadido en la 0.2.2
+fn con_tilde(ruta: &std::path::Path) -> String {
+    let texto = ruta.to_string_lossy();
+    match std::env::var("HOME") {
+        Ok(casa) if texto.starts_with(&casa) => format!("~{}", &texto[casa.len()..]),
+        _ => texto.into_owned(),
+    }
+}
+
+fn icono_zenith() -> Option<Icono> {
+    icono::cargar("bookos-assistant").or_else(|| insignia("micro"))
 }
 
 pub struct Buscador {
@@ -209,6 +434,12 @@ pub struct Buscador {
     /// el tamaño aparente o desplace el hit-test.
     ancho: f32,
     consulta: String,
+    // añadido en la 0.2.2
+    ambito: Ambito,
+    /// La búsqueda de archivos en marcha. Una nueva sustituye a la anterior:
+    /// soltar el receptor basta para que su resultado se tire al llegar.
+    // añadido en la 0.2.2
+    en_curso: Option<(String, std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>)>,
     /// Las aplicaciones, leídas una vez al abrir: igual que el launchpad, que
     /// no vigila el directorio con inotify por un `dnf install` al mes.
     apps: Vec<apps::App>,
@@ -237,7 +468,26 @@ pub struct Buscador {
     /// Tras Ctrl+A: lo siguiente que se escriba o borre sustituye la consulta
     /// entera. No hay cursor movible, así que basta con esto y no un rango.
     todo_seleccionado: bool,
+    /// Lo movido en la barra de brillo o volumen y aún sin aplicar: Intro lo
+    /// aplica. Aplicar al arrastrar dejaba la pantalla a oscuras a medio gesto.
+    // añadido en la 0.2.2
+    pendiente: Option<(Que, u8)>,
+    /// La barra está agarrada con el ratón.
+    // añadido en la 0.2.2
+    agarrada: bool,
+    /// Lo último aplicado desde la barra: cubre la línea de la fila con el
+    /// sello ✓ y lo que quedó, y al vencer cierra el buscador. Cerrar de golpe
+    /// al dar Intro no dejaba ver que había funcionado.
+    // añadido en la 0.2.2
+    confirmando: Option<(std::time::Instant, String)>,
+    /// El sello crece de 0,4 a 1 al aparecer.
+    sello: tema::Transicion,
 }
+
+/// Cuánto se queda la confirmación antes de cerrar: lo que se tarda en leer
+/// «Brillo al 30 %», sin hacer esperar a quien ya ha terminado.
+// añadido en la 0.2.2
+const CONFIRMACION: std::time::Duration = std::time::Duration::from_millis(1200);
 
 impl Buscador {
     // 0.1.0
@@ -248,6 +498,8 @@ impl Buscador {
         let mut buscador = Self {
             ancho: ancho_para(pantalla.0),
             consulta: String::new(),
+            ambito: Ambito::Todo,
+            en_curso: None,
             apps,
             usos: crate::config::cargar_usos(),
             abiertas,
@@ -257,12 +509,15 @@ impl Buscador {
             elegida_y: tema::Transicion::nueva(0.0, tema::M_RAPIDO),
             alto: tema::Transicion::nueva(CAMPO, tema::M_RAPIDO),
             todo_seleccionado: false,
+            pendiente: None,
+            agarrada: false,
+            confirmando: None,
+            sello: tema::Transicion::nueva(1.0, tema::M_REBOTE),
         };
         buscador.buscar();
         // Al abrir ya tiene su alto: la tarjeta entra entera, no creciendo.
-        buscador
-            .alto
-            .fijar(Self::alto_para(buscador.resultados.len()));
+        let alto = buscador.alto_objetivo();
+        buscador.alto.fijar(alto);
         buscador
     }
 
@@ -274,7 +529,16 @@ impl Buscador {
     // 0.1.0
     // modified 0.2.0 -- el alto máximo: lo visible lo da `alto_visible`
     pub fn size(&self) -> (f32, f32) {
-        (self.ancho, Self::alto_para(MAXIMO))
+        // La barra de una fila de nivel pide sitio de más solo mientras la hay: así
+        // el buffer de las demás búsquedas sigue siendo el de seis filas justas.
+        let barra = self
+            .resultados
+            .iter()
+            .any(|r| matches!(r, Resultado::Nivel { .. }));
+        (
+            self.ancho,
+            Self::alto_para(MAXIMO) + if barra { BARRA_EXTRA } else { 0.0 },
+        )
     }
 
     /// Lo que ocupa la tarjeta ahora, dentro del buffer. Por debajo es
@@ -332,13 +596,89 @@ impl Buscador {
     // 0.1.0
     // modified 0.1.1 -- ordena con usos y abiertas
     fn buscar(&mut self) {
-        self.resultados = resultados(&self.apps, &self.usos, &self.abiertas, &self.consulta);
+        // «@» sin espacio aún: es la lista de a quién se le puede hablar, no una búsqueda.
+        let mencion = (self.ambito == Ambito::Todo)
+            .then(|| self.consulta.strip_prefix('@'))
+            .flatten()
+            .filter(|resto| !resto.contains(char::is_whitespace))
+            .map(menciones);
+        self.resultados = match self.ambito {
+            _ if mencion.is_some() => mencion.unwrap_or_default(),
+            Ambito::Todo => {
+                let mut lista = resultados(&self.apps, &self.usos, &self.abiertas, &self.consulta);
+                lista.extend(puertas(&self.consulta, lista.len()));
+                if let Some(nivel) = self.nivel_para() {
+                    // El atajo que abre la tarjeta del mismo nombre sobra: la
+                    // fila de nivel ya hace más.
+                    let propio = apps::normalizar(nivel.nombre());
+                    lista.retain(|r| {
+                        !matches!(r, Resultado::Accion { nombre, .. } if apps::normalizar(nombre) == propio)
+                    });
+                    lista.insert(0, nivel);
+                    lista.truncate(MAXIMO);
+                }
+                lista
+            }
+            Ambito::Zenith => en_zenith(&self.consulta),
+            Ambito::Archivos => Vec::new(),
+        };
+        let nombre = match self.ambito {
+            Ambito::Todo => None,
+            Ambito::Zenith => archivo_pedido(self.consulta.trim()),
+            Ambito::Archivos => Some(self.consulta.trim()),
+        };
+        self.en_curso = nombre.filter(|n| n.chars().count() >= 2).map(|nombre| {
+            let (emisor, receptor) = std::sync::mpsc::channel();
+            let nombre = nombre.to_string();
+            let buscado = nombre.clone();
+            std::thread::spawn(move || {
+                let _ = emisor.send(buscar_archivos(&buscado));
+            });
+            (nombre, receptor)
+        });
         self.seleccion = 0;
+        self.pendiente = None;
+        self.agarrada = false;
+        self.confirmando = None;
         // Las filas ya son otras: ni el realce ni la elegida vienen de la
         // anterior, así que no se deslizan desde ella.
         self.señalada = tema::Realce::nuevo();
         self.elegida_y.fijar(0.0);
-        self.alto.ir_a(Self::alto_para(self.resultados.len()));
+        self.alto.ir_a(self.alto_objetivo());
+    }
+
+    /// La fila de brillo o volumen con su barra, si lo escrito es el principio
+    /// de su nombre («bri», «vol»…). Con menos de tres letras encajaría media
+    /// lista. Si no se puede leer el valor, no hay fila: una barra a cero
+    /// mentiría.
+    // añadido en la 0.2.2
+    fn nivel_para(&self) -> Option<Resultado> {
+        let q = apps::normalizar(self.consulta.trim());
+        if q.chars().count() < 3 || q.contains(char::is_whitespace) {
+            return None;
+        }
+        let empieza = |palabras: &[&str]| palabras.iter().any(|p| p.starts_with(&q));
+        if empieza(&["brillo", "pantalla", "brightness"]) {
+            let valor = PanelData::read().brightness?;
+            return Some(Resultado::Nivel {
+                que: Que::Brillo,
+                valor,
+                mudo: false,
+                icono: insignia("brillo"),
+                glifo: icono::propio("brillo"),
+            });
+        }
+        if empieza(&["volumen", "sonido", "audio", "altavoces", "volume"]) {
+            let (valor, mudo) = crate::widgets::volumen::consultar("@DEFAULT_AUDIO_SINK@")?;
+            return Some(Resultado::Nivel {
+                que: Que::Volumen,
+                valor,
+                mudo,
+                icono: insignia("volumen-alto"),
+                glifo: icono::propio("volumen-alto"),
+            });
+        }
+        None
     }
 
     /// Dónde empieza la lista dentro de la tarjeta. Tiene que incluir todo el
@@ -348,8 +688,48 @@ impl Buscador {
         CAMPO + DIVISOR + SEPARACION
     }
 
+    /// Lo que mide la fila `i`: la elegida de brillo o volumen lleva la barra.
+    // añadido en la 0.2.2
+    fn alto_de(&self, i: usize) -> f32 {
+        let con_barra =
+            i == self.seleccion && matches!(self.resultados.get(i), Some(Resultado::Nivel { .. }));
+        FILA + if con_barra { BARRA_EXTRA } else { 0.0 }
+    }
+
+    /// Dónde empieza la fila `i`, medido desde lo alto de la lista.
+    // añadido en la 0.2.2
+    fn y_fila(&self, i: usize) -> f32 {
+        (0..i).map(|j| self.alto_de(j)).sum()
+    }
+
+    fn alto_lista(&self) -> f32 {
+        self.y_fila(self.resultados.len().min(MAXIMO))
+    }
+
+    /// El alto que debe tener la tarjeta con lo que hay y lo elegido.
+    // añadido en la 0.2.2
+    fn alto_objetivo(&self) -> f32 {
+        if self.resultados.is_empty() {
+            CAMPO
+        } else {
+            CAMPO + DIVISOR + SEPARACION + self.alto_lista() + MARGEN
+        }
+    }
+
+    /// Cambia la elegida: la barra se abre en la nueva y se cierra en la
+    /// anterior, y con ella la tarjeta.
+    // añadido en la 0.2.2
+    fn elegir(&mut self, i: usize) {
+        self.seleccion = i;
+        self.pendiente = None;
+        self.señalada.señalar(None);
+        self.elegida_y.ir_a(i as f32);
+        self.alto.ir_a(self.alto_objetivo());
+    }
+
     /// Qué fila cae en `y`, si cae en alguna.
     // 0.1.0
+    // modificado en la 0.2.2 -- las filas ya no miden todas lo mismo
     fn fila_en(&self, x: f32, y: f32) -> Option<usize> {
         if x < 0.0 || x > self.ancho {
             return None;
@@ -358,21 +738,155 @@ impl Buscador {
         if dentro < 0.0 {
             return None;
         }
-        let i = (dentro / FILA) as usize;
-        (i < self.resultados.len().min(MAXIMO)).then_some(i)
+        (0..self.resultados.len().min(MAXIMO)).find(|&i| {
+            let desde = self.y_fila(i);
+            (desde..desde + self.alto_de(i)).contains(&dentro)
+        })
+    }
+
+    /// Dónde está la barra de la fila elegida, en la tarjeta: `(x, ancho)` del
+    /// surco, entre los iconos de los extremos.
+    // añadido en la 0.2.2
+    fn surco(&self) -> (f32, f32) {
+        let x0 = X_TEXTO + ICONO_BARRA + ENTRE_BARRA;
+        (x0, self.ancho - DERECHA_FILA - (ICONO_BARRA + ENTRE_BARRA) - x0)
+    }
+
+    /// ¿Cae `(x, y)` en la barra de la fila elegida, con la holgura de un
+    /// dedo? Solo hay barra en una fila de nivel elegida.
+    // añadido en la 0.2.2
+    fn en_barra(&self, x: f32, y: f32) -> bool {
+        if !matches!(
+            self.resultados.get(self.seleccion),
+            Some(Resultado::Nivel { .. })
+        ) {
+            return false;
+        }
+        let (x0, ancho) = self.surco();
+        let y0 = self.y_lista() + self.y_fila(self.seleccion) + FILA;
+        (y0 - 4.0..=y0 + control::FILA_BARRA + 4.0).contains(&y)
+            && (x0 - ENTRE_BARRA..=x0 + ancho + ENTRE_BARRA).contains(&x)
+    }
+
+    /// Lo que enseña la barra de la fila de nivel: lo pendiente si lo hay.
+    // añadido en la 0.2.2
+    fn nivel_visto(&self, que: Que, valor: u8) -> u8 {
+        match self.pendiente {
+            Some((q, v)) if q == que => v,
+            _ => valor,
+        }
+    }
+
+    /// Deja pendiente el nivel que corresponde a la `x` de la barra.
+    // añadido en la 0.2.2
+    fn poner_desde_x(&mut self, x: f32) -> bool {
+        let Some(Resultado::Nivel { que, .. }) = self.resultados.get(self.seleccion) else {
+            return false;
+        };
+        let que = *que;
+        let (x0, ancho) = self.surco();
+        let nivel = control::nivel_barra(x, x0, ancho).max(que.minimo());
+        let cambia = self.pendiente != Some((que, nivel));
+        self.pendiente = Some((que, nivel));
+        cambia
+    }
+
+    /// ← y →: de 5 en 5 sobre lo pendiente o, si no hay, sobre lo que está.
+    // añadido en la 0.2.2
+    fn mover_nivel(&mut self, paso: i16) {
+        let Some(Resultado::Nivel { que, valor, .. }) = self.resultados.get(self.seleccion) else {
+            return;
+        };
+        let (que, base) = (*que, self.nivel_visto(*que, *valor));
+        let nuevo = (i16::from(base) + paso).clamp(i16::from(que.minimo()), 100) as u8;
+        self.pendiente = Some((que, nuevo));
+    }
+
+    /// Lo que Intro aplica en una fila de nivel: lo pendiente, y nada si no se
+    /// ha tocado la barra.
+    // añadido en la 0.2.2
+    fn aplicar_nivel(&mut self) -> Option<Accion> {
+        let (que, nivel) = self.pendiente.take()?;
+        // La fila pasa a enseñar lo aplicado y arranca la confirmación.
+        if let Some(Resultado::Nivel { valor, mudo, .. }) = self.resultados.get_mut(self.seleccion)
+        {
+            *valor = nivel;
+            *mudo = false;
+        }
+        let titulo = match que {
+            Que::Brillo => format!("{} {nivel} %", t("Brillo al", "Brightness to")),
+            Que::Volumen if nivel == 0 => t("Volumen silenciado", "Volume muted").to_string(),
+            Que::Volumen => format!("{} {nivel} %", t("Volumen al", "Volume to")),
+        };
+        self.confirmando = Some((std::time::Instant::now(), titulo));
+        self.sello = tema::Transicion::nueva(0.4, tema::M_REBOTE);
+        self.sello.ir_a(1.0);
+        Some(que.accion(nivel))
+    }
+
+    /// ¿Se está enseñando la confirmación? Con ella el buscador sigue abierto
+    /// tras la acción.
+    // añadido en la 0.2.2
+    pub fn confirmando(&self) -> bool {
+        self.confirmando.is_some()
+    }
+
+    /// ¿Ya se ha visto lo bastante? El shell cierra entonces el buscador.
+    // añadido en la 0.2.2
+    pub fn confirmacion_vencida(&self) -> bool {
+        self.confirmando
+            .as_ref()
+            .is_some_and(|(desde, _)| desde.elapsed() >= CONFIRMACION)
     }
 
     // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
+        // Agarrada, la barra sigue a la mano aunque salga de la tarjeta.
+        if self.agarrada {
+            return punto.is_some_and(|(x, _)| self.poner_desde_x(x));
+        }
         let nueva = punto.and_then(|(x, y)| self.fila_en(x, y));
         self.señalada.señalar(nueva)
     }
 
     // 0.1.0
     // modificado en la 0.2.0 -- aplica lo que la acción no lleva consigo
+    // modificado en la 0.2.2 -- las menciones entran en su ámbito y la barra de nivel se agarra
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let i = self.fila_en(x, y)?;
+        if let Some(Resultado::Mencion { ambito, .. }) = self.resultados.get(i) {
+            let ambito = *ambito;
+            self.entrar(ambito, String::new());
+            return None;
+        }
+        if matches!(self.resultados.get(i), Some(Resultado::Nivel { .. })) {
+            if i != self.seleccion {
+                self.elegir(i);
+            } else if self.en_barra(x, y) {
+                self.agarrada = true;
+                self.poner_desde_x(x);
+            } else {
+                return self.aplicar_nivel();
+            }
+            return None;
+        }
         self.resultados.get(i)?.accion().map(aplicar)
+    }
+
+    /// Se suelta la barra. `true` si hay que repintar.
+    // añadido en la 0.2.2
+    pub fn soltar(&mut self) -> bool {
+        std::mem::take(&mut self.agarrada)
+    }
+
+    pub fn agarrado(&self) -> bool {
+        self.agarrada
+    }
+
+    /// Para el reconocimiento táctil: ¿es aquí un arrastre de la barra?
+    // añadido en la 0.2.2
+    pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
+        self.en_barra(x, y)
     }
 
     // 0.1.0
@@ -401,7 +915,84 @@ impl Buscador {
                 self.buscar();
                 Tecla::Consumida
             }
+            T::Escape | T::Retroceso if self.ambito != Ambito::Todo && self.consulta.is_empty() => {
+                self.entrar(Ambito::Todo, String::new());
+                Tecla::Consumida
+            }
             T::Escape => Tecla::Cerrar,
+            // «zenith» + espacio: la palabra se vuelve píldora.
+            T::Caracter(' ') if self.ambito == Ambito::Todo => {
+                match Ambito::por_palabra(self.consulta.trim()) {
+                    Some(ambito) => self.entrar(ambito, String::new()),
+                    None => {
+                        self.consulta.push(' ');
+                        self.buscar();
+                    }
+                }
+                Tecla::Consumida
+            }
+            T::Tabulador => {
+                match self.resultados.get(self.seleccion) {
+                    Some(Resultado::Ambito { ambito, texto, .. }) => {
+                        let (ambito, texto) = (*ambito, texto.clone());
+                        self.entrar(ambito, texto);
+                    }
+                    Some(Resultado::Mencion { ambito, .. }) => {
+                        let ambito = *ambito;
+                        self.entrar(ambito, String::new());
+                    }
+                    _ => {}
+                }
+                Tecla::Consumida
+            }
+            // Elegir una mención pone su píldora, como Tab.
+            T::Intro
+                if matches!(
+                    self.resultados.get(self.seleccion),
+                    Some(Resultado::Mencion { .. })
+                ) =>
+            {
+                if let Some(Resultado::Mencion { ambito, .. }) = self.resultados.get(self.seleccion)
+                {
+                    let ambito = *ambito;
+                    self.entrar(ambito, String::new());
+                }
+                Tecla::Consumida
+            }
+            // Sin tocar la barra no hay nada que aplicar.
+            T::Intro
+                if matches!(
+                    self.resultados.get(self.seleccion),
+                    Some(Resultado::Nivel { .. })
+                ) =>
+            {
+                match self.aplicar_nivel() {
+                    Some(accion) => Tecla::Hacer(accion),
+                    None => Tecla::Consumida,
+                }
+            }
+            T::Izquierda | T::Derecha
+                if matches!(
+                    self.resultados.get(self.seleccion),
+                    Some(Resultado::Nivel { .. })
+                ) =>
+            {
+                self.mover_nivel(if tecla == T::Izquierda { -5 } else { 5 });
+                Tecla::Consumida
+            }
+            T::Intro
+                if matches!(
+                    self.resultados.get(self.seleccion),
+                    Some(Resultado::Ambito {
+                        ambito: Ambito::Archivos,
+                        ..
+                    })
+                ) =>
+            {
+                let texto = std::mem::take(&mut self.consulta);
+                self.entrar(Ambito::Archivos, texto);
+                Tecla::Consumida
+            }
             T::Caracter(c) => {
                 self.consulta.push(c);
                 self.buscar();
@@ -421,15 +1012,11 @@ impl Buscador {
                 Tecla::Consumida
             }
             T::Abajo if visibles > 0 => {
-                self.seleccion = (self.seleccion + 1) % visibles;
-                self.señalada.señalar(None);
-                self.elegida_y.ir_a(self.seleccion as f32);
+                self.elegir((self.seleccion + 1) % visibles);
                 Tecla::Consumida
             }
             T::Arriba if visibles > 0 => {
-                self.seleccion = (self.seleccion + visibles - 1) % visibles;
-                self.señalada.señalar(None);
-                self.elegida_y.ir_a(self.seleccion as f32);
+                self.elegir((self.seleccion + visibles - 1) % visibles);
                 Tecla::Consumida
             }
             T::Intro => match self
@@ -449,9 +1036,108 @@ impl Buscador {
         }
     }
 
+    /// Mete los archivos si ya han llegado. Lo llama el shell antes de
+    /// pintar. En Zenith van delante de «Preguntar a Zenith», que se queda.
+    // añadido en la 0.2.2
+    pub fn recoger(&mut self) {
+        let Some((_, receptor)) = &self.en_curso else {
+            return;
+        };
+        let rutas = match receptor.try_recv() {
+            Ok(rutas) => rutas,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Vec::new(),
+        };
+        let Some((nombre, _)) = self.en_curso.take() else {
+            return;
+        };
+        // Con Zenith, la primera fila es su respuesta —dónde está—, como
+        // contesta Siri en Spotlight; debajo los archivos y al final, siempre,
+        // preguntarle. Sin nada, lo dice en vez de dejar solo la pregunta.
+        let mut nuevos: Vec<Resultado> = Vec::new();
+        if self.ambito == Ambito::Zenith {
+            nuevos.push(match rutas.first() {
+                Some(ruta) => Resultado::Respuesta {
+                    titulo: format!(
+                        "{} {} {}",
+                        ruta.file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default(),
+                        t("está en", "is in"),
+                        ruta.parent().map(con_tilde).unwrap_or_default()
+                    ),
+                    ruta: ruta.clone(),
+                    icono: icono_zenith(),
+                },
+                None => Resultado::Dato {
+                    titulo: format!("{} «{nombre}»", t("No encuentro", "Can't find")),
+                    valor: t(
+                        "Ni en tu carpeta personal · pregúntale a Zenith abajo",
+                        "Not in your home folder · ask Zenith below",
+                    )
+                    .to_string(),
+                    icono: icono_zenith(),
+                },
+            });
+        }
+        let hueco = MAXIMO - nuevos.len() - usize::from(self.ambito == Ambito::Zenith);
+        nuevos.extend(rutas.into_iter().take(hueco).map(resultado_archivo));
+        self.resultados.splice(0..0, nuevos);
+        self.seleccion = 0;
+        self.señalada = tema::Realce::nuevo();
+        self.elegida_y.fijar(0.0);
+        self.alto.ir_a(self.alto_objetivo());
+    }
+
+    /// Lo escrito que cabe entre las píldoras. Si no cabe se ve el final, que
+    /// es donde se está escribiendo, con «…» delante: recortado por detrás,
+    /// el cursor desaparecía y la píldora de la derecha salía de la tarjeta.
+    // añadido en la 0.2.2
+    fn cola_visible(&self) -> std::borrow::Cow<'_, str> {
+        let pildora = |nombre: &str| {
+            crate::widget::ancho_con_fuente(
+                nombre,
+                16.0,
+                super::control::peso(iced_core::font::Weight::Semibold),
+            ) + 28.0
+                + 12.0
+        };
+        let izquierda = match self.ambito {
+            Ambito::Todo => 26.0 + 12.0,
+            ambito => pildora(ambito.nombre()),
+        };
+        let derecha = self
+            .resultados
+            .get(self.seleccion)
+            .and_then(Resultado::destino)
+            .map_or(0.0, pildora);
+        let cabe = self.ancho - 40.0 - izquierda - derecha;
+        let mide = |texto: &str| crate::widget::ancho_de(&format!("{texto}▏"), TEXTO_CAMPO);
+        if mide(&self.consulta) <= cabe {
+            return self.consulta.as_str().into();
+        }
+        self.consulta
+            .char_indices()
+            .map(|(i, _)| format!("…{}", &self.consulta[i..]))
+            .find(|cola| mide(cola) <= cabe)
+            .unwrap_or_default()
+            .into()
+    }
+
+    // añadido en la 0.2.2
+    fn entrar(&mut self, ambito: Ambito, texto: String) {
+        self.ambito = ambito;
+        self.consulta = texto;
+        self.buscar();
+    }
+
     // modified 0.2.0 -- elegida, realce y alto
     pub fn animando(&self) -> bool {
-        self.elegida_y.animando() || self.señalada.animando() || self.alto.animando()
+        self.elegida_y.animando()
+            || self.señalada.animando()
+            || self.alto.animando()
+            || self.en_curso.is_some()
+            || self.confirmando.is_some()
     }
 
     // 0.1.0
@@ -465,10 +1151,14 @@ impl Buscador {
         // parpadeo son dos repintados por segundo de una tarjeta de 640 px
         // mientras no haces nada, y este compositor no despierta para eso.
         let escrito: PanelElement<'_> = if self.consulta.is_empty() {
-            text(t(
-                "Buscar apps, ajustes o acciones",
-                "Search apps, settings or actions",
-            ))
+            text(match self.ambito {
+                Ambito::Todo => t(
+                    "Buscar apps, ajustes o acciones",
+                    "Search apps, settings or actions",
+                ),
+                Ambito::Zenith => t("Pide algo a Zenith", "Ask Zenith anything"),
+                Ambito::Archivos => t("Nombre del archivo", "File name"),
+            })
             .size(TEXTO_CAMPO)
             .color(colores.secundario)
             .into()
@@ -490,13 +1180,33 @@ impl Buscador {
             })
             .into()
         } else {
-            text(format!("{}▏", self.consulta))
+            text(format!("{}▏", self.cola_visible()))
                 .size(TEXTO_CAMPO)
                 .color(colores.texto)
                 .into()
         };
+        // modificado en la 0.2.2 -- píldora del ámbito a la izquierda y de la app destino a la derecha
+        let izquierda: PanelElement<'_> = match self.ambito {
+            Ambito::Todo => lupa,
+            ambito => pildora(ambito.nombre(), colores),
+        };
+        let destino: PanelElement<'_> = match self
+            .resultados
+            .get(self.seleccion)
+            .and_then(Resultado::destino)
+        {
+            Some(app) => pildora(app, colores),
+            None => crate::widget::vacio(),
+        };
         let campo = container(
-            row![lupa, Space::new().width(Length::Fixed(12.0)), escrito,].align_y(Vertical::Center),
+            row![
+                izquierda,
+                Space::new().width(Length::Fixed(12.0)),
+                escrito,
+                Space::new().width(Length::Fill),
+                destino,
+            ]
+            .align_y(Vertical::Center),
         )
         .width(Length::Fixed(self.ancho))
         .height(Length::Fixed(CAMPO))
@@ -526,11 +1236,12 @@ impl Buscador {
             // El acento se reserva para lo que Intro va a lanzar; va debajo de
             // las filas para que el realce del ratón no lo tape.
             let acento = tema::alfa(colores.acento, 0.10);
+            let (placa_y, placa_alto) = self.placa();
             let elegida = column![
-                Space::new().height(Length::Fixed(self.elegida_y.valor() * FILA)),
+                Space::new().height(Length::Fixed(placa_y)),
                 container(Space::new())
                     .width(Length::Fixed(self.ancho - MARGEN * 2.0))
-                    .height(Length::Fixed(FILA))
+                    .height(Length::Fixed(placa_alto))
                     .style(move |_theme| container::Style {
                         background: Some(acento.into()),
                         border: Border {
@@ -543,9 +1254,7 @@ impl Buscador {
             .padding([0, MARGEN as u16])
             // `stack!` mide lo que su primera capa: sin el alto de la lista
             // entera, recortaba las filas por debajo de la elegida.
-            .height(Length::Fixed(
-                self.resultados.len().min(MAXIMO) as f32 * FILA,
-            ));
+            .height(Length::Fixed(self.alto_lista()));
             contenido = contenido.push(stack![elegida, lista]);
             // El respiro bajo la última fila: sin él su realce llega al borde y
             // se come la esquina redondeada de la tarjeta. Va aquí y no como
@@ -608,14 +1317,35 @@ impl Buscador {
                 _ => crate::widget::vacio(),
             },
         };
+        // Lo escrito se marca en negrita en el principio del nombre, como en el
+        // diseño: se ve por qué ha salido esa fila.
+        let nombre = super::recortar_texto(resultado.nombre(), self.ancho - 140.0, 15.0);
+        let escrito = self.consulta.trim();
+        let marcadas = if self.ambito == Ambito::Todo
+            && !escrito.is_empty()
+            && !escrito.starts_with('@')
+            && apps::normalizar(&nombre).starts_with(&apps::normalizar(escrito))
+        {
+            escrito.chars().count()
+        } else {
+            0
+        };
+        let titulo: PanelElement<'a> = if marcadas == 0 {
+            text(nombre.to_string()).size(15.0).color(colores.texto).into()
+        } else {
+            row![
+                text(nombre.chars().take(marcadas).collect::<String>())
+                    .size(15.0)
+                    .font(super::control::peso(iced_core::font::Weight::Semibold))
+                    .color(colores.texto),
+                text(nombre.chars().skip(marcadas).collect::<String>())
+                    .size(15.0)
+                    .color(colores.texto),
+            ]
+            .into()
+        };
         let textos = column![
-            text(super::recortar_texto(
-                resultado.nombre(),
-                self.ancho - 140.0,
-                15.0
-            ))
-            .size(15.0)
-            .color(colores.texto),
+            titulo,
             text(super::recortar_texto(
                 &resultado.detalle(),
                 self.ancho - 140.0,
@@ -624,14 +1354,127 @@ impl Buscador {
             .size(12.0)
             .color(colores.secundario),
         ];
+        // La tecla que hará la fila elegida. Los datos ya han contestado y no
+        // tienen nada que hacer.
+        let intro: PanelElement<'a> = if i == self.seleccion && !matches!(resultado, Resultado::Dato { .. })
+        {
+            let (tarjeta, borde, texto) = (colores.tarjeta, colores.borde, colores.texto);
+            container(
+                text("↵")
+                    .size(11.0)
+                    .font(super::control::peso(iced_core::font::Weight::Semibold))
+                    .color(texto),
+            )
+            .center_x(Length::Fixed(24.0))
+            .center_y(Length::Fixed(22.0))
+            .style(move |_theme| container::Style {
+                background: Some(tarjeta.into()),
+                border: Border {
+                    radius: 6.0.into(),
+                    width: 1.0,
+                    color: borde,
+                },
+                ..Default::default()
+            })
+            .into()
+        } else {
+            crate::widget::vacio()
+        };
         // El realce va **dentro** de un margen y con esquinas: pegado a los
         // bordes de la tarjeta, la última fila se comía su esquina redondeada.
-        let fila = container(
+        let linea = container(
             row![
                 Space::new().width(Length::Fixed(18.0 - MARGEN)),
                 dibujo,
                 Space::new().width(Length::Fixed(14.0)),
                 textos,
+                Space::new().width(Length::Fill),
+                intro,
+                Space::new().width(Length::Fixed(14.0)),
+            ]
+            .align_y(Vertical::Center),
+        )
+        .width(Length::Fixed(self.ancho - MARGEN * 2.0))
+        .height(Length::Fixed(FILA))
+        .align_y(Vertical::Center);
+        let linea: PanelElement<'a> = match &self.confirmando {
+            Some((_, titulo)) if i == self.seleccion => {
+                iced_widget::stack![linea, self.confirmacion(titulo, colores)].into()
+            }
+            _ => linea.into(),
+        };
+        let mut cuerpo = column![linea];
+        if let (true, Resultado::Nivel { que, valor, glifo, .. }) = (i == self.seleccion, resultado) {
+            cuerpo = cuerpo.push(self.barra(*que, self.nivel_visto(*que, *valor), glifo.as_ref()));
+        }
+        let fila = container(cuerpo)
+            .width(Length::Fixed(self.ancho - MARGEN * 2.0))
+            .height(Length::Fixed(self.alto_de(i)))
+            .style(move |_theme| container::Style {
+                background: Some(fondo.into()),
+                border: Border {
+                    radius: tema::R_ITEM_POPOVER.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        container(fila)
+            .width(Length::Fixed(self.ancho))
+            .padding([0, MARGEN as u16])
+            .into()
+    }
+
+    /// La línea de confirmación que tapa la de la fila: sello verde con el ✓ y
+    /// lo que quedó. Opaca y del color de la placa de la elegida.
+    // añadido en la 0.2.2
+    fn confirmacion<'a>(&self, titulo: &'a str, colores: Colores) -> PanelElement<'a> {
+        let fondo = tema::mezclar(colores.tarjeta, colores.acento, 0.10);
+        let verde = if tema::es_claro() {
+            Color::from_rgb8(0x24, 0x8a, 0x3d)
+        } else {
+            Color::from_rgb8(0x30, 0xd1, 0x58)
+        };
+        let lado = ICONO * self.sello.valor().clamp(0.0, 1.2);
+        let visto = icono::desde_svg(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>"##,
+        );
+        let visto: PanelElement<'a> = match visto {
+            Icono::Svg(h) => iced_widget::svg(h)
+                .width(Length::Fixed(18.0))
+                .height(Length::Fixed(18.0))
+                .into(),
+            _ => Space::new().into(),
+        };
+        let sello = container(visto)
+            .width(Length::Fixed(lado))
+            .height(Length::Fixed(lado))
+            .center_x(Length::Fixed(lado))
+            .center_y(Length::Fixed(lado))
+            .style(move |_theme| container::Style {
+                background: Some(verde.into()),
+                border: Border {
+                    radius: (lado / 2.0).into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        container(
+            row![
+                Space::new().width(Length::Fixed(18.0 - MARGEN)),
+                // Hueco fijo del tamaño del icono: crecer no mueve el texto.
+                container(sello)
+                    .width(Length::Fixed(ICONO))
+                    .height(Length::Fixed(ICONO))
+                    .center_x(Length::Fixed(ICONO))
+                    .center_y(Length::Fixed(ICONO)),
+                Space::new().width(Length::Fixed(14.0)),
+                column![
+                    text(titulo)
+                        .size(15.0)
+                        .font(super::control::peso(iced_core::font::Weight::Semibold))
+                        .color(colores.texto),
+                    text(t("Aplicado", "Applied")).size(12.0).color(colores.secundario),
+                ],
             ]
             .align_y(Vertical::Center),
         )
@@ -645,12 +1488,291 @@ impl Buscador {
                 ..Default::default()
             },
             ..Default::default()
-        });
-        container(fila)
-            .width(Length::Fixed(self.ancho))
-            .padding([0, MARGEN as u16])
-            .into()
+        })
+        .into()
     }
+
+    /// Dónde está la placa de la elegida y cuánto mide, entre dos filas
+    /// mientras se desliza: la altura también se interpola, porque una fila de
+    /// nivel elegida mide más que las demás.
+    // añadido en la 0.2.2
+    fn placa(&self) -> (f32, f32) {
+        let n = self.resultados.len().min(MAXIMO);
+        if n == 0 {
+            return (0.0, FILA);
+        }
+        let f = self.elegida_y.valor().clamp(0.0, (n - 1) as f32);
+        let i = f.floor() as usize;
+        let frac = f - i as f32;
+        let (h0, h1) = (self.alto_de(i), self.alto_de((i + 1).min(n - 1)));
+        (self.y_fila(i) + frac * h0, h0 + frac * (h1 - h0))
+    }
+
+    /// La barra de brillo o volumen, la de las tarjetas, bajo el texto de la
+    /// fila: icono, surco y icono, con el mismo grueso que engorda al agarrarla.
+    // añadido en la 0.2.2
+    fn barra<'a>(&'a self, que: Que, nivel: u8, glifo: Option<&'a Icono>) -> PanelElement<'a> {
+        let (_, ancho) = self.surco();
+        let extremo = |lado: f32| -> PanelElement<'a> {
+            let dibujo: PanelElement<'a> = match glifo {
+                Some(ic) => icono::ver_teñido(ic, lado, Some(tema::texto())),
+                None => Space::new().into(),
+            };
+            container(dibujo)
+                .width(Length::Fixed(ICONO_BARRA))
+                .height(Length::Fixed(control::FILA_BARRA))
+                .center_x(Length::Fixed(ICONO_BARRA))
+                .center_y(Length::Fixed(control::FILA_BARRA))
+                .into()
+        };
+        let grueso = if self.agarrada {
+            control::PISTA_AGARRADA
+        } else {
+            control::PISTA
+        };
+        let (menor, mayor) = match que {
+            Que::Brillo => (15.0, 20.0),
+            Que::Volumen => (17.0, 20.0),
+        };
+        column![
+            row![
+                Space::new().width(Length::Fixed(X_TEXTO - MARGEN)),
+                extremo(menor),
+                Space::new().width(Length::Fixed(ENTRE_BARRA)),
+                control::barra(
+                    ancho,
+                    grueso,
+                    f32::from(nivel) / 100.0,
+                    tema::texto(),
+                    tema::elevado(),
+                    &[],
+                    None,
+                ),
+                Space::new().width(Length::Fixed(ENTRE_BARRA)),
+                extremo(mayor),
+            ]
+            .align_y(Vertical::Center),
+            Space::new().height(Length::Fixed(10.0)),
+        ]
+        .into()
+    }
+}
+
+/// La píldora de un ámbito o de una app: un relleno opaco mezclado sobre la
+/// tarjeta (nada de translúcidos) y el nombre en seminegrita, como un token
+/// de Spotlight.
+// añadido en la 0.2.2
+fn pildora(nombre: &str, colores: Colores) -> PanelElement<'_> {
+    let fondo = tema::mezclar(colores.tarjeta, colores.acento, 0.16);
+    container(
+        text(nombre)
+            .size(16.0)
+            .font(super::control::peso(iced_core::font::Weight::Semibold))
+            .color(tema::mezclar(colores.texto, colores.acento, 0.35)),
+    )
+    .padding([7, 14])
+    .style(move |_theme| container::Style {
+        background: Some(fondo.into()),
+        border: Border {
+            radius: tema::R_ITEM_POPOVER.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
+/// A quién se le puede hablar con «@»: los que empiezan por lo escrito tras la
+/// arroba. Con solo «@» salen todos.
+// añadido en la 0.2.2
+fn menciones(prefijo: &str) -> Vec<Resultado> {
+    let p = apps::normalizar(prefijo);
+    let todas: [(Ambito, &[&str], &'static str, Option<Icono>); 2] = [
+        (
+            Ambito::Zenith,
+            &["zenith"],
+            t(
+                "Pídele algo: busca un archivo, abre una app…",
+                "Ask for something: find a file, open an app…",
+            ),
+            icono_zenith(),
+        ),
+        (
+            Ambito::Archivos,
+            &["archivos", "archivo", "explorador", "files"],
+            t(
+                "Busca por nombre en tu carpeta personal",
+                "Search by name in your home folder",
+            ),
+            icono::cargar("system-file-manager").or_else(|| icono::cargar("folder")),
+        ),
+    ];
+    todas
+        .into_iter()
+        .filter(|(_, palabras, ..)| palabras.iter().any(|w| w.starts_with(&p)))
+        .map(|(ambito, _, detalle, icono)| Resultado::Mencion {
+            ambito,
+            detalle,
+            icono,
+        })
+        .collect()
+}
+
+/// Las filas que llevan lo escrito a Zenith o a archivos, al final de la
+/// lista del ámbito general. Zenith solo con dos palabras o más: una sola
+/// es casi siempre el nombre de una app y la fila estorbaría.
+// añadido en la 0.2.2
+fn puertas(consulta: &str, ocupadas: usize) -> Vec<Resultado> {
+    let texto = consulta.trim();
+    if texto.chars().count() < 3 || texto.starts_with('>') {
+        return Vec::new();
+    }
+    let mut lista = Vec::new();
+    if texto.split_whitespace().nth(1).is_some() {
+        lista.push(Resultado::Ambito {
+            ambito: Ambito::Zenith,
+            texto: texto.to_string(),
+            icono: icono_zenith(),
+        });
+    }
+    lista.push(Resultado::Ambito {
+        ambito: Ambito::Archivos,
+        texto: texto.to_string(),
+        icono: icono::cargar("system-file-manager").or_else(|| icono::cargar("folder")),
+    });
+    // Solo se ven seis filas: si no caben enteras no se meten a medias.
+    lista.truncate(MAXIMO.saturating_sub(ocupadas));
+    lista
+}
+
+/// Con la píldora de Zenith, la fila de preguntarle. Si lo escrito pide un
+/// archivo por su nombre (`archivo_pedido`), los archivos llegan después y se
+/// ponen delante: es lo que Zenith haría y aquí se ve al momento.
+// añadido en la 0.2.2
+fn en_zenith(consulta: &str) -> Vec<Resultado> {
+    let texto = consulta.trim();
+    if texto.is_empty() {
+        return Vec::new();
+    }
+    // Ya dentro de Zenith no hay «Tab para seguir aquí»: es una acción más.
+    vec![Resultado::Accion {
+        nombre: t("Preguntar a Zenith", "Ask Zenith").to_string(),
+        detalle: format!("«{texto}»"),
+        icono: icono_zenith(),
+        accion: preguntar_a_zenith(texto),
+    }]
+}
+
+/// El nombre en «busca un archivo llamado X», «abre la carpeta X», «encuentra
+/// X». Sin verbo de buscar o abrir no es una petición de archivo.
+// añadido en la 0.2.2
+fn archivo_pedido(texto: &str) -> Option<&str> {
+    let bajo = texto.to_lowercase();
+    // `to_lowercase` puede cambiar longitudes en algunos alfabetos; los
+    // índices solo valen si no lo ha hecho.
+    if bajo.len() != texto.len() {
+        return None;
+    }
+    if let Some(i) = bajo.find("llamad") {
+        let resto = &texto[i..];
+        let nombre = resto.split_once(' ')?.1.trim();
+        return (!nombre.is_empty()).then_some(nombre);
+    }
+    let verbos = [
+        "busca ",
+        "buscar ",
+        "encuentra ",
+        "abre ",
+        "abrir ",
+        "find ",
+        "open ",
+    ];
+    let verbo = verbos.iter().find(|v| bajo.starts_with(*v))?;
+    let mut nombre = texto[verbo.len()..].trim();
+    for articulo in [
+        "el archivo ",
+        "un archivo ",
+        "la carpeta ",
+        "una carpeta ",
+        "the file ",
+        "a file ",
+        "de ",
+        "of ",
+    ] {
+        if nombre.to_lowercase().starts_with(articulo) {
+            nombre = nombre[articulo.len()..].trim();
+        }
+    }
+    (!nombre.is_empty()).then_some(nombre)
+}
+
+/// Archivos y carpetas de la carpeta personal cuyo nombre contiene lo
+/// escrito, del índice de `plocate`. La expresión deja fuera lo que cuelga de
+/// carpetas ocultas —la caché de una app no se busca a mano— y solo mira el
+/// último componente: «hig» no saca todo lo de dentro de una carpeta «HIG».
+/// Van primero los nombres que empiezan por lo escrito y, entre ellos, los
+/// menos hondos: `~/Descargas/BookOS/BookOS-HIG` antes que un recurso del SDK
+/// de Android que se llama «highlight».
+// añadido en la 0.2.2
+fn buscar_archivos(nombre: &str) -> Vec<std::path::PathBuf> {
+    let Some(casa) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let casa = casa.to_string_lossy();
+    let expresion = format!(
+        "^{}/([^./][^/]*/)*([^./][^/]*)?{}[^/]*$",
+        escapar_regex(&casa),
+        escapar_regex(nombre)
+    );
+    let salida = match std::process::Command::new("plocate")
+        .args(["-i", "-l", "200", "--regex", &expresion])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        Ok(salida) => salida,
+        Err(err) => {
+            tracing::warn!("plocate: {err}");
+            return Vec::new();
+        }
+    };
+    let bajo = nombre.to_lowercase();
+    let mut rutas: Vec<std::path::PathBuf> = String::from_utf8_lossy(&salida.stdout)
+        .lines()
+        .map(std::path::PathBuf::from)
+        .collect();
+    rutas.sort_by_cached_key(|ruta| {
+        let empieza = ruta
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().to_lowercase().starts_with(&bajo));
+        (!empieza, ruta.components().count())
+    });
+    rutas.truncate(MAXIMO);
+    rutas
+}
+
+/// Lo escrito, literal dentro de una expresión POSIX extendida.
+// añadido en la 0.2.2
+fn escapar_regex(texto: &str) -> String {
+    texto
+        .chars()
+        .flat_map(|c| {
+            let especial = "\\.^$|?*+()[]{}".contains(c);
+            especial
+                .then_some('\\')
+                .into_iter()
+                .chain(std::iter::once(c))
+        })
+        .collect()
+}
+
+// añadido en la 0.2.2
+fn resultado_archivo(ruta: std::path::PathBuf) -> Resultado {
+    let icono = if ruta.is_dir() {
+        icono::cargar("folder")
+    } else {
+        icono::cargar("text-x-generic")
+    };
+    Resultado::Archivo { ruta, icono }
 }
 
 /// Calcula el ancho del buscador en coordenadas lógicas.
@@ -1341,14 +2463,6 @@ fn estado(consulta: &str) -> Option<Resultado> {
             icono: insignia(icono),
         });
     }
-    if quiere(&["brillo", "pantalla"]) {
-        let brillo = PanelData::read().brightness?;
-        return Some(Resultado::Dato {
-            titulo: format!("Brillo al {brillo} %"),
-            valor: "Retroiluminación de la pantalla".to_string(),
-            icono: insignia("brillo"),
-        });
-    }
     if quiere(&["hora", "fecha", "reloj"]) {
         return Some(Resultado::Dato {
             titulo: PanelData::read().clock,
@@ -1484,6 +2598,133 @@ fn borrar_palabra(texto: &mut String) {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn la_peticion_de_archivo_saca_el_nombre() {
+        assert_eq!(
+            archivo_pedido("Busca un archivo llamado BookOS-HIG"),
+            Some("BookOS-HIG")
+        );
+        assert_eq!(
+            archivo_pedido("abre la carpeta Descargas"),
+            Some("Descargas")
+        );
+        assert_eq!(archivo_pedido("encuentra notas.md"), Some("notas.md"));
+        assert_eq!(
+            archivo_pedido("busca un archivo de BookOS-HIG"),
+            Some("BookOS-HIG")
+        );
+        assert_eq!(archivo_pedido("pon el brillo al 30"), None);
+        assert_eq!(archivo_pedido("busca"), None);
+    }
+
+    #[test]
+    fn la_regex_escapa_lo_escrito() {
+        assert_eq!(escapar_regex("a.b(c)"), "a\\.b\\(c\\)");
+    }
+
+    /// «zenith» + espacio abre el ámbito; Retroceso con el campo vacío lo
+    /// quita; y Tab sobre la sugerencia entra con el texto puesto.
+    #[test]
+    fn la_palabra_y_el_tabulador_abren_el_ambito() {
+        use crate::TeclaPulsada as T;
+        let mut b = Buscador::new((1440.0, 900.0), Vec::new());
+        for c in "zenith ".chars() {
+            b.tecla(T::Caracter(c));
+        }
+        assert_eq!(b.ambito, Ambito::Zenith);
+        assert!(b.consulta.is_empty());
+        b.tecla(T::Retroceso);
+        for c in "@zenith ".chars() {
+            b.tecla(T::Caracter(c));
+        }
+        assert_eq!(b.ambito, Ambito::Zenith, "con @ delante también");
+        b.tecla(T::Retroceso);
+        assert_eq!(b.ambito, Ambito::Todo);
+
+        for c in "pon música tranquila".chars() {
+            b.tecla(T::Caracter(c));
+        }
+        let zenith = b
+            .resultados
+            .iter()
+            .position(|r| {
+                matches!(
+                    r,
+                    Resultado::Ambito {
+                        ambito: Ambito::Zenith,
+                        ..
+                    }
+                )
+            })
+            .expect("sugerencia de Zenith con dos palabras");
+        b.seleccion = zenith;
+        b.tecla(T::Tabulador);
+        assert_eq!(b.ambito, Ambito::Zenith);
+        assert_eq!(b.consulta, "pon música tranquila");
+        let Tecla::Hacer(accion) = b.tecla(T::Intro) else {
+            panic!("Intro sobre Zenith tiene que preguntarle");
+        };
+        assert_eq!(
+            accion,
+            Accion::Lanzar("bookos-assistant --preguntar 'pon música tranquila'".into())
+        );
+    }
+
+    fn buscador_con(consulta: &str) -> Buscador {
+        let mut b = Buscador::new((1440.0, 900.0), Vec::new());
+        for c in consulta.chars() {
+            b.tecla(crate::TeclaPulsada::Caracter(c));
+        }
+        b
+    }
+
+    /// «@» a secas lista a quién hablar; con letras filtra; Intro pone la píldora.
+    #[test]
+    fn la_arroba_lista_los_ambitos_y_intro_entra_en_uno() {
+        let todos = buscador_con("@");
+        assert_eq!(todos.resultados.len(), 2);
+        assert!(todos.resultados.iter().all(|r| matches!(r, Resultado::Mencion { .. })));
+        let mut b = buscador_con("@zen");
+        assert_eq!(b.resultados.len(), 1);
+        assert!(matches!(
+            b.tecla(crate::TeclaPulsada::Intro),
+            Tecla::Consumida
+        ));
+        assert_eq!(b.ambito, Ambito::Zenith);
+        assert!(b.consulta.is_empty());
+        assert_eq!(buscador_con("@xyz").resultados.len(), 0);
+    }
+
+    /// La fila elegida de brillo mide más (lleva la barra), la hit-test lo
+    /// cuenta, y ← → dejan un valor pendiente que solo Intro aplica.
+    #[test]
+    fn la_fila_de_nivel_se_abre_y_lo_pendiente_lo_aplica_intro() {
+        let mut b = buscador_con("bril");
+        // Sin retroiluminación (CI, portátil sin sysfs) no hay fila: nada que probar.
+        let Some(Resultado::Nivel { que, valor, .. }) = b.resultados.first() else {
+            return;
+        };
+        let (que, valor) = (*que, *valor);
+        assert_eq!(b.alto_de(0), FILA + BARRA_EXTRA);
+        assert_eq!(b.alto_de(1), FILA);
+        // La segunda fila empieza donde acaba la ampliada.
+        let y1 = b.y_lista() + FILA + BARRA_EXTRA + 1.0;
+        assert_eq!(b.fila_en(100.0, y1), Some(1));
+        assert!(matches!(b.tecla(crate::TeclaPulsada::Intro), Tecla::Consumida));
+        b.tecla(crate::TeclaPulsada::Izquierda);
+        assert_eq!(b.pendiente, Some((que, valor.saturating_sub(5).max(5))));
+        match b.tecla(crate::TeclaPulsada::Intro) {
+            Tecla::Hacer(a) => assert_eq!(a, que.accion(valor.saturating_sub(5).max(5))),
+            _ => panic!("Intro con algo pendiente tiene que aplicarlo"),
+        }
+        // Al elegir otra fila la barra se cierra y lo pendiente se olvida.
+        let mut c = buscador_con("bril");
+        c.tecla(crate::TeclaPulsada::Derecha);
+        c.tecla(crate::TeclaPulsada::Abajo);
+        assert_eq!(c.pendiente, None);
+        assert_eq!(c.alto_de(0), FILA);
+    }
 
     #[test]
     fn brillo_y_volumen_con_numero_dan_un_ajuste() {

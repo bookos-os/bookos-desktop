@@ -17,7 +17,7 @@ use crate::Accion;
 use crate::tema;
 use crate::view::PanelElement;
 
-use super::{Ancla, Tecla};
+use super::{Ancla, FilaAccesible, Tecla, t};
 
 /// Lo que el menú puede crecer para que quepa un nombre largo en «Cerrar
 /// sesión de …». Más allá se recorta: un menú de medio panel tapa el escritorio
@@ -40,9 +40,9 @@ pub(super) const MARGEN: f32 = 5.0;
 const BORDE_SUP: f32 = MARGEN;
 const BORDE_INF: f32 = MARGEN;
 /// Relleno del texto dentro de la fila, a cada lado.
-const RELLENO: f32 = 10.0;
+pub(super) const RELLENO: f32 = 10.0;
 /// Aire mínimo entre la etiqueta y su atajo.
-const HUECO_ATAJO: f32 = 20.0;
+pub(super) const HUECO_ATAJO: f32 = 20.0;
 /// Letra de los atajos y relleno lateral de la cápsula de cada tecla.
 const T_ATAJO: f32 = tema::T_PEQUENO - 1.0;
 const RELLENO_TECLA: f32 = 5.0;
@@ -86,12 +86,12 @@ fn entradas() -> Vec<Entrada> {
         // `bookos-about` en el sistema, y `kinfocenter` —lo que se abría
         // antes— es el panel de otro escritorio y enseña las versiones de
         // Plasma y de Qt en vez de las de BookOS.
-        item("Acerca de este PC", None, || Accion::Acerca),
+        item(t("Acerca de este PC", "About This PC"), None, || Accion::Acerca),
         Divisor,
         // Antes de «Preferencias del sistema», que abre otro programa: esta
         // es del propio escritorio y se aplica al pulsarla.
-        item("Apariencia", None, || Accion::Emergente("apariencia")),
-        item("Preferencias del sistema", None, || {
+        item(t("Apariencia…", "Appearance…"), None, || Accion::Emergente("apariencia")),
+        item(t("Preferencias del sistema…", "System Preferences…"), None, || {
             Accion::Lanzar("bookos-settings".into())
         }),
         // `bookos-store` todavía no existe —no hay ni un crate con ese nombre
@@ -100,39 +100,39 @@ fn entradas() -> Vec<Entrada> {
         // como si hubiera funcionado. Mientras no haya tienda propia, cae a
         // Discover, que es la que ya trae esta base y hace lo mismo de verdad:
         // instalar software.
-        item("BookOS Store", None, || {
+        item("BookOS Store…", None, || {
             Accion::Lanzar("bookos-store || plasma-discover".into())
         }),
         Divisor,
-        item("Dormir", None, || {
+        item(t("Dormir", "Sleep"), None, || {
             Accion::Lanzar("systemctl suspend".into())
         }),
     ];
     // Debajo de Dormir, y solo si logind dice que se puede: sin swap en disco
     // el botón fallaría sin más.
     if crate::confirmacion::hibernar_disponible() {
-        entradas.push(item("Hibernar", None, || {
+        entradas.push(item(t("Hibernar", "Hibernate"), None, || {
             Accion::Lanzar("systemctl hibernate".into())
         }));
     }
     let login = std::env::var("USER").unwrap_or_default();
     let nombre = crate::bloqueo::nombre_completo(&login).unwrap_or(login);
     entradas.extend([
-        item("Reiniciar", None, || {
+        item(t("Reiniciar…", "Restart…"), None, || {
             Accion::Lanzar("systemctl reboot".into())
         }),
-        item("Apagar", None, || {
+        item(t("Apagar…", "Shut down…"), None, || {
             Accion::Lanzar("systemctl poweroff".into())
         }),
         Divisor,
-        item("Pantalla de bloqueo", Some("Meta+L"), || Accion::Bloquear),
+        item(t("Pantalla de bloqueo", "Lock Screen"), Some("Meta+L"), || Accion::Bloquear),
         Item {
             // Con el nombre, como en macOS: en un equipo con varias cuentas
             // dice cuál se va a cerrar. Sin `USER` queda la frase sola.
             etiqueta: if nombre.is_empty() {
-                "Cerrar sesión".into()
+                t("Cerrar sesión…", "Log out…").into()
             } else {
-                format!("Cerrar sesión de {nombre}")
+                format!("{} {nombre}…", t("Cerrar sesión de", "Log out"))
             },
             atajo: Some("Ctrl+Alt+Supr"),
             accion: || Accion::CerrarSesion,
@@ -270,14 +270,66 @@ impl Menu {
         use crate::TeclaPulsada as T;
         match tecla {
             T::Escape => Tecla::Cerrar,
-            T::Abajo => self.mover(1),
+            T::Abajo | T::Tabulador => self.mover(1),
             T::Arriba => self.mover(-1),
-            // Sin selección, Intro no hace nada: mejor eso que activar la
-            // primera entrada, que aquí sería "Acerca de este PC" y en otro
-            // menú podría ser "Apagar".
-            T::Intro => Tecla::Ignorada,
+            T::Inicio => {
+                if let Some(i) = self
+                    .entradas
+                    .iter()
+                    .position(|e| matches!(e, Entrada::Item { .. }))
+                {
+                    self.señalada.señalar(Some(i));
+                }
+                Tecla::Consumida
+            }
+            T::Fin => {
+                if let Some(i) = self
+                    .entradas
+                    .iter()
+                    .rposition(|e| matches!(e, Entrada::Item { .. }))
+                {
+                    self.señalada.señalar(Some(i));
+                }
+                Tecla::Consumida
+            }
+            // Sin selección, Intro no hace nada: mejor eso que activar una
+            // entrada accidentalmente. Con una entrada señalada, la ejecuta.
+            T::Intro | T::Caracter(' ') => match self.señalada.actual() {
+                Some(i) => match &self.entradas[i] {
+                    Entrada::Item { accion, .. } => Tecla::Hacer(accion()),
+                    Entrada::Divisor => Tecla::Ignorada,
+                },
+                None => Tecla::Ignorada,
+            },
             _ => Tecla::Ignorada,
         }
+    }
+
+    /// Entradas expuestas a AT-SPI2 / Orca.
+    // añadido en la 0.2.3
+    pub fn accesible(&self) -> Vec<FilaAccesible> {
+        let mut cursor = BORDE_SUP;
+        let mut items = Vec::new();
+        for (i, entrada) in self.entradas.iter().enumerate() {
+            match entrada {
+                Entrada::Item {
+                    etiqueta, atajo, ..
+                } => {
+                    items.push(FilaAccesible {
+                        id: format!("menu:{i}"),
+                        rol: accesskit::Role::MenuItem,
+                        nombre: etiqueta.clone(),
+                        valor: atajo.unwrap_or("").to_string(),
+                        rect: (MARGEN, cursor, self.ancho - MARGEN * 2.0, FILA),
+                        marcada: None,
+                        seleccionada: self.señalada.actual() == Some(i),
+                    });
+                    cursor += FILA;
+                }
+                Entrada::Divisor => cursor += DIVISOR,
+            }
+        }
+        items
     }
 
     /// Mueve la selección saltándose los divisores.
@@ -359,31 +411,99 @@ pub(super) fn fila(
     icono: Option<&str>,
     señalada: f32,
 ) -> PanelElement<'static> {
+    fila_con(etiqueta, atajo, icono.map(Delante::Icono), false, false, señalada)
+}
+
+/// Lo que va delante del texto de una fila.
+// añadido en la 0.2.3
+#[derive(Clone, Copy)]
+pub(super) enum Delante<'a> {
+    Icono(&'a str),
+    /// Una casilla: la marca de «hecho» si está puesta, y el hueco si no, para
+    /// que el texto no baile entre una fila marcada y otra sin marcar.
+    Casilla(bool),
+    /// La opción de un grupo excluyente: el círculo del popover del HIG §9,
+    /// relleno con su punto cuando es la elegida.
+    Opcion(bool),
+}
+
+/// La tinta de lo destructivo como **texto** sobre la tarjeta.
+///
+/// El rojo de estado del tema claro (`#FF3B30`) da 3,6:1 sobre blanco y el HIG
+/// §2 pide 4,5 para texto accionable: se oscurece hacia la tinta hasta llegar.
+/// En oscuro ya cumple y sale tal cual.
+// añadido en la 0.2.3
+pub(super) fn rojo_texto() -> iced_core::Color {
+    let fondo = tema::card();
+    (0..=10)
+        .map(|n| tema::mezclar(tema::rojo(), tema::texto(), n as f32 * 0.05))
+        .find(|c| tema::contraste(*c, fondo) >= 4.5)
+        .unwrap_or_else(tema::texto)
+}
+
+/// Una fila completa del menú. `peligro` la tiñe de rojo y su realce es rojo
+/// en vez de acento: azul es acción neutra (HIG §1) y lo que borra no lo es.
+/// `chevron` dice que despliega un submenú; va con su icono y no con «›»,
+/// que el HIG §10 no admite como pictograma.
+// añadido en la 0.2.3
+pub(super) fn fila_con(
+    etiqueta: &str,
+    atajo: Option<&str>,
+    delante: Option<Delante<'_>>,
+    peligro: bool,
+    chevron: bool,
+    señalada: f32,
+) -> PanelElement<'static> {
     // El hover del plasmoide es acento **sólido** con el texto en blanco, no un
     // gris sutil: es lo que hace que se lea como un menú de sistema. El fondo
     // entra por alfa y no mezclándose con la tarjeta porque debajo hay un
     // popover translúcido: mezclar con `card()` dejaría un rectángulo opaco.
-    let fondo = tema::alfa(tema::acento(), señalada);
-    let color = tema::mezclar(tema::texto(), tema::sobre_acento(), señalada);
+    let base = if peligro { tema::rojo() } else { tema::acento() };
+    let fondo = tema::alfa(base, señalada);
+    let sobre = tema::tinta_sobre(base);
+    let reposo = if peligro { rojo_texto() } else { tema::texto() };
+    let color = tema::mezclar(reposo, sobre, señalada);
+    // Los iconos van en gris para que mande el texto; los de una fila roja,
+    // rojos como ella.
+    let reposo_icono = if peligro { reposo } else { tema::texto2() };
+    let color_icono = tema::mezclar(reposo_icono, sobre, señalada);
 
     // El icono se tiñe del color de la fila para que siga al texto al pasar a
     // fondo de acento; si no, quedaría blanco sobre azul con el mismo tono y
     // desaparecería justo en la fila que se está mirando.
     let mut contenido = row![].align_y(iced_core::alignment::Vertical::Center);
-    if let Some(icono) = icono {
-        contenido = contenido.push(match crate::icono::propio(icono) {
-            Some(ic) => crate::icono::ver_teñido_propio(&ic, ICONO, color),
-            // Un icono que falta no puede descolocar el texto de su fila
-            // respecto a las demás: se deja el hueco.
-            None => Space::new().width(Length::Fixed(ICONO)).into(),
+    if let Some(delante) = delante {
+        contenido = contenido.push(match delante {
+            Delante::Icono(nombre) => match crate::icono::propio(nombre) {
+                Some(ic) => crate::icono::ver_teñido_propio(&ic, ICONO, color_icono),
+                // Un icono que falta no puede descolocar el texto de su fila
+                // respecto a las demás: se deja el hueco.
+                None => Space::new().width(Length::Fixed(ICONO)).into(),
+            },
+            Delante::Casilla(true) => match crate::icono::propio("comprobado") {
+                Some(ic) => crate::icono::ver_teñido_propio(
+                    &ic,
+                    ICONO,
+                    tema::mezclar(tema::acento(), sobre, señalada),
+                ),
+                None => Space::new().width(Length::Fixed(ICONO)).into(),
+            },
+            Delante::Casilla(false) => Space::new().width(Length::Fixed(ICONO)).into(),
+            Delante::Opcion(elegida) => opcion(elegida, señalada),
         });
         contenido = contenido.push(Space::new().width(Length::Fixed(HUECO_ICONO)));
     }
     contenido = contenido.push(text(etiqueta.to_string()).size(tema::T_CUERPO).color(color));
     contenido = contenido.push(Space::new().width(Length::Fill));
     if let Some(atajo) = atajo {
-        let color_atajo = tema::mezclar(tema::TEXTO2, tema::sobre_acento(), señalada);
+        let color_atajo = tema::mezclar(tema::texto2(), sobre, señalada);
         contenido = contenido.push(teclas(atajo, color_atajo));
+    }
+    if chevron {
+        contenido = contenido.push(match crate::icono::propio("chevron-derecha") {
+            Some(ic) => crate::icono::ver_teñido_propio(&ic, CHEVRON, color_icono),
+            None => Space::new().width(Length::Fixed(CHEVRON)).into(),
+        });
     }
 
     container(
@@ -402,6 +522,61 @@ pub(super) fn fila(
     )
     .padding([0, MARGEN as u16])
     .height(Length::Fixed(FILA))
+    .into()
+}
+
+/// Lado del chevron de submenú: un poco menor que el icono de la fila, como
+/// en la maqueta, para que no compita con el texto.
+pub(super) const CHEVRON: f32 = 14.0;
+
+/// El círculo de una opción excluyente (HIG §9: borde 2, elegida rellena con
+/// un punto de 6). Del mismo lado que un icono, para que el texto no se mueva.
+// añadido en la 0.2.3
+fn opcion(elegida: bool, señalada: f32) -> PanelElement<'static> {
+    let sobre = tema::sobre_acento();
+    let (relleno, borde, punto) = if elegida {
+        (
+            tema::mezclar(tema::acento(), sobre, señalada),
+            tema::mezclar(tema::acento(), sobre, señalada),
+            Some(tema::mezclar(sobre, tema::acento(), señalada)),
+        )
+    } else {
+        (
+            iced_core::Color::TRANSPARENT,
+            // Gris secundario entero: con menos alfa el círculo vacío no llegaba
+            // al 3:1 de control del HIG §2 sobre la tarjeta clara.
+            tema::mezclar(tema::texto2(), sobre, señalada),
+            None,
+        )
+    };
+    container(match punto {
+        Some(c) => container(Space::new())
+            .width(Length::Fixed(6.0))
+            .height(Length::Fixed(6.0))
+            .style(move |_| container::Style {
+                background: Some(c.into()),
+                border: Border {
+                    radius: 3.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into(),
+        None => PanelElement::from(Space::new()),
+    })
+    .width(Length::Fixed(ICONO))
+    .height(Length::Fixed(ICONO))
+    .center_x(Length::Fixed(ICONO))
+    .center_y(Length::Fixed(ICONO))
+    .style(move |_| container::Style {
+        background: Some(relleno.into()),
+        border: Border {
+            radius: (ICONO / 2.0).into(),
+            width: 2.0,
+            color: borde,
+        },
+        ..Default::default()
+    })
     .into()
 }
 
@@ -424,7 +599,7 @@ fn ancho_tecla(tecla: &str) -> f32 {
 
 /// Lo que ocupa un atajo dibujado con [`teclas`].
 // añadido en la 0.2.0
-fn ancho_atajo(atajo: &str) -> f32 {
+pub(super) fn ancho_atajo(atajo: &str) -> f32 {
     let partes = atajo.split('+');
     let huecos = (partes.clone().count() - 1) as f32 * HUECO_TECLA;
     partes.map(ancho_tecla).sum::<f32>() + huecos
@@ -472,4 +647,22 @@ pub(super) fn divisor() -> PanelElement<'static> {
     .padding([5, RELLENO as u16 + MARGEN as u16])
     .height(Length::Fixed(DIVISOR))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TeclaPulsada;
+
+    #[test]
+    fn teclado_navega_y_ejecuta_la_entrada_senalada() {
+        let mut m = Menu::new();
+        assert!(matches!(m.tecla(TeclaPulsada::Intro), Tecla::Ignorada));
+        assert!(matches!(m.tecla(TeclaPulsada::Abajo), Tecla::Consumida));
+        assert!(matches!(
+            m.tecla(TeclaPulsada::Intro),
+            Tecla::Hacer(Accion::Acerca)
+        ));
+        assert!(!m.accesible().is_empty());
+    }
 }

@@ -558,6 +558,7 @@ fn ventanas_de(state: &BookosComp, salida: &str) -> Vec<Apartada> {
 // 0.1.0
 // modified 0.1.1 -- lo despejado sigue despejado al cambiar de escritorio
 pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
+    let era_inhibido = state.idle_inhibido();
     let nombre = salida.name();
     // modificado en la 0.2.0 -- invertir entre los mismos dos escritorios conserva posición e impulso.
     if let Some(d) = state.escritorios.deslizando.get_mut(&nombre)
@@ -567,6 +568,7 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
         d.muelle.ir_a(if n == d.destino { 1.0 } else { 0.0 });
         state.escritorios.activo.insert(nombre, n);
         avisar_al_panel(state);
+        crate::handlers::sincronizar_inhibicion(state, era_inhibido);
         state.needs_redraw = true;
         return;
     }
@@ -640,6 +642,7 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
     if state.escritorios.gesto.is_none() {
         avisar_osd(state, &nombre, n);
     }
+    crate::handlers::sincronizar_inhibicion(state, era_inhibido);
     state.needs_redraw = true;
 }
 
@@ -954,6 +957,20 @@ pub fn animar(state: &mut BookosComp) -> bool {
     }
     state.needs_redraw = true;
     vivo || despejando
+}
+
+/// Si la ventana está en pantalla solo porque se está yendo con un cambio de
+/// escritorio a medias. Siguen mapeadas mientras se deslizan fuera, y Alt+Tab
+/// pulsado justo después del cambio las enseñaba entre las del escritorio
+/// nuevo. Se decide con la misma regla que `terminar_deslizamiento`, para que
+/// sean justo las que acabará desmapeando.
+// añadido en la 0.2.2
+pub fn saliendo(state: &BookosComp, window: &Window) -> bool {
+    state.escritorios.deslizando.values().any(|d| {
+        let vuelve = d.sujeto || d.anterior == d.destino || d.muelle.destino() == 0.0;
+        let ocultas = if vuelve { &d.entrantes } else { &d.salientes };
+        ocultas.iter().any(|(w, _)| w == window)
+    })
 }
 
 /// Deja las ventanas de esa salida donde tienen que acabar y suelta su

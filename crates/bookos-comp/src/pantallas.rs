@@ -39,6 +39,59 @@ use zbus::zvariant::Type;
 /// sin romper a quien ya habla con nosotros.
 pub const VERSION_CONTRATO: u32 = 1;
 
+/// Extrae el rango de frecuencia variable `(min_hz, max_hz)` del EDID en bruto.
+///
+/// Primero busca el Vendor-Specific Data Block de AMD FreeSync / Adaptive Sync
+/// (`OUI 00-00-1A`) en los bloques de extensión CTA-861, que es donde los
+/// paneles OLED eDP (como el Galaxy Book5 Pro, 48–120 Hz) suelen declararlo.
+/// Si no está, cae al descriptor estándar `Display Range Limits` (`0xFD`) del
+/// bloque base de 128 bytes.
+// añadido en la 0.2.4
+pub fn rango_vrr_edid(edid: &[u8]) -> Option<(u32, u32)> {
+    // 1) Bloques de extensión CTA-861 (cada uno de 128 bytes a partir de 128).
+    for bloque in edid.get(128..)?.chunks_exact(128) {
+        if bloque[0] != 0x02 {
+            continue;
+        }
+        let fin_datos = usize::from(bloque[2]).min(127);
+        let mut i = 4usize;
+        while i < fin_datos {
+            let cabecera = bloque[i];
+            let etiqueta = (cabecera >> 5) & 0x07;
+            let largo = usize::from(cabecera & 0x1F);
+            i += 1;
+            if i + largo > fin_datos {
+                break;
+            }
+            let carga = &bloque[i..i + largo];
+            // Tag 3 = Vendor-Specific Data Block; OUI 00-00-1A (little-endian: 1A 00 00)
+            // Byte 5 = min refresh Hz, byte 6 = max refresh Hz.
+            if etiqueta == 3 && carga.len() >= 7 && carga[0..3] == [0x1A, 0x00, 0x00] {
+                let min_hz = u32::from(carga[5]);
+                let max_hz = u32::from(carga[6]);
+                if min_hz >= 24 && max_hz > min_hz {
+                    return Some((min_hz, max_hz));
+                }
+            }
+            i += largo;
+        }
+    }
+    // 2) Fallback: Display Range Limits (0xFD) en los 4 descriptores del bloque base.
+    if edid.len() >= 126 {
+        for desc in edid[54..126].chunks_exact(18) {
+            if desc[0..4] == [0x00, 0x00, 0x00, 0xFD] {
+                let flags = desc[4];
+                let min_hz = u32::from(desc[5]) + if flags & 0x01 != 0 { 255 } else { 0 };
+                let max_hz = u32::from(desc[6]) + if flags & 0x02 != 0 { 255 } else { 0 };
+                if min_hz >= 24 && max_hz > min_hz {
+                    return Some((min_hz, max_hz));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Escalas que se ofrecen en la interfaz. Un cuarto es el paso que reconocen
 /// todos los toolkits con `wp_fractional_scale`, y es también el que usa la
 /// heurística de [`crate::backend::escala_sugerida`], así que lo que sugiere el
@@ -163,6 +216,9 @@ pub struct Compartido {
     salidas: Mutex<Vec<Salida>>,
     /// `udev` o `winit`. Cambia lo que se puede hacer, y Settings lo enseña.
     pub backend: Mutex<&'static str>,
+    /// Rango VRR `(min_hz, max_hz)` leído del EDID del panel principal/capaz.
+    // añadido en la 0.2.4
+    vrr_rango: Mutex<Option<(u32, u32)>>,
 }
 
 impl Default for Compartido {
@@ -171,6 +227,7 @@ impl Default for Compartido {
         Self {
             salidas: Mutex::new(Vec::new()),
             backend: Mutex::new("ninguno"),
+            vrr_rango: Mutex::new(None),
         }
     }
 }
@@ -192,6 +249,14 @@ impl Compartido {
         match self.salidas.lock() {
             Ok(mut guard) => *guard = salidas,
             Err(err) => *err.into_inner() = salidas,
+        }
+    }
+
+    // añadido en la 0.2.4
+    pub fn publicar_rango_vrr(&self, rango: Option<(u32, u32)>) {
+        match self.vrr_rango.lock() {
+            Ok(mut guard) => *guard = rango,
+            Err(err) => *err.into_inner() = rango,
         }
     }
 
@@ -232,6 +297,11 @@ impl Compartido {
         poner("mode", Value::from(udev));
         poner("refresh", Value::from(udev));
         poner("vrr", Value::from(udev));
+        poner("vrr_frame_limit", Value::from(udev));
+        if let Some((min_hz, max_hz)) = *self.vrr_rango.lock().unwrap_or_else(|e| e.into_inner()) {
+            poner("vrr_min_hz", Value::from(min_hz));
+            poner("vrr_max_hz", Value::from(max_hz));
+        }
         poner("multi_output", Value::from(udev));
         poner("hotplug", Value::from(udev));
         poner("per_output_refresh", Value::from(udev));
@@ -1283,5 +1353,26 @@ mod pruebas {
         normalizar(&mut p);
         assert_eq!((p[0].x, p[0].y), (0, 0));
         assert_eq!((p[1].x, p[1].y), (-1646, 0));
+    }
+
+    #[test]
+    fn rango_vrr_lee_bloque_amd_freesync_y_display_range() {
+        // Bloque base de 128 bytes + extensión CTA-861 con AMD VSDB (48-120 Hz).
+        let mut edid = vec![0u8; 256];
+        edid[128] = 0x02; // CTA-861
+        edid[130] = 12; // inicio de DTDs
+        // Tag 3 (VSDB), len 7 -> (3 << 5) | 7 = 0x67
+        edid[132] = 0x67;
+        edid[133..136].copy_from_slice(&[0x1A, 0x00, 0x00]); // OUI AMD 00-00-1A
+        edid[138] = 48;
+        edid[139] = 120;
+        assert_eq!(rango_vrr_edid(&edid), Some((48, 120)));
+
+        // Sin extensión CTA, cae a Display Range Limits (0xFD) en el bloque base.
+        let mut base = vec![0u8; 128];
+        base[54..58].copy_from_slice(&[0x00, 0x00, 0x00, 0xFD]);
+        base[59] = 48;
+        base[60] = 144;
+        assert_eq!(rango_vrr_edid(&base), Some((48, 144)));
     }
 }

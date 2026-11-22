@@ -500,6 +500,37 @@ impl DrmSurface {
             DrmSurfaceInternal::Legacy(surf) => surf.clear(),
         }
     }
+
+    /// Prepares an atomic `GAMMA_LUT` blob with per-channel multipliers.
+    pub fn set_gamma_lut(&self, multipliers: [f32; 3]) -> Result<bool, Error> {
+        match &*self.internal {
+            DrmSurfaceInternal::Atomic(surf) => surf.set_gamma_lut(multipliers),
+            DrmSurfaceInternal::Legacy(_) => Ok(false),
+        }
+    }
+
+    /// Returns whether a prepared `GAMMA_LUT` blob has not yet been committed.
+    pub fn gamma_pending(&self) -> bool {
+        match &*self.internal {
+            DrmSurfaceInternal::Atomic(surf) => surf.gamma_pending(),
+            DrmSurfaceInternal::Legacy(_) => false,
+        }
+    }
+
+    /// Discards any pending uncommitted `GAMMA_LUT` blob.
+    pub fn clear_pending_gamma(&self) {
+        if let DrmSurfaceInternal::Atomic(surf) = &*self.internal {
+            surf.clear_pending_gamma();
+        }
+    }
+
+    /// Commits any pending `GAMMA_LUT` blob non-blockingly via DRM atomic.
+    pub fn commit_gamma(&self, event: bool) -> Result<bool, Error> {
+        match &*self.internal {
+            DrmSurfaceInternal::Atomic(surf) => surf.commit_gamma(event),
+            DrmSurfaceInternal::Legacy(_) => Ok(false),
+        }
+    }
 }
 
 fn ensure_legacy_planes<'a>(

@@ -314,7 +314,7 @@ impl Acerca {
             tx2: if claro {
                 Color::from_rgb8(0x6c, 0x6c, 0x70)
             } else {
-                tema::TEXTO2
+                tema::texto2()
             },
             div: tema::mezclar(fila, tx, 0.08),
             realce: tema::mezclar(fila, tx, 0.06),

@@ -133,6 +133,15 @@ impl Widget for Medidor {
         }
     }
 
+    fn accesible(&self) -> (&'static str, String) {
+        let nombre = match self.tipo {
+            Tipo::Monitor => crate::emergente::t("Rendimiento", "Performance"),
+            Tipo::Trafico => crate::emergente::t("Tráfico de red", "Network traffic"),
+            Tipo::Consumo => crate::emergente::t("Consumo", "Power draw"),
+        };
+        (nombre, self.texto.clone())
+    }
+
     // añadido en la 0.2.0
     fn refrescar(&mut self) -> bool {
         let texto = self.leer();

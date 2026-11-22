@@ -772,13 +772,13 @@ impl Captura {
                             Some(ic) => crate::icono::ver_teñido_propio(
                                 &ic,
                                 22.0,
-                                if activa { tema::acento() } else { tema::TEXTO2 },
+                                if activa { tema::acento() } else { tema::texto2() },
                             ),
                             None => Space::new().height(Length::Fixed(22.0)).into(),
                         },
                         Space::new().height(Length::Fixed(2.0)),
                         text(nombre).size(tema::T_PEQUENO).color(if apagada {
-                            tema::TEXTO2
+                            tema::texto2()
                         } else {
                             tema::texto()
                         }),

@@ -65,6 +65,10 @@ impl Widget for Reloj {
         "reloj"
     }
 
+    fn accesible(&self) -> (&'static str, String) {
+        (crate::emergente::t("Reloj", "Clock"), self.texto.clone())
+    }
+
     // 0.1.0
     fn refrescar(&mut self) -> bool {
         let texto = ahora();

@@ -349,7 +349,7 @@ pub(crate) fn teclado_actual() -> Option<(String, u32, u32)> {
 }
 
 // 0.1.0
-pub(crate) fn read_brightness() -> Option<u8> {
+pub(crate) fn read_brightness_exact() -> Option<f64> {
     let path = backlight_path()?;
     let max = read_num(path.join("max_brightness"))?;
     if max == 0 {
@@ -363,7 +363,12 @@ pub(crate) fn read_brightness() -> Option<u8> {
     // Ese medio milisegundo se pagaba en **cada** evento de udev, que llegan en
     // ráfaga al mover el brillo con la tecla.
     let ahora = read_num(path.join("brightness"))?;
-    Some((u64::from(ahora.min(max)) * 100 / u64::from(max)) as u8)
+    Some(f64::from(ahora.min(max)) * 100.0 / f64::from(max))
+}
+
+// 0.1.0
+pub(crate) fn read_brightness() -> Option<u8> {
+    read_brightness_exact().map(|p| p.round().clamp(0.0, 100.0) as u8)
 }
 
 // 0.1.0
@@ -500,7 +505,7 @@ pub fn hora_local_ahora() -> (u8, u8) {
 /// `(hora, minuto, años desde 1900, mes desde 0, día del mes)` en local.
 #[cfg(unix)]
 // 0.1.0
-fn local_tm(unix_secs: i64) -> (u8, u8, i32, i32, i32) {
+pub(crate) fn local_tm(unix_secs: i64) -> (u8, u8, i32, i32, i32) {
     // Declaración mínima de libc en vez de la dependencia entera: solo se
     // necesita `localtime_r` y los campos de `tm` que usa el reloj.
     #[repr(C)]

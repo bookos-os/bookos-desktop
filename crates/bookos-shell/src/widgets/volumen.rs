@@ -48,7 +48,7 @@ impl Volumen {
     // 0.1.0
     fn color(&self) -> iced_core::Color {
         if self.nivel.is_none() || self.silenciado {
-            tema::TEXTO2
+            tema::texto2()
         } else {
             TEXT()
         }
@@ -99,6 +99,15 @@ impl Widget for Volumen {
     // 0.1.0
     fn nombre(&self) -> &'static str {
         "volumen"
+    }
+
+    fn accesible(&self) -> (&'static str, String) {
+        let valor = match self.nivel {
+            _ if self.silenciado => crate::emergente::t("Silenciado", "Muted").to_string(),
+            Some(n) => format!("{n} %"),
+            None => "—".into(),
+        };
+        (crate::emergente::t("Volumen", "Volume"), valor)
     }
 
     // 0.1.0

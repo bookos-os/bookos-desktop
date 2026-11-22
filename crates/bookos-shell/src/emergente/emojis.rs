@@ -391,7 +391,7 @@ impl Emojis {
             container(icono::ver_teñido_propio(
                 &icono::propio("cerrar").expect("cerrar es un icono integrado"),
                 14.0,
-                tema::TEXTO2
+                tema::texto2()
             ))
             .center(24.0),
         ]
@@ -410,7 +410,7 @@ impl Emojis {
                     tema::acento()
                 ),
                 text(consulta).size(14).color(if self.consulta.is_empty() {
-                    tema::TEXTO2
+                    tema::texto2()
                 } else {
                     tema::texto()
                 }),
@@ -438,11 +438,11 @@ impl Emojis {
             t("Resultados", "Results")
         };
         let cabecera = row![
-            text(etiqueta).size(12).color(tema::TEXTO2),
+            text(etiqueta).size(12).color(tema::texto2()),
             Space::new().width(Length::Fill),
             text(self.resultados.len().to_string())
                 .size(11)
-                .color(tema::TEXTO2)
+                .color(tema::texto2())
         ]
         .height(20.0)
         .align_y(Vertical::Center);
@@ -496,7 +496,7 @@ impl Emojis {
                         "Try another category or search"
                     ))
                     .size(11)
-                    .color(tema::TEXTO2),
+                    .color(tema::texto2()),
                 ]
                 .spacing(8)
                 .align_x(Horizontal::Center),
@@ -534,11 +534,11 @@ impl Emojis {
         let pie = row![
             text(super::recortar_texto(descripcion, ancho - 80.0, 11.0))
                 .size(11)
-                .color(tema::TEXTO2),
+                .color(tema::texto2()),
             Space::new().width(Length::Fill),
             text(t("Intro  ·  Esc", "Enter  ·  Esc"))
                 .size(11)
-                .color(tema::TEXTO2)
+                .color(tema::texto2())
         ]
         .height(24.0)
         .align_y(Vertical::Center);
@@ -547,7 +547,7 @@ impl Emojis {
             let activo = self.consulta.trim().is_empty() && self.categoria == i;
             let hover = self.categoria_señalada.intensidad(i);
             let fondo = if activo { 0.10 } else { 0.07 * hover };
-            let color = if activo { tema::acento() } else { tema::TEXTO2 };
+            let color = if activo { tema::acento() } else { tema::texto2() };
             categorias = categorias.push(
                 container(
                     svg(svg::Handle::from_memory(bytes))

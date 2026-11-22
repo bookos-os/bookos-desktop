@@ -85,6 +85,8 @@ libloading = "0.8"
 # y no la más alta para no exigir un PipeWire recién sacado.
 pipewire = { version = "0.10", features = ["v0_3_34"] }
 libspa = "0.10"
+accesskit_unix = "0.24.1"
+accesskit = "0.25.2"
 
 [dev-dependencies]
 bookos-system = { path = "../bookos-system", features = ["test-fixtures"] }

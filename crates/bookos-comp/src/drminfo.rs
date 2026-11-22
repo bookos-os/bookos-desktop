@@ -11,7 +11,7 @@ use std::os::fd::{AsFd, BorrowedFd};
 use std::path::Path;
 
 use smithay::reexports::drm::Device as BasicDevice;
-use smithay::reexports::drm::control::{Device as ControlDevice, connector};
+use smithay::reexports::drm::control::{Device as ControlDevice, connector, property::Value as PropValue};
 
 /// Envoltorio mínimo: los traits de `drm` solo piden el descriptor.
 struct Card(File);
@@ -94,6 +94,15 @@ fn describir(ruta: &Path) -> anyhow::Result<()> {
         }
         let (mm_w, mm_h) = con.size().unwrap_or((0, 0));
         println!("      tamaño físico: {mm_w}×{mm_h} mm");
+        let vrr = vrr_capaz(&card, &con);
+        let rango = edid_crudo(&card, &con).and_then(|e| crate::pantallas::rango_vrr_edid(&e));
+        match rango {
+            Some((min_hz, max_hz)) => println!(
+                "      vrr_capable: {}   rango EDID: {min_hz}–{max_hz} Hz",
+                if vrr { "sí" } else { "no" }
+            ),
+            None => println!("      vrr_capable: {}", if vrr { "sí" } else { "no" }),
+        }
         // El modo preferido es el primero que anuncia el conector.
         for (i, modo) in con.modes().iter().take(4).enumerate() {
             let (w, h) = modo.size();
@@ -110,4 +119,44 @@ fn describir(ruta: &Path) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+// añadido en la 0.2.4
+fn vrr_capaz(card: &Card, con: &connector::Info) -> bool {
+    let Ok(props) = card.get_properties(con.handle()) else {
+        return false;
+    };
+    let (handles, valores) = props.as_props_and_values();
+    for (handle, valor) in handles.iter().zip(valores.iter()) {
+        let Ok(info) = card.get_property(*handle) else {
+            continue;
+        };
+        if info.name().to_str() != Ok("vrr_capable") {
+            continue;
+        }
+        return match info.value_type().convert_value(*valor) {
+            PropValue::Boolean(v) => v,
+            PropValue::UnsignedRange(v) => v != 0,
+            _ => false,
+        };
+    }
+    false
+}
+
+// añadido en la 0.2.4
+fn edid_crudo(card: &Card, con: &connector::Info) -> Option<Vec<u8>> {
+    let props = card.get_properties(con.handle()).ok()?;
+    let (handles, valores) = props.as_props_and_values();
+    for (handle, valor) in handles.iter().zip(valores.iter()) {
+        let Ok(info) = card.get_property(*handle) else {
+            continue;
+        };
+        if info.name().to_str() != Ok("EDID") {
+            continue;
+        }
+        if let PropValue::Blob(id) = info.value_type().convert_value(*valor) {
+            return card.get_property_blob(id).ok();
+        }
+    }
+    None
 }

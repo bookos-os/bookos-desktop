@@ -5,17 +5,18 @@
 //! rótulos hacen que las filas no midan todas lo mismo y la geometría sale de
 //! [`Red::colocar`].
 //!
-//! La clave de una red nueva **no pasa por el shell**: la pide Ajustes. Con
-//! perfil guardado NetworkManager ya la tiene, y una red abierta no la
-//! necesita.
+//! La clave de una red protegida sin perfil se escribe en la propia tarjeta:
+//! un campo bajo la red, Intro conecta y Esc lo cierra. Con perfil guardado
+//! NetworkManager ya la tiene, y una red abierta no la necesita.
 
 use std::time::{Duration, Instant};
 
 use bookos_system::Operation;
 use serde_json::Value;
 
-use iced_core::Length;
-use iced_widget::{Space, column};
+use iced_core::alignment::Vertical;
+use iced_core::{Border, Length};
+use iced_widget::{Space, column, container, row, text};
 
 use crate::Accion;
 use crate::icono;
@@ -50,6 +51,17 @@ struct Ap {
     activa: bool,
 }
 
+/// WPA2-PSK no admite claves de menos de 8 caracteres: NetworkManager rechaza
+/// el perfil y el fallo llegaría como un «No se pudo conectar» sin motivo.
+const CLAVE_MINIMA: usize = 8;
+
+/// La contraseña que se está escribiendo para una red. Va por SSID y no por
+/// índice: cada refresco reordena `aps`.
+struct Clave {
+    ssid: String,
+    texto: String,
+}
+
 /// Lo que se ha pedido y todavía no se ve.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Orden {
@@ -67,6 +79,8 @@ enum Seccion {
 enum Fila {
     Seccion(Seccion),
     Red(usize),
+    /// El campo de contraseña, bajo la red a la que pertenece.
+    Clave,
 }
 
 type Colocada = lista::Colocada<Fila>;
@@ -90,6 +104,7 @@ pub struct Red {
     escaneada: bool,
     buscando_visto: bool,
     pendiente: Option<(String, Orden, Instant)>,
+    clave: Option<Clave>,
 }
 
 /// Las tres intensidades que distingue el icono y el texto.
@@ -124,6 +139,7 @@ impl Red {
             escaneada: false,
             buscando_visto: false,
             pendiente: None,
+            clave: None,
         };
         r.refrescar();
         r
@@ -155,6 +171,15 @@ impl Red {
         let (activas, resto): (Vec<Ap>, Vec<Ap>) = todas.into_iter().partition(|a| a.activa);
         let (conocidas, otras): (Vec<Ap>, Vec<Ap>) = resto.into_iter().partition(|a| a.guardada);
         self.aps = activas.into_iter().chain(conocidas).chain(otras).collect();
+        // Si la red se fue de alcance, o ya tiene perfil, el campo sobra.
+        if let Some(c) = &self.clave
+            && !self
+                .aps
+                .iter()
+                .any(|a| a.ssid == c.ssid && !a.guardada && !a.abierta)
+        {
+            self.clave = None;
+        }
         self.pedir_escaneo();
         self.avanzar_pendiente();
         self.reconstruir();
@@ -245,6 +270,33 @@ impl Red {
     /// Todo lo que hay en la lista, con su altura y su `y` dentro de ella.
     // añadido en la 0.2.1
     fn colocar(&self) -> Vec<Colocada> {
+        let mut v = self.colocar_redes();
+        let Some(c) = &self.clave else {
+            return v;
+        };
+        let Some(i) = v
+            .iter()
+            .position(|f| matches!(f.fila, Fila::Red(i) if self.aps[i].ssid == c.ssid))
+        else {
+            return v;
+        };
+        // Lo de debajo baja lo que mide el campo y su hueco.
+        let y = v[i].y + v[i].alto + lista::HUECO_FILA;
+        for f in &mut v[i + 1..] {
+            f.y += lista::FILA + lista::HUECO_FILA;
+        }
+        v.insert(
+            i + 1,
+            Colocada {
+                fila: Fila::Clave,
+                y,
+                alto: lista::FILA,
+            },
+        );
+        v
+    }
+
+    fn colocar_redes(&self) -> Vec<Colocada> {
         let mut v = Vec::new();
         if self.estado_carga.is_some() || !self.encendida {
             return v;
@@ -333,7 +385,7 @@ impl Red {
             .find(|c| (c.y..c.y + c.alto).contains(&y))
             .and_then(|c| match c.fila {
                 Fila::Red(i) => Some(i),
-                Fila::Seccion(_) => None,
+                Fila::Seccion(_) | Fila::Clave => None,
             })
     }
 
@@ -399,22 +451,41 @@ impl Red {
         if self.pie_en(x, y) {
             return Some(Accion::Lanzar("bookos-settings --page wifi".into()));
         }
-        let i = self.red_en(x, y)?;
+        let Some(i) = self.red_en(x, y) else {
+            // Pulsar el propio campo no lo cierra; pulsar fuera de la lista
+            // tampoco: se está escribiendo.
+            return None;
+        };
         self.activar(i)
     }
 
-    /// Conecta, desconecta o remite a Ajustes según la red `i`: lo mismo con
-    /// el ratón que con Intro.
+    /// Conecta, desconecta o pide la clave según la red `i`: lo mismo con el
+    /// ratón que con Intro.
     // añadido en la 0.2.0
     // modified 0.2.1 -- «Conectando…» con caducidad en vez de escribir en la entrada
     fn activar(&mut self, i: usize) -> Option<Accion> {
         let ap = self.aps.get(i)?;
+        if !ap.activa && !ap.guardada && !ap.abierta {
+            // Pulsarla otra vez con el campo abierto lo cierra.
+            self.clave = match self.clave.take() {
+                Some(c) if c.ssid == ap.ssid => None,
+                _ => Some(Clave {
+                    ssid: ap.ssid.clone(),
+                    texto: String::new(),
+                }),
+            };
+            if let Some(c) = self.colocar().into_iter().find(|c| c.fila == Fila::Clave) {
+                self.mostrar(c.y, c.alto);
+            }
+            return None;
+        }
+        self.clave = None;
         let orden = if ap.activa {
             bookos_system::request(Operation::NetworkDisconnect {
                 device: ap.dispositivo.clone(),
             });
             Orden::Desconectar
-        } else if ap.guardada || ap.abierta {
+        } else {
             // Con perfil guardado NetworkManager ya tiene la clave; una red
             // abierta no la necesita. Ninguna de las dos pasa contraseña por
             // el shell.
@@ -423,9 +494,6 @@ impl Red {
                 password: String::new(),
             });
             Orden::Conectar
-        } else {
-            // Red con clave sin perfil: la contraseña la pide Ajustes, nunca el shell.
-            return Some(Accion::Lanzar("bookos-settings --page wifi".into()));
         };
         self.pendiente = Some((ap.ssid.clone(), orden, Instant::now()));
         self.reconstruir();
@@ -435,10 +503,49 @@ impl Red {
         None
     }
 
+    /// Manda la clave escrita. Con menos de [`CLAVE_MINIMA`] no hace nada: el
+    /// campo lo dice.
+    // añadido en la 0.2.1
+    fn enviar_clave(&mut self) {
+        let Some(c) = self
+            .clave
+            .take_if(|c| c.texto.chars().count() >= CLAVE_MINIMA)
+        else {
+            return;
+        };
+        bookos_system::request(Operation::WifiConnect {
+            ssid: c.ssid.clone(),
+            password: c.texto,
+        });
+        self.pendiente = Some((c.ssid, Orden::Conectar, Instant::now()));
+        self.reconstruir();
+        self.ultimo = Value::Null;
+    }
+
     // 0.1.0
     // modified 0.2.0 -- flechas y Intro recorren y activan la lista
+    // modified 0.2.1 -- con el campo de clave abierto, las teclas son suyas
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
         use crate::TeclaPulsada as T;
+        if let Some(c) = &mut self.clave {
+            match tecla {
+                T::Caracter(ch) if !ch.is_control() => c.texto.push(ch),
+                T::Retroceso => {
+                    c.texto.pop();
+                }
+                T::BorrarTodo => c.texto.clear(),
+                T::Escape => self.clave = None,
+                T::Intro => self.enviar_clave(),
+                T::Arriba | T::Abajo => {
+                    self.clave = None;
+                    self.mover(if tecla == T::Arriba { -1 } else { 1 });
+                }
+                // Lo demás se traga: no debe acabar en la ventana de debajo
+                // mientras se teclea una contraseña.
+                _ => {}
+            }
+            return Tecla::Consumida;
+        }
         match tecla {
             T::Escape => Tecla::Cerrar,
             T::Arriba | T::Abajo => {
@@ -484,6 +591,142 @@ impl Red {
         cambio | self.caducar()
     }
 
+    /// El campo de contraseña. Puntos y no la clave: la tarjeta puede estar
+    /// en una captura o a la vista de otro.
+    // añadido en la 0.2.1
+    fn campo_clave(&self) -> PanelElement<'_> {
+        let Some(c) = &self.clave else {
+            return Space::new().into();
+        };
+        let n = c.texto.chars().count();
+        let escrito = if n == 0 {
+            text("Contraseña").size(14.0).color(tema::texto2())
+        } else {
+            text(format!("{}▏", "•".repeat(n)))
+                .size(14.0)
+                .color(tema::texto())
+        };
+        let aviso = if n >= CLAVE_MINIMA {
+            "Intro para conectar"
+        } else if n > 0 {
+            "Mínimo 8 caracteres"
+        } else {
+            "Esc para cancelar"
+        };
+        let acento = tema::acento();
+        container(
+            row![
+                escrito,
+                Space::new().width(Length::Fill),
+                text(aviso).size(11.0).color(tema::texto2()),
+            ]
+            .align_y(Vertical::Center),
+        )
+        .width(Length::Fixed(lista::BALDOSA))
+        .height(Length::Fixed(lista::FILA))
+        .center_y(Length::Fixed(lista::FILA))
+        .padding([0, 12])
+        .style(move |_: &iced_widget::Theme| container::Style {
+            background: Some(tema::elevado().into()),
+            border: Border {
+                radius: tema::R_CONTROL.into(),
+                width: 1.5,
+                color: acento,
+            },
+            ..Default::default()
+        })
+        .into()
+    }
+
+    /// El interruptor, las redes que se ven, el campo de clave y el botón del
+    /// pie, con la geometría de `pulsar`. Las filas desplazadas fuera de la
+    /// ventana no salen: pulsarlas en su centro no caería en ellas.
+    // añadido en la 0.2.2
+    pub fn accesible(&self) -> Vec<super::FilaAccesible> {
+        use accesskit::Role;
+        use super::FilaAccesible as F;
+        let mut v = vec![F {
+            id: "interruptor".into(),
+            rol: Role::Switch,
+            nombre: "Wi-Fi".into(),
+            valor: String::new(),
+            rect: (
+                lista::ANCHO - lista::MARGEN - 4.0 - lista::INTERRUPTOR_ANCHO,
+                lista::MARGEN + (lista::CABECERA - lista::INTERRUPTOR_ALTO) / 2.0,
+                lista::INTERRUPTOR_ANCHO,
+                lista::INTERRUPTOR_ALTO,
+            ),
+            marcada: Some(self.encendida),
+            seleccionada: false,
+        }];
+        let (x0, y0, alto) = (lista::MARGEN + control::GRUPO, self.y_lista(), self.alto_lista());
+        for c in self.colocar() {
+            let y = y0 + c.y - self.desplazamiento;
+            if y < y0 || y + c.alto > y0 + alto + 0.5 {
+                continue;
+            }
+            let rect = (x0, y, lista::BALDOSA, c.alto);
+            let fila = match c.fila {
+                Fila::Seccion(_) => continue,
+                Fila::Red(i) => {
+                    let (ap, e) = (&self.aps[i], &self.entradas[i]);
+                    let mut valor = e.estado.clone();
+                    if !ap.abierta {
+                        if !valor.is_empty() {
+                            valor.push_str(", ");
+                        }
+                        valor.push_str("protegida");
+                    }
+                    F {
+                        id: format!("red:{}", ap.ssid),
+                        rol: Role::ListBoxOption,
+                        nombre: ap.ssid.clone(),
+                        valor,
+                        rect,
+                        marcada: None,
+                        seleccionada: self.señalada.actual() == Some(i),
+                    }
+                }
+                Fila::Clave => {
+                    let Some(k) = &self.clave else { continue };
+                    F {
+                        id: "clave".into(),
+                        rol: Role::PasswordInput,
+                        nombre: format!("Contraseña de {}", k.ssid),
+                        valor: format!(
+                            "{} caracteres{}",
+                            k.texto.chars().count(),
+                            if k.texto.chars().count() >= CLAVE_MINIMA {
+                                ", Intro para conectar"
+                            } else {
+                                ", mínimo 8"
+                            }
+                        ),
+                        rect,
+                        marcada: None,
+                        seleccionada: true,
+                    }
+                }
+            };
+            v.push(fila);
+        }
+        v.push(F {
+            id: "pie".into(),
+            rol: Role::Button,
+            nombre: "Ajustes de Wi-Fi".into(),
+            valor: String::new(),
+            rect: (
+                x0,
+                y0 + alto + lista::PIE_AIRE,
+                lista::BALDOSA,
+                lista::PIE_BOTON,
+            ),
+            marcada: None,
+            seleccionada: false,
+        });
+        v
+    }
+
     // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         control::tarjeta(self.contenido(false), lista::ANCHO, lista::MARGEN)
@@ -518,6 +761,7 @@ impl Red {
                         s == Seccion::Otras && self.buscando(),
                     ),
                     Fila::Red(i) => lista::fila(&self.entradas[i], self.señalada.intensidad(i)),
+                    Fila::Clave => self.campo_clave(),
                 };
                 todas = todas.push(pieza);
                 fin = c.y + c.alto;
@@ -599,15 +843,52 @@ mod tests {
         assert!(!abierta.entradas[0].candado);
     }
 
-    /// La clave de una red nueva la pide Ajustes: el shell no la maneja.
+    /// Una red protegida sin perfil abre el campo bajo ella; con menos de 8
+    /// caracteres Intro no manda nada y con 8 conecta y lo cierra.
     #[test]
-    fn una_red_protegida_sin_perfil_abre_ajustes() {
-        let mut r = con(vec![red("Vecina", 70, false, false, "WPA2")]);
-        assert!(
-            matches!(r.activar(0), Some(Accion::Lanzar(c)) if c.contains("--page wifi")),
-            "la contraseña no pasa por el shell"
+    fn una_red_protegida_sin_perfil_pide_la_clave_en_la_tarjeta() {
+        use crate::TeclaPulsada as T;
+        let mut r = con(vec![
+            red("Vecina", 70, false, false, "WPA2"),
+            red("Otra", 20, false, false, "WPA2"),
+        ]);
+        assert!(r.activar(0).is_none(), "no abre Ajustes");
+        let filas: Vec<Fila> = r.colocar().into_iter().map(|c| c.fila).collect();
+        assert_eq!(
+            filas,
+            [
+                Fila::Seccion(Seccion::Otras),
+                Fila::Red(0),
+                Fila::Clave,
+                Fila::Red(1)
+            ]
         );
-        assert!(r.pendiente.is_none(), "no se pidió nada al sistema");
+        for ch in "corta".chars() {
+            assert!(matches!(r.tecla(T::Caracter(ch)), Tecla::Consumida));
+        }
+        r.tecla(T::Intro);
+        assert!(r.pendiente.is_none(), "corta: no se pidió nada");
+        assert!(r.clave.is_some());
+        for ch in "123".chars() {
+            r.tecla(T::Caracter(ch));
+        }
+        r.tecla(T::Intro);
+        assert!(r.clave.is_none());
+        assert_eq!(r.entradas[0].estado, "Conectando…");
+        assert!(
+            matches!(r.tecla(T::Escape), Tecla::Cerrar),
+            "sin campo, Esc cierra la tarjeta"
+        );
+    }
+
+    /// Esc con el campo abierto lo cierra a él, no a la tarjeta.
+    #[test]
+    fn esc_cierra_el_campo_primero() {
+        use crate::TeclaPulsada as T;
+        let mut r = con(vec![red("Vecina", 70, false, false, "WPA2")]);
+        r.activar(0);
+        assert!(matches!(r.tecla(T::Escape), Tecla::Consumida));
+        assert!(r.clave.is_none());
     }
 
     /// Pulsar donde se dibuja cada cosa: una fila, un rótulo (que no es de
@@ -677,6 +958,10 @@ mod tests {
                 red("Cafe_Libre", 30, false, false, ""),
             ]);
             r.activar(1);
+            r.activar(3);
+            for ch in "clave123".chars() {
+                r.tecla(crate::TeclaPulsada::Caracter(ch));
+            }
             let config = crate::Config {
                 tema,
                 ..crate::Config::default()
