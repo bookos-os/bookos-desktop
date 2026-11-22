@@ -67,7 +67,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 libc = "0.2"
-libloading = "0.8"
+libloading = "0.9"
 # PipeWire, para el portal de compartir pantalla. No hay alternativa: es la
 # única forma de entregar vídeo a un navegador, a OBS o a cualquier cosa que
 # pase por `xdg-desktop-portal`.
