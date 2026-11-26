@@ -22,6 +22,7 @@ marcas de versión junto al código; desde 0.2.0 se usan
 - Accesos directos en el escritorio: el icono del original con una marca blanca de flecha abajo a la izquierda; si el original ya no está, una hoja gris con la marca naranja. Su menú ofrece Abrir, Mostrar el original, Información y Quitar el acceso directo.
 - Diálogos nuevos del escritorio: Renombrar (con el error debajo si el nombre no vale o ya existe), Información (tamaño, ubicación, fecha, con qué se abre y, en un script, el interruptor «Ejecutar como programa») y Vista rápida (imágenes PNG/JPEG/WebP, la primera página de un PDF, el principio de un texto).
 - Menú del dock como el de macOS: con varias ventanas, su lista por título con la activa marcada (pulsar una la trae delante); Nueva ventana y las acciones propias de la app (p. ej. «Nueva ventana privada»); Opciones › con Mantener en el dock y Abrir al iniciar sesión (`~/.config/autostart`); Cerrar o Cerrar todo. Con la app cerrada, sus tres archivos recientes, Abrir y Opciones ›.
+- Sesión en inglés sin textos en castellano: centro de control (No molestar sale como «Silence», que cabe en la píldora), avisos, sonido, Wi-Fi, Bluetooth, brillo, isla (temporizador, grabadora, calendario, Zenith, menú ⋯), bloqueo y su menú de apagado, Launchpad («N apps», «Folder»), calendario (días y «Today»), menús (Super, Delete, Space, Alt+Enter), compartir pantalla, proyección, captura, buscador («Settings: display»…), Buds, avisos del compositor (cuentagotas, emoji, batería baja, capturas, cámara, touchpad) los valores por defecto de dock y escritorios («Desktop N») y los nombres de lo que se crea en el escritorio («New folder»). Los nombres ya guardados en `panel.conf` y los de las capturas y su carpeta («Captura … a las …», «Imágenes/Capturas») no cambian. En castellano todo sigue igual.
 
 ## 0.2.2
 
@@ -105,6 +106,9 @@ marcas de versión junto al código; desde 0.2.0 se usan
 - Vista de escritorios: la ✕ de las ventanas es un botón redondo con fondo propio, que se ve sobre cualquier ventana y se pone rojo al señalarlo.
 - Meta+Tab y exposición: debajo de las miniaturas sale la aplicación de la ventana elegida, con icono y nombre grandes, y el título de la ventana debajo.
 - Pantalla de acceso: la contraseña se ve con los mismos puntos grandes del bloqueo y el texto del campo es algo mayor. Hora y fecha van igual en las dos pantallas.
+- Pantalla de acceso: al confirmar la contraseña o reconocer la huella aparece
+  el logo de BookOS con la barra de carga. El escritorio recoge esa composición
+  al arrancar. Las preguntas adicionales de PAM devuelven el foco al formulario.
 - Bloqueo (Meta+L): en vez de los tres puntos, batería, red y botón de apagado arriba a la derecha, como en la pantalla de acceso.
 - Zenith: al llegar la respuesta o un error, la píldora se despliega en tarjeta en su sitio, sin desaparecer y volver a crecer; minimizar y volver hacen la entrada completa en el sitio nuevo, sin teletransportarse.
 - Selector de emojis: 21 nuevos (🏳️‍⚧️ bandera trans, ⚧️, 🥀 rosa marchita, 🫶, 🥹, 🫠, 🫡, 🩷, 🩵, 🩶, 💅, 🫂, 🌷, 💐…). La bandera arcoíris pasa a Banderas y se encuentra también por «gay» y «lgtb».
@@ -223,6 +227,28 @@ los dos dedos de zoom siguen reservados a la aplicación.
   Toma el color del acento.
 - Se puede desactivar la pantalla táctil en Ajustes; sin ella, el teclado en
   pantalla se retira.
+
+- Desde el borde de abajo, un deslizamiento corto muestra el dock. Si
+  se continúa hacia arriba se abre Aplicaciones recientes con el mismo gesto.
+  Volver hacia abajo antes de soltar permite quedarse en el dock o cancelar.
+  El borde de arriba sigue mostrando el panel. Las barras se recogen tras
+  tres segundos de inactividad y se mantienen mientras esté abierto su menú.
+  El primer icono del dock y el menú del escritorio abren Launchpad.
+- En Aplicaciones recientes, un barrido horizontal recorre las tarjetas.
+  Tocar una la abre, deslizarla hacia arriba pide cerrarla y repetir el gesto
+  desde el borde inferior muestra el escritorio.
+- Arrastrar el rótulo de una tarjeta hacia un lateral prepara la pantalla
+  dividida con la otra ventana reciente disponible. Arrastrarlo hacia el
+  centro inferior recupera la ventana flotante. Las parejas comparten tarjeta.
+- Deslizar tres dedos en horizontal cambia de escritorio virtual. Al
+  mantener el dedo en el dock, en el escritorio o en una barra de título
+  del compositor se abre su menú contextual.
+- En pantalla dividida, arrastrar el divisor ajusta ambas ventanas. Un toque
+  en el divisor abre «Separar ventanas». En una ventana flotante, arrastrar
+  un borde ajusta su eje, y arrastrar una esquina inferior ajusta los dos.
+- En recientes, ← y → cambian la selección, Intro abre, Supr cierra y Esc
+  vuelve. Tab recorre Escritorio y Cerrar todo. ↑ coloca a la izquierda,
+  ↓ a la derecha y Mayús+↓ abre la ventana flotante.
 
 ## Sonidos del sistema
 

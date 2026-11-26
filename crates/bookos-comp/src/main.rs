@@ -8,6 +8,7 @@ mod ajustes;
 mod inhibir;
 mod apariencia;
 mod archivos;
+mod arranque;
 mod atenuacion;
 mod autenticar;
 mod backend;
@@ -25,6 +26,7 @@ mod drminfo;
 mod emision;
 mod emojis;
 mod escritorios;
+mod extras;
 mod fondo;
 mod fundido;
 mod esquinas;
@@ -41,15 +43,19 @@ mod metricas;
 mod miniatura_captura;
 mod multimedia;
 mod multitarea;
+mod multitarea_tactil;
 mod notificaciones;
 mod pantallas;
+mod polkit;
 mod portal;
+mod portapapeles;
 mod publicar;
 mod pw;
 mod salvapantallas;
 mod selftest;
 mod shell;
 mod state;
+mod tactil;
 mod teclado;
 mod teclas_accesibles;
 mod teclas;
@@ -114,6 +120,7 @@ fn main() -> anyhow::Result<()> {
                        Meta+Return        abrir un terminal (BOOKOS_TERMINAL, bookos-shell por defecto)\n  \
                        Ctrl+Alt+T         lo mismo\n  \
                        Meta+.             abrir o cerrar el selector de emojis\n  \
+                       Meta+,             abrir o cerrar el historial del portapapeles\n  \
                        Meta+Alt+A         asistente; mantenida, habla hasta soltarla\n  \
                        Alt+Tab            elegir aplicación por icono\n  \
                        Meta+Tab           elegir ventana por previsualización\n  \

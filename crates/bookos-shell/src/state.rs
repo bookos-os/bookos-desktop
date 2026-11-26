@@ -204,15 +204,23 @@ fn charge_limit_en(path: &Path) -> Option<u8> {
 }
 
 // 0.1.0
-fn ac_online() -> Option<bool> {
-    let dir = fs::read_dir("/sys/class/power_supply").ok()?;
-    for entrada in dir.filter_map(|e| e.ok()) {
-        let path = entrada.path();
-        if fs::read_to_string(path.join("type")).is_ok_and(|t| t.trim() == "Mains") {
-            return Some(read_num(path.join("online")) == Some(1));
+fn ac_path() -> Option<PathBuf> {
+    static CACHE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    recordar(&CACHE, || {
+        let dir = fs::read_dir("/sys/class/power_supply").ok()?;
+        for entrada in dir.filter_map(|e| e.ok()) {
+            let path = entrada.path();
+            if fs::read_to_string(path.join("type")).is_ok_and(|t| t.trim() == "Mains") {
+                return Some(path);
+            }
         }
-    }
-    None
+        None
+    })
+}
+
+// 0.1.0
+fn ac_online() -> Option<bool> {
+    Some(read_num(ac_path()?.join("online")) == Some(1))
 }
 
 impl Network {
@@ -300,13 +308,48 @@ fn recordar(
     Some(encontrada)
 }
 
+// Caché breve con invalidación si falla la lectura: evita `read_dir` y leer
+// `acpi_video0` en cada refresco, manteniendo la redetección tras suspender.
+// 0.1.0
+fn backlight_cache_slot()
+-> &'static std::sync::Mutex<Option<(PathBuf, u32, std::time::Instant)>> {
+    static CACHE: std::sync::Mutex<Option<(PathBuf, u32, std::time::Instant)>> =
+        std::sync::Mutex::new(None);
+    &CACHE
+}
+
+fn backlight_cached() -> Option<(PathBuf, u32)> {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+    let slot = backlight_cache_slot();
+    {
+        let guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((path, max, cuando)) = guard.as_ref()
+            && cuando.elapsed() < TTL
+        {
+            return Some((path.clone(), *max));
+        }
+    }
+    let path = elegir_luz(Path::new("/sys/class/backlight"), false)?;
+    let max = read_num(path.join("max_brightness")).filter(|&m| m > 0)?;
+    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some((path.clone(), max, std::time::Instant::now()));
+    Some((path, max))
+}
+
+fn invalidar_backlight_cache() {
+    let mut guard = backlight_cache_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    *guard = None;
+}
+
 // 0.1.0
 fn backlight_path() -> Option<PathBuf> {
     elegir_luz(Path::new("/sys/class/backlight"), false)
 }
 
-// No se conserva una ruta entre refrescos: el controlador puede reaparecer
-// tras suspender o cargarse después del arranque.
+// Ordena primero por tipo (`raw` antes que `platform`/ACPI) antes de tocar
+// `brightness`, evitando consultar controladores lentos que no se van a elegir.
 // 0.1.0
 fn elegir_luz(root: &Path, teclado: bool) -> Option<PathBuf> {
     let mut paths: Vec<_> = fs::read_dir(root)
@@ -317,10 +360,6 @@ fn elegir_luz(root: &Path, teclado: bool) -> Option<PathBuf> {
             !teclado
                 || p.file_name()
                     .is_some_and(|n| n.to_string_lossy().contains("kbd_backlight"))
-        })
-        .filter(|p| {
-            read_num(p.join("max_brightness")).is_some_and(|n| n > 0)
-                && read_num(p.join("brightness")).is_some()
         })
         .collect();
     paths.sort_by_key(|p| {
@@ -334,7 +373,10 @@ fn elegir_luz(root: &Path, teclado: bool) -> Option<PathBuf> {
             p.clone(),
         )
     });
-    paths.into_iter().next()
+    paths.into_iter().find(|p| {
+        read_num(p.join("max_brightness")).is_some_and(|n| n > 0)
+            && read_num(p.join("brightness")).is_some()
+    })
 }
 
 // 0.1.0
@@ -350,11 +392,7 @@ pub(crate) fn teclado_actual() -> Option<(String, u32, u32)> {
 
 // 0.1.0
 pub(crate) fn read_brightness_exact() -> Option<f64> {
-    let path = backlight_path()?;
-    let max = read_num(path.join("max_brightness"))?;
-    if max == 0 {
-        return None;
-    }
+    let (path, max) = backlight_cached()?;
     // `brightness` y no `actual_brightness`: **medido en esta máquina, leer
     // `actual_brightness` cuesta 0,512 ms y `brightness` 0,030**, diecisiete
     // veces menos. La diferencia es que el primero le pregunta al hardware por
@@ -362,7 +400,16 @@ pub(crate) fn read_brightness_exact() -> Option<f64> {
     // portátil son el mismo número salvo durante la rampa de una transición.
     // Ese medio milisegundo se pagaba en **cada** evento de udev, que llegan en
     // ráfaga al mover el brillo con la tecla.
-    let ahora = read_num(path.join("brightness"))?;
+    let ahora = match read_num(path.join("brightness")) {
+        Some(v) => v,
+        None => {
+            invalidar_backlight_cache();
+            let path = backlight_path()?;
+            let max2 = read_num(path.join("max_brightness")).filter(|&m| m > 0)?;
+            let v = read_num(path.join("brightness"))?;
+            return Some(f64::from(v.min(max2)) * 100.0 / f64::from(max2));
+        }
+    };
     Some(f64::from(ahora.min(max)) * 100.0 / f64::from(max))
 }
 

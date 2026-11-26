@@ -20,8 +20,9 @@ impl Red {
     // 0.1.0
     // modified 0.1.1 -- nace sin aviso de desconexión
     pub fn new() -> Self {
-        let dato = estado_red();
-        let senal = senal_activa();
+        let s = &bookos_system::snapshot().network;
+        let dato = estado_red(s);
+        let senal = senal_activa(s);
         let icono = icono::propio(nombre_icono(dato, senal));
         Self {
             dato,
@@ -108,8 +109,9 @@ impl Widget for Red {
     // modified 0.1.1 -- al caerse el enlace saca «Desconectado» unos segundos
     fn refrescar(&mut self) -> bool {
         let caducado = self.desconexion.caducar();
-        let fresco = estado_red();
-        let senal = senal_activa();
+        let s = &bookos_system::snapshot().network;
+        let fresco = estado_red(s);
+        let senal = senal_activa(s);
         if fresco == self.dato && nombre_icono(fresco, senal) == nombre_icono(self.dato, self.senal)
         {
             self.senal = senal;
@@ -158,8 +160,7 @@ impl Widget for Red {
 }
 
 // 0.1.0
-fn estado_red() -> Option<Network> {
-    let s = bookos_system::snapshot().network;
+fn estado_red(s: &serde_json::Value) -> Option<Network> {
     if s.is_null() {
         return None;
     }
@@ -177,8 +178,7 @@ fn estado_red() -> Option<Network> {
 
 /// La señal de la red a la que se está conectado, si la lista la trae.
 // añadido en la 0.2.0
-fn senal_activa() -> Option<u8> {
-    let s = bookos_system::snapshot().network;
+fn senal_activa(s: &serde_json::Value) -> Option<u8> {
     s["networks"]
         .as_array()?
         .iter()

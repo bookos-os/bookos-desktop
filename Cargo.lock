@@ -484,6 +484,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookos-extras"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "cosmic-text",
+ "libc",
+ "serde",
+ "serde_json",
+ "smithay-client-toolkit 0.20.0",
+ "tiny-skia",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-client",
+]
+
+[[package]]
 name = "bookos-greeter"
 version = "0.2.0"
 dependencies = [
@@ -3391,12 +3408,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0512da38f5e2b31201a93524adb8d3136276fa4fe4aafab4e1f727a82b534cc0"
 dependencies = [
  "bitflags 2.13.1",
+ "bytemuck",
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",
  "cursor-icon",
  "libc",
  "log",
  "memmap2",
+ "pkg-config",
  "rustix 1.1.4",
  "thiserror 2.0.20",
  "wayland-backend",
@@ -3408,6 +3427,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-scanner",
+ "xkbcommon",
  "xkeysym",
 ]
 
@@ -4657,6 +4677,9 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "xml-rs"

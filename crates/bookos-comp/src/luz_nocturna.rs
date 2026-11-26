@@ -288,13 +288,16 @@ pub fn alternar(state: &mut BookosComp, encender: bool) {
         // Con horario se fuerza hasta el próximo borde; ver la cabecera.
         ModoLuzNocturna::Programada => luz.forzada = Some(encender),
         ModoLuzNocturna::Apagada | ModoLuzNocturna::Encendida => {
-            luz.config.modo = if encender {
+            let nuevo = if encender {
                 ModoLuzNocturna::Encendida
             } else {
                 ModoLuzNocturna::Apagada
             };
-            if let Err(err) = bookos_shell::guardar_luz_nocturna(luz.config.modo) {
-                tracing::warn!("no se pudo guardar la luz nocturna: {err}");
+            if luz.config.modo != nuevo {
+                luz.config.modo = nuevo;
+                if let Err(err) = bookos_shell::guardar_luz_nocturna(nuevo) {
+                    tracing::warn!("no se pudo guardar la luz nocturna: {err}");
+                }
             }
         }
     }
@@ -315,17 +318,28 @@ pub fn reponer(state: &mut BookosComp) {
 /// Avanza un paso del fundido en cada fotograma mientras haya transición activa.
 // añadido en la 0.2.4
 pub fn avanzar(state: &mut BookosComp) {
-    let luz = &mut state.luz_nocturna;
-    let Some(transicion) = luz.transicion.as_ref() else {
-        return;
-    };
-    let ahora = Instant::now();
-    let kelvin = transicion.kelvin(ahora);
-    let terminada = transicion.terminada(ahora);
-    luz.aplicada = kelvin;
-    luz.pendiente = Some(multiplicadores_f64(kelvin));
-    if terminada {
-        luz.transicion = None;
+    state.luz_nocturna.avanzar_en(Instant::now());
+}
+
+impl Estado {
+    fn avanzar_en(&mut self, ahora: Instant) {
+        let Some(transicion) = self.transicion.as_ref() else {
+            return;
+        };
+        if bookos_shell::tema::efectos_reducidos() {
+            let objetivo = transicion.objetivo_kelvin;
+            self.aplicada = f64::from(objetivo);
+            self.pendiente = Some(multiplicadores(objetivo));
+            self.transicion = None;
+            return;
+        }
+        let kelvin = transicion.kelvin(ahora);
+        let terminada = transicion.terminada(ahora);
+        self.aplicada = kelvin;
+        self.pendiente = Some(multiplicadores_f64(kelvin));
+        if terminada {
+            self.transicion = None;
+        }
     }
 }
 
@@ -528,5 +542,28 @@ mod tests {
         let t = Transicion::con_efectos(6500.0, 0.0, 3000, ahora, false);
         assert!(t.terminada(ahora));
         assert_eq!(t.kelvin(ahora), 3000.0);
+    }
+
+    #[test]
+    fn efectos_reducidos_en_medio_del_fundido_remata_transicion_de_golpe() {
+        struct Restaurar(bool);
+        impl Drop for Restaurar {
+            fn drop(&mut self) {
+                bookos_shell::tema::aplicar_efectos_reducidos(self.0);
+            }
+        }
+        let _guard = Restaurar(bookos_shell::tema::efectos_reducidos());
+        bookos_shell::tema::aplicar_efectos_reducidos(false);
+
+        let ahora = Instant::now();
+        let mut estado = Estado::nuevo(LuzNocturna::default());
+        estado.transicion = Some(Transicion::nueva(6500.0, 3200, ahora));
+        assert!(estado.animando());
+
+        bookos_shell::tema::aplicar_efectos_reducidos(true);
+        estado.avanzar_en(ahora);
+        assert!(!estado.animando());
+        assert_eq!(estado.aplicada, 3200.0);
+        assert_eq!(estado.tomar_pendiente(), Some(multiplicadores(3200)));
     }
 }

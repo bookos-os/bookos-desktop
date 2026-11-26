@@ -38,7 +38,7 @@ use super::bluetooth::Bluetooth;
 use super::control;
 use super::lista;
 use super::red::Red;
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 
 const ANCHO: f32 = 352.0;
 const MARGEN: f32 = 16.0;
@@ -861,7 +861,10 @@ impl Centro {
                 medios::Nivel::SinPerdida => "Lossless".to_owned(),
                 medios::Nivel::ConPerdida => c.codec.clone(),
             }),
-            None => self.caratula_ancha.is_some().then(|| "Vídeo".to_owned()),
+            None => self
+                .caratula_ancha
+                .is_some()
+                .then(|| t("Vídeo", "Video").to_owned()),
         }
     }
 
@@ -889,7 +892,7 @@ impl Centro {
                 },
                 s.map(|s| s.aplicacion.clone()).unwrap_or_default(),
                 if self.caratula_ancha.is_some() {
-                    "Vídeo".to_owned()
+                    t("Vídeo", "Video").to_owned()
                 } else {
                     String::new()
                 },
@@ -904,7 +907,11 @@ impl Centro {
                     .unwrap_or(&o.via)
                     .to_owned(),
             ),
-            None => ("volumen-alto", "Salida".to_owned(), String::new()),
+            None => (
+                "volumen-alto",
+                t("Salida", "Output").to_owned(),
+                String::new(),
+            ),
         };
         [origen, destino]
     }
@@ -1189,7 +1196,9 @@ impl Centro {
             r
         };
         if self.musica_grande {
-            return holgada(self.rect_avance()).contains(p);
+            return !self.menu_salida
+                && self.grande_en(x, y) != Some(Zona::Calidad)
+                && holgada(self.rect_avance()).contains(p);
         }
         [Agarre::Volumen, Agarre::Brillo]
             .into_iter()
@@ -1201,6 +1210,9 @@ impl Centro {
     // añadido en la 0.2.0
     fn zona_en(&self, x: f32, y: f32) -> Option<Zona> {
         if self.musica_grande {
+            if self.menu_salida {
+                return None;
+            }
             return self.grande_en(x, y);
         }
         if self.rect_silencio().contains(Point::new(x, y)) {
@@ -2017,10 +2029,10 @@ impl Centro {
             (false, false) => "sin-red",
         };
         let estado = match (disponible, encendida, conectado) {
-            (false, ..) => "No disponible".to_owned(),
+            (false, ..) => t("No disponible", "Unavailable").to_owned(),
             (true, _, Some(donde)) => donde.to_owned(),
-            (true, true, None) => "No conectado".to_owned(),
-            (true, false, None) => "Desactivado".to_owned(),
+            (true, true, None) => t("No conectado", "Not connected").to_owned(),
+            (true, false, None) => t("Desactivado", "Off").to_owned(),
         };
         self.pildora(celda, nombre, glifo, estado, encendida && disponible)
     }
@@ -2056,7 +2068,7 @@ impl Centro {
                     s.artista.as_str()
                 },
             ),
-            None => ("No se reproduce nada", "Player"),
+            None => (t("No se reproduce nada", "Nothing playing"), "Player"),
         };
         let mando = |nombre: &'static str, px: f32| -> PanelElement<'static> {
             container(Self::glifo(nombre, px, tinta))
@@ -2115,14 +2127,14 @@ impl Centro {
         let r = self.rect_pista(cual);
         let (titulo, nivel, pequeño, grande, apagado) = match cual {
             Agarre::Brillo => (
-                "Pantalla",
+                t("Pantalla", "Display"),
                 self.brillo,
                 "brillo",
                 "brillo",
                 self.backlight.is_none(),
             ),
             _ => (
-                "Sonido",
+                t("Sonido", "Sound"),
                 self.volumen,
                 if self.silenciado || self.volumen == 0 {
                     "volumen-silencio"
@@ -2421,7 +2433,10 @@ impl Centro {
             let selector = Self::caja(
                 container(iced_widget::stack![
                     pulgar,
-                    row![opcion("Portada", 1.0 - v), opcion("Vídeo", v)],
+                    row![
+                        opcion(t("Portada", "Cover"), 1.0 - v),
+                        opcion(t("Vídeo", "Video"), v)
+                    ],
                 ])
                 .padding(4.0)
                 .into(),
@@ -2448,7 +2463,9 @@ impl Centro {
         let mut fila_textos = row![
             column![
                 text(recortar_px(
-                    s.map_or("No se reproduce nada", |s| s.titulo.as_str()),
+                    s.map_or(t("No se reproduce nada", "Nothing playing"), |s| s
+                        .titulo
+                        .as_str()),
                     ancho_textos,
                     18.0
                 ))
@@ -2857,12 +2874,14 @@ impl Centro {
                 hueco_col(),
                 self.pildora(
                     Celda::NoMolestar,
-                    "No molestar",
+                    // «Do Not Disturb» no cabe en la píldora y salía «Do Not Dis…»;
+                    // el panel de avisos, que tiene sitio, lo dice completo.
+                    t("No molestar", "Silence"),
                     "notificaciones",
                     if self.no_molestar {
-                        "Activado"
+                        t("Activado", "On")
                     } else {
-                        "Desactivado"
+                        t("Desactivado", "Off")
                     }
                     .to_owned(),
                     self.no_molestar,
@@ -2872,16 +2891,16 @@ impl Centro {
             row![
                 self.pildora(
                     Celda::Microfono,
-                    "Micrófono",
+                    t("Micrófono", "Microphone"),
                     if self.microfono_mudo {
                         "micro-silencio"
                     } else {
                         "micro"
                     },
                     if self.microfono_mudo {
-                        "Silenciado"
+                        t("Silenciado", "Muted")
                     } else {
-                        "Activo"
+                        t("Activo", "On")
                     }
                     .to_owned(),
                     self.microfono_mudo,
@@ -2973,20 +2992,20 @@ fn salidas_de_audio(audio: &serde_json::Value) -> Vec<OpcionSalida> {
             (descripcion.to_owned(), via, glifo)
         } else if bajo.contains("headphone") || puerto.contains("headphone") {
             (
-                "Auriculares con cable".to_owned(),
-                "Jack de 3,5 mm".to_owned(),
+                t("Auriculares con cable", "Wired headphones").to_owned(),
+                t("Jack de 3,5 mm", "3.5 mm jack").to_owned(),
                 "casco",
             )
         } else if bajo.contains("hdmi") {
             (
                 "HDMI / DisplayPort".to_owned(),
-                "Pantalla externa".to_owned(),
+                t("Pantalla externa", "External display").to_owned(),
                 "volumen-alto",
             )
         } else {
             (
-                "Altavoces".to_owned(),
-                "Del portátil".to_owned(),
+                t("Altavoces", "Speakers").to_owned(),
+                t("Del portátil", "Built-in").to_owned(),
                 "volumen-alto",
             )
         };
@@ -3081,6 +3100,17 @@ fn icono_de_escritorio(escritorio: &str) -> Option<crate::icono::Icono> {
     let nombre =
         crate::apps::por_app_id(escritorio).map_or_else(|| escritorio.to_owned(), |a| a.icono);
     crate::icono::cargar(&nombre)
+}
+
+impl Centro {
+    /// Vuelve a resolver el icono de la app que reproduce música tras cambiar de tema.
+    pub fn recargar_iconos(&mut self) {
+        self.app_icono = self
+            .extras
+            .escritorio
+            .as_deref()
+            .and_then(icono_de_escritorio);
+    }
 }
 
 /// Las alturas de lo que suena en grande; ver [`Centro::grande`].
@@ -3678,7 +3708,12 @@ mod tests {
         assert_eq!(
             resumen,
             [
-                ("Altavoces", "Del portátil", "volumen-alto", true),
+                (
+                    t("Altavoces", "Speakers"),
+                    t("Del portátil", "Built-in"),
+                    "volumen-alto",
+                    true
+                ),
                 (
                     "Buds3 Pro de Evelyn",
                     "Bluetooth · BASC · 24 bits",
@@ -3775,5 +3810,20 @@ mod tests {
         c.sonando.as_mut().expect("hay música").reproduciendo = false;
         c.sincronizar_reloj_avance();
         assert!(!c.barra_corriendo());
+    }
+
+    #[test]
+    fn menu_salida_abierto_no_hunde_ni_arrastra_mandos_debajo() {
+        let mut c = grande_con_flac_abierta();
+        let avance = c.rect_avance();
+        assert!(!c.arrastre_en(avance.center_x(), avance.center_y()));
+
+        let g = c.grande();
+        let play_x = MARGEN + MANDOS[2].0 + MANDOS[2].1 / 2.0;
+        let play_y = g.mandos + GRANDE_REPRODUCIR / 2.0;
+        assert_eq!(c.zona_en(play_x, play_y), None);
+        c.pulsar(play_x, play_y);
+        assert!(c.apretada.is_none(), "con menu_salida abierto no se hunde nada de debajo");
+        assert!(!c.menu_salida, "pulsar fuera del menú de salidas lo cierra");
     }
 }

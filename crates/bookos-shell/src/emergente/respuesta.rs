@@ -72,8 +72,22 @@ impl Respuesta {
                 Tecla::Consumida
             }
             T::Escape => Tecla::Cerrar,
-            T::Caracter(c) => {
+            T::BorrarTodo => {
+                self.texto.clear();
+                Tecla::Consumida
+            }
+            T::Caracter(c) if !c.is_control() => {
                 self.texto.push(c);
+                Tecla::Consumida
+            }
+            T::Pegar(texto) => {
+                for c in texto.chars() {
+                    if matches!(c, '\r' | '\n' | '\t') {
+                        self.texto.push(' ');
+                    } else if !c.is_control() {
+                        self.texto.push(c);
+                    }
+                }
                 Tecla::Consumida
             }
             T::Retroceso => {
@@ -187,5 +201,15 @@ mod tests {
         escribir(&mut r, "hol");
         assert!(matches!(r.tecla(T::Escape), Tecla::Consumida));
         assert!(matches!(r.tecla(T::Escape), Tecla::Cerrar));
+    }
+
+    #[test]
+    fn control_no_entra_y_borrar_todo_vacia_respuesta() {
+        let mut r = Respuesta::new(7, "Lumina", "Ana");
+        r.tecla(T::Caracter('h'));
+        assert!(matches!(r.tecla(T::Caracter('\x07')), Tecla::Ignorada));
+        assert_eq!(r.texto, "h");
+        assert!(matches!(r.tecla(T::BorrarTodo), Tecla::Consumida));
+        assert!(r.texto.is_empty());
     }
 }

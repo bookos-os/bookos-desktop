@@ -15,6 +15,7 @@
 //! misma proyección del frame: así da igual cómo esté girada la salida o si el
 //! framebuffer va invertido en Y (winit y udev no coinciden en eso).
 
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, RelocateRenderElement, RescaleRenderElement,
@@ -115,10 +116,115 @@ pub type Ajustada = CropRenderElement<
     RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
 >;
 
-/// Una superficie de la ventana recortada a `recorte` con `radio` de esquina,
-/// los dos en físicos de la salida.
+/// La barra de título SSD escalada a su tamaño de miniatura.
+pub type BarraEscalada = RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>;
+
+/// Elemento interior que recorta [`Redondeada`].
+pub enum Contenido {
+    Ventana(Ajustada),
+    Barra(BarraEscalada),
+}
+
+impl Element for Contenido {
+    fn id(&self) -> &Id {
+        match self {
+            Self::Ventana(e) => e.id(),
+            Self::Barra(e) => e.id(),
+        }
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        match self {
+            Self::Ventana(e) => e.current_commit(),
+            Self::Barra(e) => e.current_commit(),
+        }
+    }
+
+    fn src(&self) -> Rectangle<f64, BufferCoords> {
+        match self {
+            Self::Ventana(e) => e.src(),
+            Self::Barra(e) => e.src(),
+        }
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        match self {
+            Self::Ventana(e) => e.geometry(scale),
+            Self::Barra(e) => e.geometry(scale),
+        }
+    }
+
+    fn location(&self, scale: Scale<f64>) -> Point<i32, Physical> {
+        match self {
+            Self::Ventana(e) => e.location(scale),
+            Self::Barra(e) => e.location(scale),
+        }
+    }
+
+    fn transform(&self) -> Transform {
+        match self {
+            Self::Ventana(e) => e.transform(),
+            Self::Barra(e) => e.transform(),
+        }
+    }
+
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        match self {
+            Self::Ventana(e) => e.damage_since(scale, commit),
+            Self::Barra(e) => e.damage_since(scale, commit),
+        }
+    }
+
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        OpaqueRegions::default()
+    }
+
+    fn alpha(&self) -> f32 {
+        match self {
+            Self::Ventana(e) => e.alpha(),
+            Self::Barra(e) => e.alpha(),
+        }
+    }
+
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Ventana(e) => e.kind(),
+            Self::Barra(e) => e.kind(),
+        }
+    }
+}
+
+impl RenderElement<GlesRenderer> for Contenido {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, BufferCoords>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), GlesError> {
+        match self {
+            Self::Ventana(e) => e.draw(frame, src, dst, damage, opaque_regions),
+            Self::Barra(e) => e.draw(frame, src, dst, damage, opaque_regions),
+        }
+    }
+
+    fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        match self {
+            Self::Ventana(e) => e.underlying_storage(renderer),
+            Self::Barra(e) => e.underlying_storage(renderer),
+        }
+    }
+}
+
+/// Una superficie de la ventana (o su barra SSD) recortada a `recorte` con
+/// `radio` de esquina, los dos en físicos de la salida.
 pub struct Redondeada {
-    dentro: Ajustada,
+    dentro: Contenido,
     programa: GlesTexProgram,
     recorte: Rectangle<i32, Physical>,
     radio: f32,
@@ -133,7 +239,23 @@ impl Redondeada {
         radio: f32,
     ) -> Self {
         Self {
-            dentro,
+            dentro: Contenido::Ventana(dentro),
+            programa: esquinas.programa.clone(),
+            recorte,
+            radio,
+        }
+    }
+
+    /// Recorta la barra de título SSD con el mismo `recorte` total (barra +
+    /// cuerpo) para redondear sus esquinas superiores sin dejar muescas abajo.
+    pub fn barra(
+        dentro: BarraEscalada,
+        esquinas: &Esquinas,
+        recorte: Rectangle<i32, Physical>,
+        radio: f32,
+    ) -> Self {
+        Self {
+            dentro: Contenido::Barra(dentro),
             programa: esquinas.programa.clone(),
             recorte,
             radio,

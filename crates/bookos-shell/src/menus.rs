@@ -185,6 +185,11 @@ fn fondo(esc: &Escritorio, pegable: bool) -> Vec<Entrada> {
     }
     entradas.push(Entrada::Divisor);
     entradas.push(fila(
+        t("Abrir Launchpad", "Open Launchpad"),
+        "rejilla",
+        Accion::Launchpad,
+    ));
+    entradas.push(fila(
         t("Cambiar fondo…", "Change wallpaper…"),
         "fondo",
         Accion::Lanzar("bookos-settings --page fondos".into()),
@@ -271,7 +276,7 @@ fn cabecera(e: &Elemento, detalle: String) -> Entrada {
 fn papelera(etiqueta: &str) -> Entrada {
     Entrada::Fila(
         Fila::new(etiqueta, "papelera", Accion::EscritorioEliminarSeleccion)
-            .atajo("Supr")
+            .atajo(t("Supr", "Delete"))
             .peligro(),
     )
 }
@@ -283,7 +288,7 @@ fn fila_informacion() -> Entrada {
             "informacion",
             Accion::EscritorioInformacion,
         )
-        .atajo("Alt+Intro"),
+        .atajo(t("Alt+Intro", "Alt+Enter")),
     )
 }
 
@@ -440,7 +445,7 @@ fn elemento(esc: &Escritorio, e: &Elemento) -> Vec<Entrada> {
                     "ojo",
                     Accion::EscritorioVistaRapida,
                 )
-                .atajo("Espacio"),
+                .atajo(t("Espacio", "Space")),
             ));
             entradas.extend(abrir_con(e));
             entradas.push(fila_informacion());

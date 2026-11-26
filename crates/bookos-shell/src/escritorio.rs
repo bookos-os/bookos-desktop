@@ -89,10 +89,13 @@ impl NuevoElemento {
     /// Nombre base y extensión.
     fn nombre(self) -> (&'static str, &'static str) {
         match self {
-            Self::Carpeta => ("Nueva carpeta", ""),
-            Self::Texto => ("Nuevo documento de texto", ".txt"),
-            Self::Script => ("Nuevo script", ".sh"),
-            Self::Vacio => ("Nuevo archivo", ""),
+            Self::Carpeta => (crate::emergente::t("Nueva carpeta", "New folder"), ""),
+            Self::Texto => (
+                crate::emergente::t("Nuevo documento de texto", "New text document"),
+                ".txt",
+            ),
+            Self::Script => (crate::emergente::t("Nuevo script", "New script"), ".sh"),
+            Self::Vacio => (crate::emergente::t("Nuevo archivo", "New file"), ""),
         }
     }
 
@@ -430,6 +433,22 @@ impl Escritorio {
         true
     }
 
+    /// Vuelve a resolver los iconos de los lanzadores `.desktop` del escritorio
+    /// tras cambiar de tema o de pack de iconos.
+    pub fn recargar_iconos(&mut self) -> bool {
+        let mut cambio = false;
+        for elemento in &mut self.elementos {
+            if elemento.ruta.extension().is_some_and(|e| e == "desktop")
+                && let Some(app) = crate::apps::leer_lanzador(&elemento.ruta)
+            {
+                elemento.icono = crate::icono::cargar(&app.icono)
+                    .or_else(|| Some(icono_fichero(&elemento.ruta)));
+                cambio = true;
+            }
+        }
+        cambio
+    }
+
     /// Crea una carpeta o un archivo vacío y lo deja seleccionado.
     ///
     /// Sin escotilla propia: si no hay `~/Escritorio` —ni siquiera se ha usado
@@ -722,6 +741,15 @@ impl Escritorio {
             return false;
         };
         let celda = self.celda();
+        if !dx.is_finite()
+            || !dy.is_finite()
+            || self.columnas <= 0
+            || self.filas <= 0
+            || celda.0 <= 0.0
+            || celda.1 <= 0.0
+        {
+            return false;
+        }
         let paso = ((dx / celda.0).round() as i32, (dy / celda.1).round() as i32);
         if paso == (0, 0) {
             return false;
@@ -1612,6 +1640,7 @@ mod tests {
     /// correcta.
     #[test]
     fn crear_y_eliminar_una_carpeta_de_verdad() {
+        let carpeta = crate::emergente::t("Nueva carpeta", "New folder");
         let sufijo = format!(
             "{}-{}",
             std::process::id(),
@@ -1636,55 +1665,54 @@ mod tests {
 
         assert!(e.crear_nuevo(NuevoElemento::Carpeta, 32.0, (1440.0, 900.0)));
         assert_eq!(e.cuantos(), 1);
-        assert!(escritorio_tmp.join("Nueva carpeta").is_dir());
+        assert!(escritorio_tmp.join(carpeta).is_dir());
         assert!(
             e.elementos[0].seleccionado,
             "la carpeta recién creada queda seleccionada"
         );
 
         // Un archivo lleva el número antes de la extensión, y un script nace ejecutable.
+        let texto = crate::emergente::t("Nuevo documento de texto", "New text document");
+        let script = crate::emergente::t("Nuevo script", "New script");
         assert!(e.crear_nuevo(NuevoElemento::Texto, 32.0, (1440.0, 900.0)));
         assert!(e.crear_nuevo(NuevoElemento::Texto, 32.0, (1440.0, 900.0)));
-        assert!(
-            escritorio_tmp
-                .join("Nuevo documento de texto (2).txt")
-                .is_file()
-        );
+        assert!(escritorio_tmp.join(format!("{} (2).txt", texto)).is_file());
         assert!(e.crear_nuevo(NuevoElemento::Script, 32.0, (1440.0, 900.0)));
         {
             use std::os::unix::fs::PermissionsExt;
-            let modo = std::fs::metadata(escritorio_tmp.join("Nuevo script.sh"))
+            let modo = std::fs::metadata(escritorio_tmp.join(format!("{script}.sh")))
                 .expect("el script se acaba de crear")
                 .permissions()
                 .mode();
             assert_eq!(modo & 0o111, 0o111);
         }
-        std::fs::remove_file(escritorio_tmp.join("Nuevo documento de texto.txt")).unwrap();
-        std::fs::remove_file(escritorio_tmp.join("Nuevo documento de texto (2).txt")).unwrap();
-        std::fs::remove_file(escritorio_tmp.join("Nuevo script.sh")).unwrap();
+        std::fs::remove_file(escritorio_tmp.join(format!("{texto}.txt"))).unwrap();
+        std::fs::remove_file(escritorio_tmp.join(format!("{texto} (2).txt"))).unwrap();
+        std::fs::remove_file(escritorio_tmp.join(format!("{script}.sh"))).unwrap();
         e.releer(32.0, (1440.0, 900.0));
         assert_eq!(e.cuantos(), 1);
 
         // Una segunda no choca con el nombre de la primera.
         assert!(e.crear_nuevo(NuevoElemento::Carpeta, 32.0, (1440.0, 900.0)));
         assert_eq!(e.cuantos(), 2);
-        assert!(escritorio_tmp.join("Nueva carpeta (2)").is_dir());
+        assert!(escritorio_tmp.join(format!("{carpeta} (2)")).is_dir());
 
         for elemento in &mut e.elementos {
-            elemento.seleccionado = elemento.nombre == "Nueva carpeta";
+            elemento.seleccionado = elemento.nombre == carpeta;
         }
         assert!(e.eliminar_seleccionados(32.0, (1440.0, 900.0)));
         assert_eq!(e.cuantos(), 1, "la eliminada ya no está en la lista");
         assert!(
-            !escritorio_tmp.join("Nueva carpeta").exists(),
+            !escritorio_tmp.join(carpeta).exists(),
             "salió de donde estaba"
         );
         assert!(
-            datos_tmp.join("Trash/files/Nueva carpeta").is_dir(),
+            datos_tmp.join(format!("Trash/files/{carpeta}")).is_dir(),
             "llegó a la papelera, no se borró de verdad"
         );
-        let info = std::fs::read_to_string(datos_tmp.join("Trash/info/Nueva carpeta.trashinfo"))
-            .expect("hay .trashinfo");
+        let info =
+            std::fs::read_to_string(datos_tmp.join(format!("Trash/info/{carpeta}.trashinfo")))
+                .expect("hay .trashinfo");
         assert!(info.starts_with("[Trash Info]\n"));
         assert!(info.contains("Path="));
         assert!(info.contains("DeletionDate="));
@@ -1696,5 +1724,19 @@ mod tests {
             std::env::remove_var("BOOKOS_ESCRITORIO");
             std::env::remove_var("XDG_DATA_HOME");
         }
+    }
+
+    #[test]
+    fn soltar_con_rejilla_vacia_o_delta_no_finito_no_entra_en_panico() {
+        let mut e = Escritorio::new(32.0, (0.0, 0.0), false, Tamano::Mediano);
+        e.columnas = 0;
+        e.filas = 0;
+        e.arrastrar((100.0, 100.0));
+        assert!(!e.soltar());
+        assert!(!e.arrastrando());
+
+        let mut valid = Escritorio::new(32.0, (1920.0, 1080.0), false, Tamano::Mediano);
+        valid.arrastrar((f32::NAN, 40.0));
+        assert!(!valid.soltar());
     }
 }

@@ -29,9 +29,10 @@ impl Brillo {
     pub fn new() -> Self {
         let sensor = crate::retroiluminacion::hay_sensor_luz();
         let automatico = sensor && crate::retroiluminacion::automatico().pantalla;
-        let tercio = tercio(read_brightness());
+        let nivel = read_brightness();
+        let tercio = tercio(nivel);
         Self {
-            legible: read_brightness().is_some(),
+            legible: nivel.is_some(),
             tercio,
             automatico,
             sensor,

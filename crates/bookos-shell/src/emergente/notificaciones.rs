@@ -99,11 +99,11 @@ const AJUSTES: f32 = 32.0;
 const SANGRIA: f32 = 4.0;
 
 /// Cuánto dura el silencio, en la rejilla de dos por dos del diseño.
-const DURACIONES: &[(&str, Option<Duration>)] = &[
-    ("1 hora", Some(Duration::from_secs(3600))),
-    ("4 horas", Some(Duration::from_secs(4 * 3600))),
-    ("8 horas", Some(Duration::from_secs(8 * 3600))),
-    ("Hasta desactivarlo", None),
+const DURACIONES: &[(&str, &str, Option<Duration>)] = &[
+    ("1 hora", "1 hour", Some(Duration::from_secs(3600))),
+    ("4 horas", "4 hours", Some(Duration::from_secs(4 * 3600))),
+    ("8 horas", "8 hours", Some(Duration::from_secs(8 * 3600))),
+    ("Hasta desactivarlo", "Until turned off", None),
 ];
 
 /// De qué aviso o pila está abierto el menú ⋯.
@@ -291,6 +291,8 @@ impl Notificaciones {
                 self.menu = None;
             }
         }
+        self.todos
+            .retain(|app| self.lista.iter().any(|n| &n.app == app));
         self.desplazamiento = self.desplazamiento.min(self.maximo());
     }
 
@@ -317,7 +319,7 @@ impl Notificaciones {
     fn botones(notif: &Notificacion) -> Vec<(String, String)> {
         let mut botones: Vec<_> = Vec::new();
         if notif.acciones.iter().any(|a| a.clave == "default") {
-            botones.push(("default".into(), "Abrir".into()));
+            botones.push(("default".into(), super::t("Abrir", "Open").into()));
         }
         botones.extend(
             notif
@@ -680,7 +682,8 @@ impl Notificaciones {
                 let app = &grupos[g].app;
                 let derecha = ANCHO_TARJETA - 4.0;
                 let cerrar = derecha - BTN;
-                let plegar_ancho = crate::widget::ancho_de("Mostrar menos", 12.0) + 16.0;
+                let plegar_ancho =
+                    crate::widget::ancho_de(super::t("Mostrar menos", "Show less"), 12.0) + 16.0;
                 let abrir_ancho = crate::widget::ancho_de(app, 12.0) + 14.0 + 16.0;
                 if dx >= cerrar {
                     Some(Zona::BorrarGrupo(g))
@@ -789,7 +792,7 @@ impl Notificaciones {
     /// «Borrar», pegado al borde derecho.
     // 0.1.0
     fn rect_borrar(&self) -> Rectangle {
-        let ancho = crate::widget::ancho_de("Borrar", 13.0) + 28.0;
+        let ancho = crate::widget::ancho_de(super::t("Borrar", "Clear"), 13.0) + 28.0;
         Rectangle {
             x: lista::ANCHO - lista::MARGEN - SANGRIA - ancho,
             y: lista::MARGEN + (lista::CABECERA - AJUSTES) / 2.0,
@@ -876,7 +879,7 @@ impl Notificaciones {
             self.duracion = i;
             // Elegir una duración enciende el silencio: nadie pulsa «4 horas»
             // para dejarlo apagado.
-            self.silencio = Some((Instant::now(), DURACIONES[i].1));
+            self.silencio = Some((Instant::now(), DURACIONES[i].2));
             self.interruptor.ir_a(1.0);
             return None;
         }
@@ -884,7 +887,7 @@ impl Notificaciones {
             self.silencio = if self.silenciado() {
                 None
             } else {
-                Some((Instant::now(), DURACIONES[self.duracion].1))
+                Some((Instant::now(), DURACIONES[self.duracion].2))
             };
             self.interruptor
                 .ir_a(f32::from(u8::from(self.silenciado())));
@@ -1022,7 +1025,13 @@ impl Notificaciones {
             s.mostrar_aviso(nueva);
         };
         match tecla {
-            T::Escape => Tecla::Cerrar,
+            T::Escape => {
+                if self.menu.take().is_some() {
+                    Tecla::Consumida
+                } else {
+                    Tecla::Cerrar
+                }
+            }
             T::Arriba | T::Abajo => {
                 if orden.is_empty() {
                     return Tecla::Ignorada;
@@ -1345,7 +1354,7 @@ impl Notificaciones {
                             },
                             ..Default::default()
                         }),
-                    text("Urgente")
+                    text(super::t("Urgente", "Urgent"))
                         .size(11.0)
                         .font(control::peso(Weight::Semibold))
                         .color(tema::texto()),
@@ -1496,7 +1505,9 @@ impl Notificaciones {
             )
             .padding(Padding::ZERO.left(8.0)),
             Space::new().width(Length::Fill),
-            text("Mostrar menos").size(12.0).color(tema::texto2()),
+            text(super::t("Mostrar menos", "Show less"))
+                .size(12.0)
+                .color(tema::texto2()),
             Space::new().width(Length::Fixed(4.0)),
             container(Self::glifo("cerrar", 11.0, tema::texto2()))
                 .width(Length::Fixed(BTN))
@@ -1556,7 +1567,8 @@ impl Notificaciones {
     // 0.1.0
     // modified 0.2.1 -- píldoras: la elegida, la tinta del tema con su contraste
     fn boton_duracion(&self, i: usize) -> PanelElement<'_> {
-        let (etiqueta, _) = DURACIONES[i];
+        let (es, en, _) = DURACIONES[i];
+        let etiqueta = super::t(es, en);
         let elegido = self.duracion == i && self.silenciado();
         let señalado = self.señalada.intensidad(i);
         let (fondo, color, peso) = if elegido {
@@ -1616,19 +1628,27 @@ impl Notificaciones {
                 ..Default::default()
             });
         let estado = if self.silenciado() {
-            match DURACIONES[self.duracion].1 {
-                None => "Activado hasta desactivarlo".to_string(),
-                Some(_) => format!("Activado durante {}", DURACIONES[self.duracion].0),
+            let (es, en, cuanto) = DURACIONES[self.duracion];
+            match (cuanto, super::t("es", "en") == "es") {
+                (None, _) => {
+                    super::t("Activado hasta desactivarlo", "On until turned off").to_string()
+                }
+                (Some(_), true) => format!("Activado durante {es}"),
+                (Some(_), false) => format!("On for {en}"),
             }
         } else {
-            "Las notificaciones solo se guardan aquí".to_string()
+            super::t(
+                "Las notificaciones solo se guardan aquí",
+                "Notifications are only kept here",
+            )
+            .to_string()
         };
         container(
             row![
                 disco,
                 Space::new().width(Length::Fixed(12.0)),
                 container(column![
-                    text("No molestar")
+                    text(super::t("No molestar", "Do Not Disturb"))
                         .size(14.0)
                         .font(control::peso(Weight::Medium))
                         .color(tema::texto()),
@@ -1690,7 +1710,7 @@ impl Notificaciones {
                 )
             };
             container(
-                text("Borrar")
+                text(super::t("Borrar", "Clear"))
                     .size(13.0)
                     .font(control::peso(Weight::Medium))
                     .color(tinta),
@@ -1709,7 +1729,7 @@ impl Notificaciones {
         };
         let cabecera = container(
             row![
-                control::titulo("Notificaciones"),
+                control::titulo(super::t("Notificaciones", "Notifications")),
                 Space::new().width(Length::Fill),
                 ajustes,
                 Space::new().width(Length::Fixed(8.0)),
@@ -1725,14 +1745,14 @@ impl Notificaciones {
         let cuerpo: PanelElement<'_> = if vacia {
             container(
                 column![
-                    text("No hay notificaciones")
+                    text(super::t("No hay notificaciones", "No notifications"))
                         .size(15.0)
                         .font(control::peso(Weight::Semibold))
                         .color(tema::texto()),
                     text(if self.silenciado() {
-                        "Las nuevas se guardan aquí."
+                        super::t("Las nuevas se guardan aquí.", "New ones are kept here.")
                     } else {
-                        "Estás al día."
+                        super::t("Estás al día.", "You're all caught up.")
                     })
                     .size(12.0)
                     .color(tema::texto2()),
@@ -1779,10 +1799,14 @@ impl Notificaciones {
                     Fila::Mas(g) => {
                         let resto = grupos[g].idxs.len() - POR_GRUPO;
                         container(
-                            text(format!("Mostrar {resto} más"))
-                                .size(12.0)
-                                .font(control::peso(Weight::Medium))
-                                .color(tema::texto2()),
+                            text(if super::t("es", "en") == "es" {
+                                format!("Mostrar {resto} más")
+                            } else {
+                                format!("Show {resto} more")
+                            })
+                            .size(12.0)
+                            .font(control::peso(Weight::Medium))
+                            .color(tema::texto2()),
                         )
                         .width(Length::Fixed(ANCHO_TARJETA))
                         .height(Length::Fixed(MAS))
@@ -1825,9 +1849,12 @@ impl Notificaciones {
                 .push(Space::new().height(Length::Fixed(6.0)))
                 .push(
                     container(
-                        text("Las urgentes siguen sonando.")
-                            .size(11.0)
-                            .color(tema::texto2()),
+                        text(super::t(
+                            "Las urgentes siguen sonando.",
+                            "Urgent ones still make a sound.",
+                        ))
+                        .size(11.0)
+                        .color(tema::texto2()),
                     )
                     .padding([0, 4])
                     .height(Length::Fixed(18.0))
@@ -2130,10 +2157,10 @@ mod tests {
         assert_eq!(
             etiquetas,
             [
-                "Abrir Chat",
-                "Silenciar Chat",
-                "Ajustes de notificaciones…",
-                "Borrar"
+                format!("{} Chat", crate::t("Abrir", "Open")),
+                format!("{} Chat", crate::t("Silenciar", "Mute")),
+                crate::t("Ajustes de notificaciones…", "Notification settings…").to_string(),
+                crate::t("Borrar", "Clear").to_string(),
             ]
         );
         let (xm, ym) = centro(&n, Fila::Menu);
@@ -2330,5 +2357,28 @@ mod tests {
                 .iter()
                 .any(|(op, t)| *op == Opcion::Silenciar && (t.contains("Activar") || t.contains("Unmute")))
         );
+    }
+
+    #[test]
+    fn escape_cierra_menu_antes_que_el_emergente_y_actualizar_limpia_todos() {
+        let mut notif = Notificaciones::new();
+        let n = Notificacion::nueva(
+            7,
+            "Discord".into(),
+            "Hola".into(),
+            "Mundo".into(),
+            "discord",
+            false,
+        );
+        notif.actualizar(vec![n]);
+        notif.todos.push("Discord".into());
+        notif.menu = Some(Menu::Aviso(7));
+
+        assert!(matches!(notif.tecla(crate::TeclaPulsada::Escape), Tecla::Consumida));
+        assert!(notif.menu.is_none());
+        assert!(matches!(notif.tecla(crate::TeclaPulsada::Escape), Tecla::Cerrar));
+
+        notif.actualizar(Vec::new());
+        assert!(notif.todos.is_empty());
     }
 }

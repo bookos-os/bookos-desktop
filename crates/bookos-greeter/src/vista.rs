@@ -1,4 +1,6 @@
 use bookos_shell::bloqueo::{self, Peticion};
+use bookos_shell::carga_sesion;
+use bookos_shell::confirmacion::Confirmacion;
 use bookos_shell::{Icono, Link, Network, icono, tema};
 use iced::font::{Family, Weight};
 use iced::widget::{
@@ -8,7 +10,10 @@ use iced::{Border, Center, Color, Element, Fill, Font, Left, Padding, Right};
 
 use crate::sistema::{DISTRIBUCIONES, Idioma};
 use crate::usuarios::Persona;
-use crate::{Acceso, Estado, Foco, Mensaje, Operacion, Panel, SACUDIDA, TipoEntrada, lente};
+use crate::{
+    Acceso, CargaSesion, Estado, FaseCarga, Foco, Mensaje, Operacion, Panel, SACUDIDA, TipoEntrada,
+    lente,
+};
 
 /// Lo que se ve mientras llega el fondo: el mismo casi negro que el compositor
 /// pone en los monitores sin imagen durante el bloqueo.
@@ -21,7 +26,16 @@ const AVATAR_FILA: f32 = 44.0;
 const MARGEN: f32 = 28.0;
 const BOTON_ESTADO: f32 = 32.0;
 const ICONO_ESTADO: f32 = 20.0;
-const ANCHO_PANEL: f32 = 296.0;
+/// Ancho y márgenes de las tarjetas emergentes del escritorio (`emergente::{energia,lista}.rs`).
+const ANCHO_PANEL: f32 = 336.0;
+const MARGEN_PANEL: f32 = 16.0;
+const INTERIOR_PANEL: f32 = ANCHO_PANEL - MARGEN_PANEL * 2.0;
+const GRUPO_PANEL: f32 = 6.0;
+const BALDOSA_PANEL: f32 = INTERIOR_PANEL - GRUPO_PANEL * 2.0;
+const CAPSULA_PAD: f32 = 6.0;
+
+const RAYO_BATERIA: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z"/></svg>"##;
+const AVISO_BATERIA: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>"##;
 
 // Macizos y no de trazo, como los del resto del shell: sobre una foto, un
 // trazo de 1,5 se pierde. Wi-Fi y encendido son los `solid` de Heroicons de
@@ -35,6 +49,16 @@ type Elemento<'a> = Element<'a, Mensaje>;
 // 0.1.1
 fn blanco(a: f32) -> Color {
     Color { a, ..Color::WHITE }
+}
+
+/// Tinta adaptada al tema actual sobre las superficies (`fondo_campo`), igual que `bloqueo.rs`.
+fn tinta_campo(a: f32) -> Color {
+    tema::alfa(bloqueo::tinta_campo(), a)
+}
+
+/// Fondo traslúcido adaptado al tema actual (`bloqueo::fondo_campo`).
+fn fondo_campo(a: f32) -> Color {
+    tema::alfa(bloqueo::fondo_campo(), a)
 }
 
 // 0.1.1
@@ -71,6 +95,212 @@ fn propio<'a>(nombre: &str, lado: f32, color: Color) -> Elemento<'a> {
     match icono::propio(nombre) {
         Some(icono) => pictograma(&icono, lado, lado, Some(color)),
         None => Space::new().width(lado).height(lado).into(),
+    }
+}
+
+fn solido<'a>(nombre: &str, lado: f32, color: Color) -> Elemento<'a> {
+    match icono::propio_solido(nombre) {
+        Some(icono) => pictograma(&icono, lado, lado, Some(color)),
+        None => propio(nombre, lado, color),
+    }
+}
+
+fn encendido_colores() -> (Color, Color) {
+    let acento = tema::acento();
+    if tema::es_claro() || tema::contraste(Color::WHITE, acento) < 3.0 {
+        (acento, tema::sobre_acento())
+    } else {
+        (Color::WHITE, acento)
+    }
+}
+
+/// Título de tarjeta de escritorio (`emergente::control::titulo`).
+fn titulo_panel<'a>(texto: &'a str, u: f32, alfa: f32) -> Elemento<'a> {
+    text(texto)
+        .size(17.0 * u)
+        .font(peso(Weight::Bold))
+        .color(tema::alfa(tema::texto(), alfa))
+        .into()
+}
+
+/// Grupo gris redondeado dentro de una tarjeta (`emergente::lista::grupo`).
+fn grupo_panel<'a>(contenido: Elemento<'a>, u: f32, alfa: f32) -> Elemento<'a> {
+    container(contenido)
+        .width(INTERIOR_PANEL * u)
+        .padding(GRUPO_PANEL * u)
+        .style(move |_| container::Style {
+            background: Some(tema::alfa(tema::superficie_en_tarjeta(), alfa).into()),
+            border: Border {
+                radius: (tema::R_TARJETA * u).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Selector segmentado con píldora deslizante (`emergente::energia::selector`).
+fn capsula_segmentada<'a>(
+    opciones: Vec<(&'a str, Mensaje)>,
+    posicion: f32,
+    alto_capsula: f32,
+    u: f32,
+    alfa: f32,
+) -> Elemento<'a> {
+    let n = opciones.len().max(1);
+    let ancho_seg = (INTERIOR_PANEL - CAPSULA_PAD * 2.0) / n as f32;
+    let alto_pulgar = alto_capsula - CAPSULA_PAD * 2.0;
+
+    let pista = container(Space::new())
+        .width(INTERIOR_PANEL * u)
+        .height(alto_capsula * u)
+        .style(move |_| container::Style {
+            background: Some(tema::alfa(tema::superficie_en_tarjeta(), alfa).into()),
+            border: Border {
+                radius: (alto_capsula * 0.5 * u).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+    let pulgar_color = tema::texto();
+    let pulgar = container(Space::new())
+        .width(ancho_seg * u)
+        .height(alto_pulgar * u)
+        .style(move |_| container::Style {
+            background: Some(tema::alfa(pulgar_color, alfa).into()),
+            border: Border {
+                radius: (alto_pulgar * 0.5 * u).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+    let pulgar_pos = container(pulgar)
+        .width(INTERIOR_PANEL * u)
+        .height(alto_capsula * u)
+        .padding(Padding {
+            left: (CAPSULA_PAD + posicion * ancho_seg).max(0.0) * u,
+            top: CAPSULA_PAD * u,
+            ..Padding::ZERO
+        });
+
+    let tinta_elegido = tema::tinta_sobre(pulgar_color);
+    let mut fila = row![];
+    for (i, (etiqueta, msg)) in opciones.into_iter().enumerate() {
+        let elegido = (1.0 - (posicion - i as f32).abs()).clamp(0.0, 1.0);
+        let color = tema::alfa(tema::mezclar(tema::texto2(), tinta_elegido, elegido), alfa);
+        let font = peso(if elegido > 0.5 {
+            Weight::Semibold
+        } else {
+            Weight::Medium
+        });
+        fila = fila.push(
+            button(
+                container(
+                    text(etiqueta)
+                        .size(13.0 * u)
+                        .font(font)
+                        .color(color),
+                )
+                .width(ancho_seg * u)
+                .height(alto_capsula * u)
+                .center_x(ancho_seg * u)
+                .center_y(alto_capsula * u),
+            )
+            .width(ancho_seg * u)
+            .height(alto_capsula * u)
+            .padding(0)
+            .on_press(msg)
+            .style(|_, _| sin_fondo()),
+        );
+    }
+
+    Stack::new()
+        .push(pista)
+        .push(pulgar_pos)
+        .push(
+            container(fila)
+                .width(INTERIOR_PANEL * u)
+                .height(alto_capsula * u)
+                .padding(Padding {
+                    left: CAPSULA_PAD * u,
+                    ..Padding::ZERO
+                }),
+        )
+        .into()
+}
+
+/// Interruptor deslizante de escritorio (`emergente::lista::interruptor`).
+fn interruptor_panel<'a>(avance: f32, u: f32, alfa: f32, msg: Mensaje) -> Elemento<'a> {
+    let ancho = 46.0;
+    let alto = 28.0;
+    let lado = alto - 6.0;
+    let bolita = container(Space::new())
+        .width(lado * u)
+        .height(lado * u)
+        .style(move |_| container::Style {
+            background: Some(Color {
+                a: alfa,
+                ..Color::WHITE
+            }
+            .into()),
+            border: Border {
+                radius: (lado * 0.5 * u).into(),
+                ..Default::default()
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.2 * alfa),
+                offset: iced::Vector::new(0.0, 1.0 * u),
+                blur_radius: 3.0 * u,
+            },
+            ..Default::default()
+        });
+    let recorrido = ((ancho - alto) * avance).max(0.0) * u;
+    let pista = container(
+        row![Space::new().width(recorrido), bolita].align_y(Center),
+    )
+    .width(ancho * u)
+    .height(alto * u)
+    .padding(3.0 * u)
+    .style(move |_| container::Style {
+        background: Some(
+            tema::alfa(
+                tema::mezclar(
+                    tema::control_apagado(),
+                    tema::acento(),
+                    avance.clamp(0.0, 1.0),
+                ),
+                alfa,
+            )
+            .into(),
+        ),
+        border: Border {
+            radius: (alto * 0.5 * u).into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    button(pista)
+        .padding(0)
+        .on_press(msg)
+        .style(|_, _| sin_fondo())
+        .into()
+}
+
+fn nivel_senal(senal: u8) -> usize {
+    match senal {
+        67.. => 2,
+        34..=66 => 1,
+        _ => 0,
+    }
+}
+
+fn duracion_bateria(min: u32) -> String {
+    match (min / 60, min % 60) {
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
     }
 }
 
@@ -170,7 +400,7 @@ fn separador_panel<'a>(ancho: f32, u: f32, alfa: f32) -> Elemento<'a> {
         container(Space::new().height(u.round()))
             .width(ancho * u)
             .style(move |_| container::Style {
-                background: Some(blanco(0.12 * alfa).into()),
+                background: Some(tinta_campo(0.12 * alfa).into()),
                 ..Default::default()
             }),
     )
@@ -217,8 +447,10 @@ impl Acceso {
 
     // 0.1.1
     pub fn vista(&self) -> Elemento<'_> {
-        let entrada =
-            tema::C_ENTRADA.eval(tema::avance(self.cambio_desde.elapsed(), tema::D_PAGINA));
+        if let Some(carga) = &self.carga_sesion {
+            return self.carga(carga);
+        }
+        let [reloj_avance, entrada, estado_avance] = self.entradas();
         let mut capas = Stack::new().width(Fill).height(Fill);
         if let Some(fondo) = &self.fondo {
             capas = capas.push(column(fondo.losas.iter().map(|fila| {
@@ -232,13 +464,13 @@ impl Acceso {
                 .into()
             })));
         }
-        capas = capas.push(self.reloj()).push(if self.en_lista() {
+        capas = capas.push(self.reloj(reloj_avance)).push(if self.en_lista() {
             self.lista_de_usuarios(entrada)
         } else {
             self.bloque_de_acceso(entrada)
         });
-        capas = capas.push(self.fila_de_estado());
-        let abierto = self.menu.valor();
+        capas = capas.push(self.fila_de_estado(estado_avance));
+        let abierto = self.menu_avance();
         if abierto > 0.001 {
             let panel = self
                 .panel_abierto
@@ -251,6 +483,24 @@ impl Acceso {
                 )
                 .push(self.panel_emergente(panel, abierto));
         }
+        if let Some((peticion, aceptar)) = self.confirmacion {
+            capas = capas.push(self.confirmacion_energia(peticion, aceptar));
+        }
+        let velo = self.velo_entrada();
+        if velo > 0.002 {
+            capas = capas.push(
+                container(Space::new().width(Fill).height(Fill)).style(move |_| container::Style {
+                    background: Some(Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: velo,
+                    }
+                    .into()),
+                    ..Default::default()
+                }),
+            );
+        }
         container(capas)
             .style(|_| container::Style {
                 background: Some(FONDO.into()),
@@ -259,16 +509,87 @@ impl Acceso {
             .into()
     }
 
-    /// Hora y fecha, en el mismo orden y blanco que el bloqueo: al entrar y al
-    /// bloquear es la misma pantalla.
+    fn carga<'a>(&'a self, carga: &CargaSesion) -> Elemento<'a> {
+        let u = self.escala;
+        let lado = carga_sesion::LOGO as f32 * u;
+        let ancho = carga_sesion::ANCHO_BARRA as f32 * u;
+        let alto_barra = carga_sesion::ALTO_BARRA as f32 * u;
+        let reducidos = tema::efectos_reducidos();
+        let (progreso, pulso) = if reducidos {
+            (carga_sesion::PROGRESO_REDUCIDO, 1.0)
+        } else {
+            // Solo pulsa la tinta. La barra mantiene el mismo tramo que la primera
+            // imagen de KMS y no representa un porcentaje de autenticación.
+            let periodo = 4.0 * tema::D_TEMA.as_secs_f32();
+            let t = carga.desde.elapsed().as_secs_f32() * std::f32::consts::TAU / periodo;
+            (carga_sesion::PROGRESO_INICIAL, 0.88 + 0.12 * t.cos())
+        };
+        let pildora = |ancho, [r, g, b, a]: [u8; 4], pulso| {
+            container(Space::new())
+                .width(ancho)
+                .height(alto_barra)
+                .style(move |_| container::Style {
+                    background: Some(
+                        Color::from_rgba8(r, g, b, f32::from(a) / 255.0 * pulso).into(),
+                    ),
+                    border: Border {
+                        radius: tema::R_PILL.into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                })
+        };
+        let barra = Stack::new()
+            .width(ancho)
+            .height(alto_barra)
+            .push(pildora(ancho, carga_sesion::PISTA, 1.0))
+            .push(pildora(ancho * progreso, carga_sesion::RELLENO, pulso));
+        let estado = match &self.estado {
+            Estado::Ocupado(Operacion::Iniciar) => {
+                self.idioma.t("Iniciando sesión…", "Signing in…")
+            }
+            _ if carga.fase == FaseCarga::ArranquePendiente => {
+                self.idioma.t("Iniciando sesión…", "Signing in…")
+            }
+            Estado::Aviso(aviso) => aviso.as_str(),
+            _ => self.idioma.t("Comprobando el acceso…", "Checking sign-in…"),
+        };
+        let separacion = carga_sesion::SEPARACION as f32 * u;
+        let desfase = carga_sesion::DESFASE_Y as f32 * u;
+        let emblema = column![
+            bookos_shell::marca::ver(lado).map(|()| Mensaje::Fotograma),
+            alto(separacion),
+            barra,
+        ]
+        .align_x(Center)
+        .padding(Padding::default().bottom(2.0 * desfase));
+        // Los avisos de PAM pueden ocupar varias líneas sin desplazar el logo
+        // que recogerá el compositor al relevar al greeter.
+        let y_texto =
+            (self.pantalla.height + lado + separacion + alto_barra) / 2.0 - desfase + 16.0 * u;
+        let texto = container(text(estado).size(tema::T_CUERPO * u).color(Color::WHITE))
+            .center_x(Fill)
+            .padding([0.0, 16.0 * u]);
+        let capas = Stack::new()
+            .push(container(emblema).center(Fill))
+            .push(column![alto(y_texto), texto].width(Fill));
+        container(capas)
+            .style(|_| container::Style {
+                background: Some(Color::BLACK.into()),
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// Hora y fecha, en el mismo orden, blanco y entrada escalonada que el bloqueo.
     // modificado en la 0.2.0 -- antes la fecha iba encima y con el tono de la paleta.
     // 0.1.1
-    fn reloj(&self) -> Elemento<'_> {
+    fn reloj(&self, alfa: f32) -> Elemento<'_> {
         let (u, config) = (self.escala, self.config());
         let familia = Family::Name(config.reloj_fuente.familia());
-        let tinta = Color::WHITE;
+        let tinta = blanco(alfa);
         let mut reloj = column![
-            alto(self.pantalla.height * config.reloj_y),
+            alto(self.pantalla.height * config.reloj_y + (1.0 - alfa) * 22.0 * u),
             text(&self.hora)
                 .size(config.reloj_tamano * u)
                 .font(Font {
@@ -289,7 +610,7 @@ impl Acceso {
                         weight: Weight::Medium,
                         ..Font::DEFAULT
                     })
-                    .color(tema::alfa(tinta, 0.75))
+                    .color(blanco(0.75 * alfa))
                     .width(Fill)
                     .align_x(Center),
             );
@@ -332,7 +653,7 @@ impl Acceso {
     }
 
     // 0.1.1
-    fn fila_de_estado(&self) -> Elemento<'_> {
+    fn fila_de_estado(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
         let lado = ICONO_ESTADO * u;
         let etiqueta = |texto: &str| {
@@ -340,7 +661,7 @@ impl Acceso {
                 texto.to_string(),
                 (13.0 * u).round(),
                 peso(Weight::Semibold),
-                1.0,
+                alfa,
             )
         };
 
@@ -350,7 +671,7 @@ impl Acceso {
                 self.boton_estado(
                     row![
                         etiqueta(distribucion),
-                        con_sombra(&self.tecla, lado, 1.0, u)
+                        con_sombra(&self.tecla, lado, alfa, u)
                     ]
                     .spacing(6.0 * u)
                     .align_y(Center)
@@ -367,7 +688,7 @@ impl Acceso {
                 text(cifra)
                     .size((13.0 * u).round())
                     .font(peso(Weight::Semibold))
-                    .color(*tinta)
+                    .color(tema::alfa(*tinta, alfa))
                     .into()
             };
             fila = fila.push(
@@ -385,15 +706,15 @@ impl Acceso {
             Some(Network {
                 kind: Link::Cable,
                 up: true,
-            }) => propio("cable", lado, Color::WHITE),
+            }) => propio("cable", lado, blanco(alfa)),
             // Sin red son los mismos arcos apagados: un icono tachado más en
             // la fila llama más la atención que el dato que da.
-            Some(Network { up: true, .. }) => con_sombra(&self.wifi, lado, 1.0, u),
-            Some(Network { up: false, .. }) | None => con_sombra(&self.wifi, lado, 0.35, u),
+            Some(Network { up: true, .. }) => con_sombra(&self.wifi, lado, alfa, u),
+            Some(Network { up: false, .. }) | None => con_sombra(&self.wifi, lado, 0.35 * alfa, u),
         };
         fila = fila.push(self.boton_estado(icono_red, Panel::Red, true));
         fila = fila.push(self.boton_estado(
-            con_sombra(&self.encendido, lado, 1.0, u),
+            con_sombra(&self.encendido, lado, alfa, u),
             Panel::Energia,
             true,
         ));
@@ -408,23 +729,41 @@ impl Acceso {
     fn panel_emergente(&self, panel: Panel, avance: f32) -> Elemento<'_> {
         let u = self.escala;
         let alfa = avance.clamp(0.0, 1.0);
+        let escritorio = !matches!(panel, Panel::Energia);
         let (contenido, ancho) = match panel {
             Panel::Energia => (self.menu_de_energia(alfa), bloqueo::ANCHO_MENU),
             Panel::Idioma => (self.menu_de_idioma(alfa), ANCHO_PANEL),
             Panel::Bateria => (self.menu_de_bateria(alfa), ANCHO_PANEL),
             Panel::Red => (self.menu_de_red(alfa), ANCHO_PANEL),
         };
+        let borde = tema::borde();
+        let color_borde = tema::alfa(borde, borde.a * alfa);
         let tarjeta = container(contenido)
             .width(ancho * u)
+            .padding(if escritorio { MARGEN_PANEL * u } else { 0.0 })
             .clip(true)
-            .style(move |_| container::Style {
-                background: Some(tema::alfa(bloqueo::FONDO_CAMPO, 0.94 * alfa).into()),
-                border: Border {
-                    radius: (tema::R_TARJETA * u).into(),
-                    width: u.round(),
-                    color: blanco(0.12 * alfa),
-                },
-                ..Default::default()
+            .style(move |_| {
+                if escritorio {
+                    container::Style {
+                        background: Some(tema::alfa(tema::card(), alfa).into()),
+                        border: Border {
+                            radius: (tema::R_POPOVER * u).into(),
+                            width: u.round().max(1.0),
+                            color: color_borde,
+                        },
+                        ..Default::default()
+                    }
+                } else {
+                    container::Style {
+                        background: Some(fondo_campo(0.94 * alfa).into()),
+                        border: Border {
+                            radius: (tema::R_TARJETA * u).into(),
+                            width: if tema::es_claro() { u.round() } else { 0.0 },
+                            color: color_borde,
+                        },
+                        ..Default::default()
+                    }
+                }
             });
         // El clic dentro de la tarjeta no debe cerrar el emergente.
         let protegida = mouse_area(tarjeta).on_press(Mensaje::Fotograma);
@@ -432,7 +771,7 @@ impl Acceso {
             .width(Fill)
             .align_x(Right)
             .padding(Padding {
-                top: (MARGEN + BOTON_ESTADO + 6.0 - (1.0 - avance) * 18.0) * u,
+                top: ((MARGEN + BOTON_ESTADO + 6.0 - (1.0 - avance) * 18.0) * u).max(0.0),
                 right: (MARGEN - (BOTON_ESTADO - ICONO_ESTADO) / 2.0) * u,
                 ..Padding::ZERO
             })
@@ -442,44 +781,225 @@ impl Acceso {
     // 0.1.1
     fn menu_de_idioma(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
-        let acento = self.acento();
-        let sobre = self.sobre_acento();
-        let tinta = blanco(alfa);
-        let sub = blanco(0.55 * alfa);
+        let sub = tema::alfa(tema::texto2(), alfa);
+        let texto_principal = tema::alfa(tema::texto(), alfa);
+        let (disco_activo, glifo_activo) = encendido_colores();
 
-        // Selector segmentado de idioma (Español / English).
-        let mut fila_idiomas = row![].spacing(6.0 * u);
-        for idioma in Idioma::TODOS {
-            let activo = self.idioma == idioma;
-            let color_txt = if activo {
-                tema::alfa(sobre, alfa)
-            } else {
-                blanco(0.82 * alfa)
-            };
-            fila_idiomas = fila_idiomas.push(
-                button(
-                    container(
-                        text(idioma.etiqueta())
-                            .size(13.0 * u)
-                            .font(peso(Weight::Semibold))
-                            .color(color_txt),
-                    )
-                    .center_x(Fill)
-                    .center_y(30.0 * u),
+        let cabecera = container(
+            row![
+                titulo_panel(self.idioma.t("Idioma y teclado", "Language & keyboard"), u, alfa),
+                Space::new().width(Fill),
+                container(
+                    text("Alt + Shift")
+                        .size(11.0 * u)
+                        .font(peso(Weight::Semibold))
+                        .color(sub),
                 )
-                .width(Fill)
-                .padding(0)
-                .on_press(Mensaje::ElegirIdioma(idioma))
-                .style(move |_, estado| button::Style {
-                    background: Some(if activo {
-                        tema::alfa(acento, alfa).into()
-                    } else if estado != button::Status::Active {
-                        blanco(0.14 * alfa).into()
-                    } else {
-                        blanco(0.07 * alfa).into()
-                    }),
+                .height(20.0 * u)
+                .center_y(20.0 * u)
+                .padding([0.0, 8.0 * u])
+                .style(move |_| container::Style {
+                    background: Some(tema::alfa(tema::superficie_en_tarjeta(), alfa).into()),
                     border: Border {
-                        radius: (8.0 * u).into(),
+                        radius: (tema::R_CHIP * u).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            ]
+            .align_y(Center),
+        )
+        .width(INTERIOR_PANEL * u)
+        .height(32.0 * u)
+        .center_y(32.0 * u)
+        .padding([0.0, 4.0 * u]);
+
+        let selector_idioma = capsula_segmentada(
+            Idioma::TODOS
+                .iter()
+                .map(|idioma| (idioma.etiqueta(), Mensaje::ElegirIdioma(*idioma)))
+                .collect(),
+            self.idioma_pulgar.valor(),
+            46.0,
+            u,
+            alfa,
+        );
+
+        let rotulo_teclado = container(
+            text(self.idioma.t("Distribución de teclado", "Keyboard layout"))
+                .size(12.0 * u)
+                .font(peso(Weight::Medium))
+                .color(sub),
+        )
+        .padding([0.0, 4.0 * u])
+        .height(16.0 * u)
+        .center_y(16.0 * u);
+
+        let mut filas = column![].spacing(6.0 * u);
+        for (codigo, nombre_es, nombre_en) in DISTRIBUCIONES {
+            let activo = self.teclado_codigo == *codigo;
+            let nombre = self.idioma.t(nombre_es, nombre_en);
+            let disco = if activo { disco_activo } else { tema::elevado() };
+            let badge: Elemento<'_> = if activo {
+                pictograma(
+                    &self.comprobado,
+                    14.0 * u,
+                    14.0 * u,
+                    Some(tema::alfa(glifo_activo, alfa)),
+                )
+            } else {
+                text(codigo.to_uppercase())
+                    .size(10.0 * u)
+                    .font(peso(Weight::Bold))
+                    .color(sub)
+                    .into()
+            };
+            let icono = container(badge)
+                .width(32.0 * u)
+                .height(32.0 * u)
+                .center_x(32.0 * u)
+                .center_y(32.0 * u)
+                .style(move |_| container::Style {
+                    background: Some(tema::alfa(disco, alfa).into()),
+                    border: Border {
+                        radius: (16.0 * u).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                });
+            let fila = row![
+                icono,
+                Space::new().width(10.0 * u),
+                text(nombre)
+                    .size(14.0 * u)
+                    .font(peso(if activo { Weight::Semibold } else { Weight::Medium }))
+                    .color(texto_principal),
+                Space::new().width(Fill),
+                text(codigo.to_uppercase())
+                    .size(12.0 * u)
+                    .font(peso(Weight::Semibold))
+                    .color(if activo {
+                        tema::alfa(tema::acento_en(tema::superficie_en_tarjeta()), alfa)
+                    } else {
+                        sub
+                    }),
+            ]
+            .align_y(Center);
+            filas = filas.push(
+                button(container(fila).center_y(42.0 * u))
+                    .width(BALDOSA_PANEL * u)
+                    .height(42.0 * u)
+                    .padding(Padding {
+                        left: 6.0 * u,
+                        right: 12.0 * u,
+                        ..Padding::ZERO
+                    })
+                    .on_press(Mensaje::ElegirTeclado((*codigo).to_string()))
+                    .style(move |_, estado| {
+                        let hover = estado != button::Status::Active;
+                        let fondo = if hover {
+                            tema::elevado()
+                        } else {
+                            tema::superficie_en_tarjeta()
+                        };
+                        button::Style {
+                            background: Some(tema::alfa(fondo, alfa).into()),
+                            border: Border {
+                                radius: (tema::R_CONTROL * u).into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    }),
+            );
+        }
+
+        column![
+            cabecera,
+            alto(12.0 * u),
+            selector_idioma,
+            alto(18.0 * u),
+            rotulo_teclado,
+            alto(8.0 * u),
+            grupo_panel(filas.into(), u, alfa),
+        ]
+        .into()
+    }
+
+    // 0.1.1
+    // modificado en la 0.2.1 -- diseño idéntico al popover de batería del escritorio (`emergente::energia.rs`)
+    fn menu_de_bateria(&self, alfa: f32) -> Elemento<'_> {
+        let u = self.escala;
+        let detalle = &self.bateria_detalle;
+        let texto_principal = tema::alfa(tema::texto(), alfa);
+        let sub = tema::alfa(tema::texto2(), alfa);
+        let es_es = matches!(self.idioma, Idioma::Es);
+
+        let color_perfil = match detalle.perfil.as_str() {
+            "power-saver" => tema::perfil_ahorro(),
+            "balanced" => tema::perfil_equilibrado(),
+            "performance" => tema::perfil_rendimiento(),
+            _ => tema::texto2(),
+        };
+
+        let baja = detalle
+            .dato
+            .as_ref()
+            .is_some_and(|b| !b.charging && !b.plugged && b.percent <= 15);
+        let pastilla = match &detalle.dato {
+            None => Some((
+                self.idioma.t("Corriente", "AC power"),
+                RAYO_BATERIA,
+                tema::verde(),
+            )),
+            Some(b) if b.charging => Some((
+                self.idioma.t("Cargando", "Charging"),
+                RAYO_BATERIA,
+                tema::verde(),
+            )),
+            Some(b) if b.plugged => Some((
+                self.idioma.t("Enchufado", "Plugged in"),
+                RAYO_BATERIA,
+                tema::verde(),
+            )),
+            Some(_) if baja => Some((
+                self.idioma.t("Batería baja", "Low battery"),
+                AVISO_BATERIA,
+                tema::rojo(),
+            )),
+            Some(_) => None,
+        };
+
+        let mut titulo_fila = row![
+            text(self.idioma.t("Batería", "Battery"))
+                .size(15.0 * u)
+                .font(peso(Weight::Semibold))
+                .color(texto_principal),
+        ]
+        .spacing(8.0 * u)
+        .height(22.0 * u)
+        .align_y(Center);
+        if let Some((rotulo, svg_icono, color_icono)) = pastilla {
+            let ic = icono::desde_svg(svg_icono);
+            titulo_fila = titulo_fila.push(
+                container(
+                    row![
+                        pictograma(&ic, 12.0 * u, 12.0 * u, Some(tema::alfa(color_icono, alfa))),
+                        text(rotulo)
+                            .size(11.0 * u)
+                            .font(peso(Weight::Semibold))
+                            .color(texto_principal),
+                    ]
+                    .spacing(4.0 * u)
+                    .align_y(Center),
+                )
+                .height(18.0 * u)
+                .center_y(18.0 * u)
+                .padding([0.0, 8.0 * u])
+                .style(move |_| container::Style {
+                    background: Some(tema::alfa(tema::superficie_en_tarjeta(), alfa).into()),
+                    border: Border {
+                        radius: (tema::R_CHIP * u).into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -487,450 +1007,400 @@ impl Acceso {
             );
         }
 
-        let cabecera = column![
-            text(self.idioma.t("Idioma", "Language"))
-                .size(12.0 * u)
-                .font(peso(Weight::Semibold))
-                .color(sub),
-            alto(6.0 * u),
-            fila_idiomas,
-            alto(12.0 * u),
-            row![
-                text(self.idioma.t("Teclado", "Keyboard"))
-                    .size(12.0 * u)
-                    .font(peso(Weight::Semibold))
-                    .color(sub),
-                Space::new().width(Fill),
-                text("Alt + Shift").size(11.0 * u).color(blanco(0.4 * alfa)),
-            ]
-            .align_y(Center),
-        ]
-        .padding([14.0 * u, 16.0 * u]);
-
-        let mut lista = column![];
-        for (codigo, nombre_es, nombre_en) in DISTRIBUCIONES {
-            let activo = self.teclado_codigo == *codigo;
-            let nombre = self.idioma.t(nombre_es, nombre_en);
-            let marca: Elemento<'_> = if activo {
-                pictograma(
-                    &self.comprobado,
-                    14.0 * u,
-                    14.0 * u,
-                    Some(tema::alfa(acento, alfa)),
+        let estado_txt: String = match &detalle.dato {
+            None => self
+                .idioma
+                .t(
+                    "Este equipo funciona solo con corriente",
+                    "This computer runs on AC power only",
                 )
-            } else {
-                Space::new().width(14.0 * u).height(14.0 * u).into()
-            };
-            let fila = row![
-                marca,
-                text(nombre)
-                    .size(14.0 * u)
-                    .font(peso(if activo { Weight::Bold } else { Weight::Medium }))
-                    .color(tinta),
-                Space::new().width(Fill),
-                text(codigo.to_uppercase())
-                    .size(12.0 * u)
-                    .font(peso(Weight::Semibold))
-                    .color(sub),
-            ]
-            .spacing(10.0 * u)
-            .align_y(Center);
-            lista = lista.push(
-                button(container(fila).center_y(Fill))
-                    .padding([0.0, 16.0 * u])
-                    .width(Fill)
-                    .height(34.0 * u)
-                    .on_press(Mensaje::ElegirTeclado((*codigo).to_string()))
-                    .style(move |_, estado| button::Style {
-                        background: (estado != button::Status::Active)
-                            .then(|| blanco(0.10 * alfa).into()),
-                        ..Default::default()
-                    }),
-            );
-        }
+                .into(),
+            Some(b) if b.charging => match (b.minutes, detalle.tope) {
+                (Some(m), Some(tope)) if m > 0 => {
+                    let pct_tope = if es_es {
+                        format!("{tope} %")
+                    } else {
+                        format!("{tope}%")
+                    };
+                    if es_es {
+                        format!("Al {pct_tope} en {}", duracion_bateria(m))
+                    } else {
+                        format!("{pct_tope} in {}", duracion_bateria(m))
+                    }
+                }
+                (Some(m), None) if m > 0 => {
+                    if es_es {
+                        format!("Llena en {}", duracion_bateria(m))
+                    } else {
+                        format!("Full in {}", duracion_bateria(m))
+                    }
+                }
+                _ => self
+                    .idioma
+                    .t("Cargando la batería", "Charging the battery")
+                    .into(),
+            },
+            Some(b) if b.plugged && detalle.tope.is_some_and(|tope| b.percent + 1 >= tope) => self
+                .idioma
+                .t(
+                    "En pausa para cuidar la batería",
+                    "Paused to protect the battery",
+                )
+                .into(),
+            Some(b) if b.plugged && b.percent >= 99 => {
+                self.idioma.t("Batería cargada", "Fully charged").into()
+            }
+            Some(b) if b.plugged => self
+                .idioma
+                .t("Enchufado, sin cargar", "Plugged in, not charging")
+                .into(),
+            Some(b) => match b.minutes {
+                Some(m) if m > 0 => {
+                    if es_es {
+                        format!("{} restantes", duracion_bateria(m))
+                    } else {
+                        format!("{} left", duracion_bateria(m))
+                    }
+                }
+                _ => self.idioma.t("Usando la batería", "On battery").into(),
+            },
+        };
 
-        column![
-            cabecera,
-            separador_panel(ANCHO_PANEL - 32.0, u, alfa),
+        let nivel = match &detalle.dato {
+            Some(b) => {
+                let pct = b.percent.min(100);
+                if es_es {
+                    format!("{pct} %")
+                } else {
+                    format!("{pct}%")
+                }
+            }
+            None => self.idioma.t("Sin batería", "No battery").into(),
+        };
+        let color_nivel = if baja {
+            tema::alfa(tema::rojo(), alfa)
+        } else {
+            texto_principal
+        };
+
+        let cabecera_izquierda = column![
+            titulo_fila,
             alto(4.0 * u),
-            lista,
-            alto(8.0 * u),
-        ]
-        .into()
-    }
+            container(
+                text(bookos_shell::recortar_texto(
+                    &estado_txt,
+                    INTERIOR_PANEL - 100.0,
+                    12.0,
+                ))
+                .size(12.0 * u)
+                .color(sub),
+            )
+            .height(16.0 * u)
+            .center_y(16.0 * u),
+        ];
+        let mut cabecera = column![
+            row![
+                cabecera_izquierda,
+                Space::new().width(Fill),
+                container(
+                    text(nivel)
+                        .size(34.0 * u)
+                        .font(peso(Weight::ExtraBold))
+                        .color(color_nivel),
+                )
+                .height(42.0 * u)
+                .center_y(42.0 * u),
+            ]
+            .height(42.0 * u),
+        ];
 
-    // 0.1.1
-    // modificado en la 0.2.0 -- glifos blancos, como el bloqueo: las insignias de color son de aplicación
-    fn menu_de_bateria(&self, alfa: f32) -> Elemento<'_> {
-        let u = self.escala;
-        let acento = self.acento();
-        let tinta = blanco(alfa);
-        let sub = blanco(0.58 * alfa);
-        let detalle = &self.bateria_detalle;
-
-        let mut col = column![];
         if let Some(bat) = &detalle.dato {
             let pct = bat.percent.min(100);
-            let estado_txt = if bat.charging {
-                match bat.minutes {
-                    Some(m) if m > 0 => format!(
-                        "{} · {} h {:02} min",
-                        self.idioma.t("Cargando", "Charging"),
-                        m / 60,
-                        m % 60
-                    ),
-                    _ => self.idioma.t("Cargando", "Charging").to_string(),
-                }
-            } else if bat.plugged {
-                if let Some(tope) = detalle.tope {
-                    format!(
-                        "{} ({tope} %)",
-                        self.idioma
-                            .t("Enchufado · Tope de carga", "Plugged in · Charge limit")
-                    )
-                } else {
-                    self.idioma
-                        .t("Conectado a la corriente", "Plugged in")
-                        .to_string()
-                }
-            } else {
-                match bat.minutes {
-                    Some(m) if m > 0 => format!(
-                        "{} h {:02} min {}",
-                        m / 60,
-                        m % 60,
-                        self.idioma.t("restantes", "remaining")
-                    ),
-                    _ => self.idioma.t("Con batería", "On battery").to_string(),
-                }
-            };
-
-            let ancho_barra = (ANCHO_PANEL - 32.0) * u;
-            let ancho_lleno = (ancho_barra * (pct as f32 / 100.0)).max(6.0 * u);
-            let color_barra = if bat.charging {
-                tema::verde()
-            } else if pct <= 15 {
+            let ancho_barra = INTERIOR_PANEL * u;
+            let bar_h = 8.0 * u;
+            let marca_h = bar_h + 6.0 * u;
+            let lleno = (ancho_barra * (pct as f32 / 100.0)).max(bar_h);
+            let color_barra = if baja {
                 tema::rojo()
+            } else if bat.charging || bat.plugged {
+                tema::verde()
             } else {
-                acento
+                color_perfil
             };
-
-            let barra = Stack::new()
-                .push(
-                    container(Space::new().width(ancho_barra).height(8.0 * u)).style(move |_| {
-                        container::Style {
-                            background: Some(blanco(0.14 * alfa).into()),
-                            border: Border {
-                                radius: (4.0 * u).into(),
-                                ..Default::default()
-                            },
+            let pista = container(
+                container(Space::new())
+                    .width(lleno)
+                    .height(bar_h)
+                    .style(move |_| container::Style {
+                        background: Some(tema::alfa(color_barra, alfa).into()),
+                        border: Border {
+                            radius: (tema::R_PILL * u).into(),
                             ..Default::default()
-                        }
+                        },
+                        ..Default::default()
                     }),
-                )
-                .push(
-                    container(Space::new().width(ancho_lleno).height(8.0 * u)).style(move |_| {
-                        container::Style {
-                            background: Some(tema::alfa(color_barra, alfa).into()),
-                            border: Border {
-                                radius: (4.0 * u).into(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        }
-                    }),
-                );
-
-            col = col.push(
-                column![
-                    row![
-                        text(self.idioma.t("Batería", "Battery"))
-                            .size(14.0 * u)
-                            .font(peso(Weight::Bold))
-                            .color(tinta),
-                        Space::new().width(Fill),
-                        text(format!("{pct} %"))
-                            .size(15.0 * u)
-                            .font(peso(Weight::Bold))
-                            .color(tinta),
-                    ]
-                    .align_y(Center),
-                    alto(8.0 * u),
-                    barra,
-                    alto(6.0 * u),
-                    text(estado_txt).size(12.0 * u).color(sub),
-                ]
-                .padding([14.0 * u, 16.0 * u]),
+            )
+            .width(ancho_barra)
+            .height(bar_h)
+            .style(move |_| container::Style {
+                background: Some(tema::alfa(tema::control_apagado(), alfa).into()),
+                border: Border {
+                    radius: (tema::R_PILL * u).into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let mut capas = Stack::new().push(
+                container(pista)
+                    .height(marca_h)
+                    .padding([(marca_h - bar_h) * 0.5, 0.0]),
             );
-            col = col.push(separador_panel(ANCHO_PANEL - 32.0, u, alfa));
+            if bat.plugged
+                && let Some(tope) = detalle.tope
+            {
+                let x = (ancho_barra * (tope.min(100) as f32 / 100.0) - u).max(0.0);
+                capas = capas.push(row![
+                    Space::new().width(x),
+                    container(Space::new())
+                        .width(2.0 * u)
+                        .height(marca_h)
+                        .style(move |_| container::Style {
+                            background: Some(texto_principal.into()),
+                            border: Border {
+                                radius: u.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }),
+                ]);
+            }
+            cabecera = cabecera
+                .push(alto(12.0 * u))
+                .push(container(capas).height(marca_h));
         }
 
-        col = col.push(
-            container(
-                text(self.idioma.t("Modo de energía", "Power mode"))
-                    .size(12.0 * u)
-                    .font(peso(Weight::Semibold))
-                    .color(sub),
-            )
-            .padding(Padding {
-                top: 10.0 * u,
-                left: 16.0 * u,
-                right: 16.0 * u,
-                bottom: 4.0 * u,
-            }),
-        );
-
-        let perfiles = [
+        let perfiles: Vec<(&str, &str, &str)> = [
             (
                 "power-saver",
-                "perfil-ahorro",
-                self.idioma.t("Ahorro de energía", "Power Saver"),
+                self.idioma.t("Ahorro", "Saver"),
+                self.idioma.t(
+                    "Más autonomía, menos potencia",
+                    "Longer battery life, less power",
+                ),
             ),
             (
                 "balanced",
-                "perfil-equilibrado",
                 self.idioma.t("Equilibrado", "Balanced"),
+                self.idioma
+                    .t("Potencia según lo que hagas", "Power adapts to what you do"),
             ),
             (
                 "performance",
-                "perfil-rendimiento",
-                self.idioma.t("Alto rendimiento", "Performance"),
+                self.idioma.t("Rendimiento", "Performance"),
+                self.idioma
+                    .t("Máxima potencia, más consumo", "Maximum power, higher usage"),
             ),
-        ];
-        for (clave, icono_nombre, nombre) in perfiles {
-            if !detalle.perfiles_disponibles.is_empty()
-                && !detalle.perfiles_disponibles.iter().any(|p| p == clave)
-            {
-                continue;
-            }
-            let activo = detalle.perfil == clave;
-            let marca: Elemento<'_> = if activo {
-                pictograma(
-                    &self.comprobado,
-                    14.0 * u,
-                    14.0 * u,
-                    Some(tema::alfa(acento, alfa)),
-                )
-            } else {
-                Space::new().width(14.0 * u).height(14.0 * u).into()
-            };
-            let fila = row![
-                // El activo ya lo dice la marca de la derecha: el glifo no
-                // cambia de color.
-                propio(icono_nombre, 18.0 * u, blanco(alfa)),
-                text(nombre)
-                    .size(14.0 * u)
-                    .font(peso(if activo { Weight::Bold } else { Weight::Medium }))
-                    .color(tinta),
-                Space::new().width(Fill),
-                marca,
-            ]
-            .spacing(10.0 * u)
-            .align_y(Center);
-            col = col.push(
-                button(container(fila).center_y(Fill))
-                    .padding([0.0, 16.0 * u])
-                    .width(Fill)
-                    .height(38.0 * u)
-                    .on_press(Mensaje::PerfilEnergia(clave.to_string()))
-                    .style(move |_, estado| button::Style {
-                        background: (estado != button::Status::Active)
-                            .then(|| blanco(0.10 * alfa).into()),
-                        ..Default::default()
-                    }),
+        ]
+        .into_iter()
+        .filter(|(clave, _, _)| {
+            detalle.perfiles_disponibles.is_empty()
+                || detalle.perfiles_disponibles.iter().any(|p| p == clave)
+        })
+        .collect();
+
+        let mut col = column![cabecera];
+        if !perfiles.is_empty() {
+            let detalle_activo = perfiles
+                .iter()
+                .find(|(clave, _, _)| *clave == detalle.perfil)
+                .map_or("", |(_, _, d)| *d);
+            let selector = capsula_segmentada(
+                perfiles
+                    .iter()
+                    .map(|(clave, corto, _)| (*corto, Mensaje::PerfilEnergia((*clave).into())))
+                    .collect(),
+                self.pulgar.valor(),
+                54.0,
+                u,
+                alfa,
             );
+            col = col
+                .push(alto(18.0 * u))
+                .push(
+                    container(
+                        text(self.idioma.t("Modo de energía", "Power mode"))
+                            .size(12.0 * u)
+                            .font(peso(Weight::Medium))
+                            .color(sub),
+                    )
+                    .padding([0.0, 4.0 * u])
+                    .height(16.0 * u)
+                    .center_y(16.0 * u),
+                )
+                .push(alto(8.0 * u))
+                .push(selector)
+                .push(alto(10.0 * u))
+                .push(
+                    container(text(detalle_activo).size(12.0 * u).color(sub))
+                        .padding([0.0, 4.0 * u])
+                        .height(17.0 * u)
+                        .center_y(17.0 * u),
+                );
         }
-        col.push(alto(8.0 * u)).into()
+        col.into()
     }
 
     // 0.1.1
+    // modificado en la 0.2.1 -- tarjetas y filas del sistema de diseño (`emergente::{red,lista}.rs`)
     fn menu_de_red(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
-        let acento = self.acento();
-        let sobre = self.sobre_acento();
-        let tinta = blanco(alfa);
-        let sub = blanco(0.58 * alfa);
         let wifi = &self.wifi_estado;
+        let acento = tema::acento();
+        let sobre = tema::sobre_acento();
+        let texto_principal = tema::alfa(tema::texto(), alfa);
+        let sub = tema::alfa(tema::texto2(), alfa);
+        let (disco_activo, glifo_activo) = encendido_colores();
 
-        let texto_boton = if wifi.encendida {
-            self.idioma.t("Activada", "On")
-        } else {
-            self.idioma.t("Desactivada", "Off")
-        };
-        let encendida = wifi.encendida;
-        let interruptor = button(
-            container(
-                text(texto_boton)
-                    .size(12.0 * u)
-                    .font(peso(Weight::Semibold))
-                    .color(if encendida {
-                        tema::alfa(sobre, alfa)
-                    } else {
-                        blanco(0.75 * alfa)
-                    }),
-            )
-            .padding([4.0 * u, 10.0 * u]),
-        )
-        .padding(0)
-        .on_press(Mensaje::WifiAlternar(!encendida))
-        .style(move |_, _| button::Style {
-            background: Some(if encendida {
-                tema::alfa(acento, alfa).into()
-            } else {
-                blanco(0.15 * alfa).into()
-            }),
-            border: Border {
-                radius: (12.0 * u).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-
-        let mut cabecera = row![
-            con_sombra(&self.wifi, 18.0 * u, alfa, u),
-            text("Wi-Fi")
-                .size(15.0 * u)
-                .font(peso(Weight::Bold))
-                .color(tinta),
-            Space::new().width(Fill),
-        ]
-        .spacing(8.0 * u)
-        .align_y(Center);
-
+        let mut fila_cabecera = row![titulo_panel("Wi-Fi", u, alfa), Space::new().width(Fill)]
+            .spacing(8.0 * u)
+            .align_y(Center);
         if wifi.encendida {
             let recargar = button(
-                container(propio("reiniciar", 15.0 * u, blanco(0.75 * alfa)))
+                container(propio("reiniciar", 15.0 * u, sub))
                     .center_x(26.0 * u)
                     .center_y(26.0 * u),
             )
             .padding(0)
             .on_press(Mensaje::WifiRefrescar)
             .style(move |_, estado| button::Style {
-                background: (estado != button::Status::Active).then(|| blanco(0.14 * alfa).into()),
+                background: (estado != button::Status::Active)
+                    .then(|| tema::alfa(tema::superficie_en_tarjeta(), alfa).into()),
                 border: Border {
                     radius: (13.0 * u).into(),
                     ..Default::default()
                 },
                 ..Default::default()
             });
-            cabecera = cabecera.push(recargar);
+            fila_cabecera = fila_cabecera.push(recargar);
         }
-        cabecera = cabecera.push(interruptor);
+        fila_cabecera = fila_cabecera.push(interruptor_panel(
+            self.wifi_switch.valor(),
+            u,
+            alfa,
+            Mensaje::WifiAlternar(!wifi.encendida),
+        ));
 
-        let mut col = column![container(cabecera).padding([14.0 * u, 16.0 * u])];
+        let cabecera = container(fila_cabecera)
+            .width(INTERIOR_PANEL * u)
+            .height(32.0 * u)
+            .center_y(32.0 * u)
+            .padding([0.0, 4.0 * u]);
+
+        let vacia = |mensaje: String| -> Elemento<'_> {
+            container(text(mensaje).size(13.0 * u).color(sub))
+                .width(BALDOSA_PANEL * u)
+                .height(48.0 * u)
+                .center_x(BALDOSA_PANEL * u)
+                .center_y(48.0 * u)
+                .into()
+        };
+
+        let mut cuerpo = column![].spacing(6.0 * u);
         if wifi.cable {
-            col = col.push(
+            cuerpo = cuerpo.push(
                 container(
                     row![
                         propio("cable", 16.0 * u, tema::alfa(tema::verde(), alfa)),
                         text(
                             self.idioma
-                                .t("Conectado por cable Ethernet", "Ethernet cable connected")
+                                .t("Conectado por cable Ethernet", "Ethernet cable connected"),
                         )
                         .size(12.0 * u)
-                        .color(sub),
+                        .font(peso(Weight::Medium))
+                        .color(texto_principal),
                     ]
                     .spacing(8.0 * u)
                     .align_y(Center),
                 )
-                .padding([0.0, 16.0 * u]),
+                .width(BALDOSA_PANEL * u)
+                .padding([6.0 * u, 10.0 * u])
+                .style(move |_| container::Style {
+                    background: Some(tema::alfa(tema::elevado(), alfa).into()),
+                    border: Border {
+                        radius: (tema::R_CONTROL * u).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
             );
-            col = col.push(alto(8.0 * u));
         }
-
-        col = col.push(separador_panel(ANCHO_PANEL - 32.0, u, alfa));
-
         if let Some(err) = self.wifi_error.as_deref().or(wifi.error.as_deref()) {
-            col = col.push(
+            cuerpo = cuerpo.push(
                 container(
                     text(err)
                         .size(12.0 * u)
                         .color(tema::alfa(tema::rojo(), alfa)),
                 )
-                .padding([8.0 * u, 16.0 * u]),
+                .width(BALDOSA_PANEL * u)
+                .padding([4.0 * u, 8.0 * u]),
             );
         }
 
-        if self.wifi_cargando {
-            col = col.push(
-                container(
-                    text(self.idioma.t("Buscando redes…", "Scanning networks…"))
-                        .size(13.0 * u)
-                        .color(sub),
-                )
-                .padding([16.0 * u, 16.0 * u]),
-            );
-            return col.into();
-        }
-
-        if !wifi.encendida {
-            col = col.push(
-                container(
-                    text(self.idioma.t(
-                        "Activa el Wi-Fi para ver las redes disponibles.",
-                        "Turn on Wi-Fi to see available networks.",
-                    ))
-                    .size(13.0 * u)
-                    .color(sub),
-                )
-                .padding([16.0 * u, 16.0 * u]),
-            );
-            return col.into();
-        }
-
-        if let Some(ssid) = &self.wifi_conectar_a {
+        let clave_card = |ssid: &str| -> Elemento<'_> {
+            let listo = self.wifi_clave.chars().count() >= 8;
             let estilo_input = move |_: &iced::Theme, _| text_input::Style {
-                background: blanco(0.10 * alfa).into(),
+                background: tema::alfa(tema::elevado(), alfa).into(),
                 border: Border {
-                    radius: (8.0 * u).into(),
-                    width: u.round(),
-                    color: tema::alfa(acento, 0.85 * alfa),
+                    radius: (tema::R_CONTROL * u).into(),
+                    width: 1.5 * u,
+                    color: tema::alfa(acento, alfa),
                 },
-                icon: tinta,
-                placeholder: blanco(0.45 * alfa),
-                value: tinta,
-                selection: tema::alfa(acento, 0.5),
+                icon: texto_principal,
+                placeholder: sub,
+                value: texto_principal,
+                selection: tema::alfa(acento, 0.35 * alfa),
             };
-            let listo = !self.wifi_clave.is_empty();
-            let form = column![
-                text(format!(
-                    "{} «{ssid}»",
-                    self.idioma.t("Contraseña para", "Password for")
-                ))
-                .size(13.0 * u)
-                .font(peso(Weight::Semibold))
-                .color(tinta),
-                alto(8.0 * u),
+            column![
                 text_input(
-                    self.idioma.t("Contraseña Wi-Fi", "Wi-Fi password"),
-                    &self.wifi_clave
+                    self.idioma
+                        .t("Contraseña (mín. 8 caracteres)", "Password (min. 8 chars)"),
+                    &self.wifi_clave,
                 )
                 .id("wifi_clave")
                 .secure(true)
                 .size(14.0 * u)
-                .padding([8.0 * u, 10.0 * u])
+                .padding([10.0 * u, 12.0 * u])
                 .on_input(Mensaje::WifiClave)
                 .on_submit(Mensaje::WifiConectar)
                 .style(estilo_input),
-                alto(10.0 * u),
                 row![
                     button(
                         container(
                             text(self.idioma.t("Cancelar", "Cancel"))
                                 .size(13.0 * u)
                                 .font(peso(Weight::Semibold))
-                                .color(tinta)
+                                .color(texto_principal),
                         )
                         .center_x(Fill)
-                        .center_y(30.0 * u)
+                        .center_y(32.0 * u),
                     )
                     .width(Fill)
                     .padding(0)
                     .on_press(Mensaje::WifiCancelarClave)
-                    .style(move |_, _| button::Style {
-                        background: Some(blanco(0.12 * alfa).into()),
+                    .style(move |_, estado| button::Style {
+                        background: Some(
+                            tema::alfa(
+                                tema::mezclar(
+                                    tema::elevado(),
+                                    tema::tinta(),
+                                    if estado != button::Status::Active { 0.06 } else { 0.0 },
+                                ),
+                                alfa,
+                            )
+                            .into(),
+                        ),
                         border: Border {
-                            radius: (8.0 * u).into(),
+                            radius: (tema::R_BOTON_PEQUENO * u).into(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -943,11 +1413,11 @@ impl Acceso {
                                 .color(if listo {
                                     tema::alfa(sobre, alfa)
                                 } else {
-                                    blanco(0.4 * alfa)
-                                })
+                                    sub
+                                }),
                         )
                         .center_x(Fill)
-                        .center_y(30.0 * u)
+                        .center_y(32.0 * u),
                     )
                     .width(Fill)
                     .padding(0)
@@ -956,122 +1426,238 @@ impl Acceso {
                         background: Some(if listo {
                             tema::alfa(acento, alfa).into()
                         } else {
-                            blanco(0.08 * alfa).into()
+                            tema::alfa(tema::elevado(), alfa).into()
                         }),
                         border: Border {
-                            radius: (8.0 * u).into(),
+                            radius: (tema::R_BOTON_PEQUENO * u).into(),
                             ..Default::default()
                         },
                         ..Default::default()
                     }),
                 ]
-                .spacing(8.0 * u),
+                .spacing(6.0 * u),
+                text(format!(
+                    "{} «{ssid}»",
+                    self.idioma.t("Red seleccionada:", "Selected network:")
+                ))
+                .size(11.0 * u)
+                .color(sub),
             ]
-            .padding([14.0 * u, 16.0 * u]);
-            return col.push(form).into();
-        }
+            .spacing(6.0 * u)
+            .width(BALDOSA_PANEL * u)
+            .padding(Padding {
+                top: 2.0 * u,
+                bottom: 4.0 * u,
+                ..Padding::ZERO
+            })
+            .into()
+        };
 
-        if wifi.redes.is_empty() {
-            col = col.push(
-                container(
-                    text(
-                        self.idioma
-                            .t("No se encontraron redes Wi-Fi", "No Wi-Fi networks found"),
-                    )
-                    .size(13.0 * u)
+        let seccion_wifi = |titulo: &str| -> Elemento<'_> {
+            container(
+                text(titulo.to_string())
+                    .size(12.0 * u)
+                    .font(peso(Weight::Semibold))
                     .color(sub),
-                )
-                .padding([16.0 * u, 16.0 * u]),
-            );
-            return col.into();
-        }
+            )
+            .width(BALDOSA_PANEL * u)
+            .height(26.0 * u)
+            .padding(Padding {
+                left: 6.0 * u,
+                ..Padding::ZERO
+            })
+            .center_y(26.0 * u)
+            .into()
+        };
 
-        col = col.push(alto(4.0 * u));
-        for (i, red) in wifi.redes.iter().enumerate() {
-            let marca: Elemento<'_> = if red.activa {
-                pictograma(
-                    &self.comprobado,
-                    14.0 * u,
-                    14.0 * u,
-                    Some(tema::alfa(acento, alfa)),
-                )
-            } else {
-                Space::new().width(14.0 * u).height(14.0 * u).into()
-            };
-            let candado_red: Elemento<'_> = if red.segura {
-                pictograma(&self.candado, 13.0 * u, 13.0 * u, Some(sub))
-            } else {
-                Space::new().width(0.0).into()
-            };
-            let fila = row![
-                marca,
-                text(bookos_shell::recortar_texto(&red.ssid, 165.0, 14.0))
-                    .size(14.0 * u)
-                    .font(peso(if red.activa {
-                        Weight::Bold
-                    } else {
-                        Weight::Medium
-                    }))
-                    .color(tinta),
-                Space::new().width(Fill),
-                candado_red,
-                text(format!("{} %", red.senal)).size(12.0 * u).color(sub),
-            ]
-            .spacing(8.0 * u)
-            .align_y(Center);
-
-            col = col.push(
-                button(container(fila).center_y(Fill))
-                    .padding([0.0, 16.0 * u])
-                    .width(Fill)
-                    .height(36.0 * u)
-                    .on_press(Mensaje::WifiElegir(i))
-                    .style(move |_, estado| button::Style {
-                        background: (estado != button::Status::Active)
-                            .then(|| blanco(0.10 * alfa).into()),
-                        ..Default::default()
-                    }),
-            );
-        }
-
-        if wifi.ssid_actual.is_some() {
-            col = col
-                .push(alto(4.0 * u))
-                .push(separador_panel(ANCHO_PANEL - 32.0, u, alfa))
-                .push(
-                    button(
-                        container(
-                            text(self.idioma.t("Desconectar", "Disconnect"))
-                                .size(13.0 * u)
-                                .font(peso(Weight::Semibold))
-                                .color(tema::alfa(tema::rojo(), alfa)),
-                        )
-                        .center_x(Fill)
-                        .center_y(34.0 * u),
-                    )
-                    .width(Fill)
-                    .padding(0)
-                    .on_press(Mensaje::WifiDesconectar)
-                    .style(move |_, estado| button::Style {
-                        background: (estado != button::Status::Active)
-                            .then(|| blanco(0.08 * alfa).into()),
-                        ..Default::default()
-                    }),
-                );
+        if self.wifi_cargando {
+            cuerpo = cuerpo.push(vacia(
+                self.idioma
+                    .t("Buscando redes…", "Scanning networks…")
+                    .into(),
+            ));
+        } else if !wifi.encendida {
+            cuerpo = cuerpo.push(vacia(
+                self.idioma.t("Wi-Fi apagado", "Wi-Fi is off").into(),
+            ));
+        } else if wifi.redes.is_empty() {
+            cuerpo = cuerpo.push(vacia(
+                self.idioma
+                    .t("No hay redes a la vista", "No networks in range")
+                    .into(),
+            ));
         } else {
-            col = col.push(alto(8.0 * u));
+            let ancho_nombre = BALDOSA_PANEL - 12.0 - 36.0 - 12.0 - 44.0;
+            let mut en_conocidas = false;
+            let mut en_otras = false;
+            let mut clave_mostrada = false;
+
+            for (i, red) in wifi.redes.iter().enumerate() {
+                if !red.activa {
+                    if red.guardada && !en_conocidas {
+                        en_conocidas = true;
+                        cuerpo = cuerpo.push(seccion_wifi(
+                            self.idioma.t("Redes conocidas", "Known networks"),
+                        ));
+                    } else if !red.guardada && !en_otras {
+                        en_otras = true;
+                        cuerpo = cuerpo.push(seccion_wifi(
+                            self.idioma.t("Otras redes", "Other networks"),
+                        ));
+                    }
+                }
+
+                let (disco, glifo, estado_color) = if red.activa {
+                    (
+                        disco_activo,
+                        glifo_activo,
+                        tema::alfa(tema::acento_en(tema::superficie_en_tarjeta()), alfa),
+                    )
+                } else {
+                    (tema::elevado(), tema::texto(), sub)
+                };
+                let nombre_icono = ["wifi-1", "wifi-2", "wifi"][nivel_senal(red.senal)];
+                let dibujo = container(solido(nombre_icono, 18.0 * u, tema::alfa(glifo, alfa)))
+                    .width(36.0 * u)
+                    .height(36.0 * u)
+                    .center_x(36.0 * u)
+                    .center_y(36.0 * u)
+                    .style(move |_| container::Style {
+                        background: Some(tema::alfa(disco, alfa).into()),
+                        border: Border {
+                            radius: (18.0 * u).into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    });
+
+                let mut textos = column![
+                    text(bookos_shell::recortar_texto(&red.ssid, ancho_nombre, 14.0))
+                        .size(14.0 * u)
+                        .font(peso(if red.activa {
+                            Weight::Semibold
+                        } else {
+                            Weight::Medium
+                        }))
+                        .color(texto_principal),
+                ];
+                if red.activa {
+                    let calidad = match nivel_senal(red.senal) {
+                        2 => self.idioma.t("Excelente", "Excellent"),
+                        1 => self.idioma.t("Buena", "Good"),
+                        _ => self.idioma.t("Débil", "Weak"),
+                    };
+                    textos = textos.push(
+                        text(format!(
+                            "{} · {calidad}",
+                            self.idioma.t("Conectado", "Connected"),
+                        ))
+                        .size(11.0 * u)
+                        .color(estado_color),
+                    );
+                }
+
+                let mut fila = row![dibujo, Space::new().width(12.0 * u), textos].align_y(Center);
+                if red.segura && !red.activa {
+                    fila = fila
+                        .push(Space::new().width(Fill))
+                        .push(solido("bloquear", 13.0 * u, sub));
+                }
+
+                cuerpo = cuerpo.push(
+                    button(container(fila).center_y(48.0 * u))
+                        .width(BALDOSA_PANEL * u)
+                        .height(48.0 * u)
+                        .padding(Padding {
+                            left: 6.0 * u,
+                            right: 12.0 * u,
+                            ..Padding::ZERO
+                        })
+                        .on_press(Mensaje::WifiElegir(i))
+                        .style(move |_, estado| {
+                            let fondo = if estado != button::Status::Active {
+                                tema::elevado()
+                            } else {
+                                tema::superficie_en_tarjeta()
+                            };
+                            button::Style {
+                                background: Some(tema::alfa(fondo, alfa).into()),
+                                border: Border {
+                                    radius: (tema::R_CONTROL * u).into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }
+                        }),
+                );
+
+                if self.wifi_conectar_a.as_deref() == Some(red.ssid.as_str()) {
+                    clave_mostrada = true;
+                    cuerpo = cuerpo.push(clave_card(&red.ssid));
+                }
+            }
+
+            if !clave_mostrada && let Some(ssid) = &self.wifi_conectar_a {
+                cuerpo = cuerpo.push(clave_card(ssid));
+            }
+
+            if wifi.ssid_actual.is_some() {
+                let color_desconectar = tema::alfa(tema::rojo_en(tema::elevado()), alfa);
+                let pie = button(
+                    container(
+                        text(self.idioma.t("Desconectar", "Disconnect"))
+                            .size(14.0 * u)
+                            .font(peso(Weight::Semibold))
+                            .color(color_desconectar),
+                    )
+                    .width(BALDOSA_PANEL * u)
+                    .height(36.0 * u)
+                    .center_x(BALDOSA_PANEL * u)
+                    .center_y(36.0 * u),
+                )
+                .width(BALDOSA_PANEL * u)
+                .height(36.0 * u)
+                .padding(0)
+                .on_press(Mensaje::WifiDesconectar)
+                .style(move |_, estado| {
+                    let s = if estado != button::Status::Active {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    button::Style {
+                        background: Some(
+                            tema::alfa(tema::mezclar(tema::elevado(), tema::tinta(), 0.05 * s), alfa)
+                                .into(),
+                        ),
+                        border: Border {
+                            radius: (tema::R_CONTROL * u).into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                });
+                cuerpo = cuerpo
+                    .push(alto(4.5 * u))
+                    .push(pie);
+            }
         }
-        col.into()
+
+        column![cabecera, alto(12.0 * u), grupo_panel(cuerpo.into(), u, alfa)].into()
     }
 
     // 0.1.1
-    // modificado en la 0.2.0 -- glifos blancos, como el bloqueo: las insignias de color son de aplicación
+    // modificado en la 0.2.0 -- glifos y peso Medium emparejados con el bloqueo (`bloqueo.rs`)
     fn menu_de_energia(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
-        let tinta = blanco(alfa);
+        let tinta = tinta_campo(alfa);
         let entradas: Vec<_> = bloqueo::entradas()
             .iter()
-            .filter(|(_, _, peticion)| *peticion != Peticion::CerrarSesion)
+            // Sin sesión abierta, cerrarla o cambiar de usuario no significan
+            // nada: la lista de cuentas ya está en pantalla.
+            .filter(|(_, _, peticion)| {
+                !matches!(peticion, Peticion::CerrarSesion | Peticion::CambiarUsuario)
+            })
             .collect();
         let mut filas = column![];
         for (i, (etiqueta, icono, peticion)) in entradas.iter().enumerate() {
@@ -1080,13 +1666,13 @@ impl Acceso {
                 Peticion::Reiniciar => self.idioma.t("Reiniciar", "Restart"),
                 Peticion::Suspender => self.idioma.t("Suspender", "Sleep"),
                 Peticion::Hibernar => self.idioma.t("Hibernar", "Hibernate"),
-                Peticion::CerrarSesion => *etiqueta,
+                Peticion::CerrarSesion | Peticion::CambiarUsuario => *etiqueta,
             };
             let fila = row![
-                propio(icono, 18.0 * u, blanco(alfa)),
+                propio(icono, 20.0 * u, tinta),
                 text(etiqueta_traducida)
                     .size(15.0 * u)
-                    .font(peso(Weight::Bold))
+                    .font(peso(Weight::Medium))
                     .color(tinta),
             ]
             .spacing(12.0 * u)
@@ -1099,7 +1685,7 @@ impl Acceso {
                     .on_press(Mensaje::Energia(*peticion))
                     .style(move |_, estado| button::Style {
                         background: (estado != button::Status::Active)
-                            .then(|| blanco(0.10 * alfa).into()),
+                            .then(|| tinta_campo(0.10 * alfa).into()),
                         ..Default::default()
                     }),
             );
@@ -1108,6 +1694,178 @@ impl Acceso {
             }
         }
         filas.into()
+    }
+
+    /// Diálogo de confirmación de energía (Apagar / Reiniciar), siguiendo `confirmacion.rs`.
+    fn confirmacion_energia(&self, peticion: Peticion, aceptar: bool) -> Elemento<'_> {
+        let u = self.escala;
+        let energia = peticion
+            .energia()
+            .expect("solo se confirma lo que tiene acción de energía");
+        let destructiva = energia.es_destructiva();
+        let (titulo, cuerpo, etiqueta_accion) = match peticion {
+            Peticion::Apagar => (
+                self.idioma.t("¿Apagar el equipo?", "Shut down the computer?"),
+                self.idioma.t(
+                    "El equipo se apagará por completo.",
+                    "The computer will shut down completely.",
+                ),
+                self.idioma.t("Apagar", "Shut down"),
+            ),
+            Peticion::Reiniciar => (
+                self.idioma.t("¿Reiniciar el equipo?", "Restart the computer?"),
+                self.idioma.t(
+                    "El equipo volverá a iniciarse.",
+                    "The computer will restart.",
+                ),
+                self.idioma.t("Reiniciar", "Restart"),
+            ),
+            _ => (energia.titulo(), energia.mensaje(), energia.etiqueta()),
+        };
+        let (fondo_insignia, tinta_insignia) = if destructiva {
+            let fondo = tema::rojo_suave();
+            (fondo, tema::rojo_en(fondo))
+        } else {
+            (tema::superficie_en_tarjeta(), tema::texto())
+        };
+        let insignia = container(propio(energia.icono(), 20.0 * u, tinta_insignia))
+            .width(40.0 * u)
+            .height(40.0 * u)
+            .center_x(40.0 * u)
+            .center_y(40.0 * u)
+            .style(move |_| container::Style {
+                background: Some(fondo_insignia.into()),
+                border: Border {
+                    radius: (20.0 * u).into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+        let acento_primario = if destructiva {
+            tema::rojo()
+        } else {
+            self.acento()
+        };
+        let tinta_primario = if destructiva {
+            tema::tinta_sobre(tema::rojo())
+        } else {
+            self.sobre_acento()
+        };
+        let cancelar = button(
+            container(
+                text(self.idioma.t("Cancelar", "Cancel"))
+                    .size(14.0 * u)
+                    .font(peso(Weight::Semibold))
+                    .color(tema::texto()),
+            )
+            .center_x(Fill)
+            .center_y(48.0 * u),
+        )
+        .width(Fill)
+        .padding(0)
+        .on_press(Mensaje::ConfirmarEnergia(false))
+        .style(move |_, estado| button::Style {
+            background: Some(
+                if estado != button::Status::Active {
+                    tema::mezclar(tema::superficie_en_tarjeta(), tema::tinta(), 0.08)
+                } else {
+                    tema::superficie_en_tarjeta()
+                }
+                .into(),
+            ),
+            border: Border {
+                radius: (24.0 * u).into(),
+                width: if !aceptar { (2.0 * u).round() } else { 0.0 },
+                color: tema::acento(),
+            },
+            ..Default::default()
+        });
+
+        let confirmar = button(
+            container(
+                text(etiqueta_accion)
+                    .size(14.0 * u)
+                    .font(peso(Weight::Semibold))
+                    .color(tinta_primario),
+            )
+            .center_x(Fill)
+            .center_y(48.0 * u),
+        )
+        .width(Fill)
+        .padding(0)
+        .on_press(Mensaje::ConfirmarEnergia(true))
+        .style(move |_, estado| button::Style {
+            background: Some(
+                if estado != button::Status::Active {
+                    tema::mezclar(acento_primario, Color::WHITE, 0.10)
+                } else {
+                    acento_primario
+                }
+                .into(),
+            ),
+            border: Border {
+                radius: (24.0 * u).into(),
+                width: if aceptar { (2.0 * u).round() } else { 0.0 },
+                color: tema::tinta(),
+            },
+            ..Default::default()
+        });
+
+        let tarjeta = container(
+            column![
+                insignia,
+                alto(8.0 * u),
+                text(titulo)
+                    .size(17.0 * u)
+                    .font(peso(Weight::Bold))
+                    .color(tema::texto())
+                    .align_x(Center),
+                alto(6.0 * u),
+                text(cuerpo)
+                    .size(13.0 * u)
+                    .color(tema::texto2())
+                    .align_x(Center),
+                alto(16.0 * u),
+                row![cancelar, confirmar].spacing(10.0 * u),
+            ]
+            .align_x(Center),
+        )
+        .width(Confirmacion::ANCHO * u)
+        .padding(Padding {
+            top: 18.0 * u,
+            right: 24.0 * u,
+            bottom: 20.0 * u,
+            left: 24.0 * u,
+        })
+        .style(move |_| container::Style {
+            background: Some(tema::card().into()),
+            border: Border {
+                radius: (34.0 * u).into(),
+                width: u.round(),
+                color: tema::borde(),
+            },
+            ..Default::default()
+        });
+
+        // Velo al 45 % igual que `bloqueo.rs`.
+        mouse_area(
+            container(mouse_area(tarjeta).on_press(Mensaje::Fotograma))
+                .center_x(Fill)
+                .center_y(Fill)
+                .style(|_| container::Style {
+                    background: Some(
+                        Color {
+                            a: 0.45,
+                            ..Color::BLACK
+                        }
+                        .into(),
+                    ),
+                    ..Default::default()
+                }),
+        )
+        .on_press(Mensaje::ConfirmarEnergia(false))
+        .into()
     }
 
     // 0.1.1
@@ -1148,11 +1906,11 @@ impl Acceso {
         .width(Fill)
         .align_x(Center);
         if let Some(error) = &self.error {
-            capa = capa.push(alto(10.0 * u)).push(
-                text(error)
-                    .size(tema::T_CUERPO * u)
-                    .color(tema::alfa(tema::rojo(), entrada)),
-            );
+            capa = capa.push(alto(10.0 * u)).push(self.pildora_aviso(
+                error,
+                Some(tema::rojo()),
+                entrada,
+            ));
         }
         capa.into()
     }
@@ -1239,7 +1997,7 @@ impl Acceso {
         let bajo_el_reloj = self.pantalla.height * config.reloj_y
             + (config.reloj_tamano + if config.fecha { 22.0 * 1.3 } else { 0.0 } + 24.0) * u;
         let arriba = (self.pantalla.height * config.acceso_y).max(bajo_el_reloj);
-        column![
+        let mut col = column![
             alto(arriba + (1.0 - entrada) * 30.0 * u),
             button(avatar(
                 persona.and_then(|p| p.foto.as_ref()),
@@ -1260,7 +2018,7 @@ impl Acceso {
                 entrada
             ))
             .padding(0)
-            .on_press_maybe(volver)
+            .on_press_maybe(volver.clone())
             .style(|_, _| sin_fondo()),
             alto(16.0 * u),
             container(self.campo(entrada)).padding(Padding {
@@ -1272,20 +2030,56 @@ impl Acceso {
             self.mensaje(entrada),
         ]
         .width(Fill)
-        .align_x(Center)
-        .into()
+        .align_x(Center);
+        if self.personas.len() > 1
+            && let Some(accion_volver) = volver
+        {
+            col = col.push(alto(10.0 * u)).push(
+                button(
+                    container(
+                        text(self.idioma.t("Cambiar de usuario", "Switch user"))
+                            .size(12.0 * u)
+                            .font(peso(Weight::Medium))
+                            .color(tinta_campo(0.88 * entrada)),
+                    )
+                    .padding([5.0 * u, 12.0 * u]),
+                )
+                .padding(0)
+                .on_press(accion_volver)
+                .style(move |_, estado| button::Style {
+                    background: Some(
+                        fondo_campo(
+                            if estado != button::Status::Active {
+                                0.92
+                            } else {
+                                0.72
+                            } * entrada,
+                        )
+                        .into(),
+                    ),
+                    border: Border {
+                        radius: (tema::R_PILL * u).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
+        col.into()
     }
 
     // 0.1.1
     fn campo(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
         let acento = self.acento();
+        let tinta = tinta_campo(alfa);
+        let comprobando = matches!(self.estado, Estado::Ocupado(Operacion::Autenticar));
         let estilo = move |_: &iced::Theme, _| text_input::Style {
             background: Color::TRANSPARENT.into(),
             border: Border::default(),
-            icon: blanco(alfa),
-            placeholder: blanco(0.45 * alfa),
-            value: blanco(alfa),
+            icon: tinta,
+            placeholder: tinta_campo(0.45 * alfa),
+            value: tinta,
             selection: tema::alfa(acento, 0.5),
         };
         let mut es_secreta = false;
@@ -1313,11 +2107,7 @@ impl Acceso {
                 // deja el campo de verdad, invisible, para el teclado y el foco,
                 // y encima se ven los mismos puntos del bloqueo.
                 let estilo_campo = move |tema_: &iced::Theme, estado| text_input::Style {
-                    value: if con_puntos {
-                        Color::TRANSPARENT
-                    } else {
-                        blanco(alfa)
-                    },
+                    value: if con_puntos { Color::TRANSPARENT } else { tinta },
                     selection: if con_puntos {
                         Color::TRANSPARENT
                     } else {
@@ -1348,25 +2138,57 @@ impl Acceso {
             }
             Estado::Aviso(_) | Estado::Ocupado(_) => (Space::new().width(Fill).into(), false),
         };
-        let dentro: Elemento<'_> = if es_secreta && !self.mostrar_respuesta {
+        let caben = ((bloqueo::CAMPO - 120.0) / (bloqueo::PUNTO + 6.0)) as usize;
+        let dentro: Elemento<'_> = if (es_secreta && !self.mostrar_respuesta)
+            || (comprobando && self.ultimo_escritos > 0)
+        {
             let lado = bloqueo::PUNTO * u;
+            let ola = (!tema::efectos_reducidos() && comprobando)
+                .then(|| {
+                    self.comprobando_desde
+                        .map(|d| tema::fraccion(d.elapsed(), bloqueo::D_OLA))
+                })
+                .flatten()
+                .filter(|t| *t < 1.0);
+            let cuantos = if comprobando {
+                self.ultimo_escritos
+            } else {
+                self.respuesta.chars().count()
+            }
+            .min(caben);
             let mut puntos = row![].spacing(6.0 * u).align_y(Center);
-            // Con el ojo y el botón al lado caben menos que en el bloqueo.
-            let caben = ((bloqueo::CAMPO - 120.0) / (bloqueo::PUNTO + 6.0)) as usize;
-            for _ in 0..self.respuesta.chars().count().min(caben) {
-                puntos = puntos.push(container(Space::new().width(lado).height(lado)).style(
-                    move |_| container::Style {
-                        background: Some(blanco(alfa).into()),
+            for i in 0..cuantos {
+                let alza = ola.map_or(0.0, |t| {
+                    ((t * 2.0 - i as f32 * 0.08) * std::f32::consts::TAU)
+                        .sin()
+                        .max(0.0)
+                        * 5.0
+                        * u
+                });
+                let punto = container(Space::new().width(lado).height(lado)).style(move |_| {
+                    container::Style {
+                        background: Some(tinta.into()),
                         border: Border {
                             radius: (lado / 2.0).into(),
                             ..Default::default()
                         },
                         ..Default::default()
-                    },
-                ));
+                    }
+                });
+                puntos = puntos.push(
+                    container(punto)
+                        .width(lado)
+                        .height(lado + 10.0 * u)
+                        .center_x(lado)
+                        .padding(Padding {
+                            bottom: alza * 2.0,
+                            ..Padding::ZERO
+                        })
+                        .center_y(lado + 10.0 * u),
+                );
             }
             // Quieto, como en el bloqueo. Con el campo vacío va solo la pista.
-            if !self.respuesta.is_empty() {
+            if !comprobando && !self.respuesta.is_empty() {
                 puntos = puntos.push(
                     container(
                         Space::new()
@@ -1374,30 +2196,34 @@ impl Acceso {
                             .height(bloqueo::ALTO_CAMPO * 0.42 * u),
                     )
                     .style(move |_| container::Style {
-                        background: Some(blanco(0.8 * alfa).into()),
+                        background: Some(tinta_campo(0.8 * alfa).into()),
                         ..Default::default()
                     }),
                 );
             }
-            // Con el campo arriba para que el clic siga cayendo en él.
-            Stack::new()
-                .width(Fill)
-                .push(
-                    container(puntos)
-                        .height(bloqueo::ALTO_CAMPO * u)
-                        .center_y(bloqueo::ALTO_CAMPO * u),
-                )
-                .push(
-                    container(dentro)
-                        .height(bloqueo::ALTO_CAMPO * u)
-                        .center_y(bloqueo::ALTO_CAMPO * u),
-                )
-                .into()
+            if comprobando {
+                puntos.into()
+            } else {
+                // Con el campo arriba para que el clic siga cayendo en él.
+                Stack::new()
+                    .width(Fill)
+                    .push(
+                        container(puntos)
+                            .height(bloqueo::ALTO_CAMPO * u)
+                            .center_y(bloqueo::ALTO_CAMPO * u),
+                    )
+                    .push(
+                        container(dentro)
+                            .height(bloqueo::ALTO_CAMPO * u)
+                            .center_y(bloqueo::ALTO_CAMPO * u),
+                    )
+                    .into()
+            }
         } else {
             dentro
         };
         let borde = match self.estado {
-            Estado::Aviso(_) | Estado::Ocupado(_) => blanco(0.35 * alfa),
+            Estado::Aviso(_) | Estado::Ocupado(_) => tinta_campo(0.35 * alfa),
             _ if self.error.is_some() => tema::alfa(tema::rojo(), alfa),
             _ => tema::alfa(acento, 0.85 * alfa),
         };
@@ -1405,7 +2231,7 @@ impl Acceso {
         let tinta_flecha = if listo {
             tema::alfa(self.sobre_acento(), alfa)
         } else {
-            blanco(0.45 * alfa)
+            tinta_campo(0.45 * alfa)
         };
         let boton = button(
             container(pictograma(
@@ -1423,7 +2249,7 @@ impl Acceso {
             background: Some(if listo {
                 tema::alfa(acento, alfa).into()
             } else {
-                blanco(0.12 * alfa).into()
+                tinta_campo(0.12 * alfa).into()
             }),
             border: Border {
                 radius: (lado_boton / 2.0).into(),
@@ -1432,7 +2258,12 @@ impl Acceso {
             ..Default::default()
         });
         let mut fila_campo = row![
-            pictograma(&self.candado, 16.0 * u, 16.0 * u, Some(blanco(0.6 * alfa))),
+            pictograma(
+                &self.candado,
+                16.0 * u,
+                16.0 * u,
+                Some(tinta_campo(0.6 * alfa))
+            ),
             dentro,
         ]
         .spacing(10.0 * u)
@@ -1449,7 +2280,7 @@ impl Acceso {
                         icono_ojo,
                         16.0 * u,
                         16.0 * u,
-                        Some(blanco(0.65 * alfa)),
+                        Some(tinta_campo(0.65 * alfa)),
                     ))
                     .center_x(26.0 * u)
                     .center_y(26.0 * u),
@@ -1466,7 +2297,7 @@ impl Acceso {
             .padding(Padding::ZERO.left(18.0 * u).right(4.0 * u))
             .center_y(alto_campo)
             .style(move |_| container::Style {
-                background: Some(tema::alfa(bloqueo::FONDO_CAMPO, 0.82 * alfa).into()),
+                background: Some(fondo_campo(alfa).into()),
                 border: Border {
                     radius: (alto_campo / 2.0).into(),
                     width: (2.0 * u).round(),
@@ -1477,25 +2308,66 @@ impl Acceso {
             .into()
     }
 
+    /// Píldora de estado bajo el campo, igual que `bloqueo::aviso`.
+    fn pildora_aviso<'a>(&self, texto: &str, senal: Option<Color>, alfa: f32) -> Elemento<'a> {
+        let u = self.escala;
+        let alto_pildora = bloqueo::ALTO_MENSAJE * u;
+        if texto.is_empty() {
+            return Space::new().height(alto_pildora).into();
+        }
+        let mut fila = row![].spacing(7.0 * u).align_y(Center);
+        if let Some(color) = senal {
+            fila = fila.push(
+                container(Space::new().width(7.0 * u).height(7.0 * u)).style(move |_| {
+                    container::Style {
+                        background: Some(tema::alfa(color, alfa).into()),
+                        border: Border {
+                            radius: (3.5 * u).into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                }),
+            );
+        }
+        fila = fila.push(
+            text(texto.to_string())
+                .size(13.0 * u)
+                .color(tinta_campo(alfa)),
+        );
+        container(fila)
+            .height(alto_pildora)
+            .center_y(alto_pildora)
+            .padding([0.0, 12.0 * u])
+            .style(move |_| container::Style {
+                background: Some(fondo_campo(alfa).into()),
+                border: Border {
+                    radius: (alto_pildora / 2.0).into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
     // 0.1.1
     // modificado en la 0.2.0 -- la pregunta de pam_bookos_huella invita a poner el dedo
+    // modificado en la 0.2.4 -- píldora con fondo y punto indicador, igual que `bloqueo.rs`
     fn mensaje(&self, alfa: f32) -> Elemento<'_> {
         let u = self.escala;
-        let (texto, color) = match (&self.error, &self.estado) {
-            (Some(error), _) => (error.as_str(), tema::rojo()),
+        let (texto, senal) = match (&self.error, &self.estado) {
+            (Some(error), _) => (error.as_str(), Some(tema::rojo())),
             (None, Estado::Usuario) => (
                 self.idioma
                     .t("Escribe tu nombre de usuario", "Enter your username"),
-                blanco(0.55),
+                None,
             ),
-            // pam_unix pregunta a secas «Password:» o «Contraseña:»; el
-            // campo ya lo dice, y en crudo parecía texto de terminal.
             (None, Estado::Pregunta { texto, .. }) if texto == crate::PREGUNTA_HUELLA => (
                 self.idioma.t(
                     "Escribe tu contraseña o pon el dedo",
                     "Enter your password or use your fingerprint",
                 ),
-                blanco(0.55),
+                None,
             ),
             (
                 None,
@@ -1506,41 +2378,37 @@ impl Acceso {
             ) => (
                 self.idioma
                     .t("Introduce tu contraseña", "Enter your password"),
-                blanco(0.55),
+                None,
             ),
-            (None, Estado::Pregunta { texto, .. }) => (texto.as_str(), blanco(0.55)),
-            (None, Estado::Aviso(aviso)) => (aviso.as_str(), blanco(0.8)),
+            (None, Estado::Pregunta { texto, .. }) => (texto.as_str(), None),
+            (None, Estado::Aviso(aviso)) => (aviso.as_str(), None),
             (None, Estado::Ocupado(Operacion::Autenticar)) => {
-                (self.idioma.t("Comprobando…", "Verifying…"), blanco(0.55))
+                (self.idioma.t("Comprobando…", "Verifying…"), None)
             }
             (None, Estado::Ocupado(Operacion::Iniciar)) => (
                 self.idioma.t("Entrando en BookOS…", "Signing in…"),
-                blanco(0.55),
+                None,
             ),
             (None, Estado::Ocupado(Operacion::Cancelar)) => {
-                (self.idioma.t("Cancelando…", "Cancelling…"), blanco(0.55))
+                (self.idioma.t("Cancelando…", "Cancelling…"), None)
             }
         };
-        let principal = text(texto)
-            .size(tema::T_CUERPO * u)
-            .color(tema::alfa(color, color.a * alfa))
-            .width(420.0 * u)
-            .align_x(Center);
+        let principal = self.pildora_aviso(texto, senal, alfa);
         if self.caps_lock {
             column![
                 principal,
                 alto(4.0 * u),
-                text(self.idioma.t("⇪ Bloq Mayús activado", "⇪ Caps Lock is on"))
-                    .size(12.0 * u)
-                    .font(peso(Weight::Semibold))
-                    .color(tema::alfa(tema::amarillo(), alfa))
-                    .width(420.0 * u)
-                    .align_x(Center),
+                self.pildora_aviso(
+                    self.idioma
+                        .t("Bloq Mayús está activado", "Caps Lock is on"),
+                    Some(tema::amarillo()),
+                    alfa,
+                ),
             ]
             .align_x(Center)
             .into()
         } else {
-            principal.into()
+            principal
         }
     }
 }

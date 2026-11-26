@@ -48,6 +48,36 @@ impl Arbol {
     }
 }
 
+pub fn arbol_recientes(
+    pantalla: Rect,
+    controles: impl IntoIterator<Item = (NodeId, String, Rect)>,
+    foco: NodeId,
+) -> Arbol {
+    let mut nodos: Vec<_> = controles
+        .into_iter()
+        .map(|(id, nombre, area)| {
+            let mut boton = nodo(Role::Button, &nombre, "");
+            boton.set_bounds(area);
+            boton.add_action(accesskit::Action::Click);
+            (id, boton)
+        })
+        .collect();
+    let mut raiz = nodo(Role::Window, t("Aplicaciones recientes", "Recent apps"), "");
+    raiz.set_bounds(pantalla);
+    raiz.set_children(nodos.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+    nodos.push((RAIZ, raiz));
+    Arbol {
+        actualizacion: TreeUpdate {
+            nodes: nodos,
+            tree: Some(TreeInfo::new(RAIZ)),
+            tree_id: TreeId::ROOT,
+            focus: foco,
+        },
+        con_foco: true,
+        centros: HashMap::new(),
+    }
+}
+
 const RAIZ: NodeId = NodeId(1);
 
 /// Un identificador estable a partir de un nombre: Orca sigue el foco y la
@@ -503,9 +533,13 @@ mod pruebas {
         let s = shell();
         let arbol = s.arbol_accesible(&origenes());
         let botones = hijos_de(&arbol, "panel");
-        assert_eq!(botones.first().map(String::as_str), Some("Menú de BookUI"));
+        assert_eq!(
+            botones.first().map(String::as_str),
+            Some(t("Menú de BookUI", "BookUI menu"))
+        );
+        let prefijo_reloj = format!("{}, ", t("Reloj", "Clock"));
         assert!(
-            botones.iter().any(|b| b.starts_with("Reloj, ")),
+            botones.iter().any(|b| b.starts_with(&prefijo_reloj)),
             "{botones:?}"
         );
         assert_eq!(arbol.actualizacion.focus, RAIZ, "sin foco de teclado");
@@ -520,7 +554,10 @@ mod pruebas {
         s.enfocar_panel();
         let arbol = s.arbol_accesible(&origenes());
         assert!(arbol.con_foco);
-        assert_eq!(nombre(&arbol, arbol.actualizacion.focus), "Menú de BookUI");
+        assert_eq!(
+            nombre(&arbol, arbol.actualizacion.focus),
+            t("Menú de BookUI", "BookUI menu")
+        );
         s.tecla_foco(TeclaPulsada::Derecha);
         let segundo = hijos_de(&s.arbol_accesible(&origenes()), "panel")[1].clone();
         let arbol = s.arbol_accesible(&origenes());
@@ -547,7 +584,10 @@ mod pruebas {
         s.tecla_foco(TeclaPulsada::Intro);
         assert_eq!(s.emergente_nombre(), Some("calendario"));
         let arbol = s.arbol_accesible(&origenes());
-        assert_eq!(nombre(&arbol, arbol.actualizacion.focus), "Calendario");
+        assert_eq!(
+            nombre(&arbol, arbol.actualizacion.focus),
+            t("Calendario", "Calendar")
+        );
         s.emergente_tecla(TeclaPulsada::Escape);
         assert_eq!(s.emergente_nombre(), None);
         assert_eq!(s.foco_barra(), Some(Foco::Panel(i)));

@@ -23,7 +23,7 @@ use crate::view::PanelElement;
 
 use super::control::{self, ENTRE_BARRA, FILA_BARRA, ICONO_BARRA, PISTA};
 use super::lista::{self, ANCHO, BAJO_CABECERA, CABECERA, MARGEN};
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 
 /// Cuánto más se mete la cabecera que las tarjetas: deja el título a 20 del
 /// borde, alineado con el texto de dentro de las tarjetas.
@@ -255,25 +255,33 @@ impl Brillo {
     // modified 0.2.1 -- avisa del mínimo, que es lo que explica por qué no baja
     fn ayuda_pantalla(&self) -> Option<String> {
         if self.dispositivo.is_some() && self.nivel <= MINIMO {
-            return Some("Es el mínimo: más abajo no se vería.".into());
+            return Some(
+                t(
+                    "Es el mínimo: más abajo no se vería.",
+                    "This is the minimum: any lower and you wouldn’t see it.",
+                )
+                .into(),
+            );
         }
         if !self.pantalla_automatica() {
             return None;
         }
         Some(match self.ajuste() {
             Some((_, ajuste)) => format!(
-                "Ajustado {}{} % sobre la luz",
+                "{} {}{} %{}",
+                t("Ajustado", "Adjusted"),
                 if ajuste > 0 { "+" } else { "−" },
-                ajuste.unsigned_abs()
+                ajuste.unsigned_abs(),
+                t(" sobre la luz", " for the light"),
             ),
-            None => "Sigue la luz ambiente".into(),
+            None => t("Sigue la luz ambiente", "Follows the ambient light").into(),
         })
     }
 
     // 0.1.0
     fn ayuda_teclado(&self) -> Option<&'static str> {
         (self.sensor && self.automatico.teclado && self.teclado.is_some())
-            .then_some("Se enciende con poca luz")
+            .then_some(t("Se enciende con poca luz", "Turns on in low light"))
     }
 
     /// Lo que mide una tarjeta con barra, con o sin línea de ayuda.
@@ -405,10 +413,14 @@ impl Brillo {
     fn estado_nocturna(&self) -> String {
         let hora = |(h, m): tema::HoraDelDia| format!("{h:02}:{m:02}");
         match (self.nocturna, self.horario) {
-            (true, Some((_, hasta))) => format!("Hasta las {}", hora(hasta)),
-            (true, None) => "Encendida".into(),
-            (false, Some((desde, _))) => format!("Programada desde las {}", hora(desde)),
-            (false, None) => "Apagada".into(),
+            (true, Some((_, hasta))) => format!("{} {}", t("Hasta las", "Until"), hora(hasta)),
+            (true, None) => t("Encendida", "On").into(),
+            (false, Some((desde, _))) => format!(
+                "{} {}",
+                t("Programada desde las", "Scheduled from"),
+                hora(desde)
+            ),
+            (false, None) => t("Apagada", "Off").into(),
         }
     }
 
@@ -521,10 +533,22 @@ impl Brillo {
         }
     }
 
+    fn pantalla_disponible(&self) -> bool {
+        self.dispositivo.is_some() && self.maximo > 0
+    }
+
+    fn fila_disponible(&self, fila: Fila) -> bool {
+        match fila {
+            Fila::Pantalla => self.pantalla_disponible(),
+            Fila::Teclado => self.teclado.is_some(),
+        }
+    }
+
     // añadido en la 0.2.0 -- la holgura coincide con la zona que acepta la pulsación del deslizador.
     pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
         [Fila::Pantalla, Fila::Teclado]
             .into_iter()
+            .filter(|f| self.fila_disponible(*f))
             .filter_map(|f| self.zona_barra(f))
             .any(|zona| zona.contains(Point::new(x, y)))
     }
@@ -562,6 +586,9 @@ impl Brillo {
             (Fila::Pantalla, Agarre::Pantalla),
             (Fila::Teclado, Agarre::Teclado),
         ] {
+            if !self.fila_disponible(fila) {
+                continue;
+            }
             let (Some(zona), Some(r)) = (self.zona_barra(fila), self.rect_barra(fila)) else {
                 continue;
             };
@@ -618,11 +645,15 @@ impl Brillo {
     // añadido en la 0.2.1
     fn valor_teclado(&self) -> String {
         match self.teclado.as_ref() {
-            Some(t) if t.maximo == 3 => {
-                ["Apagada", "Baja", "Media", "Alta"][t.nivel.min(3) as usize].into()
-            }
+            Some(t) if t.maximo == 3 => [
+                super::t("Apagada", "Off"),
+                super::t("Baja", "Low"),
+                super::t("Media", "Medium"),
+                super::t("Alta", "High"),
+            ][t.nivel.min(3) as usize]
+                .into(),
             _ => match self.porciento_teclado() {
-                0 => "Apagada".into(),
+                0 => t("Apagada", "Off").into(),
                 p => format!("{p} %"),
             },
         }
@@ -699,7 +730,7 @@ impl Brillo {
                 let realce = self.boton.intensidad(3);
                 linea = linea.push(
                     container(
-                        text("Restablecer")
+                        text(t("Restablecer", "Reset"))
                             .size(12.0)
                             .font(control::peso(Weight::Semibold))
                             .color(tema::mezclar(tema::acento(), tema::texto(), realce * 0.35)),
@@ -774,7 +805,7 @@ impl Brillo {
             })
         };
         let mut tarjetas = column![self.tarjeta(
-            "Pantalla",
+            t("Pantalla", "Display"),
             valor,
             self.ayuda_pantalla(),
             auto(0, 0),
@@ -799,7 +830,7 @@ impl Brillo {
                 None,
             );
             tarjetas = tarjetas.push(self.tarjeta(
-                "Teclado",
+                super::t("Teclado", "Keyboard"),
                 self.valor_teclado(),
                 self.ayuda_teclado().map(str::to_string),
                 auto(1, 1),
@@ -835,7 +866,7 @@ impl Brillo {
         };
         let cabecera = container(
             row![
-                control::titulo("Brillo"),
+                control::titulo(t("Brillo", "Brightness")),
                 Space::new().width(Length::Fill),
                 ajustes
             ]
@@ -874,7 +905,7 @@ impl Brillo {
                 luna,
                 Space::new().width(Length::Fixed(12.0)),
                 column![
-                    text("Luz nocturna")
+                    text(t("Luz nocturna", "Night Light"))
                         .size(14.0)
                         .font(control::peso(Weight::Medium))
                         .color(tema::texto()),
@@ -1027,11 +1058,18 @@ mod tests {
         assert_eq!(automatica(68, Some(52)).ajuste(), Some((52, 16)));
         assert_eq!(
             automatica(40, Some(52)).ayuda_pantalla().as_deref(),
-            Some("Ajustado −12 % sobre la luz")
+            Some(
+                format!(
+                    "{} −12 %{}",
+                    t("Ajustado", "Adjusted"),
+                    t(" sobre la luz", " for the light")
+                )
+                .as_str()
+            )
         );
         assert_eq!(
             automatica(68, None).ayuda_pantalla().as_deref(),
-            Some("Sigue la luz ambiente"),
+            Some(t("Sigue la luz ambiente", "Follows the ambient light")),
             "sin lectura del sensor no hay con qué comparar"
         );
         let mut sin_sensor = automatica(68, Some(52));
@@ -1069,7 +1107,10 @@ mod tests {
         let b = automatica(MINIMO, Some(40));
         assert_eq!(
             b.ayuda_pantalla().as_deref(),
-            Some("Es el mínimo: más abajo no se vería.")
+            Some(t(
+                "Es el mínimo: más abajo no se vería.",
+                "This is the minimum: any lower and you wouldn’t see it."
+            ))
         );
     }
 
@@ -1141,8 +1182,21 @@ mod tests {
             nivel: 2,
             maximo: 3,
         });
-        assert_eq!(b.valor_teclado(), "Media");
+        assert_eq!(b.valor_teclado(), t("Media", "Medium"));
         b.teclado.as_mut().expect("recién puesto").nivel = 0;
-        assert_eq!(b.valor_teclado(), "Apagada");
+        assert_eq!(b.valor_teclado(), t("Apagada", "Off"));
+    }
+
+    #[test]
+    fn sin_dispositivo_de_brillo_no_agarra_ni_engorda_barra() {
+        let mut b = automatica(50, Some(50));
+        b.dispositivo = None;
+        b.maximo = 0;
+        let r = b.rect_barra(Fila::Pantalla).expect("hay barra");
+        let (x, y) = (r.x + r.width / 2.0, r.y + r.height / 2.0);
+        assert!(!b.arrastre_en(x, y));
+        b.pulsar(x, y);
+        assert!(!b.agarrado());
+        assert!(!b.grosor.animando());
     }
 }

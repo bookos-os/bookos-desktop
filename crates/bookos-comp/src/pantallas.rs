@@ -395,7 +395,7 @@ pub fn nombre_visible(conector: &str, modelo: &str) -> String {
         .iter()
         .any(|prefijo| conector.starts_with(prefijo));
     if interno {
-        "Pantalla integrada".into()
+        bookos_shell::t("Pantalla integrada", "Built-in display").into()
     } else if modelo.is_empty() || modelo == "KMS" {
         // "KMS" es el relleno de `udev.rs` cuando no hay EDID.
         conector.into()
@@ -870,7 +870,11 @@ pub fn aplicar_modo_rapido(
     }
     let salidas = state.pantallas.compartido.salidas();
     if salidas.len() < 2 {
-        return Err("No hay otra pantalla conectada".into());
+        return Err(bookos_shell::t(
+            "No hay otra pantalla conectada",
+            "No other display connected",
+        )
+        .into());
     }
     let principal = salidas.iter().position(|s| s.principal).unwrap_or(0);
     let externa = (0..salidas.len()).find(|&i| i != principal).unwrap();
@@ -882,7 +886,13 @@ pub fn aplicar_modo_rapido(
             .find(|m| m.actual)
             .or_else(|| s.modos.iter().find(|m| m.preferido))
             .or_else(|| s.modos.first())
-            .ok_or_else(|| format!("«{}» no anuncia ningún modo", s.id))?;
+            .ok_or_else(|| {
+                if bookos_shell::t("es", "en") == "es" {
+                    format!("«{}» no anuncia ningún modo", s.id)
+                } else {
+                    format!("“{}” reports no display modes", s.id)
+                }
+            })?;
         p.ancho = m.ancho;
         p.alto = m.alto;
         p.refresco_mhz = m.refresco_mhz;
@@ -932,7 +942,11 @@ pub fn aplicar_modo_rapido(
                         .any(|b| a.ancho == b.ancho && a.alto == b.alto)
                 })
                 .ok_or_else(|| {
-                    "Las pantallas no comparten una resolución para duplicar".to_string()
+                    bookos_shell::t(
+                        "Las pantallas no comparten una resolución para duplicar",
+                        "The displays don’t share a resolution to mirror",
+                    )
+                    .to_string()
                 })?;
             for i in [principal, externa] {
                 peticiones[i].activa = true;
@@ -1016,7 +1030,10 @@ mod pruebas {
 
     #[test]
     fn el_monitor_se_llama_por_su_modelo_y_no_por_el_conector() {
-        assert_eq!(nombre_visible("eDP-1", "ATNA40YK"), "Pantalla integrada");
+        assert_eq!(
+            nombre_visible("eDP-1", "ATNA40YK"),
+            bookos_shell::t("Pantalla integrada", "Built-in display")
+        );
         assert_eq!(nombre_visible("HDMI-A-1", "DELL U2720Q"), "DELL U2720Q");
         assert_eq!(nombre_visible("DP-2", "KMS"), "DP-2");
         assert_eq!(nombre_visible("DP-3", ""), "DP-3");

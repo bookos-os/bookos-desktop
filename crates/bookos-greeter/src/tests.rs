@@ -113,6 +113,42 @@ fn comenzar(socket: &mut UnixStream) -> anyhow::Result<Request> {
     Ok(Request::read_from(socket)?)
 }
 
+fn intro_en_el_campo(acceso: &Acceso) -> Mensaje {
+    use iced::keyboard::{
+        Event, Key, Location, Modifiers,
+        key::{Code, Named, Physical},
+    };
+    use iced_runtime::core::widget::{Id, operation::focusable};
+    use iced_runtime::user_interface::{Cache, UserInterface};
+
+    let mut renderer = iced_tiny_skia::Renderer::new(iced::Font::DEFAULT, iced::Pixels(16.0));
+    let mut vista = UserInterface::build(
+        acceso.vista(),
+        acceso.pantalla,
+        Cache::default(),
+        &mut renderer,
+    );
+    vista.operate(&renderer, &mut focusable::focus(Id::new("respuesta")));
+    let mut mensajes = Vec::new();
+    let _ = vista.update(
+        &[iced::Event::Keyboard(Event::KeyPressed {
+            key: Key::Named(Named::Enter),
+            modified_key: Key::Named(Named::Enter),
+            physical_key: Physical::Code(Code::Enter),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        })],
+        iced::mouse::Cursor::Unavailable,
+        &mut renderer,
+        &mut iced_runtime::core::clipboard::Null,
+        &mut mensajes,
+    );
+    assert!(matches!(mensajes.as_slice(), [Mensaje::Continuar]));
+    mensajes.remove(0)
+}
+
 #[test]
 // 0.1.1
 fn autentica_con_varias_preguntas_y_sale_solo_tras_arrancar() -> anyhow::Result<()> {
@@ -146,8 +182,10 @@ fn autentica_con_varias_preguntas_y_sale_solo_tras_arrancar() -> anyhow::Result<
         }
     ));
     let _ = acceso.actualizar(Mensaje::Respuesta("secreto".into()));
-    let tarea = acceso.actualizar(Mensaje::Continuar);
+    let intro = intro_en_el_campo(&acceso);
+    let tarea = acceso.actualizar(intro);
     assert!(acceso.respuesta.is_empty());
+    assert!(acceso.carga_sesion.is_some(), "Intro muestra el logo antes de esperar a PAM");
     let mensaje = recibir(tarea);
     let _ = acceso.actualizar(mensaje);
     assert!(matches!(
@@ -157,8 +195,11 @@ fn autentica_con_varias_preguntas_y_sale_solo_tras_arrancar() -> anyhow::Result<
             ..
         }
     ));
+    assert!(acceso.carga_sesion.is_none(), "la segunda pregunta devuelve el formulario");
     let _ = acceso.actualizar(Mensaje::Respuesta("123456".into()));
-    let mensaje = recibir(acceso.actualizar(Mensaje::Continuar));
+    let tarea = acceso.actualizar(Mensaje::Continuar);
+    let _ = acceso.actualizar(Mensaje::FotogramaCarga(Instant::now()));
+    let mensaje = recibir(tarea);
     // El aviso se contesta solo: pam_fprintd no lee el lector hasta entonces.
     let tarea = acceso.actualizar(mensaje);
     assert!(matches!(acceso.estado, Estado::Aviso(_)));
@@ -240,9 +281,20 @@ fn un_fallo_al_arrancar_mantiene_el_greeter_abierto() -> anyhow::Result<()> {
     })?;
     let _ = acceso.actualizar(Mensaje::Usuario("eve".into()));
     let mensaje = recibir(acceso.actualizar(Mensaje::Continuar));
-    let mensaje = recibir(acceso.actualizar(mensaje));
+    let confirmacion = acceso.actualizar(mensaje);
+    assert!(
+        iced_runtime::task::into_stream(confirmacion).is_none(),
+        "aunque PAM confirme enseguida, el compositor espera al primer dibujo"
+    );
+    let inicio = acceso.carga_sesion.as_ref().expect("el logo queda preparado").desde;
+    assert!(iced_runtime::task::into_stream(
+        acceso.actualizar(Mensaje::FotogramaCarga(inicio - Duration::from_millis(1)))
+    ).is_none());
+    let arranque = acceso.actualizar(Mensaje::FotogramaCarga(Instant::now()));
+    let mensaje = recibir(arranque);
     let tarea = acceso.actualizar(mensaje);
     assert!(matches!(acceso.estado, Estado::Usuario));
+    assert!(acceso.carga_sesion.is_none(), "el fallo revela el formulario y su mensaje");
     assert!(
         acceso
             .error
@@ -266,7 +318,7 @@ fn la_vista_previa_no_autentica_y_los_diagnosticos_ocultan_respuestas() {
         acceso
             .error
             .as_deref()
-            .is_some_and(|texto| texto.starts_with("Vista previa"))
+            .is_some_and(|texto| texto.starts_with(acceso.idioma.t("Vista previa", "Preview mode")))
     );
     assert!(!format!("{:?}", Mensaje::Respuesta("secreto".into())).contains("secreto"));
 }
@@ -375,7 +427,11 @@ fn la_huella_suelta_la_pregunta_de_pam_bookos_huella() -> anyhow::Result<()> {
     let _ = acceso.actualizar(Mensaje::Huella("no-coincide 1".into()));
     assert!(acceso.error.is_some());
     assert!(matches!(acceso.estado, Estado::Pregunta { .. }));
-    let mensaje = recibir(acceso.actualizar(Mensaje::Huella("coincide".into())));
+    assert!(acceso.carga_sesion.is_none(), "una huella rechazada conserva la contraseña");
+    let tarea = acceso.actualizar(Mensaje::Huella("coincide".into()));
+    assert!(acceso.carga_sesion.is_some(), "una huella válida también muestra el logo");
+    let _ = acceso.actualizar(Mensaje::FotogramaCarga(Instant::now()));
+    let mensaje = recibir(tarea);
     let inicio = acceso.actualizar(mensaje);
     let _ = acceso.actualizar(recibir(inicio));
     servidor.terminar()
@@ -509,6 +565,7 @@ fn renderiza_las_vistas_para_inspeccion() -> anyhow::Result<()> {
     std::fs::create_dir_all(&directorio)?;
     // La escala que pone BookOS en este panel: la que el greeter recibe ahora publicada.
     let (ancho, alto, escala) = (2880, 1800, 2.0);
+    let solo = std::env::var("BOOKOS_GREETER_PREVIEW_VISTA").ok();
     let publicada = std::env::var_os("BOOKOS_GREETER_PREVIEW_PUBLICADO").map(PathBuf::from);
     let pregunta = || Estado::Pregunta {
         texto: "Contraseña:".into(),
@@ -525,13 +582,76 @@ fn renderiza_las_vistas_para_inspeccion() -> anyhow::Result<()> {
             a.fuerza.fijar(1.0);
         }),
         ("acceso", Tema::Oscuro, |a| a.usuario = "laura".into()),
+        ("acceso-claro", Tema::Claro, |a| a.usuario = "laura".into()),
         ("fallo", Tema::Oscuro, |a| {
             a.usuario = "laura".into();
             a.error = Some("No se ha podido autenticar. Comprueba tus datos.".into());
         }),
-        ("menu", Tema::Oscuro, |a| a.menu.fijar(1.0)),
+        ("confirmar", Tema::Oscuro, |a| {
+            a.usuario = "laura".into();
+            a.confirmacion = Some((Peticion::Apagar, false));
+        }),
+        ("menu", Tema::Oscuro, |a| {
+            a.panel_abierto = Some(Panel::Energia);
+            a.panel_visible = Some(Panel::Energia);
+            a.menu.fijar(1.0);
+        }),
+        ("bateria", Tema::Oscuro, |a| {
+            a.panel_abierto = Some(Panel::Bateria);
+            a.panel_visible = Some(Panel::Bateria);
+            a.bateria_detalle.dato = Some(bookos_shell::Battery {
+                percent: 49,
+                charging: false,
+                plugged: false,
+                minutes: Some(74),
+            });
+            a.bateria_detalle.perfil = "balanced".into();
+            a.pulgar.fijar(1.0);
+            a.menu.fijar(1.0);
+        }),
+        ("bateria-claro", Tema::Claro, |a| {
+            a.panel_abierto = Some(Panel::Bateria);
+            a.panel_visible = Some(Panel::Bateria);
+            a.bateria_detalle.dato = Some(bookos_shell::Battery {
+                percent: 49,
+                charging: false,
+                plugged: false,
+                minutes: Some(74),
+            });
+            a.bateria_detalle.perfil = "balanced".into();
+            a.pulgar.fijar(1.0);
+            a.menu.fijar(1.0);
+        }),
+        ("red", Tema::Oscuro, |a| {
+            a.panel_abierto = Some(Panel::Red);
+            a.panel_visible = Some(Panel::Red);
+            a.wifi_switch.fijar(1.0);
+            a.menu.fijar(1.0);
+        }),
+        ("red-claro", Tema::Claro, |a| {
+            a.panel_abierto = Some(Panel::Red);
+            a.panel_visible = Some(Panel::Red);
+            a.wifi_switch.fijar(1.0);
+            a.menu.fijar(1.0);
+        }),
+        ("idioma", Tema::Oscuro, |a| {
+            a.panel_abierto = Some(Panel::Idioma);
+            a.panel_visible = Some(Panel::Idioma);
+            a.menu.fijar(1.0);
+        }),
         ("otro", Tema::Claro, |a| a.manual = true),
+        ("verificando", Tema::Oscuro, |a| {
+            a.estado = Estado::Ocupado(Operacion::Autenticar);
+            a.mostrar_carga_sesion();
+        }),
+        ("iniciando", Tema::Claro, |a| {
+            a.estado = Estado::Ocupado(Operacion::Iniciar);
+            a.mostrar_carga_sesion();
+        }),
     ] {
+        if solo.as_deref().is_some_and(|elegida| elegida != nombre) {
+            continue;
+        }
         let personas = de_pega(&[
             ("daniel", "Daniel"),
             ("laura", "Laura"),
@@ -541,6 +661,7 @@ fn renderiza_las_vistas_para_inspeccion() -> anyhow::Result<()> {
         bookos_shell::tema::aplicar(tema_de);
         acceso.pantalla = Size::new(ancho as f32, alto as f32);
         acceso.escala = escala;
+        acceso.entrada_desde -= std::time::Duration::from_secs(5);
         acceso.cambio_desde -= std::time::Duration::from_secs(5);
         // Con BOOKOS_GREETER_PREVIEW_PUBLICADO se viste como una carpeta
         // publicada de verdad: fondo, tema y paleta de esa sesión.
@@ -631,7 +752,17 @@ fn renderiza_las_vistas_para_inspeccion() -> anyhow::Result<()> {
         // Las losas tienen que dar el mismo fondo que la imagen en una pieza:
         // una fila y una columna que las cruzan todas delatan una costura o
         // una losa corrida un píxel.
-        if let Some(usuarios::Fondo { losas }) = cargar(64.0)
+        if acceso.carga_sesion.is_some() {
+            use bookos_shell::carga_sesion as carga;
+            let y = alto as f32 / 2.0
+                + (carga::LOGO + carga::SEPARACION) as f32 * escala / 2.0
+                - carga::DESFASE_Y as f32 * escala;
+            let x = (ancho as f32 - carga::ANCHO_BARRA as f32 * escala) / 2.0;
+            let brillo = |x: f32, y: f32| pixmap.data()[((y as u32 * ancho + x as u32) * 4) as usize];
+            assert_eq!(brillo(0.0, 0.0), 0, "el relevo parte de negro");
+            assert!(brillo(x + 16.0, y) > 160, "la barra ya se ve en el primer dibujo");
+            assert!(brillo(ancho as f32 / 2.0, y - 100.0) > 50, "el logo conserva su eje");
+        } else if let Some(usuarios::Fondo { losas }) = cargar(64.0)
             && let iced::widget::image::Handle::Rgba { pixels, .. } = &losas[0][0].0
         {
             let en = |x: u32, y: u32| ((y * ancho + x) * 4) as usize;
@@ -658,6 +789,7 @@ fn cambia_idioma_teclado_y_visibilidad_de_contrasena() {
 
     let _ = acceso.actualizar(Mensaje::ElegirIdioma(Idioma::En));
     assert_eq!(acceso.idioma, Idioma::En);
+    assert_eq!(acceso.idioma_pulgar.destino(), 1.0);
 
     let _ = acceso.actualizar(Mensaje::ElegirTeclado("us".into()));
     assert_eq!(acceso.teclado.as_deref(), Some("US"));
@@ -701,11 +833,94 @@ fn gestiona_redes_wifi_y_perfiles_de_energia_en_vista_previa() {
     assert_eq!(acceso.wifi_estado.ssid_actual, None);
     let _ = acceso.actualizar(Mensaje::WifiAlternar(false));
     assert!(!acceso.wifi_estado.encendida);
+    assert_eq!(acceso.wifi_switch.destino(), 0.0);
 
     // Cambiar el modo de energía en el panel de batería.
     let _ = acceso.actualizar(Mensaje::AbrirPanel(Some(Panel::Bateria)));
     assert_eq!(acceso.panel_abierto, Some(Panel::Bateria));
     let _ = acceso.actualizar(Mensaje::PerfilEnergia("performance".into()));
     assert_eq!(acceso.bateria_detalle.perfil, "performance");
+    assert_eq!(acceso.pulgar.destino(), 2.0);
+}
+
+#[test]
+fn apagar_y_reiniciar_piden_confirmacion_antes_de_ejecutar() {
+    let (mut acceso, _) = Acceso::nuevo(None, "/sesion-no-utilizada".into(), Vec::new());
+    let _ = acceso.actualizar(Mensaje::Energia(Peticion::Apagar));
+    assert_eq!(acceso.confirmacion, Some((Peticion::Apagar, false)));
+    assert_eq!(acceso.error, None);
+
+    // Esc cancela sin ejecutar.
+    let _ = acceso.actualizar(Mensaje::Cancelar);
+    assert_eq!(acceso.confirmacion, None);
+    assert_eq!(acceso.error, None);
+
+    // Confirmar con teclado (Derecha + Intro) ejecuta (en vista previa deja aviso).
+    let _ = acceso.actualizar(Mensaje::Energia(Peticion::Reiniciar));
+    assert_eq!(acceso.confirmacion, Some((Peticion::Reiniciar, false)));
+    let _ = acceso.actualizar(Mensaje::ConfirmarFoco(true));
+    assert_eq!(acceso.confirmacion, Some((Peticion::Reiniciar, true)));
+    let _ = acceso.actualizar(Mensaje::Continuar);
+    assert_eq!(acceso.confirmacion, None);
+    assert!(acceso.error.as_deref().is_some_and(|e| e.contains("reboot")));
+
+    // Suspender es reversible y no pide confirmación.
+    acceso.error = None;
+    let _ = acceso.actualizar(Mensaje::Energia(Peticion::Suspender));
+    assert_eq!(acceso.confirmacion, None);
+    assert!(acceso.error.as_deref().is_some_and(|e| e.contains("suspend")));
+}
+
+#[test]
+fn el_tema_claro_adapta_fondo_y_tinta_del_campo() {
+    bookos_shell::tema::aplicar(bookos_shell::tema::Tema::Oscuro);
+    let oscuro_fondo = bookos_shell::bloqueo::fondo_campo();
+    let oscuro_tinta = bookos_shell::bloqueo::tinta_campo();
+    bookos_shell::tema::aplicar(bookos_shell::tema::Tema::Claro);
+    let claro_fondo = bookos_shell::bloqueo::fondo_campo();
+    let claro_tinta = bookos_shell::bloqueo::tinta_campo();
+    assert_ne!(oscuro_fondo, claro_fondo);
+    assert_ne!(oscuro_tinta, claro_tinta);
+    bookos_shell::tema::aplicar(bookos_shell::tema::Tema::Oscuro);
+}
+
+#[test]
+fn recuerda_el_ultimo_usuario_al_autenticar() -> anyhow::Result<()> {
+    let personas = de_pega(&[("daniel", "Daniel"), ("laura", "Laura")]);
+    let (mut acceso, servidor) = Servidor::con_personas(personas, |mut socket| {
+        assert!(
+            matches!(comenzar(&mut socket)?, Request::CreateSession { username } if username == "laura")
+        );
+        Response::Success.write_to(&mut socket)?;
+        Ok(())
+    })?;
+    let mensaje = recibir(acceso.actualizar(Mensaje::Elegir(1)));
+    assert!(matches!(
+        mensaje,
+        Mensaje::Recibido(Operacion::Autenticar, Ok(Respuesta::Confirmado))
+    ));
+    assert_eq!(acceso.usuario, "laura");
+
+    // Comprueba que `greeter.env` guarda y conserva el último usuario al cambiar teclado/idioma.
+    let dir = std::env::temp_dir().join(format!("bookos-greeter-last-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let ruta = dir.join("greeter.env");
+    sistema::guardar_preferencias_en(&ruta, "es", "es_ES.UTF-8", Some("laura"));
+    assert_eq!(sistema::leer_ultimo_usuario_en(&ruta).as_deref(), Some("laura"));
+    sistema::guardar_preferencias_en(&ruta, "us", "en_US.UTF-8", None);
+    assert_eq!(sistema::leer_ultimo_usuario_en(&ruta).as_deref(), Some("laura"));
+    std::fs::remove_dir_all(&dir)?;
+    servidor.terminar()
+}
+
+#[test]
+fn la_entrada_del_greeter_se_funde_desde_negro_y_respeta_efectos_reducidos() {
+    let (acceso, _) = Acceso::nuevo(None, "/s".into(), Vec::new());
+    assert!(acceso.velo_entrada_para(std::time::Duration::ZERO, false) == 1.0);
+    assert!(acceso.velo_entrada_para(std::time::Duration::from_secs(2), false) == 0.0);
+    assert_eq!(
+        acceso.velo_entrada_para(std::time::Duration::ZERO, true),
+        0.0
+    );
 }
 

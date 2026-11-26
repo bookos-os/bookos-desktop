@@ -67,7 +67,7 @@ enum Entrada {
     Item {
         etiqueta: String,
         atajo: Option<&'static str>,
-        accion: fn() -> Accion,
+        accion: Accion,
     },
     Divisor,
 }
@@ -86,58 +86,82 @@ fn entradas() -> Vec<Entrada> {
         // `bookos-about` en el sistema, y `kinfocenter` —lo que se abría
         // antes— es el panel de otro escritorio y enseña las versiones de
         // Plasma y de Qt en vez de las de BookOS.
-        item(t("Acerca de este PC", "About This PC"), None, || Accion::Acerca),
+        item(
+            t("Acerca de este PC", "About This PC"),
+            None,
+            Accion::Acerca,
+        ),
         Divisor,
         // Antes de «Preferencias del sistema», que abre otro programa: esta
         // es del propio escritorio y se aplica al pulsarla.
-        item(t("Apariencia…", "Appearance…"), None, || Accion::Emergente("apariencia")),
-        item(t("Preferencias del sistema…", "System Preferences…"), None, || {
-            Accion::Lanzar("bookos-settings".into())
-        }),
+        item(
+            t("Apariencia…", "Appearance…"),
+            None,
+            Accion::Emergente("apariencia"),
+        ),
+        item(
+            t("Preferencias del sistema…", "System Preferences…"),
+            None,
+            Accion::Lanzar("bookos-settings".into()),
+        ),
         // `bookos-store` todavía no existe —no hay ni un crate con ese nombre
         // en el repositorio—, así que pulsar aquí no hacía nada: `sh -c
         // bookos-store` fallaba con "orden no encontrada" y el menú se cerraba
         // como si hubiera funcionado. Mientras no haya tienda propia, cae a
         // Discover, que es la que ya trae esta base y hace lo mismo de verdad:
         // instalar software.
-        item("BookOS Store…", None, || {
-            Accion::Lanzar("bookos-store || plasma-discover".into())
-        }),
+        item(
+            "BookOS Store…",
+            None,
+            Accion::Lanzar("bookos-store || plasma-discover".into()),
+        ),
         Divisor,
-        item(t("Dormir", "Sleep"), None, || {
-            Accion::Lanzar("systemctl suspend".into())
-        }),
+        item(
+            t("Dormir", "Sleep"),
+            None,
+            Accion::Lanzar("systemctl suspend".into()),
+        ),
     ];
     // Debajo de Dormir, y solo si logind dice que se puede: sin swap en disco
     // el botón fallaría sin más.
     if crate::confirmacion::hibernar_disponible() {
-        entradas.push(item(t("Hibernar", "Hibernate"), None, || {
-            Accion::Lanzar("systemctl hibernate".into())
-        }));
+        entradas.push(item(
+            t("Hibernar", "Hibernate"),
+            None,
+            Accion::Lanzar("systemctl hibernate".into()),
+        ));
     }
     let login = std::env::var("USER").unwrap_or_default();
     let nombre = crate::bloqueo::nombre_completo(&login).unwrap_or(login);
     entradas.extend([
-        item(t("Reiniciar…", "Restart…"), None, || {
-            Accion::Lanzar("systemctl reboot".into())
-        }),
-        item(t("Apagar…", "Shut down…"), None, || {
-            Accion::Lanzar("systemctl poweroff".into())
-        }),
+        item(
+            t("Reiniciar…", "Restart…"),
+            None,
+            Accion::Lanzar("systemctl reboot".into()),
+        ),
+        item(
+            t("Apagar…", "Shut down…"),
+            None,
+            Accion::Lanzar("systemctl poweroff".into()),
+        ),
         Divisor,
-        item(t("Pantalla de bloqueo", "Lock Screen"), Some("Meta+L"), || Accion::Bloquear),
-        Item {
-            // Con el nombre, como en macOS: en un equipo con varias cuentas
-            // dice cuál se va a cerrar. Sin `USER` queda la frase sola.
-            etiqueta: if nombre.is_empty() {
-                t("Cerrar sesión…", "Log out…").into()
-            } else {
-                format!("{} {nombre}…", t("Cerrar sesión de", "Log out"))
-            },
-            atajo: Some("Ctrl+Alt+Supr"),
-            accion: || Accion::CerrarSesion,
-        },
+        item(
+            t("Pantalla de bloqueo", "Lock Screen"),
+            Some("Meta+L"),
+            Accion::Bloquear,
+        ),
     ]);
+    entradas.extend([Item {
+        // Con el nombre, como en macOS: en un equipo con varias cuentas
+        // dice cuál se va a cerrar. Sin `USER` queda la frase sola.
+        etiqueta: if nombre.is_empty() {
+            t("Cerrar sesión…", "Log out…").into()
+        } else {
+            format!("{} {nombre}…", t("Cerrar sesión de", "Log out"))
+        },
+        atajo: Some("Ctrl+Alt+Supr"),
+        accion: Accion::CerrarSesion,
+    }]);
     entradas
 }
 
@@ -260,7 +284,7 @@ impl Menu {
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
         let i = self.entrada_en(x, y)?;
         match &self.entradas[i] {
-            Entrada::Item { accion, .. } => Some(accion()),
+            Entrada::Item { accion, .. } => Some(accion.clone()),
             Entrada::Divisor => None,
         }
     }
@@ -296,7 +320,7 @@ impl Menu {
             // entrada accidentalmente. Con una entrada señalada, la ejecuta.
             T::Intro | T::Caracter(' ') => match self.señalada.actual() {
                 Some(i) => match &self.entradas[i] {
-                    Entrada::Item { accion, .. } => Tecla::Hacer(accion()),
+                    Entrada::Item { accion, .. } => Tecla::Hacer(accion.clone()),
                     Entrada::Divisor => Tecla::Ignorada,
                 },
                 None => Tecla::Ignorada,
@@ -411,7 +435,14 @@ pub(super) fn fila(
     icono: Option<&str>,
     señalada: f32,
 ) -> PanelElement<'static> {
-    fila_con(etiqueta, atajo, icono.map(Delante::Icono), false, false, señalada)
+    fila_con(
+        etiqueta,
+        atajo,
+        icono.map(Delante::Icono),
+        false,
+        false,
+        señalada,
+    )
 }
 
 /// Lo que va delante del texto de una fila.
@@ -458,7 +489,11 @@ pub(super) fn fila_con(
     // gris sutil: es lo que hace que se lea como un menú de sistema. El fondo
     // entra por alfa y no mezclándose con la tarjeta porque debajo hay un
     // popover translúcido: mezclar con `card()` dejaría un rectángulo opaco.
-    let base = if peligro { tema::rojo() } else { tema::acento() };
+    let base = if peligro {
+        tema::rojo()
+    } else {
+        tema::acento()
+    };
     let fondo = tema::alfa(base, señalada);
     let sobre = tema::tinta_sobre(base);
     let reposo = if peligro { rojo_texto() } else { tema::texto() };
@@ -587,7 +622,8 @@ fn opcion(elegida: bool, señalada: f32) -> PanelElement<'static> {
 // modificado en la 0.2.0 -- palabras en teclas pequeñas, sin símbolos de Mac
 fn nombre_tecla(tecla: &str) -> &str {
     match tecla {
-        "Meta" => "Súper",
+        "Meta" => t("Súper", "Super"),
+        "Supr" => t("Supr", "Delete"),
         otra => otra,
     }
 }
@@ -664,5 +700,20 @@ mod tests {
             Tecla::Hacer(Accion::Acerca)
         ));
         assert!(!m.accesible().is_empty());
+    }
+
+    #[test]
+    fn sin_entradas_de_cambio_de_usuario() {
+        let m = Menu::new();
+        assert!(
+            !m.entradas.iter().any(|e| matches!(
+                e,
+                Entrada::Item {
+                    accion: Accion::Lanzar(cmd),
+                    ..
+                } if cmd.contains("bookos-cambiar-usuario")
+            )),
+            "el menú del logo no debe incluir el cambio rápido de usuario"
+        );
     }
 }

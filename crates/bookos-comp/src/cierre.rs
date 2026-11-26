@@ -151,7 +151,7 @@ impl Cierre {
 
     // 0.1.0
     pub fn terminado(&self) -> bool {
-        self.inicio.elapsed() >= DURACION
+        terminado_en(self.inicio, DURACION)
     }
 
     /// Alfa y zoom de ahora, con la curva de la entrada recorrida al revés.
@@ -226,5 +226,30 @@ impl Cierre {
             alfa,
             zoom,
         })
+    }
+}
+
+pub(crate) fn terminado_en(inicio: Instant, duracion: Duration) -> bool {
+    tema::efectos_reducidos() || inicio.elapsed() >= duracion
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminado_en_acorta_con_efectos_reducidos() {
+        struct GuardiaReducidos(bool);
+        impl Drop for GuardiaReducidos {
+            fn drop(&mut self) {
+                tema::aplicar_efectos_reducidos(self.0);
+            }
+        }
+        let _g = GuardiaReducidos(tema::efectos_reducidos());
+        let inicio = Instant::now();
+        tema::aplicar_efectos_reducidos(false);
+        assert!(!terminado_en(inicio, Duration::from_secs(60)));
+        tema::aplicar_efectos_reducidos(true);
+        assert!(terminado_en(inicio, Duration::from_secs(60)));
     }
 }

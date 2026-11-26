@@ -43,6 +43,7 @@ use iced_core::font::{Font, Weight};
 use iced_core::{Border, Color, Length, Shadow, Vector};
 use iced_widget::{Row, Space, column, container, image, row, stack, text};
 
+use crate::emergente::t;
 use crate::icono;
 use crate::tema;
 use crate::view::PanelElement;
@@ -585,6 +586,9 @@ impl Actividad {
         a.app_nombre = nombre_app(&a.estado);
         a.guardar_miniaturas();
         a.seguir_fase(true);
+        let ahora = Instant::now();
+        a.desde = ahora;
+        a.nivel_desde = (0.0, ahora);
         a
     }
 
@@ -1101,15 +1105,20 @@ impl Actividad {
 
     // 0.1.0
     pub fn animando(&self) -> bool {
-        self.animaciones
-            && (self.desde.elapsed() < tema::D_ISLA
-                || self.saliendo.is_some()
-                || self.cambio.is_some_and(|t| t.elapsed() < tema::D_ISLA)
-                || self.relevo.is_some()
-                || self
-                    .sacudida
-                    .is_some_and(|t| t.elapsed() < tema::D_ISLA + D_SACUDIDA)
-                || (self.vista == Vista::Compacta && self.sonando() && self.con_ondas()))
+        if !self.animaciones {
+            return false;
+        }
+        if tema::efectos_reducidos() {
+            return self.saliendo.is_some();
+        }
+        self.desde.elapsed() < tema::D_ISLA
+            || self.saliendo.is_some()
+            || self.cambio.is_some_and(|t| t.elapsed() < tema::D_ISLA)
+            || self.relevo.is_some()
+            || self
+                .sacudida
+                .is_some_and(|t| t.elapsed() < tema::D_ISLA + D_SACUDIDA)
+            || (self.vista == Vista::Compacta && self.sonando() && self.con_ondas())
     }
 
     /// La voz que oye Zenith, siguiendo al último nivel publicado sin saltos.
@@ -1144,7 +1153,8 @@ impl Actividad {
     /// aplican a la textura ya pintada desde el compositor/GPU.
     // 0.1.0
     pub fn ondas_pendientes(&self) -> bool {
-        self.animaciones
+        !tema::efectos_reducidos()
+            && self.animaciones
             && self.vista == Vista::Compacta
             && self.sonando()
             && self.con_ondas()
@@ -1901,9 +1911,9 @@ impl Actividad {
                 row![
                     punto(self.sonando(), tema::rojo(), 8.0),
                     text(if self.estado.pausado {
-                        "En pausa"
+                        t("En pausa", "Paused")
                     } else {
-                        "Grabando"
+                        t("Grabando", "Recording")
                     })
                     .size(12)
                     .font(negrita())
@@ -1993,11 +2003,11 @@ impl Actividad {
             Clase::Timer => {
                 let vencido = self.estado.restante_ms < 0;
                 let (estado, principal) = if vencido {
-                    ("Tiempo acabado", "Aplazar")
+                    (t("Tiempo acabado", "Time's up"), t("Aplazar", "Snooze"))
                 } else if self.estado.pausado {
-                    ("En pausa", "Reanudar")
+                    (t("En pausa", "Paused"), t("Reanudar", "Resume"))
                 } else {
-                    ("En marcha", "Pausar")
+                    (t("En marcha", "Running"), t("Pausar", "Pause"))
                 };
                 // Lo transcurrido, que es lo que crece. Vencido, llena y roja.
                 let hecho = if vencido {
@@ -2008,7 +2018,7 @@ impl Actividad {
                     0.0
                 };
                 column![
-                    rotulo("Temporizador"),
+                    rotulo(t("Temporizador", "Timer")),
                     Space::new().height(Length::Fixed(6.0)),
                     // Open Sans trae las cifras tabulares por defecto: centrada,
                     // la cuenta atrás no baila al cambiar de dígito.
@@ -2045,7 +2055,7 @@ impl Actividad {
                     Space::new().height(Length::Fixed(18.0)),
                     row![
                         boton(principal, Boton::Principal),
-                        boton("Parar", Boton::Secundario)
+                        boton(t("Parar", "Stop"), Boton::Secundario)
                     ]
                     .spacing(BOTON_SEP),
                 ]
@@ -2091,7 +2101,11 @@ impl Actividad {
                             text(format!("{:.0} %", f * 100.0)).size(12).font(negrita()),
                             Space::new().width(Length::Fill),
                             text(if self.estado.restante_ms >= 0 {
-                                format!("Quedan {}", formato_corto(self.estado.restante_ms))
+                                format!(
+                                    "{} {}",
+                                    t("Quedan", "Left:"),
+                                    formato_corto(self.estado.restante_ms)
+                                )
                             } else {
                                 String::new()
                             })
@@ -2102,7 +2116,7 @@ impl Actividad {
                     )
                     .height(Length::Fixed(TRANSFER_INFO_H)),
                     Space::new().height(Length::Fixed(18.0)),
-                    boton("Cancelar", Boton::Secundario),
+                    boton(t("Cancelar", "Cancel"), Boton::Secundario),
                 ]
                 .into()
             }
@@ -2110,9 +2124,9 @@ impl Actividad {
                 let en_curso = self.estado.restante_ms < 0;
                 column![
                     rotulo(if en_curso {
-                        "En curso"
+                        t("En curso", "Now")
                     } else {
-                        "Próximo evento"
+                        t("Próximo evento", "Next event")
                     }),
                     Space::new().height(Length::Fixed(6.0)),
                     container(
@@ -2146,9 +2160,13 @@ impl Actividad {
                         row![
                             icono_teñido(icono_inline(RELOJ), 16.0, tema::TEXTO2),
                             text(if en_curso {
-                                "Ya ha empezado".to_string()
+                                t("Ya ha empezado", "Already started").to_string()
                             } else {
-                                format!("Empieza {}", cuenta_atras(self.estado.restante_ms))
+                                format!(
+                                    "{} {}",
+                                    t("Empieza", "Starts"),
+                                    cuenta_atras(self.estado.restante_ms)
+                                )
                             })
                             .size(13)
                             .color(tema::TEXTO2),
@@ -2161,7 +2179,7 @@ impl Actividad {
                     // La única orden que el calendario atiende es «dismiss»
                     // (calendar/src-tauri/src/avisos.rs); un «Abrir
                     // calendario» no tendría quien lo escuchase.
-                    boton("Descartar", Boton::Principal),
+                    boton(t("Descartar", "Dismiss"), Boton::Principal),
                 ]
                 .into()
             }
@@ -2199,14 +2217,14 @@ impl Actividad {
                     Space::new().height(Length::Fixed(MON_FILA_H * (3 - n) as f32 + 16.0)),
                     match self.estado.anc {
                         Some(modo) => segmentado_ruido(modo),
-                        None => boton("Abrir en Ajustes", Boton::Principal),
+                        None => boton(t("Abrir en Ajustes", "Open in Settings"), Boton::Principal),
                     },
                 ]
                 .into()
             }
             Clase::Asistente(_) => Space::new().into(),
             Clase::Monitor => column![
-                rotulo("Rendimiento"),
+                rotulo(t("Rendimiento", "Performance")),
                 Space::new().height(Length::Fixed(8.0)),
                 filas_metricas(&self.estado.metricas, &[], false),
             ]
@@ -2216,9 +2234,9 @@ impl Actividad {
                     row![
                         punto(self.sonando(), tema::rojo(), 10.0),
                         text(if self.estado.pausado {
-                            "En pausa"
+                            t("En pausa", "Paused")
                         } else {
-                            "Grabando"
+                            t("Grabando", "Recording")
                         })
                         .size(13)
                         .font(negrita()),
@@ -2377,16 +2395,32 @@ impl Actividad {
             .into()
         };
         column![
-            fila(ABRIR, format!("Abrir {}", self.app_nombre), false),
+            fila(
+                ABRIR,
+                format!("{} {}", t("Abrir", "Open"), self.app_nombre),
+                false
+            ),
             if primera {
-                fila(FIJAR, "Ya se muestra primero".into(), true)
+                fila(
+                    FIJAR,
+                    t("Ya se muestra primero", "Already shown first").into(),
+                    true,
+                )
             } else {
-                fila(FIJAR, "Mostrar primero".into(), false)
+                fila(FIJAR, t("Mostrar primero", "Show first").into(), false)
             },
-            fila(OCULTAR, "Ocultar de la isla".into(), false),
+            fila(
+                OCULTAR,
+                t("Ocultar de la isla", "Hide from the island").into(),
+                false
+            ),
             // No hay permisos por app que ajustar: lleva a la página que
             // enciende las actividades y decide el temporizador.
-            fila(CAMPANA, "Ajustes de actividades…".into(), false),
+            fila(
+                CAMPANA,
+                t("Ajustes de actividades…", "Activity settings…").into(),
+                false
+            ),
         ]
         .into()
     }
@@ -2480,11 +2514,11 @@ impl Actividad {
             .into();
         }
         let estado = match fase {
-            Fase::Escuchando => "Te escucho…",
-            Fase::Pensando => "Pensando…",
-            Fase::Hecho => "Listo",
-            Fase::Respuesta => "Respuesta de Zenith",
-            Fase::Error => "No he podido continuar",
+            Fase::Escuchando => t("Te escucho…", "Listening…"),
+            Fase::Pensando => t("Pensando…", "Thinking…"),
+            Fase::Hecho => t("Listo", "Done"),
+            Fase::Respuesta => t("Respuesta de Zenith", "Zenith’s answer"),
+            Fase::Error => t("No he podido continuar", "I couldn’t continue"),
             Fase::Minimizado => unreachable!("la burbuja se dibuja antes de la píldora"),
         };
         fn vacio_o<'a>(a: &'a str, b: &'a str) -> &'a str {
@@ -2634,9 +2668,9 @@ impl Actividad {
                 column![
                     text("Zenith").size(13).font(negrita()),
                     text(if error {
-                        "Necesita atención"
+                        t("Necesita atención", "Needs attention")
                     } else {
-                        "Respuesta"
+                        t("Respuesta", "Answer")
                     })
                     .size(11)
                     .color(tema::mezclar(tema::texto(), tema::TEXTO2, 0.75)),
@@ -2653,9 +2687,9 @@ impl Actividad {
                 text(recortar_asistente(
                     if self.estado.titulo.is_empty() {
                         if error {
-                            "No he podido continuar"
+                            t("No he podido continuar", "I couldn’t continue")
                         } else {
-                            "Respuesta de Zenith"
+                            t("Respuesta de Zenith", "Zenith’s answer")
                         }
                     } else {
                         &self.estado.titulo
@@ -2684,7 +2718,11 @@ impl Actividad {
             .height(self.alto_cuerpo_asistente()),
             Space::new().height(20),
             boton_con(
-                if error { "Reintentar" } else { "Entendido" },
+                if error {
+                    t("Reintentar", "Retry")
+                } else {
+                    t("Entendido", "Got it")
+                },
                 self.tonos[0],
                 self.sobre_tono,
             ),
@@ -2823,7 +2861,7 @@ impl Actividad {
                 container(
                     row![
                         icono_teñido(icono_propio("cola-lista"), 18.0, tinta_cola),
-                        text("A continuación")
+                        text(t("A continuación", "Up next"))
                             .size(13)
                             .font(medio())
                             .color(tinta_cola),
@@ -2848,7 +2886,7 @@ impl Actividad {
     fn panel_cola(&self, color: Color) -> PanelElement<'_> {
         let mut filas = column![
             container(
-                text("A continuación")
+                text(t("A continuación", "Up next"))
                     .size(12)
                     .font(medio())
                     .color(tema::TEXTO2)
@@ -3406,7 +3444,7 @@ pub const ISLA_AJUSTES: &str = "isla:ajustes";
 // añadido en la 0.2.2
 fn nombre_app(estado: &Estado) -> String {
     if estado.clase == Clase::Auriculares {
-        return "Ajustes".into();
+        return t("Ajustes", "Settings").into();
     }
     let cola = estado.app_id.rsplit('.').next().unwrap_or(&estado.app_id);
     crate::apps::por_app_id(&estado.app_id)
@@ -3414,13 +3452,13 @@ fn nombre_app(estado: &Estado) -> String {
         .map(|a| a.nombre)
         .unwrap_or_else(|| {
             match estado.clase {
-                Clase::Player => "Música",
-                Clase::Timer => "Reloj",
-                Clase::Recorder => "Grabadora",
-                Clase::Transfer => "Archivos",
-                Clase::Calendar => "Calendario",
+                Clase::Player => t("Música", "Music"),
+                Clase::Timer => t("Reloj", "Clock"),
+                Clase::Recorder => t("Grabadora", "Recorder"),
+                Clase::Transfer => t("Archivos", "Files"),
+                Clase::Calendar => t("Calendario", "Calendar"),
                 Clase::Monitor => "Monitor",
-                Clase::Auriculares => "Auriculares",
+                Clase::Auriculares => t("Auriculares", "Headphones"),
                 Clase::Asistente(_) => "Zenith",
             }
             .to_string()
@@ -3463,7 +3501,11 @@ fn segmentado_ruido(modo: u8) -> PanelElement<'static> {
         })
         .into()
     };
-    let etiquetas = ["Desactivada", "Ambiente", "Cancelación"];
+    let etiquetas = [
+        t("Desactivada", "Off"),
+        t("Ambiente", "Ambient"),
+        t("Cancelación", "Noise cancelling"),
+    ];
     container(Row::with_children(
         MODOS_RUIDO
             .iter()
@@ -3868,13 +3910,13 @@ fn barra(f: f32, color: Color) -> PanelElement<'static> {
 // 0.1.0
 fn cuenta_atras(ms: i64) -> String {
     if ms < 60_000 {
-        return "ahora".into();
+        return t("ahora", "now").into();
     }
     let min = ms / 60_000;
     if min < 60 {
-        format!("en {min} min")
+        format!("{} {min} min", t("en", "in"))
     } else {
-        format!("en {} h {:02}", min / 60, min % 60)
+        format!("{} {} h {:02}", t("en", "in"), min / 60, min % 60)
     }
 }
 
@@ -4751,5 +4793,24 @@ mod tests {
             [COLUMNA_ACTUAL, COLUMNA_OTRA, COLUMNA_OTRA],
             "la actual va grande"
         );
+    }
+
+    #[test]
+    fn efectos_reducidos_apagan_ondas_y_animacion_en_reposo() {
+        struct GuardiaReducidos(bool);
+        impl Drop for GuardiaReducidos {
+            fn drop(&mut self) {
+                tema::aplicar_efectos_reducidos(self.0);
+            }
+        }
+        let _g = GuardiaReducidos(tema::efectos_reducidos());
+        tema::aplicar_efectos_reducidos(true);
+
+        let e = estado(Clase::Player);
+        let mut a = Actividad::nueva(e, true);
+        assert!(!a.animando());
+        assert!(!a.ondas_pendientes());
+        assert!(a.salir());
+        assert!(a.animando(), "una salida iniciada sigue completándose");
     }
 }

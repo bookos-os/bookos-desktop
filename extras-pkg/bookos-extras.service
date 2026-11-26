@@ -1,0 +1,13 @@
+[Unit]
+Description=BookOS Extras — Navegación táctil y cortina ampliada de notificaciones
+PartOf=bookos-session.target
+After=bookos-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bookos-extras daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=bookos-session.target

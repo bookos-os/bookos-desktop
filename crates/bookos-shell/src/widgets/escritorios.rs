@@ -88,6 +88,7 @@ impl Widget for Escritorios {
 
     // 0.1.0
     fn escritorios(&mut self, activo: usize, cuantos: usize) -> bool {
+        let activo = activo.min(cuantos.saturating_sub(1));
         if (activo, cuantos) == (self.activo, self.cuantos) {
             return false;
         }
@@ -167,5 +168,15 @@ mod tests {
         assert!(e.escritorios(1, 4));
         assert!(!e.escritorios(1, 4));
         assert!(e.escritorios(2, 4));
+    }
+
+    #[test]
+    fn el_indice_fuera_de_rango_se_acota_al_ultimo() {
+        let mut e = Escritorios::new();
+        assert!(e.escritorios(99, 3));
+        assert_eq!(e.activo, 2);
+        assert!(!e.escritorios(2, 3));
+        assert!(e.escritorios(5, 0));
+        assert_eq!(e.activo, 0);
     }
 }

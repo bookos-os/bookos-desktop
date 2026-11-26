@@ -348,7 +348,7 @@ fn vigilar(
                 }
                 // Con `done` fprintd ha parado: hay que volver a empezar.
                 if terminado {
-                    lector.call::<_, _, ()>("VerifyStop", &())?;
+                    let _ = lector.call::<_, _, ()>("VerifyStop", &());
                     lector.call::<_, _, ()>("VerifyStart", &("any",))?;
                 }
             }

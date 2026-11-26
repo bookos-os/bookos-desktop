@@ -20,7 +20,7 @@ use smithay::input::pointer::RelativeMotionEvent;
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
 use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
 
 use bookos_shell::TeclaPulsada;
@@ -86,7 +86,9 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
         state.loop_handle.remove(token);
     }
     crate::multimedia::soltar_chasquido(state);
-    let mut repetir = false;
+    let mut repetir: Option<TeclaPulsada> = None;
+    let mut pegar_shell = false;
+    let mut tecla_vista = None;
     // Hay un menú abierto que aún no tiene el teclado: se le da ahora, antes
     // de que la tecla salga hacia el cliente. El grab de popups ignora los
     // cambios de foco mientras está puesto, así que se quita y se vuelve a
@@ -153,6 +155,19 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
                 // Consumida o no, la tecla se queda aquí: mientras
                 // encuadras, el escritorio no responde a nada más.
                 return FilterResult::Intercept(accion.map(crate::keybinds::Accion::DelShell));
+            }
+            if state.vista_tactil.is_some() && !bloqueado {
+                if pulsada
+                    && (modifiers.logo || modifiers.ctrl || modifiers.alt)
+                    && let Some(accion) =
+                        crate::keybinds::resolver(modifiers, &handle, codigo.raw())
+                {
+                    return FilterResult::Intercept(Some(accion));
+                }
+                if pulsada {
+                    tecla_vista = Some((handle.modified_sym().raw(), modifiers.shift));
+                }
+                return FilterResult::Intercept(None);
             }
             // Solo la pulsación: interceptar también la suelta le
             // dejaría la tecla trabada al cliente. Bloqueado, tampoco
@@ -226,13 +241,31 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
                 "tecla"
             );
             // Meta empieza a contar como «sola» solo si no hay nada más
-            // pulsado; cualquier otra tecla la descarta hasta que se
-            // vuelva a pulsar.
+            // pulsado ni una capa modal o bloqueo impidiendo abrir el launchpad.
+            let bloqueada_meta = bloqueado
+                || state.cuentagotas
+                || state.modo.kiosko()
+                || state.shell.as_ref().is_some_and(|s| {
+                    s.hay_captura()
+                        || matches!(
+                            s.emergente_nombre(),
+                            Some(
+                                "buscador"
+                                    | "emojis"
+                                    | "respuesta"
+                                    | "polkit"
+                                    | "acceso"
+                                    | "elegir-app"
+                            )
+                        )
+                });
             let ya_contaba = state.meta_sola;
-            state.meta_sola = matches!(
-                handle.modified_sym().raw(),
-                keysyms::KEY_Super_L | keysyms::KEY_Super_R
-            ) && !modifiers.alt
+            state.meta_sola = !bloqueada_meta
+                && matches!(
+                    handle.modified_sym().raw(),
+                    keysyms::KEY_Super_L | keysyms::KEY_Super_R
+                )
+                && !modifiers.alt
                 && !modifiers.ctrl
                 && !modifiers.shift;
             // Solo la primera pulsación arranca la cuenta: si llega la
@@ -248,14 +281,43 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
             {
                 return FilterResult::Intercept(Some(crate::keybinds::Accion::ConmutarCancelar));
             }
+            if handle.modified_sym().raw() == keysyms::KEY_Escape
+                && state
+                    .miniatura_captura
+                    .as_mut()
+                    .is_some_and(|m| m.cancelar_apertura(std::time::Instant::now()))
+            {
+                state.needs_redraw = true;
+                return FilterResult::Intercept(None);
+            }
             let buscador = state
                 .shell
                 .as_ref()
                 .is_some_and(|s| s.emergente_nombre() == Some("buscador"));
+            let respuesta = state
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.emergente_nombre() == Some("respuesta"));
             let emojis = state
                 .shell
                 .as_ref()
                 .is_some_and(|s| s.emergente_nombre() == Some("emojis"));
+            let portapapeles = state
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.emergente_nombre() == Some("portapapeles"));
+            let polkit = state
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.emergente_nombre() == Some("polkit"));
+            let acceso = state
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.emergente_nombre() == Some("acceso"));
+            let elegir_app = state
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.emergente_nombre() == Some("elegir-app"));
             if let Some(accion) = crate::keybinds::resolver(modifiers, &handle, codigo.raw()) {
                 // En el kiosko solo se cambia de TTY, para poder mirar el
                 // journal si el asistente se atasca. Todo lo demás se traga:
@@ -280,6 +342,15 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
                     && !matches!(accion, crate::keybinds::Accion::Emojis)
                     && !accion.es_emergencia()
                 {
+                    return FilterResult::Intercept(None);
+                }
+                if portapapeles
+                    && !matches!(accion, crate::keybinds::Accion::Portapapeles)
+                    && !accion.es_emergencia()
+                {
+                    return FilterResult::Intercept(None);
+                }
+                if (polkit || acceso || elegir_app) && !accion.es_emergencia() {
                     return FilterResult::Intercept(None);
                 }
                 // Con el bloqueo echado valen las salidas de emergencia
@@ -391,13 +462,48 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
                     return FilterResult::Intercept(Some(crate::keybinds::Accion::DelShell(accion)));
                 }
             }
+            if (buscador || respuesta || polkit || elegir_app)
+                && modifiers.ctrl
+                && matches!(
+                    handle.modified_sym().raw(),
+                    keysyms::KEY_v | keysyms::KEY_V
+                )
+            {
+                state.tecla_muerta = None;
+                pegar_shell = true;
+                return FilterResult::Intercept(None);
+            }
+            if buscador || portapapeles || respuesta || polkit || elegir_app {
+                let raw = handle.modified_sym().raw();
+                if es_tecla_muerta(raw) {
+                    state.tecla_muerta = Some(raw);
+                    return FilterResult::Intercept(None);
+                }
+            } else {
+                state.tecla_muerta = None;
+            }
             // Una superficie emergente abierta se queda con las teclas
             // que entiende: es lo que permite cerrar el menú con Esc y
             // recorrerlo con las flechas sin que el cliente con foco
             // llegue a verlas. `Intercept(None)` es "consumida, pero no
             // es un atajo del compositor".
-            if let Some(tecla) = traducir_tecla(&handle, modifiers.ctrl) {
-                let es_retroceso = matches!(tecla, TeclaPulsada::Retroceso);
+            if let Some(mut tecla) = traducir_tecla(&handle, modifiers.ctrl) {
+                if let Some(muerta) = state.tecla_muerta.take()
+                    && let TeclaPulsada::Caracter(c) = tecla
+                    && let Some(combinada) = combinar_muerta(muerta, c)
+                {
+                    tecla = TeclaPulsada::Caracter(combinada);
+                }
+                let repetible = matches!(
+                    tecla,
+                    TeclaPulsada::Retroceso
+                        | TeclaPulsada::Suprimir
+                        | TeclaPulsada::Izquierda
+                        | TeclaPulsada::Derecha
+                        | TeclaPulsada::Arriba
+                        | TeclaPulsada::Abajo
+                )
+                .then(|| tecla.clone());
                 let (consumida, accion) = state
                     .shell
                     .as_mut()
@@ -405,7 +511,7 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
                     .unwrap_or((false, None));
                 if consumida {
                     state.needs_redraw = true;
-                    repetir = es_retroceso;
+                    repetir = repetible;
                     // La acción no se ejecuta aquí: seguimos dentro del
                     // filtro de `kbd.input`, con el estado prestado.
                     return FilterResult::Intercept(accion.map(crate::keybinds::Accion::DelShell));
@@ -413,17 +519,31 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
             }
             // Ctrl+C, Ctrl+V y compañía no se traducen; con el buscador
             // abierto tampoco deben llegar a la ventana que hay debajo.
-            if buscador || emojis {
+            if buscador || emojis || portapapeles || respuesta || polkit || acceso || elegir_app {
                 return FilterResult::Intercept(None);
             }
             FilterResult::Forward
         },
     );
+    if let Some((tecla, mayus)) = tecla_vista {
+        crate::multitarea_tactil::tecla(state, tecla, mayus);
+    }
     if let Some(Some(accion)) = accion {
+        crate::multitarea_tactil::cancelar(state);
         crate::keybinds::ejecutar(state, accion);
     }
-    if repetir {
-        repetir_retroceso(state);
+    if state
+        .shell
+        .as_ref()
+        .is_some_and(|s| s.emergente_tiene_alarma())
+    {
+        crate::backend::schedule_panel_tick(state);
+    }
+    if pegar_shell {
+        pegar_en_shell(state);
+    }
+    if let Some(tecla_rep) = repetir {
+        repetir_tecla(state, tecla_rep);
     }
     // El orden importa y es este: la suelta de Alt ya ha salido hacia el
     // cliente **antiguo** —que es quien vio la pulsación y la espera— y
@@ -439,6 +559,17 @@ pub(crate) fn entregar_tecla(state: &mut BookosComp, codigo: Keycode, estado: Ke
         let caps_lock = kbd.modifier_state().caps_lock;
         if let Some(shell) = state.shell.as_mut() {
             shell.bloqueo_caps_lock(caps_lock);
+        }
+        state.needs_redraw = true;
+    }
+    if state
+        .shell
+        .as_ref()
+        .is_some_and(|s| s.emergente_nombre() == Some("polkit"))
+    {
+        let caps_lock = kbd.modifier_state().caps_lock;
+        if let Some(shell) = state.shell.as_mut() {
+            shell.polkit_caps_lock(caps_lock);
         }
         state.needs_redraw = true;
     }
@@ -513,7 +644,7 @@ fn contar_meta_mantenida(state: &mut BookosComp) {
 }
 
 // 0.1.0
-fn repetir_retroceso(state: &mut BookosComp) {
+fn repetir_tecla(state: &mut BookosComp, tecla: TeclaPulsada) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     let (retardo, velocidad) = state.teclado_repeticion;
     if velocidad == 0 {
@@ -528,7 +659,7 @@ fn repetir_retroceso(state: &mut BookosComp) {
                 let seguir = state
                     .shell
                     .as_mut()
-                    .is_some_and(|s| s.tecla(TeclaPulsada::Retroceso).0);
+                    .is_some_and(|s| s.tecla(tecla.clone()).0);
                 if !seguir {
                     state.repeticion_retroceso = None;
                     return TimeoutAction::Drop;
@@ -538,8 +669,155 @@ fn repetir_retroceso(state: &mut BookosComp) {
             });
     match token {
         Ok(token) => state.repeticion_retroceso = Some(token),
-        Err(err) => tracing::warn!("sin repetición de Retroceso: {err}"),
+        Err(err) => tracing::warn!("sin repetición de tecla: {err}"),
     }
+}
+
+fn es_tecla_muerta(sym: u32) -> bool {
+    matches!(
+        sym,
+        keysyms::KEY_dead_acute
+            | keysyms::KEY_dead_grave
+            | keysyms::KEY_dead_diaeresis
+            | keysyms::KEY_dead_circumflex
+            | keysyms::KEY_dead_tilde
+    )
+}
+
+fn combinar_muerta(muerta: u32, c: char) -> Option<char> {
+    match (muerta, c) {
+        (keysyms::KEY_dead_acute, 'a') => Some('á'),
+        (keysyms::KEY_dead_acute, 'e') => Some('é'),
+        (keysyms::KEY_dead_acute, 'i') => Some('í'),
+        (keysyms::KEY_dead_acute, 'o') => Some('ó'),
+        (keysyms::KEY_dead_acute, 'u') => Some('ú'),
+        (keysyms::KEY_dead_acute, 'A') => Some('Á'),
+        (keysyms::KEY_dead_acute, 'E') => Some('É'),
+        (keysyms::KEY_dead_acute, 'I') => Some('Í'),
+        (keysyms::KEY_dead_acute, 'O') => Some('Ó'),
+        (keysyms::KEY_dead_acute, 'U') => Some('Ú'),
+        (keysyms::KEY_dead_acute, ' ') => Some('´'),
+        (keysyms::KEY_dead_grave, 'a') => Some('à'),
+        (keysyms::KEY_dead_grave, 'e') => Some('è'),
+        (keysyms::KEY_dead_grave, 'i') => Some('ì'),
+        (keysyms::KEY_dead_grave, 'o') => Some('ò'),
+        (keysyms::KEY_dead_grave, 'u') => Some('ù'),
+        (keysyms::KEY_dead_grave, 'A') => Some('À'),
+        (keysyms::KEY_dead_grave, 'E') => Some('È'),
+        (keysyms::KEY_dead_grave, 'I') => Some('Ì'),
+        (keysyms::KEY_dead_grave, 'O') => Some('Ò'),
+        (keysyms::KEY_dead_grave, 'U') => Some('Ù'),
+        (keysyms::KEY_dead_grave, ' ') => Some('`'),
+        (keysyms::KEY_dead_diaeresis, 'a') => Some('ä'),
+        (keysyms::KEY_dead_diaeresis, 'e') => Some('ë'),
+        (keysyms::KEY_dead_diaeresis, 'i') => Some('ï'),
+        (keysyms::KEY_dead_diaeresis, 'o') => Some('ö'),
+        (keysyms::KEY_dead_diaeresis, 'u') => Some('ü'),
+        (keysyms::KEY_dead_diaeresis, 'A') => Some('Ä'),
+        (keysyms::KEY_dead_diaeresis, 'E') => Some('Ë'),
+        (keysyms::KEY_dead_diaeresis, 'I') => Some('Ï'),
+        (keysyms::KEY_dead_diaeresis, 'O') => Some('Ö'),
+        (keysyms::KEY_dead_diaeresis, 'U') => Some('Ü'),
+        (keysyms::KEY_dead_diaeresis, ' ') => Some('¨'),
+        (keysyms::KEY_dead_circumflex, 'a') => Some('â'),
+        (keysyms::KEY_dead_circumflex, 'e') => Some('ê'),
+        (keysyms::KEY_dead_circumflex, 'i') => Some('î'),
+        (keysyms::KEY_dead_circumflex, 'o') => Some('ô'),
+        (keysyms::KEY_dead_circumflex, 'u') => Some('û'),
+        (keysyms::KEY_dead_circumflex, 'A') => Some('Â'),
+        (keysyms::KEY_dead_circumflex, 'E') => Some('Ê'),
+        (keysyms::KEY_dead_circumflex, 'I') => Some('Î'),
+        (keysyms::KEY_dead_circumflex, 'O') => Some('Ô'),
+        (keysyms::KEY_dead_circumflex, 'U') => Some('Û'),
+        (keysyms::KEY_dead_circumflex, ' ') => Some('^'),
+        (keysyms::KEY_dead_tilde, 'a') => Some('ã'),
+        (keysyms::KEY_dead_tilde, 'n') => Some('ñ'),
+        (keysyms::KEY_dead_tilde, 'o') => Some('õ'),
+        (keysyms::KEY_dead_tilde, 'A') => Some('Ã'),
+        (keysyms::KEY_dead_tilde, 'N') => Some('Ñ'),
+        (keysyms::KEY_dead_tilde, 'O') => Some('Õ'),
+        (keysyms::KEY_dead_tilde, ' ') => Some('~'),
+        _ => None,
+    }
+}
+
+fn canal_pegado(state: &mut BookosComp) -> smithay::reexports::calloop::channel::Sender<String> {
+    use smithay::reexports::calloop::channel;
+    if let Some(tx) = &state.pegado_canal {
+        return tx.clone();
+    }
+    let (tx, rx) = channel::channel::<String>();
+    let insertado = state.loop_handle.insert_source(rx, |evento, _, state| {
+        if let channel::Event::Msg(texto) = evento
+            && state
+                .shell
+                .as_ref()
+                .is_some_and(|s| matches!(s.emergente_nombre(), Some("buscador" | "respuesta" | "polkit" | "elegir-app")))
+            && let Some(shell) = state.shell.as_mut()
+            && shell.tecla(TeclaPulsada::Pegar(texto)).0
+        {
+            state.needs_redraw = true;
+        }
+    });
+    if let Err(err) = insertado {
+        tracing::error!("no se pudo registrar el canal de pegado del shell: {err}");
+    }
+    state.pegado_canal = Some(tx.clone());
+    tx
+}
+
+fn pegar_en_shell(state: &mut BookosComp) {
+    use smithay::wayland::selection::data_device::{
+        current_data_device_selection_userdata, request_data_device_client_selection,
+    };
+    const M_TEXTO: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"];
+    let propio =
+        current_data_device_selection_userdata(&state.seat).and_then(|datos| match &*datos {
+            crate::handlers::Seleccion::Bytes(b) => Some(String::from_utf8_lossy(b).into_owned()),
+            crate::handlers::Seleccion::PorTipo(tipos) => M_TEXTO
+                .iter()
+                .find_map(|m| tipos.iter().find(|(t, _)| t == m))
+                .map(|(_, b)| String::from_utf8_lossy(b).into_owned()),
+            crate::handlers::Seleccion::X11 => None,
+        });
+    if let Some(texto) = propio {
+        if let Some(shell) = state.shell.as_mut()
+            && shell.tecla(TeclaPulsada::Pegar(texto)).0
+        {
+            state.needs_redraw = true;
+        }
+        return;
+    }
+    let Some(tipo) = M_TEXTO
+        .iter()
+        .find(|m| state.archivos.tipos.iter().any(|t| t == *m))
+        .copied()
+    else {
+        return;
+    };
+    let Ok((lectura, escritura)) = smithay::reexports::rustix::pipe::pipe() else {
+        return;
+    };
+    if let Err(err) = request_data_device_client_selection(&state.seat, tipo.into(), escritura) {
+        tracing::warn!(?err, "no se pudo pedir texto del portapapeles");
+        return;
+    }
+    let tx = canal_pegado(state);
+    let _ = std::thread::Builder::new()
+        .name("pegar-shell".into())
+        .spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            let mut f = std::fs::File::from(lectura);
+            // Tope razonable para no leer megabytes en un buscador de una línea.
+            let mut limitado = (&mut f).take(16 * 1024);
+            if limitado.read_to_end(&mut buf).is_ok() {
+                let texto = String::from_utf8_lossy(&buf).into_owned();
+                if !texto.is_empty() {
+                    let _ = tx.send(texto);
+                }
+            }
+        });
 }
 
 /// La acción de un remapeo. Con el bloqueo echado no hace nada: una tecla
@@ -638,6 +916,9 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
             let evdev = event.key_code().raw() - 8;
             let pulsada = event.state() == KeyState::Pressed;
             if pulsada {
+                if state.cursor_oculto_por_toque || state.teclado.tactil {
+                    crate::extras::toque_fuera(state);
+                }
                 crate::teclado::retirar(state);
             }
             // añadido en la 0.2.0 -- soltar la tecla del asistente mantenida envía lo dicho.
@@ -678,6 +959,7 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
 
         // libinput: desplazamiento relativo respecto de donde estaba el cursor.
         InputEvent::PointerMotion { event } => {
+            mostrar_cursor_raton(state);
             let delta = (event.delta_x(), event.delta_y());
             let destino = state.pointer_location + Point::from(delta);
             if state
@@ -686,30 +968,13 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
             {
                 state.needs_redraw = true;
             }
-            let pantalla = state.pantalla();
-            if let Some((cambio, programar)) = state
-                .miniatura_captura
-                .as_mut()
-                .map(|m| m.mover(destino, pantalla))
-            {
-                if cambio {
-                    state.needs_redraw = true;
-                }
-                if programar {
-                    let _ = state.loop_handle.insert_source(
-                        Timer::from_duration(std::time::Duration::from_secs(2)),
-                        |_, _, state| {
-                            state.needs_redraw = true;
-                            TimeoutAction::Drop
-                        },
-                    );
-                }
-            }
+            mover_miniatura(state, destino);
             set_pointer(state, destino, event.time_msec());
         }
 
         // winit: posición absoluta, normalizada al tamaño de la ventana.
         InputEvent::PointerMotionAbsolute { event } => {
+            mostrar_cursor_raton(state);
             let (w, h) = logical_size(state);
             // El backend anidado entrega coordenadas relativas a su única
             // salida. Sumar su origen mantiene correcto el camino si la salida
@@ -732,29 +997,12 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
             {
                 state.needs_redraw = true;
             }
-            let pantalla = state.pantalla();
-            if let Some((cambio, programar)) = state
-                .miniatura_captura
-                .as_mut()
-                .map(|m| m.mover(destino, pantalla))
-            {
-                if cambio {
-                    state.needs_redraw = true;
-                }
-                if programar {
-                    let _ = state.loop_handle.insert_source(
-                        Timer::from_duration(std::time::Duration::from_secs(2)),
-                        |_, _, state| {
-                            state.needs_redraw = true;
-                            TimeoutAction::Drop
-                        },
-                    );
-                }
-            }
+            mover_miniatura(state, destino);
             set_pointer(state, destino, event.time_msec());
         }
 
         InputEvent::PointerButton { event } => {
+            mostrar_cursor_raton(state);
             state.teclado.tactil = false;
             boton(state, event.button_code(), event.state(), event.time_msec());
             // Ctrl+clic con Ctrl pegado: el clic lo gasta, como una tecla.
@@ -764,6 +1012,7 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         }
 
         InputEvent::PointerAxis { event } => {
+            mostrar_cursor_raton(state);
             // Con una emergente abierta, el gesto es suyo: en el launchpad pasa
             // de página, como el swipe horizontal del plasmoide. `amount` viene
             // en píxeles lógicos con el touchpad y en muescas con la rueda, y a
@@ -786,6 +1035,9 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
             if (dx != 0.0 || dy != 0.0) && state.shell.as_mut().is_some_and(|s| s.desplazar(dx, dy))
             {
                 state.needs_redraw = true;
+                return;
+            }
+            if entrada_cliente_bloqueada(state) {
                 return;
             }
 
@@ -817,13 +1069,14 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         // muerto en el backend anidado. La lógica vive en `crate::gestos`, que
         // sí se puede probar sin touchpad.
         InputEvent::GestureSwipeBegin { event } => {
+            if !gestos_touchpad_permitidos(state) {
+                return;
+            }
             // añadido en la 0.2.0 -- agarrar no espera al primer desplazamiento reconocido.
-            if !state.modo.kiosko() {
-                match event.fingers() {
-                    4 => crate::escritorios::agarrar_dedos(state),
-                    3 => agarrar_exposicion(state),
-                    _ => {}
-                }
+            match event.fingers() {
+                4 => crate::escritorios::agarrar_dedos(state),
+                3 => agarrar_exposicion(state),
+                _ => {}
             }
             let ancho = state
                 .salida_del_puntero()
@@ -833,33 +1086,28 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
                 .gestos
                 .deslizamiento_inicio(event.fingers(), ancho, event.time());
             // añadido en la 0.2.0 -- cuatro dedos en vertical siguen a la mano con la vista de escritorios: subir la abre, abierta, bajar la cierra.
-            if event.fingers() == 4 && !state.modo.kiosko() {
+            if event.fingers() == 4 {
                 let abierta = state
                     .shell
                     .as_ref()
                     .is_some_and(|s| s.vista_escritorios_abierta());
                 state.gestos.vista_continua(abierta);
-            }
-            // añadido en la 0.2.0 -- con la vista de escritorios abierta, cuatro dedos la cierran como antes.
-            if event.fingers() == 4
-                && !state.modo.kiosko()
-                && !state
-                    .shell
-                    .as_ref()
-                    .is_some_and(|s| s.vista_escritorios_abierta())
-            {
-                state
-                    .gestos
-                    .despeje_continuo(if state.escritorios.apartando() {
-                        -1.0
-                    } else {
-                        1.0
-                    });
+                if !abierta {
+                    state
+                        .gestos
+                        .despeje_continuo(if state.escritorios.apartando() {
+                            -1.0
+                        } else {
+                            1.0
+                        });
+                }
             }
         }
 
-        // Los gestos mueven escritorios y ventanas: en el kiosko no hay de eso.
-        InputEvent::GestureSwipeUpdate { .. } if state.modo.kiosko() => {}
+        // Los gestos mueven escritorios y ventanas: si se perdió el permiso a mitad, se cancela.
+        InputEvent::GestureSwipeUpdate { event } if !gestos_touchpad_permitidos(state) => {
+            finalizar_deslizamiento_touchpad(state, true, event.time());
+        }
 
         InputEvent::GestureSwipeUpdate { event } => {
             if let Some(gesto) =
@@ -876,9 +1124,11 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
                         seguir_exposicion(state, progreso);
                     }
                     Gesto::Continuo(crate::gestos::Movimiento::Despeje, progreso) => {
+                        crate::escritorios::soltar_agarre_cancelado(state);
                         crate::escritorios::seguir_despeje(state, progreso);
                     }
                     Gesto::Continuo(crate::gestos::Movimiento::Vista, progreso) => {
+                        crate::escritorios::soltar_agarre_cancelado(state);
                         let activo = crate::escritorios::activo_aqui(state);
                         let nombres = state.escritorios.nombres().to_vec();
                         if let Some(shell) = state.shell.as_mut() {
@@ -898,13 +1148,18 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
                             .as_ref()
                             .is_some_and(|s| s.vista_escritorios_abierta()) =>
                     {
+                        crate::escritorios::soltar_agarre_cancelado(state);
                         crate::keybinds::ejecutar(state, crate::keybinds::Accion::VistaEscritorios);
                     }
-                    Gesto::DespejarEscritorio => crate::escritorios::despejar(state),
+                    Gesto::DespejarEscritorio => {
+                        crate::escritorios::soltar_agarre_cancelado(state);
+                        crate::escritorios::despejar(state);
+                    }
                     // Subir con el escritorio despejado devuelve las ventanas;
                     // subir estando en una aplicación cualquiera enseña los
                     // escritorios, que es lo que hace el mismo gesto en macOS.
                     Gesto::SubirCuatroDedos => {
+                        crate::escritorios::soltar_agarre_cancelado(state);
                         if state.escritorios.despejado() {
                             crate::escritorios::recuperar(state);
                         } else {
@@ -919,40 +1174,24 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         }
 
         InputEvent::GestureSwipeEnd { event } => {
-            if let Some(suelta) = state
-                .gestos
-                .deslizamiento_fin(event.cancelled(), event.time())
-            {
-                match suelta.movimiento {
-                    crate::gestos::Movimiento::Escritorio => {
-                        crate::escritorios::soltar_dedos(state, suelta)
-                    }
-                    crate::gestos::Movimiento::Exposicion => soltar_exposicion(state, suelta),
-                    crate::gestos::Movimiento::Despeje => {
-                        crate::escritorios::soltar_despeje(state, suelta)
-                    }
-                    crate::gestos::Movimiento::Vista => {
-                        if let Some(shell) = state.shell.as_mut() {
-                            shell.soltar_vista(suelta);
-                        }
-                        state.revisar_barras();
-                        state.needs_redraw = true;
-                    }
-                    crate::gestos::Movimiento::Launchpad => {}
-                }
-            }
+            let cancelada = event.cancelled() || !gestos_touchpad_permitidos(state);
+            finalizar_deslizamiento_touchpad(state, cancelada, event.time());
         }
 
         InputEvent::GesturePinchBegin { event } => {
+            if !gestos_touchpad_permitidos(state) {
+                return;
+            }
             state.gestos.pellizco_inicio(event.fingers(), event.time());
             // añadido en la 0.2.0 -- una apertura puede devolverse desde el fotograma que estaba mostrando.
-            if !state.modo.kiosko()
-                && (4..=5).contains(&event.fingers())
-                && let Some(shell) = state.shell.as_mut()
-            {
-                shell.agarrar_launchpad();
-            }
-            if state.gestos.pellizco_de_la_ventana() {
+            // Solo los pellizcos del compositor (5 dedos) agarran el launchpad; con 4 dedos el fin
+            // devuelve `None` y dejaría `launchpad_gesto` colgado para siempre.
+            if !state.gestos.pellizco_de_la_ventana() {
+                if let Some(shell) = state.shell.as_mut() {
+                    shell.agarrar_launchpad();
+                }
+            } else if !entrada_cliente_bloqueada(state) {
+                state.pinch_cliente_activo = true;
                 let pointer = state.pointer.clone();
                 pointer.gesture_pinch_begin(
                     state,
@@ -966,7 +1205,22 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         }
 
         InputEvent::GesturePinchUpdate { event } if state.gestos.pellizco_de_la_ventana() => {
+            if !state.pinch_cliente_activo {
+                return;
+            }
             let pointer = state.pointer.clone();
+            if entrada_cliente_bloqueada(state) {
+                state.pinch_cliente_activo = false;
+                pointer.gesture_pinch_end(
+                    state,
+                    &smithay::input::pointer::GesturePinchEndEvent {
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time_msec(),
+                        cancelled: true,
+                    },
+                );
+                return;
+            }
             pointer.gesture_pinch_update(
                 state,
                 &smithay::input::pointer::GesturePinchUpdateEvent {
@@ -979,8 +1233,14 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         }
 
         InputEvent::GesturePinchUpdate { event } => {
-            if !state.modo.kiosko()
-                && let Some(progreso) = state.gestos.pellizco_avance(event.scale(), event.time())
+            if !gestos_touchpad_permitidos(state) {
+                if let Some(suelta) = state.gestos.pellizco_fin(true, event.time())
+                    && let Some(shell) = state.shell.as_mut()
+                {
+                    shell.soltar_launchpad(suelta);
+                    state.needs_redraw = true;
+                }
+            } else if let Some(progreso) = state.gestos.pellizco_avance(event.scale(), event.time())
                 && let Some(shell) = state.shell.as_mut()
             {
                 shell.seguir_launchpad(progreso);
@@ -989,18 +1249,20 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         }
 
         InputEvent::GesturePinchEnd { event } => {
-            if state.gestos.pellizco_de_la_ventana() {
+            if state.pinch_cliente_activo {
+                state.pinch_cliente_activo = false;
                 let pointer = state.pointer.clone();
                 pointer.gesture_pinch_end(
                     state,
                     &smithay::input::pointer::GesturePinchEndEvent {
                         serial: SERIAL_COUNTER.next_serial(),
                         time: event.time_msec(),
-                        cancelled: event.cancelled(),
+                        cancelled: event.cancelled() || entrada_cliente_bloqueada(state),
                     },
                 );
             }
-            if let Some(suelta) = state.gestos.pellizco_fin(event.cancelled(), event.time()) {
+            let cancelada = event.cancelled() || !gestos_touchpad_permitidos(state);
+            if let Some(suelta) = state.gestos.pellizco_fin(cancelada, event.time()) {
                 if let Some(shell) = state.shell.as_mut() {
                     shell.soltar_launchpad(suelta);
                 }
@@ -1011,6 +1273,10 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         // «Mantener» —dedos quietos sobre el touchpad— no es de nadie del
         // escritorio. Los navegadores lo usan para frenar el scroll con inercia.
         InputEvent::GestureHoldBegin { event } => {
+            if entrada_cliente_bloqueada(state) {
+                return;
+            }
+            state.hold_cliente_activo = true;
             let pointer = state.pointer.clone();
             pointer.gesture_hold_begin(
                 state,
@@ -1023,13 +1289,16 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
         }
 
         InputEvent::GestureHoldEnd { event } => {
+            if !std::mem::take(&mut state.hold_cliente_activo) {
+                return;
+            }
             let pointer = state.pointer.clone();
             pointer.gesture_hold_end(
                 state,
                 &smithay::input::pointer::GestureHoldEndEvent {
                     serial: SERIAL_COUNTER.next_serial(),
                     time: event.time_msec(),
-                    cancelled: event.cancelled(),
+                    cancelled: event.cancelled() || entrada_cliente_bloqueada(state),
                 },
             );
         }
@@ -1054,6 +1323,49 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
     }
 }
 
+pub(crate) fn gestos_touchpad_permitidos(state: &BookosComp) -> bool {
+    !state.modo.kiosko()
+        && !state.cuentagotas
+        && state.vista_tactil.is_none()
+        && !state.shell.as_ref().is_some_and(|s| {
+            s.esta_bloqueado()
+                || s.hay_captura()
+                || matches!(
+                    s.emergente_nombre(),
+                    Some("polkit" | "acceso" | "elegir-app")
+                )
+        })
+}
+
+fn entrada_cliente_bloqueada(state: &BookosComp) -> bool {
+    !gestos_touchpad_permitidos(state)
+        || state.shell.as_ref().is_some_and(|s| {
+            s.hay_conmutador() || s.vista_escritorios_abierta() || s.emergente_tapa_la_pantalla()
+        })
+}
+
+fn finalizar_deslizamiento_touchpad(state: &mut BookosComp, cancelada: bool, tiempo: u64) {
+    let Some(suelta) = state.gestos.deslizamiento_fin(cancelada, tiempo) else {
+        return;
+    };
+    if suelta.movimiento != crate::gestos::Movimiento::Escritorio {
+        crate::escritorios::soltar_agarre_cancelado(state);
+    }
+    match suelta.movimiento {
+        crate::gestos::Movimiento::Escritorio => crate::escritorios::soltar_dedos(state, suelta),
+        crate::gestos::Movimiento::Exposicion => soltar_exposicion(state, suelta),
+        crate::gestos::Movimiento::Despeje => crate::escritorios::soltar_despeje(state, suelta),
+        crate::gestos::Movimiento::Vista => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.soltar_vista(suelta);
+            }
+            state.revisar_barras();
+            state.needs_redraw = true;
+        }
+        crate::gestos::Movimiento::Launchpad => {}
+    }
+}
+
 /// Dónde cae un toque en el escritorio.
 ///
 /// La pantalla táctil es la del panel interno, no la que tenga el puntero: con
@@ -1062,11 +1374,8 @@ pub fn handle<B: InputBackend>(state: &mut BookosComp, event: InputEvent<B>) {
 /// La rotación de la salida no se aplica: `output_geometry` ya da el tamaño
 /// girado, pero el eje del digitalizador no gira con él.
 // 0.1.1
-fn punto_tactil<B: InputBackend>(
-    state: &BookosComp,
-    event: &impl AbsolutePositionEvent<B>,
-) -> Point<f64, Logical> {
-    let salida = state
+pub(crate) fn salida_tactil(state: &BookosComp) -> Option<&smithay::output::Output> {
+    state
         .space
         .outputs()
         .find(|o| {
@@ -1074,7 +1383,14 @@ fn punto_tactil<B: InputBackend>(
                 .iter()
                 .any(|p| o.name().starts_with(p))
         })
-        .or_else(|| state.space.outputs().next());
+        .or_else(|| state.space.outputs().next())
+}
+
+fn punto_tactil<B: InputBackend>(
+    state: &BookosComp,
+    event: &impl AbsolutePositionEvent<B>,
+) -> Point<f64, Logical> {
+    let salida = salida_tactil(state);
     let Some(geo) = salida.and_then(|o| state.space.output_geometry(o)) else {
         return state.pointer_location;
     };
@@ -1094,18 +1410,173 @@ fn punto_tactil<B: InputBackend>(
 /// segundo idioma solo duplicaría la lógica de `boton`. Esa emulación es de un
 /// solo dedo; los demás se ignoran hasta que se levanta.
 // 0.1.1
+fn ocultar_cursor_tactil(state: &mut BookosComp) {
+    if !state.cursor_oculto_por_toque {
+        state.cursor_oculto_por_toque = true;
+        state.needs_redraw = true;
+    }
+}
+
+pub(crate) fn mostrar_cursor_raton(state: &mut BookosComp) {
+    if state.cursor_oculto_por_toque {
+        state.cursor_oculto_por_toque = false;
+        crate::extras::toque_fuera(state);
+        state.needs_redraw = true;
+    }
+}
+
+fn borde_redimension_tactil(
+    state: &BookosComp,
+    punto: Point<f64, Logical>,
+) -> Option<(smithay::desktop::Window, crate::ventanas::Modo)> {
+    use smithay::utils::Rectangle;
+    for w in state
+        .space
+        .elements()
+        .rev()
+        .filter(|w| crate::multitarea::visible(state, w))
+    {
+        let Some(loc) = state.space.element_location(w) else {
+            continue;
+        };
+        let size = w.geometry().size;
+        if size.w <= 0 || size.h <= 0 {
+            continue;
+        }
+        let decorada = crate::decoracion::decorada(w);
+        let top_y = if decorada {
+            loc.y - crate::decoracion::ALTO
+        } else {
+            loc.y
+        };
+        let anillo = Rectangle::new(
+            (loc.x - 22, top_y - 22).into(),
+            (size.w + 44, loc.y - top_y + size.h + 44).into(),
+        );
+        if !anillo.to_f64().contains(punto) {
+            continue;
+        }
+        let dentro = Rectangle::new(
+            (loc.x, top_y).into(),
+            (size.w, loc.y - top_y + size.h).into(),
+        );
+        if !crate::ventanas::completa(w)
+            && !crate::ventanas::encajada(w)
+            && !crate::multitarea::agrupada(state, w)
+            && let Some(modo) = arista_tactil(dentro.to_f64(), punto)
+        {
+            return Some((w.clone(), modo));
+        }
+        if Rectangle::new(loc, size).to_f64().contains(punto)
+            || crate::decoracion::barra_rect(state, w).is_some_and(|r| r.to_f64().contains(punto))
+        {
+            return None;
+        }
+    }
+    None
+}
+
+fn arista_tactil(
+    rect: smithay::utils::Rectangle<f64, Logical>,
+    punto: Point<f64, Logical>,
+) -> Option<crate::ventanas::Modo> {
+    let izquierda = punto.x - rect.loc.x;
+    let derecha = rect.size.w - izquierda;
+    let arriba = punto.y - rect.loc.y;
+    let abajo = rect.size.h - arriba;
+    // Las esquinas inferiores dan 44 puntos de agarre (−22..+22); en las aristas
+    // rectas se acota a 10 px por fuera y 6 px por dentro para no robar toques
+    // lejos de la ventana ni invadir contenido o scroll.
+    let esquina_inferior = (-22.0..22.0).contains(&abajo)
+        && ((-22.0..22.0).contains(&izquierda) || (-22.0..22.0).contains(&derecha));
+    let dentro_vertical = (-10.0..).contains(&arriba) && (-10.0..).contains(&abajo);
+    let dentro_horizontal = (-10.0..).contains(&izquierda) && (-10.0..).contains(&derecha);
+    let horizontal = if esquina_inferior {
+        Some(izquierda < derecha)
+    } else if dentro_vertical && (-10.0..6.0).contains(&izquierda) {
+        Some(true)
+    } else if dentro_vertical && (-10.0..6.0).contains(&derecha) {
+        Some(false)
+    } else {
+        None
+    };
+    let vertical = if esquina_inferior {
+        Some(false)
+    } else if dentro_horizontal && (-10.0..6.0).contains(&arriba) {
+        Some(true)
+    } else if dentro_horizontal && (-10.0..6.0).contains(&abajo) {
+        Some(false)
+    } else {
+        None
+    };
+    (horizontal.is_some() || vertical.is_some()).then_some(
+        crate::ventanas::Modo::RedimensionarBorde {
+            horizontal,
+            vertical,
+        },
+    )
+}
+
 // modificado en la 0.2.0 -- el apoyo resalta; la acción espera únicamente a la liberación del dedo.
 pub fn toque_abajo(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Logical>, time: u32) {
+    ocultar_cursor_tactil(state);
+    if state.contactos.apoyar(slot, punto, time)
+        || crate::extras::interceptar_toque_abajo(state, slot, punto, time)
+    {
+        return;
+    }
+    toque_abajo_normal(state, slot, punto, time);
+}
+
+pub(crate) fn toque_abajo_normal(
+    state: &mut BookosComp,
+    slot: TouchSlot,
+    punto: Point<f64, Logical>,
+    time: u32,
+) {
+    if crate::multitarea_tactil::pulsar(state, Some(slot), punto, time) {
+        return;
+    }
+    crate::tactil::renovar_barra(state, punto);
     crate::teclado::iniciar_toque(state, slot, punto, time);
     if crate::teclado::pulsar(state, punto, crate::teclado::Dedo::Toque(slot)) {
         return;
     }
+    state.pointer_location = punto;
     let Some(touch) = state.seat.get_touch() else {
         return;
     };
+    let capa_modal = state
+        .shell
+        .as_ref()
+        .is_some_and(|s| s.esta_bloqueado() || s.hay_captura() || s.hay_conmutador());
+    if state.toque_emulado.is_none() && !capa_modal && !state.shell_contiene(punto) {
+        if crate::multitarea::empezar_separador_tactil(state, punto) {
+            state.toque_emulado = Some(ToqueEmulado::Separador {
+                slot,
+                origen: punto,
+                movido: false,
+            });
+            return;
+        }
+        if !crate::decoracion::barra_en(state, punto).is_some_and(|(_, boton)| boton.is_some())
+            && let Some((window, modo)) = borde_redimension_tactil(state, punto)
+        {
+            state.enfocar(&window);
+            state.arrastrar_ventana(&window, modo, false);
+            state.toque_emulado = Some(ToqueEmulado::ArrastreVentana(slot));
+            return;
+        }
+    }
     // La captura y el conmutador se quedan la entrada aunque haya una ventana
     // debajo, igual que hacen con el ratón en `boton`.
+    let pantalla = state.pantalla();
+    let en_miniatura = state
+        .miniatura_captura
+        .as_ref()
+        .is_some_and(|m| m.contiene(punto, pantalla));
     let del_shell = state.toque_emulado.is_some()
+        || en_miniatura
         || state
             .shell
             .as_ref()
@@ -1117,9 +1588,33 @@ pub fn toque_abajo(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Lo
     };
     match foco {
         Some(foco) => {
+            // Si el toque va a una ventana normal (no a una layer-surface de extras),
+            // avisamos a `bookos-extras` por si tiene la cortina abierta.
+            let es_capa = state
+                .space
+                .layer_for_surface(&foco.0, smithay::desktop::WindowSurfaceType::ALL)
+                .is_some();
+            if !es_capa {
+                crate::extras::toque_fuera(state);
+            }
             crate::teclado::tocado(state, &foco.0);
-            if let Some((window, _)) = state.ventana_bajo(punto) {
+            if let Some((window, loc)) = state.ventana_bajo(punto) {
                 state.enfocar(&window);
+                if state.toque_titulo_pendiente.is_some() {
+                    // Un segundo dedo invalida el posible arrastre de título (p. ej. pellizco o scroll).
+                    state.toque_titulo_pendiente = None;
+                } else if state.arrastre.is_none()
+                    && !es_capa
+                    && !crate::ventanas::completa(&window)
+                    && !crate::decoracion::decorada(&window)
+                {
+                    let w = window.geometry().size.w as f64;
+                    let lx = punto.x - loc.x as f64;
+                    let ly = punto.y - loc.y as f64;
+                    if (0.0..=38.0).contains(&ly) && w > 0.0 && lx >= w * 0.18 && lx <= w * 0.82 {
+                        state.toque_titulo_pendiente = Some((slot, window, punto));
+                    }
+                }
             }
             let evento = DownEvent {
                 slot,
@@ -1130,12 +1625,18 @@ pub fn toque_abajo(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Lo
             touch.down(state, Some(foco), &evento);
         }
         None if state.toque_emulado.is_none() => {
+            crate::extras::toque_fuera(state);
             set_pointer(state, punto, time);
             let del_shell = state.shell_contiene(punto)
+                || en_miniatura
                 || state
                     .shell
                     .as_ref()
                     .is_some_and(|s| s.esta_bloqueado() || s.hay_captura() || s.hay_conmutador());
+            let en_conmutador = state
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.hay_conmutador());
             // added 0.2.3 -- los mandos de la música del bloqueo se aprietan
             // al apoyar el dedo, como con el ratón; el resto del bloqueo
             // (apagar, la contraseña) sigue esperando a levantarlo.
@@ -1143,38 +1644,53 @@ pub fn toque_abajo(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Lo
                 .shell
                 .as_ref()
                 .is_some_and(|s| s.bloqueo_toque_directo(punto.x, punto.y));
-            state.toque_emulado = Some(if del_shell && !directo {
+            let titulo = !del_shell
+                && crate::decoracion::barra_en(state, punto)
+                    .is_some_and(|(_, boton)| boton.is_none());
+            let escritorio =
+                !capa_modal && !del_shell && !titulo && state.space.element_under(punto).is_none();
+            state.toque_emulado = Some(if !directo && !en_conmutador {
                 ToqueEmulado::Pendiente {
                     slot,
                     origen: punto,
-                    arrastrable: state
-                        .shell
-                        .as_ref()
-                        .is_some_and(|s| s.toque_arrastrable(punto.x, punto.y)),
+                    tiempo: time,
+                    arrastrable: escritorio
+                        || en_miniatura
+                        || titulo
+                        || state
+                            .shell
+                            .as_ref()
+                            .is_some_and(|s| s.toque_arrastrable(punto.x, punto.y)),
                 }
             } else {
-                // Las decoraciones ya confirman al soltar; el escritorio necesita iniciar su selección al apoyar.
                 boton(state, BTN_LEFT, ButtonState::Pressed, time);
                 ToqueEmulado::Arrastrando(slot)
             });
-            if del_shell && state.shell.as_ref().is_some_and(|s| s.sobre_actividad(punto.x, punto.y)) {
-                contar_toque_largo_isla(state, slot, punto, time);
+            let isla = del_shell
+                && state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.sobre_actividad(punto.x, punto.y));
+            let dock = del_shell
+                && state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.en_el_dock(punto.x, punto.y));
+            if !capa_modal && (isla || dock || escritorio || titulo) {
+                contar_toque_largo(state, slot, punto, time, isla);
             }
         }
         None => {}
     }
 }
 
-/// Mantener el dedo en la isla saca su menú, como el clic derecho. El toque
-/// del shell solo se convierte en clic al levantar el dedo; si a los
-/// `MANTENER_ISLA` sigue quieto, se hace ahora el clic (abre la tarjeta si
-/// estaba en píldora), se saca el menú y el levantar ya no hace nada.
-// añadido en la 0.2.2
-fn contar_toque_largo_isla(
+/// Abre el mismo menú del puntero si el contacto se mantiene quieto.
+fn contar_toque_largo(
     state: &mut BookosComp,
     slot: TouchSlot,
     origen: Point<f64, Logical>,
     time: u32,
+    isla: bool,
 ) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     let programado = state.loop_handle.insert_source(
@@ -1182,35 +1698,89 @@ fn contar_toque_largo_isla(
         move |_, _, state| {
             let sigue = matches!(
                 state.toque_emulado,
-                Some(ToqueEmulado::Pendiente { slot: s, origen: o, .. }) if s == slot && o == origen
+                Some(ToqueEmulado::Pendiente { slot: s, origen: o, tiempo, .. })
+                    if s == slot && o == origen && tiempo == time
             );
-            if !sigue {
+            if !sigue
+                || state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.esta_bloqueado() || s.hay_captura())
+            {
                 return TimeoutAction::Drop;
             }
             state.toque_emulado = Some(ToqueEmulado::Cancelado(slot));
-            if !state.shell.as_ref().is_some_and(|s| s.actividad_abierta()) {
-                let posicion = state.pointer_location;
-                set_pointer(state, origen, time);
-                boton(state, BTN_LEFT, ButtonState::Pressed, time);
-                boton(state, BTN_LEFT, ButtonState::Released, time);
-                set_pointer(state, posicion, time);
+            let posicion = state.pointer_location;
+            set_pointer(state, origen, time);
+            if isla {
+                if !state.shell.as_ref().is_some_and(|s| s.actividad_abierta()) {
+                    boton(state, BTN_LEFT, ButtonState::Pressed, time);
+                    boton(state, BTN_LEFT, ButtonState::Released, time);
+                }
+                if state
+                    .shell
+                    .as_mut()
+                    .is_some_and(|s| s.menu_actividad_en(origen.x, origen.y))
+                {
+                    state.needs_redraw = true;
+                }
+            } else {
+                boton(state, BTN_RIGHT, ButtonState::Pressed, time);
+                boton(state, BTN_RIGHT, ButtonState::Released, time);
             }
-            if state.shell.as_mut().is_some_and(|s| s.menu_actividad_en(origen.x, origen.y)) {
-                state.needs_redraw = true;
-            }
+            set_pointer(state, posicion, time);
             TimeoutAction::Drop
         },
     );
     if let Err(err) = programado {
-        tracing::warn!("no se pudo contar el toque largo de la isla: {err}");
+        tracing::warn!("no se pudo contar el toque largo: {err}");
     }
 }
 
 // 0.1.1
 // modificado en la 0.2.0 -- superar el margen elige arrastre o cancelación sin activar botones.
 pub fn toque_mueve(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Logical>, time: u32) {
+    ocultar_cursor_tactil(state);
+    if crate::tactil::mover_escritorio(state, slot, punto, time)
+        || crate::extras::interceptar_toque_mueve(state, slot, punto, time)
+    {
+        return;
+    }
+    toque_mueve_normal(state, slot, punto, time);
+}
+
+pub(crate) fn toque_mueve_normal(
+    state: &mut BookosComp,
+    slot: TouchSlot,
+    punto: Point<f64, Logical>,
+    time: u32,
+) {
+    if crate::multitarea_tactil::mover(state, Some(slot), punto, time) {
+        return;
+    }
     crate::teclado::mover_toque(state, slot, punto);
-    if let Some(toque) = state.toque_emulado.filter(|t| t.slot() == slot) {
+    if let Some(toque) = state.toque_emulado {
+        if toque.slot() != slot {
+            return;
+        }
+        if let ToqueEmulado::ArrastreVentana(_) = toque {
+            set_pointer(state, punto, time);
+            return;
+        }
+        if let ToqueEmulado::Separador { origen, movido, .. } = toque {
+            if movido || (punto.x - origen.x).abs() >= 10.0 {
+                state.toque_emulado = Some(ToqueEmulado::Separador {
+                    slot,
+                    origen,
+                    movido: true,
+                });
+                set_pointer(state, punto, time);
+            } else if (punto.y - origen.y).abs() >= 10.0 {
+                crate::multitarea::soltar(state);
+                state.toque_emulado = Some(ToqueEmulado::Cancelado(slot));
+            }
+            return;
+        }
         if let ToqueEmulado::Pendiente {
             origen,
             arrastrable,
@@ -1227,6 +1797,28 @@ pub fn toque_mueve(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Lo
             }
         }
         set_pointer(state, punto, time);
+        return;
+    }
+    state.pointer_location = punto;
+    if crate::multitarea::seguir_separador(state) || state.seguir_arrastre() {
+        state.toque_titulo_pendiente = None;
+        state.space.refresh();
+        let fallback = state.output_scale();
+        state.broadcast_preferred_scale(fallback);
+        return;
+    }
+    if let Some((pend_slot, _, origen)) = state.toque_titulo_pendiente.as_ref()
+        && *pend_slot == slot
+        && (punto.x - origen.x).hypot(punto.y - origen.y) > 12.0
+    {
+        let (_, window, origen) = state.toque_titulo_pendiente.take().unwrap();
+        if let Some(touch) = state.seat.get_touch() {
+            touch.cancel(state);
+        }
+        state.pointer_location = origen;
+        state.arrastrar_ventana(&window, crate::ventanas::Modo::Mover, false);
+        state.pointer_location = punto;
+        state.seguir_arrastre();
         return;
     }
     let Some(touch) = state.seat.get_touch() else {
@@ -1246,11 +1838,34 @@ pub fn toque_mueve(state: &mut BookosComp, slot: TouchSlot, punto: Point<f64, Lo
 // 0.1.1
 // modificado en la 0.2.0 -- la holgura conserva el objetivo inicial al confirmar.
 pub fn toque_arriba(state: &mut BookosComp, slot: TouchSlot, time: u32) {
+    ocultar_cursor_tactil(state);
+    if crate::tactil::soltar_escritorio(state, slot, time)
+        || crate::extras::interceptar_toque_arriba(state, slot, time)
+    {
+        return;
+    }
+    toque_arriba_normal(state, slot, time);
+}
+
+pub(crate) fn toque_arriba_normal(state: &mut BookosComp, slot: TouchSlot, time: u32) {
+    if crate::multitarea_tactil::soltar(state, Some(slot), time, false) {
+        return;
+    }
     crate::teclado::terminar_toque(state, slot, time);
     if crate::teclado::soltar(state, crate::teclado::Dedo::Toque(slot)) {
         return;
     }
-    if let Some(toque) = state.toque_emulado.filter(|t| t.slot() == slot) {
+    if state
+        .toque_titulo_pendiente
+        .as_ref()
+        .is_some_and(|(s, _, _)| *s == slot)
+    {
+        state.toque_titulo_pendiente = None;
+    }
+    if let Some(toque) = state.toque_emulado {
+        if toque.slot() != slot {
+            return;
+        }
         state.toque_emulado = None;
         match toque {
             ToqueEmulado::Pendiente { origen, .. } => {
@@ -1262,7 +1877,30 @@ pub fn toque_arriba(state: &mut BookosComp, slot: TouchSlot, time: u32) {
                 set_pointer(state, posicion, time);
             }
             ToqueEmulado::Arrastrando(_) => boton(state, BTN_LEFT, ButtonState::Released, time),
+            ToqueEmulado::ArrastreVentana(_) => {
+                let _ = state.soltar_arrastre();
+            }
+            ToqueEmulado::Separador { origen, movido, .. } => {
+                crate::multitarea::soltar(state);
+                if !movido
+                    && let Some(w) =
+                        crate::multitarea::separador_en_con_holgura(state, origen, 24.0)
+                {
+                    crate::keybinds::menu_separador(state, w);
+                }
+            }
             ToqueEmulado::Cancelado(_) => {}
+        }
+        return;
+    }
+    let solto_sep = crate::multitarea::soltar(state);
+    let solto_arrastre = state.soltar_arrastre();
+    if solto_arrastre {
+        return;
+    }
+    if solto_sep {
+        if let Some(touch) = state.seat.get_touch() {
+            touch.cancel(state);
         }
         return;
     }
@@ -1280,7 +1918,29 @@ pub fn toque_arriba(state: &mut BookosComp, slot: TouchSlot, time: u32) {
 // 0.1.1
 // modificado en la 0.2.0 -- perder el contacto no ejecuta la acción pendiente.
 pub(crate) fn toque_cancelar(state: &mut BookosComp, time: u32) {
+    ocultar_cursor_tactil(state);
+    crate::tactil::cancelar_escritorio(state, time);
+    cancelar_toques_cliente(state, time);
+}
+
+pub(crate) fn cancelar_toques_cliente(state: &mut BookosComp, time: u32) {
+    state.toque_titulo_pendiente = None;
+    state.arrastre_exposicion = None;
+    crate::extras::interceptar_toque_cancelar(state, time);
+    crate::multitarea_tactil::cancelar_toque(state, time);
     crate::teclado::cancelar_toques(state);
+    let _ = crate::multitarea::soltar(state);
+    if let Some(arrastre) = state.arrastre.as_mut() {
+        arrastre.zona = None;
+    }
+    let _ = state.soltar_arrastre();
+    if state
+        .miniatura_captura
+        .as_mut()
+        .is_some_and(|m| m.cancelar_arrastre())
+    {
+        state.needs_redraw = true;
+    }
     // Un botón pulsado sin su soltar deja al shell creyendo que se sigue
     // arrastrando: se suelta aunque el toque se haya anulado.
     if matches!(
@@ -1304,9 +1964,16 @@ pub enum ToqueEmulado {
     Pendiente {
         slot: TouchSlot,
         origen: Point<f64, Logical>,
+        tiempo: u32,
         arrastrable: bool,
     },
+    Separador {
+        slot: TouchSlot,
+        origen: Point<f64, Logical>,
+        movido: bool,
+    },
     Arrastrando(TouchSlot),
+    ArrastreVentana(TouchSlot),
     Cancelado(TouchSlot),
 }
 
@@ -1314,7 +1981,11 @@ impl ToqueEmulado {
     // añadido en la 0.2.0 -- los demás dedos no cambian la captura del primer contacto.
     fn slot(self) -> TouchSlot {
         match self {
-            Self::Pendiente { slot, .. } | Self::Arrastrando(slot) | Self::Cancelado(slot) => slot,
+            Self::Pendiente { slot, .. }
+            | Self::Separador { slot, .. }
+            | Self::Arrastrando(slot)
+            | Self::ArrastreVentana(slot)
+            | Self::Cancelado(slot) => slot,
         }
     }
 }
@@ -1348,6 +2019,7 @@ fn traducir_tecla(
         // el descarte de abajo: por eso se mira el keysym.
         keysyms::KEY_a | keysyms::KEY_A if ctrl => TeclaPulsada::SeleccionarTodo,
         keysyms::KEY_BackSpace => TeclaPulsada::Retroceso,
+        keysyms::KEY_Delete | keysyms::KEY_KP_Delete => TeclaPulsada::Suprimir,
         // Lo demás solo interesa si escribe algo: es lo que alimentará la
         // búsqueda del launchpad. Los controles se descartan para que un
         // Ctrl+C no acabe metiendo un carácter raro en un campo de texto.
@@ -1362,6 +2034,124 @@ fn traducir_tecla(
     Some(tecla)
 }
 
+// añadido en la 0.2.4
+fn mover_miniatura(state: &mut BookosComp, destino: Point<f64, Logical>) {
+    let pantalla = state.pantalla();
+    let ahora = std::time::Instant::now();
+    if let Some((cambio, programar)) = state
+        .miniatura_captura
+        .as_mut()
+        .map(|m| m.mover_en(destino, pantalla, ahora))
+    {
+        if cambio {
+            state.needs_redraw = true;
+        }
+        if programar {
+            let _ = state.loop_handle.insert_source(
+                Timer::from_duration(std::time::Duration::from_secs(2)),
+                |_, _, state| {
+                    state.needs_redraw = true;
+                    TimeoutAction::Drop
+                },
+            );
+        }
+    }
+}
+
+// añadido en la 0.2.4
+fn ejecutar_accion_miniatura(state: &mut BookosComp, accion: crate::miniatura_captura::Accion) {
+    match accion {
+        crate::miniatura_captura::Accion::Abrir {
+            generacion,
+            recurso,
+        } => {
+            let visor = bookos_shell::visor_imagenes();
+            if let Some(mini) = state.miniatura_captura.as_mut() {
+                match visor.as_ref() {
+                    Some(v) => mini.configurar_visor(
+                        Some(v.app_id.clone()),
+                        v.wm_class.clone(),
+                        None,
+                        false,
+                    ),
+                    None => mini.configurar_visor(None, None, None, true),
+                }
+            }
+            let _ = state.loop_handle.insert_source(
+                Timer::from_duration(
+                    crate::miniatura_captura::ESPERA_MAX_VISOR
+                        + std::time::Duration::from_millis(50),
+                ),
+                |_, _, state| {
+                    state.needs_redraw = true;
+                    TimeoutAction::Drop
+                },
+            );
+            let mut cmd = match visor {
+                Some(v) => crate::keybinds::comando_directo(state, &v.programa, &v.argumentos),
+                None => crate::keybinds::comando_directo(state, "xdg-open", &[]),
+            };
+            if let Some(ruta) = recurso.ruta_ya_guardada() {
+                cmd.arg(&ruta);
+                match cmd.spawn() {
+                    Ok(hijo) => {
+                        let pid = hijo.id();
+                        if let Some(mini) = state.miniatura_captura.as_mut() {
+                            mini.registrar_pid_visor(pid);
+                        }
+                        crate::keybinds::registrar_hijo(state, hijo, None);
+                    }
+                    Err(err) => {
+                        tracing::error!(?ruta, "no se pudo abrir el visor de capturas: {err}");
+                        if let Some(mini) = state.miniatura_captura.as_mut() {
+                            mini.cancelar_apertura(std::time::Instant::now());
+                        }
+                    }
+                }
+                return;
+            }
+            let envio = state.captura_envio.clone();
+            let _ = std::thread::Builder::new()
+                .name("visor-captura".into())
+                .spawn(move || {
+                    use crate::miniatura_captura::{EstadoRecurso, EventoCaptura};
+                    let ruta = match recurso.esperar(std::time::Duration::from_secs(3)) {
+                        EstadoRecurso::Guardado(r) => Ok(r),
+                        EstadoRecurso::PngEnMemoria(png) => {
+                            bookos_shell::captura::guardar_bytes_png(&png, None)
+                        }
+                        EstadoRecurso::Error(err) => Err(std::io::Error::other(err)),
+                        EstadoRecurso::Pendiente => {
+                            Err(std::io::Error::other("tiempo de espera agotado"))
+                        }
+                    };
+                    match ruta {
+                        Ok(ruta) => {
+                            cmd.arg(&ruta);
+                            match cmd.spawn() {
+                                Ok(hijo) => {
+                                    let _ = envio.send(EventoCaptura::HijoVisor { generacion, hijo });
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        ?ruta,
+                                        "no se pudo lanzar el visor de capturas: {err}"
+                                    );
+                                    let _ = envio.send(EventoCaptura::FalloAbrirVisor { generacion });
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            tracing::error!("no se pudo preparar la captura para abrir: {err}");
+                            let _ = envio.send(EventoCaptura::FalloAbrirVisor { generacion });
+                        }
+                    }
+                });
+        }
+        crate::miniatura_captura::Accion::Descartar => {}
+    }
+}
+
 /// Un botón del ratón, venga de libinput, de winit o de un autotest: todos
 /// pasan por aquí para que el clic de prueba recorra el mismo camino.
 // modified 0.1.1 -- con el cuentagotas, el clic izquierdo coge el color y otro lo cancela
@@ -1369,29 +2159,67 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
     // Meta+clic mueve y redimensiona ventanas: si hubo clic, la tecla
     // era un modificador y no debe abrir nada al soltarla.
     state.meta_sola = false;
-    // añadido en la 0.2.4 -- clic en la miniatura flotante de captura (abrir o descartar).
+    if state.vista_tactil.is_some() {
+        if button == BTN_LEFT {
+            match pulsado {
+                ButtonState::Pressed => {
+                    crate::multitarea_tactil::pulsar(state, None, state.pointer_location, time);
+                }
+                ButtonState::Released => {
+                    crate::multitarea_tactil::soltar(state, None, time, false);
+                }
+            }
+        }
+        return;
+    }
+    // añadido en la 0.2.4 -- interacción continua con la miniatura flotante de captura.
     if pulsado == ButtonState::Pressed {
         let pantalla = state.pantalla();
         let pos = state.pointer_location;
+        let ahora = std::time::Instant::now();
+        if let Some(mini) = state.miniatura_captura.as_mut() {
+            if mini.esperando_visor() {
+                if button != BTN_LEFT {
+                    mini.cancelar_apertura(ahora);
+                    state.needs_redraw = true;
+                    return;
+                }
+                if mini.contiene(pos, pantalla) {
+                    return;
+                }
+                mini.cancelar_apertura(ahora);
+                state.needs_redraw = true;
+            } else {
+                if let Some(accion) = mini.pulsar(pos, pantalla, button != BTN_LEFT, ahora) {
+                    ejecutar_accion_miniatura(state, accion);
+                    state.needs_redraw = true;
+                    return;
+                }
+                if mini.arrastrando() {
+                    state.needs_redraw = true;
+                    return;
+                }
+            }
+        }
+    } else if button == BTN_LEFT
+        && pulsado == ButtonState::Released
+        && state
+            .miniatura_captura
+            .as_ref()
+            .is_some_and(|m| m.arrastrando())
+    {
+        let pos = state.pointer_location;
+        let area_util = state.work_area();
+        let ahora = std::time::Instant::now();
         if let Some(accion) = state
             .miniatura_captura
             .as_mut()
-            .and_then(|m| m.clic(pos, pantalla, button != BTN_LEFT))
+            .and_then(|m| m.soltar(pos, area_util, ahora))
         {
-            match accion {
-                crate::miniatura_captura::Accion::Abrir(ruta) => {
-                    crate::keybinds::lanzar(state, &format!("xdg-open '{}'", ruta.display()));
-                }
-                crate::miniatura_captura::Accion::GuardarYAbrir { rgba, ancho, alto } => {
-                    if let Ok(ruta) = bookos_shell::captura::guardar_png(&rgba, ancho, alto) {
-                        crate::keybinds::lanzar(state, &format!("xdg-open '{}'", ruta.display()));
-                    }
-                }
-                crate::miniatura_captura::Accion::Descartar => {}
-            }
-            state.needs_redraw = true;
-            return;
+            ejecutar_accion_miniatura(state, accion);
         }
+        state.needs_redraw = true;
+        return;
     }
     // Un aviso cogido: el soltar decide si fue un clic o un arrastre, y no
     // llega a nadie más (la pulsación tampoco llegó).
@@ -1443,6 +2271,24 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
     // encuadrando una foto y un clic no puede llegar a la ventana de
     // debajo. Va antes que el bloqueo porque son excluyentes y esta es
     // la que puede estar abierta con el escritorio en uso.
+    if state.shell.as_ref().is_some_and(|s| s.hay_grabacion_pill()) {
+        let (x, y) = (state.pointer_location.x, state.pointer_location.y);
+        match pulsado {
+            ButtonState::Pressed if state.shell.as_ref().is_some_and(|s| s.grabacion_pill_contiene(x, y)) => {
+                if let Some(accion) = state.shell.as_mut().and_then(|s| s.grabacion_pill_pulsar(x, y)) {
+                    crate::keybinds::hacer(state, accion);
+                }
+                state.needs_redraw = true;
+                return;
+            }
+            ButtonState::Released => {
+                if let Some(shell) = state.shell.as_mut() {
+                    shell.grabacion_pill_soltar();
+                }
+            }
+            _ => {}
+        }
+    }
     if state.shell.as_ref().is_some_and(|s| s.hay_captura()) {
         let (x, y) = (state.pointer_location.x, state.pointer_location.y);
         let accion = match pulsado {
@@ -1504,11 +2350,44 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
     }
     let serial = SERIAL_COUNTER.next_serial();
 
+    if pulsado == ButtonState::Released && button == BTN_LEFT
+        && let Some(arr) = state.arrastre_exposicion.take()
+    {
+        if !arr.moviendo {
+            crate::keybinds::ejecutar(state, crate::keybinds::Accion::ConmutarFin);
+        } else if let Some(zona) = arr.zona_split {
+            state.conmutador_pegado = false;
+            state.conmutador_salida = None;
+            state.conmutador_entrada = None;
+            state.exposicion_gesto = None;
+            state.exposicion_salida_escritorio = None;
+            state.exposicion_escritorio_sujeto = false;
+            state.exposicion_desplazamiento_x.fijar(0.0);
+            let destinos = std::mem::take(&mut state.conmutador_destinos);
+            state.conmutador_modo = None;
+            if let Some(shell) = state.shell.as_mut() {
+                shell.cancelar_conmutador();
+            }
+            if let Some(window) = destinos.get(arr.indice).cloned().filter(|w| w.alive()) {
+                crate::multitarea::emparejar_en_lado(state, &window, zona);
+            }
+            state.needs_redraw = true;
+        } else if arr.actual.y - arr.origen.y < -110.0 {
+            let mut muelle =
+                bookos_shell::tema::Muelle::nuevo(0.25, bookos_shell::tema::M_SUAVE);
+            muelle.soltar_gesto(1.0, 2.5);
+            state.exposicion_salida_escritorio = Some(muelle);
+            state.exposicion_escritorio_sujeto = false;
+            state.needs_redraw = true;
+        } else {
+            state.needs_redraw = true;
+        }
+        return;
+    }
     if pulsado == ButtonState::Released && std::mem::take(&mut state.conmutador_clic) {
         return;
     }
     if pulsado == ButtonState::Pressed && state.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
-        state.conmutador_clic = true;
         let elegida = (button == BTN_LEFT)
             .then(|| {
                 crate::keybinds::celda_bajo(state, state.pointer_location.x, state.pointer_location.y)
@@ -1521,8 +2400,25 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
             {
                 shell.conmutador_elegir(i);
             }
+            if state.conmutador_pegado
+                && state.conmutador_modo == Some(bookos_shell::conmutador::Modo::Ventanas)
+                && state.conmutador_salida.is_none()
+                && state.exposicion_salida_escritorio.is_none()
+            {
+                state.arrastre_exposicion = Some(crate::state::ArrastreExposicion {
+                    indice: i,
+                    origen: state.pointer_location,
+                    actual: state.pointer_location,
+                    moviendo: false,
+                    zona_split: None,
+                });
+                state.needs_redraw = true;
+                return;
+            }
+            state.conmutador_clic = true;
             crate::keybinds::ejecutar(state, crate::keybinds::Accion::ConmutarFin);
         } else {
+            state.conmutador_clic = true;
             crate::keybinds::ejecutar(state, crate::keybinds::Accion::ConmutarCancelar);
         }
         return;
@@ -1713,6 +2609,14 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
             {
                 crate::keybinds::hacer(state, accion);
             }
+            if button == BTN_LEFT
+                && state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.emergente_tiene_alarma())
+            {
+                crate::backend::schedule_panel_tick(state);
+            }
             if state.shell.as_mut().is_some_and(|s| s.programar_mantener_isla()) {
                 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
                 let programado = state.loop_handle.insert_source(
@@ -1763,10 +2667,13 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
         }
         state.enfocar(&window);
         match boton {
-            Some(boton) => crate::decoracion::pulsar(state, &window, boton),
+            Some(boton) => {
+                state.ultimo_clic_barra = None;
+                crate::decoracion::pulsar(state, &window, boton);
+            }
             // Fuera de los botones, la barra es para agarrar la
             // ventana; y dos clics seguidos, para maximizarla.
-            None if doble_clic_en_barra(state) => {
+            None if doble_clic_en_barra(state, &window) => {
                 state.alternar_maximizada(&window);
             }
             None => {
@@ -1775,6 +2682,9 @@ pub fn boton(state: &mut BookosComp, button: u32, pulsado: ButtonState, time: u3
         }
         state.needs_redraw = true;
         return;
+    }
+    if pulsado == ButtonState::Pressed && button == BTN_LEFT {
+        state.ultimo_clic_barra = None;
     }
 
     // El escritorio pelado: aquí no hay ventana ni barra ni shell, así
@@ -1897,6 +2807,10 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
         shell.bloqueo_mover(location.x, location.y);
     }
 
+    if crate::multitarea_tactil::mover(state, None, location, time) {
+        return;
+    }
+
     // Con una ventana agarrada, el movimiento es del compositor: ni el shell ni
     // el cliente lo ven. Reenviarlo mientras arrastras una terminal la deja
     // creyendo que estás seleccionando texto.
@@ -1932,6 +2846,29 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
     }
 
     if state.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
+        if state.arrastre_exposicion.is_some() {
+            let area = state.work_area();
+            if let Some(arr) = state.arrastre_exposicion.as_mut() {
+                arr.actual = location;
+                if !arr.moviendo
+                    && (location.x - arr.origen.x).hypot(location.y - arr.origen.y) > 12.0
+                {
+                    arr.moviendo = true;
+                }
+                if arr.moviendo {
+                    arr.zona_split =
+                        if location.x <= area.loc.x as f64 + area.size.w as f64 * 0.22 {
+                            Some(crate::ventanas::Zona::Izquierda)
+                        } else if location.x >= area.loc.x as f64 + area.size.w as f64 * 0.78 {
+                            Some(crate::ventanas::Zona::Derecha)
+                        } else {
+                            None
+                        };
+                }
+            }
+            state.needs_redraw = true;
+            return;
+        }
         let celda = crate::keybinds::celda_bajo(state, location.x, location.y);
         // añadido en la 0.2.0 -- con la vuelta de la exposición en marcha la
         // elegida ya está decidida: seguir al cursor la cambiaba y, al reposar
@@ -1979,12 +2916,30 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
     // Con la capa de captura abierta el ratón es suyo entero: se está
     // encuadrando, y ni el dock ni la ventana de debajo tienen nada que decir.
     if state.shell.as_ref().is_some_and(|s| s.hay_captura()) {
+        let ventana = state
+            .space
+            .element_under(location)
+            .and_then(|(w, _)| state.space.element_geometry(&w))
+            .map(|g| bookos_shell::captura::Recuadro {
+                x: g.loc.x as f32,
+                y: g.loc.y as f32,
+                w: g.size.w as f32,
+                h: g.size.h as f32,
+            });
         if let Some(shell) = state.shell.as_mut() {
+            shell.captura_establecer_ventana(ventana);
             shell.captura_puntero(location.x, location.y);
         }
         cursor_de_captura(state);
         state.needs_redraw = true;
         return;
+    }
+    if state
+        .shell
+        .as_mut()
+        .is_some_and(|s| s.grabacion_pill_puntero(location.x, location.y))
+    {
+        state.needs_redraw = true;
     }
     // Con la vista abierta el ✕ sigue al puntero de ventana en ventana.
     if crate::escritorios::mover_en_vista(state)
@@ -2014,21 +2969,6 @@ pub fn set_pointer(state: &mut BookosComp, destino: Point<f64, Logical>, time: u
     {
         state.needs_redraw = true;
         crate::notificaciones::despertar_para_la_salida(state);
-    }
-    if state.shell.as_mut().is_some_and(|s| s.programar_recogida_isla()) {
-        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-        let programado = state.loop_handle.insert_source(
-            Timer::from_duration(crate::shell::RECOGER_ISLA),
-            |_, _, state| {
-                if state.shell.as_mut().is_some_and(|s| s.recoger_isla_si_sigue_fuera()) {
-                    state.needs_redraw = true;
-                }
-                TimeoutAction::Drop
-            },
-        );
-        if let Err(err) = programado {
-            tracing::warn!("no se pudo programar la recogida de la isla: {err}");
-        }
     }
     // El cursor pegado a un borde trae de vuelta a la barra que se apartó. Va
     // en físicos porque la franja sensible se mide contra la pantalla.
@@ -2167,6 +3107,29 @@ const DOBLE_CLIC: std::time::Duration = std::time::Duration::from_millis(400);
 /// clic en dos clics sueltos y la ventana no hace nada.
 const DOBLE_CLIC_RADIO: f64 = 6.0;
 
+fn mismo_doble_clic(
+    previo: Option<(std::time::Instant, Point<f64, Logical>)>,
+    ahora: std::time::Instant,
+    punto: Point<f64, Logical>,
+) -> bool {
+    previo.is_some_and(|(t, p)| {
+        ahora.duration_since(t) <= DOBLE_CLIC
+            && (p.x - punto.x).abs() <= DOBLE_CLIC_RADIO
+            && (p.y - punto.y).abs() <= DOBLE_CLIC_RADIO
+    })
+}
+
+fn mismo_doble_clic_barra(
+    previo: Option<(std::time::Instant, Point<f64, Logical>, u64)>,
+    ahora: std::time::Instant,
+    punto: Point<f64, Logical>,
+    ventana_id: u64,
+) -> bool {
+    previo.is_some_and(|(t, p, id)| {
+        id == ventana_id && mismo_doble_clic(Some((t, p)), ahora, punto)
+    })
+}
+
 /// ¿Este clic llega lo bastante seguido y lo bastante cerca del anterior?
 ///
 /// Apunta el clic actual pase lo que pase: dos clics lentos no son un doble,
@@ -2176,22 +3139,25 @@ fn es_doble_clic(state: &mut BookosComp) -> bool {
     let ahora = std::time::Instant::now();
     let punto = state.pointer_location;
     let previo = state.ultimo_clic.replace((ahora, punto));
-    previo.is_some_and(|(t, p)| {
-        ahora.duration_since(t) <= DOBLE_CLIC
-            && (p.x - punto.x).abs() <= DOBLE_CLIC_RADIO
-            && (p.y - punto.y).abs() <= DOBLE_CLIC_RADIO
-    })
+    mismo_doble_clic(previo, ahora, punto)
 }
 
-/// El doble clic sobre **nuestra** barra: no hace falta mirar dónde cae dentro
-/// de la ventana, porque la barra entera es zona de título.
+/// El doble clic sobre **nuestra** barra: exige que ambos clics caigan sobre
+/// la barra de la **misma** ventana.
 // 0.1.0
-fn doble_clic_en_barra(state: &mut BookosComp) -> bool {
-    if !es_doble_clic(state) {
+fn doble_clic_en_barra(state: &mut BookosComp, window: &smithay::desktop::Window) -> bool {
+    let Some(ventana_id) = crate::decoracion::id(window) else {
+        state.ultimo_clic_barra = None;
+        return false;
+    };
+    let ahora = std::time::Instant::now();
+    let punto = state.pointer_location;
+    let previo = state.ultimo_clic_barra.replace((ahora, punto, ventana_id));
+    if !mismo_doble_clic_barra(previo, ahora, punto, ventana_id) {
         return false;
     }
     // El tercer clic no vuelve a disparar: se olvida el par ya usado.
-    state.ultimo_clic = None;
+    state.ultimo_clic_barra = None;
     true
 }
 
@@ -2480,7 +3446,7 @@ fn agarrar_exposicion(state: &mut BookosComp) {
 }
 
 // modificado en la 0.2.0 -- el exceso en un extremo no se acumula como recorrido invisible al invertir.
-fn seguir_exposicion(state: &mut BookosComp, progreso: f32) {
+pub(crate) fn seguir_exposicion(state: &mut BookosComp, progreso: f32) {
     if state.exposicion_gesto.is_none() {
         agarrar_exposicion(state);
     }
@@ -2506,8 +3472,21 @@ fn seguir_exposicion(state: &mut BookosComp, progreso: f32) {
     state.needs_redraw = true;
 }
 
+/// Versión 2D táctil: además de subir y reducir la app 1:1, acompaña el dedo en X.
+pub(crate) fn seguir_exposicion_con_x(
+    state: &mut BookosComp,
+    progreso: f32,
+    desplazamiento_x: f32,
+) {
+    state
+        .exposicion_desplazamiento_x
+        .fijar(desplazamiento_x.clamp(-1.0, 1.0));
+    seguir_exposicion(state, progreso);
+}
+
 // añadido en la 0.2.0
-fn soltar_exposicion(state: &mut BookosComp, suelta: crate::gestos::Suelta) {
+pub(crate) fn soltar_exposicion(state: &mut BookosComp, suelta: crate::gestos::Suelta) {
+    state.exposicion_desplazamiento_x.ir_a(0.0);
     let Some(agarre) = state.exposicion_gesto.take() else {
         return;
     };
@@ -2526,6 +3505,44 @@ fn soltar_exposicion(state: &mut BookosComp, suelta: crate::gestos::Suelta) {
     if !abrir {
         state.conmutador_salida = Some(crate::keybinds::Accion::ConmutarCancelar);
     }
+    state.needs_redraw = true;
+}
+
+/// Segundo gesto de abajo hacia arriba con la exposición en medio: las tarjetas
+/// despegan hacia arriba siguiendo el dedo antes de despejar al escritorio.
+pub(crate) fn seguir_exposicion_escritorio(
+    state: &mut BookosComp,
+    progreso: f32,
+    desplazamiento_x: f32,
+) {
+    state.arrastre_exposicion = None;
+    state.exposicion_escritorio_sujeto = true;
+    state
+        .exposicion_desplazamiento_x
+        .fijar(desplazamiento_x.clamp(-1.0, 1.0));
+    let muelle = state
+        .exposicion_salida_escritorio
+        .get_or_insert_with(|| bookos_shell::tema::Muelle::nuevo(0.0, bookos_shell::tema::M_SUAVE));
+    muelle.fijar(progreso.clamp(0.0, 1.0));
+    state.needs_redraw = true;
+}
+
+pub(crate) fn soltar_exposicion_escritorio(state: &mut BookosComp, suelta: crate::gestos::Suelta) {
+    state.exposicion_escritorio_sujeto = false;
+    state.exposicion_desplazamiento_x.ir_a(0.0);
+    let llega = !suelta.cancelada
+        && bookos_shell::tema::proyectar_impulso(suelta.progreso, suelta.velocidad) >= 0.35;
+    let muelle = state
+        .exposicion_salida_escritorio
+        .get_or_insert_with(|| bookos_shell::tema::Muelle::nuevo(0.0, bookos_shell::tema::M_SUAVE));
+    muelle.soltar_gesto(
+        if llega { 1.0 } else { 0.0 },
+        if suelta.cancelada {
+            0.0
+        } else {
+            suelta.velocidad
+        },
+    );
     state.needs_redraw = true;
 }
 
@@ -2609,5 +3626,40 @@ mod tests {
         };
         assert!(modificador_conmutador_suelto(Modo::Aplicaciones, &meta));
         assert!(!modificador_conmutador_suelto(Modo::Ventanas, &meta));
+    }
+
+    #[test]
+    fn arista_tactil_acota_bordes_rectos_y_amplia_esquina_inferior() {
+        let rect = smithay::utils::Rectangle::new((100.0, 100.0).into(), (400.0, 300.0).into());
+        // Lejos por fuera en arista recta (>10 px): no roba toques del escritorio o barras.
+        assert!(arista_tactil(rect, (84.0, 250.0).into()).is_none());
+        assert!(arista_tactil(rect, (300.0, 84.0).into()).is_none());
+        // Dentro del margen de 10 px por fuera en arista izquierda: solo eje horizontal.
+        assert_eq!(
+            arista_tactil(rect, (93.0, 250.0).into()),
+            Some(crate::ventanas::Modo::RedimensionarBorde {
+                horizontal: Some(true),
+                vertical: None,
+            })
+        );
+        // Dentro del cuerpo de la ventana: ninguno.
+        assert!(arista_tactil(rect, (250.0, 200.0).into()).is_none());
+        // Esquina inferior derecha con 44 pt de agarre (−22..+22).
+        assert_eq!(
+            arista_tactil(rect, (515.0, 415.0).into()),
+            Some(crate::ventanas::Modo::RedimensionarBorde {
+                horizontal: Some(false),
+                vertical: Some(false),
+            })
+        );
+    }
+
+    #[test]
+    fn doble_clic_en_barra_exige_la_misma_ventana() {
+        let t0 = std::time::Instant::now();
+        let t1 = t0 + std::time::Duration::from_millis(120);
+        let p = Point::from((400.0, 60.0));
+        assert!(!mismo_doble_clic_barra(Some((t0, p, 1)), t1, p, 2));
+        assert!(mismo_doble_clic_barra(Some((t0, p, 1)), t1, p, 1));
     }
 }

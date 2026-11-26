@@ -41,6 +41,50 @@ pub const CERRADA_POR_EL_USUARIO: u32 = 2;
 
 pub const RUTA: &str = "/org/freedesktop/Notifications";
 pub const INTERFAZ: &str = "org.freedesktop.Notifications";
+pub const ID_INTERNO_BASE: u32 = 0xF000_0000;
+
+static SIGUIENTE_INTERNO: AtomicU32 = AtomicU32::new(ID_INTERNO_BASE);
+
+/// Genera un identificador único para notificaciones internas del compositor
+/// (como capturas guardadas) que no colisiona con los IDs de D-Bus.
+pub fn siguiente_id_interno() -> u32 {
+    let id = SIGUIENTE_INTERNO.fetch_add(1, Ordering::Relaxed);
+    if id < ID_INTERNO_BASE {
+        SIGUIENTE_INTERNO.store(ID_INTERNO_BASE + 1, Ordering::Relaxed);
+        ID_INTERNO_BASE
+    } else {
+        id
+    }
+}
+
+/// Abre en el visor del sistema la ruta local asociada a una notificación (si la tiene).
+pub fn abrir_ruta_de_notificacion(state: &mut crate::state::BookosComp, id: u32) -> bool {
+    let ruta = state.shell.as_ref().and_then(|s| {
+        s.notificaciones_lista()
+            .iter()
+            .find(|n| n.id == id)
+            .and_then(|n| n.ruta.clone())
+    });
+    let Some(ruta) = ruta else {
+        return false;
+    };
+    let visor = bookos_shell::visor_imagenes();
+    let mut cmd = match visor.as_ref() {
+        Some(v) => crate::keybinds::comando_directo(state, &v.programa, &v.argumentos),
+        None => crate::keybinds::comando_directo(state, "xdg-open", &[]),
+    };
+    cmd.arg(&ruta);
+    match cmd.spawn() {
+        Ok(hijo) => {
+            crate::keybinds::registrar_hijo(state, hijo, None);
+            true
+        }
+        Err(err) => {
+            tracing::warn!(?ruta, "no se pudo abrir la captura desde la notificación: {err}");
+            false
+        }
+    }
+}
 
 struct Servidor {
     canal: Sender<Aviso>,
@@ -72,7 +116,7 @@ impl Servidor {
         let id = if replaces_id != 0 {
             replaces_id
         } else {
-            self.siguiente.fetch_add(1, Ordering::Relaxed)
+            siguiente_id(&self.siguiente)
         };
         // La urgencia viene en los `hints` como un byte: 0 baja, 1 normal, 2
         // crítica. Lo que no se entienda cuenta como normal, que es lo que hay
@@ -265,6 +309,7 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
     if repintar {
         state.needs_redraw = true;
     }
+    crate::extras::notificaciones_cambiaron(state);
     despertar_para_la_salida(state);
 }
 
@@ -278,6 +323,9 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
 // 0.1.0
 pub(crate) fn despertar_para_la_salida(state: &mut crate::state::BookosComp) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    for token in state.toast_timers.drain(..) {
+        state.loop_handle.remove(token);
+    }
     let quedan = state
         .shell
         .as_ref()
@@ -292,8 +340,9 @@ pub(crate) fn despertar_para_la_salida(state: &mut crate::state::BookosComp) {
                 TimeoutAction::Drop
             },
         );
-        if let Err(err) = resultado {
-            tracing::error!("no se pudo programar la salida del aviso: {err}");
+        match resultado {
+            Ok(token) => state.toast_timers.push(token),
+            Err(err) => tracing::error!("no se pudo programar la salida del aviso: {err}"),
         }
     }
 }
@@ -332,6 +381,9 @@ pub fn arrancar(canal: Sender<Aviso>) -> Option<zbus::blocking::Connection> {
 /// Le dice a la aplicación que su notificación se ha cerrado.
 // 0.1.0
 pub fn cerrada(conexion: Option<&zbus::blocking::Connection>, id: u32, motivo: u32) {
+    if id == 0 || id >= ID_INTERNO_BASE {
+        return;
+    }
     let Some(conexion) = conexion else {
         return;
     };
@@ -348,6 +400,9 @@ pub fn cerrada(conexion: Option<&zbus::blocking::Connection>, id: u32, motivo: u
 
 // 0.1.0
 pub fn accion_invocada(conexion: Option<&zbus::blocking::Connection>, id: u32, accion: &str) {
+    if id == 0 || id >= ID_INTERNO_BASE {
+        return;
+    }
     let Some(conexion) = conexion else {
         return;
     };
@@ -431,17 +486,30 @@ fn imagen_a_rgba(
             if tiene_alfa {
                 rgba.extend_from_slice(fila);
             } else {
-                for px in fila.chunks_exact(4) {
+                for px in fila.as_chunks::<4>().0 {
                     rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
                 }
             }
         } else {
-            for px in fila.chunks_exact(3) {
+            for px in fila.as_chunks::<3>().0 {
                 rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
             }
         }
     }
     Some(rgba)
+}
+
+fn siguiente_id(contador: &AtomicU32) -> u32 {
+    loop {
+        let actual = contador.load(Ordering::Relaxed);
+        let nuevo = if actual == u32::MAX { 1 } else { actual + 1 };
+        if contador
+            .compare_exchange_weak(actual, nuevo, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return actual.max(1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -471,5 +539,15 @@ mod tests {
         assert!(imagen_a_rgba(0, 1, 4, true, 8, 4, &[1, 2, 3, 4]).is_none());
         assert!(imagen_a_rgba(2000, 1, 8000, true, 8, 4, &[]).is_none());
         assert!(imagen_a_rgba(2, 1, 4, true, 8, 4, &[0; 8]).is_none());
+    }
+
+    #[test]
+    fn siguiente_id_nunca_devuelve_cero_al_desbordar() {
+        let contador = AtomicU32::new(u32::MAX);
+        assert_eq!(siguiente_id(&contador), u32::MAX);
+        assert_eq!(siguiente_id(&contador), 1);
+        assert_eq!(siguiente_id(&contador), 2);
+        let desde_cero = AtomicU32::new(0);
+        assert_eq!(siguiente_id(&desde_cero), 1);
     }
 }

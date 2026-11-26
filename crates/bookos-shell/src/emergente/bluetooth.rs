@@ -25,7 +25,7 @@ use crate::view::PanelElement;
 use super::buds::{self, Modo};
 use super::control;
 use super::lista::{self, Entrada};
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 
 /// Cuánto dura el «buscando…» junto a «Otros dispositivos». BlueZ sigue
 /// descubriendo mientras la tarjeta esté abierta; esto solo dice que la lista
@@ -174,7 +174,7 @@ impl Bluetooth {
             pie: tema::Realce::nuevo(),
             ultimo: Value::Null,
             desplazamiento: 0.0,
-            estado_carga: Some("Cargando…".into()),
+            estado_carga: Some(t("Cargando…", "Loading…").into()),
             escaneando: false,
             abierta: Instant::now(),
             buscando_visto: false,
@@ -194,7 +194,7 @@ impl Bluetooth {
     // 0.1.0
     // modified 0.2.1 -- los no emparejados entran: son «Otros dispositivos»
     fn aplicar(&mut self, data: Value, error: Option<String>) -> bool {
-        let status = error.or_else(|| data.is_null().then(|| "Cargando…".into()));
+        let status = error.or_else(|| data.is_null().then(|| t("Cargando…", "Loading…").into()));
         if self.ultimo == data && self.estado_carga == status {
             return false;
         }
@@ -216,6 +216,9 @@ impl Bluetooth {
         self.ajustar_escaneo();
         self.avanzar_pendiente();
         self.reconstruir();
+        if !self.encendido || self.señalada.actual().is_some_and(|i| i >= self.dispositivos.len()) {
+            self.señalada.señalar(None);
+        }
         self.desplazamiento = self.desplazamiento.min(self.maximo());
         self.interruptor.ir_a(self.encendido as u8 as f32);
         self.ultimo = data;
@@ -279,9 +282,9 @@ impl Bluetooth {
                     nombre: d.nombre.clone(),
                     icono: icono::propio_solido(d.glifo),
                     estado: match (espera, d.conectado, d.emparejado) {
-                        (true, _, true) => "Conectando…".into(),
-                        (true, _, false) => "Emparejando…".into(),
-                        (false, true, _) => "Conectado".into(),
+                        (true, _, true) => t("Conectando…", "Connecting…").into(),
+                        (true, _, false) => t("Emparejando…", "Pairing…").into(),
+                        (false, true, _) => t("Conectado", "Connected").into(),
                         _ => String::new(),
                     },
                     derecha: bateria.map(|v| format!("{v}%")),
@@ -578,6 +581,10 @@ impl Bluetooth {
         if lista::interruptor_en(x, y) {
             self.encendido = !self.encendido;
             self.interruptor.ir_a(self.encendido as u8 as f32);
+            if !self.encendido {
+                self.plegar();
+                self.señalada.señalar(None);
+            }
             bookos_system::request(Operation::BluetoothPower {
                 enabled: self.encendido,
             });
@@ -742,9 +749,9 @@ impl Bluetooth {
         let cuerpo: PanelElement<'_> = if let Some(status) = &self.estado_carga {
             lista::vacia(status)
         } else if !self.encendido {
-            lista::vacia("Bluetooth apagado")
+            lista::vacia(t("Bluetooth apagado", "Bluetooth off"))
         } else if colocadas.is_empty() {
-            lista::vacia("No hay dispositivos cerca")
+            lista::vacia(t("No hay dispositivos cerca", "No devices nearby"))
         } else {
             let mut todas = column![];
             let mut fin = 0.0;
@@ -761,8 +768,8 @@ impl Bluetooth {
                     Fila::Seccion(s) => (
                         lista::seccion(
                             match s {
-                                Seccion::Mios => "Mis dispositivos",
-                                Seccion::Otros => "Otros dispositivos",
+                                Seccion::Mios => t("Mis dispositivos", "My devices"),
+                                Seccion::Otros => t("Otros dispositivos", "Other devices"),
                             },
                             s == Seccion::Otros && self.buscando(),
                         ),
@@ -792,7 +799,13 @@ impl Bluetooth {
         column![
             cabecera,
             Space::new().height(Length::Fixed(lista::BAJO_CABECERA)),
-            lista::grupo(column![cuerpo, lista::pie("Ajustes de Bluetooth", &self.pie)].into()),
+            lista::grupo(
+                column![
+                    cuerpo,
+                    lista::pie(t("Ajustes de Bluetooth", "Bluetooth settings"), &self.pie)
+                ]
+                .into()
+            ),
         ]
         .into()
     }
@@ -821,9 +834,9 @@ impl Bluetooth {
                 Space::new().height(Length::Fixed(MANDO_HUECO)),
                 container(
                     row![
-                        enlace("Desconectar"),
+                        enlace(t("Desconectar", "Disconnect")),
                         Space::new().width(Length::Fill),
-                        enlace("Ajustes de los Buds ›"),
+                        enlace(t("Ajustes de los Buds ›", "Buds settings ›")),
                     ]
                     .align_y(Vertical::Center)
                 )
@@ -932,9 +945,9 @@ impl Bluetooth {
             return String::new();
         };
         [
-            ("Izq.", e.izquierdo),
-            ("Der.", e.derecho),
-            ("Estuche", e.estuche),
+            (t("Izq.", "L"), e.izquierdo),
+            (t("Der.", "R"), e.derecho),
+            (t("Estuche", "Case"), e.estuche),
         ]
         .into_iter()
         .filter(|(_, v)| *v > 0)
@@ -1123,10 +1136,10 @@ mod tests {
             matches!(b.activar(3), Some(Accion::Lanzar(c)) if c.contains("--page bluetooth")),
             "el nuevo se empareja desde Ajustes"
         );
-        assert_eq!(b.entradas[3].estado, "Emparejando…");
+        assert_eq!(b.entradas[3].estado, t("Emparejando…", "Pairing…"));
         let mut b = buds_conectados();
         assert!(b.activar(1).is_none(), "uno emparejado solo se conecta");
-        assert_eq!(b.entradas[1].estado, "Conectando…");
+        assert_eq!(b.entradas[1].estado, t("Conectando…", "Connecting…"));
     }
 
     /// Los Buds conectados se despliegan en vez de desconectarse, y el mando
@@ -1202,14 +1215,22 @@ mod tests {
     #[test]
     fn la_linea_de_pilas_omite_lo_que_no_se_sabe() {
         let mut b = buds_conectados();
-        assert_eq!(b.linea_de_pilas(), "Izq. 82 % · Der. 79 % · Estuche 45 %");
+        assert_eq!(
+            b.linea_de_pilas(),
+            format!(
+                "{} 82 % · {} 79 % · {} 45 %",
+                t("Izq.", "L"),
+                t("Der.", "R"),
+                t("Estuche", "Case")
+            )
+        );
         b.buds_estado = Some(buds::Estado {
             anc: Modo::Apagado,
             izquierdo: 0,
             derecho: 79,
             estuche: 0,
         });
-        assert_eq!(b.linea_de_pilas(), "Der. 79 %");
+        assert_eq!(b.linea_de_pilas(), format!("{} 79 %", t("Der.", "R")));
     }
 
     /// La lista nunca pasa de su tope, y desplegado cabe lo que se ve.
@@ -1221,6 +1242,30 @@ mod tests {
         assert!(b.maximo() >= 0.0);
         let todo = b.desplazar(10_000.0);
         assert!(!todo || b.desplazamiento <= b.maximo());
+    }
+
+    #[test]
+    fn apagar_pliega_y_limpia_seleccion_y_aplicar_poda_fuera_de_rango() {
+        let mut b = buds_conectados();
+        b.activar(0);
+        assert!(b.desplegado);
+        b.señalada.señalar(Some(2));
+        assert!(b.aplicar(
+            json!({
+                "enabled": true,
+                "devices": [disp("Galaxy Buds", "AA:BB:CC:DD:EE:FF", true, true, "audio-headset")]
+            }),
+            None,
+        ));
+        assert_eq!(b.señalada.actual(), None);
+
+        b.señalada.señalar(Some(0));
+        let x = lista::ANCHO - lista::MARGEN - 4.0 - 10.0;
+        let y = lista::MARGEN + lista::CABECERA / 2.0;
+        assert!(b.pulsar(x, y).is_none());
+        assert!(!b.encendido);
+        assert!(!b.desplegado);
+        assert_eq!(b.señalada.actual(), None);
     }
 
     /// Vuelca la tarjeta a PNG para mirarla: plegada y con los Buds

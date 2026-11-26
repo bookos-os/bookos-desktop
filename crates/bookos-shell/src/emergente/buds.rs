@@ -65,10 +65,10 @@ impl Modo {
     /// Cortas porque caben cuatro en 65 px: «Cancelación» no entraba.
     pub fn etiqueta(self) -> &'static str {
         match self {
-            Modo::Apagado => "Sin AC",
-            Modo::Ambiente => "Ambiente",
-            Modo::Adaptativo => "Adaptativo",
-            Modo::Cancelacion => "AC",
+            Modo::Apagado => super::t("Sin AC", "Off"),
+            Modo::Ambiente => super::t("Ambiente", "Ambient"),
+            Modo::Adaptativo => super::t("Adaptativo", "Adaptive"),
+            Modo::Cancelacion => super::t("AC", "ANC"),
         }
     }
 

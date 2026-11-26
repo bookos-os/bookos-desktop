@@ -37,6 +37,19 @@ pub fn desde_rgba(ancho: u32, alto: u32, rgba: Vec<u8>) -> Option<Icono> {
     )))
 }
 
+/// Devuelve `(ancho, alto, bytes_rgba)` si el icono es un mapa de bits en memoria.
+pub fn rgba_de(icono: &Icono) -> Option<(u32, u32, &[u8])> {
+    match icono {
+        Icono::Raster(iced_image::Handle::Rgba {
+            width,
+            height,
+            pixels,
+            ..
+        }) if *width > 0 && *height > 0 => Some((*width, *height, pixels.as_ref())),
+        _ => None,
+    }
+}
+
 /// El icono como elemento, al tamaño y con el color que se le pidan.
 ///
 /// Son SVG, que resvg rasteriza al tamaño que se le pida: por eso da igual que
@@ -348,6 +361,9 @@ const PROPIOS: &[(&str, &[u8])] = &[
     ("apagar", include_bytes!("../assets/iconos/apagar.svg")),
     ("bloquear", include_bytes!("../assets/iconos/bloquear.svg")),
     ("salir", include_bytes!("../assets/iconos/salir.svg")),
+    ("usuarios", include_bytes!("../assets/iconos/usuarios.svg")),
+    ("foto", include_bytes!("../assets/iconos/foto.svg")),
+    ("video", include_bytes!("../assets/iconos/video.svg")),
     (
         "ventana-nueva",
         include_bytes!("../assets/iconos/ventana-nueva.svg"),
@@ -978,18 +994,95 @@ fn icon_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// `breeze-dark` va **antes** que `breeze`: los iconos monocromos de estado de
-/// Breeze llevan el color dentro (`color:#232629`, casi negro, para fondos
-/// claros) y sobre el panel negro no se veía absolutamente nada. La variante
-/// oscura trae los mismos dibujos con `#fcfcfc`.
-const TEMAS: &[&str] = &[
+/// Packs preferidos en modo claro: primero las variantes claras y sus respaldos,
+/// y las oscuras solo como último recurso antes de `hicolor`/`Adwaita`.
+const TEMAS_CLARO: &[&str] = &[
     "BookOS-Light",
     "BookOS",
+    "breeze",
     "breeze-dark",
+    "BookOS-Dark",
+    "hicolor",
+    "Adwaita",
+];
+
+/// Packs preferidos en modo oscuro: `BookOS-Dark` y `breeze-dark` primero,
+/// dejando las variantes claras detrás.
+const TEMAS_OSCURO: &[&str] = &[
+    "BookOS-Dark",
+    "BookOS",
+    "breeze-dark",
+    "BookOS-Light",
     "breeze",
     "hicolor",
     "Adwaita",
 ];
+
+fn temas_para(claro: bool) -> &'static [&'static str] {
+    if claro { TEMAS_CLARO } else { TEMAS_OSCURO }
+}
+
+/// El pack de iconos por defecto para claro u oscuro (`BookOS-Light`/`BookOS-Dark`
+/// si está instalado con `Directories=` no vacío; si no, `breeze`/`breeze-dark`).
+///
+/// Única fuente de verdad compartida con el portal GTK del compositor.
+pub fn tema_por_defecto(claro: bool) -> &'static str {
+    let mut bases = vec![PathBuf::from("/usr/share/icons")];
+    if let Some(home) = std::env::var_os("HOME") {
+        bases.push(PathBuf::from(home).join(".local/share/icons"));
+    }
+    tema_por_defecto_en(claro, &bases)
+}
+
+fn tema_por_defecto_en(claro: bool, bases: &[PathBuf]) -> &'static str {
+    let (bookos, breeze) = if claro {
+        ("BookOS-Light", "breeze")
+    } else {
+        ("BookOS-Dark", "breeze-dark")
+    };
+    // Con `Directories=` no vacío: el tema de cursores (`cursor.rs`) vive en
+    // `~/.local/share/icons/BookOS-Dark` con su propio `index.theme`, sin
+    // iconos, y sin esta comprobación GTK y el shell lo tomarían por un pack.
+    if bases.iter().any(|b| {
+        std::fs::read_to_string(b.join(bookos).join("index.theme")).is_ok_and(|t| {
+            t.lines().any(|l| {
+                l.trim_start()
+                    .strip_prefix("Directories=")
+                    .is_some_and(|v| !v.trim().is_empty())
+            })
+        })
+    }) {
+        bookos
+    } else {
+        breeze
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModoIconos {
+    /// Respeta el `icon-theme` leído de GSettings (cambio explícito en Ajustes).
+    SegunGSettings,
+    /// Sigue claro/oscuro sin esperar a que `portal::tema_gtk` termine `gsettings set`,
+    /// conservando únicamente `BookOS-Tinted*` si está puesto.
+    SegunTema,
+}
+
+static MODO_ICONOS: std::sync::Mutex<ModoIconos> = std::sync::Mutex::new(ModoIconos::SegunTema);
+
+fn resolver_elegido(
+    modo: ModoIconos,
+    claro: bool,
+    gsettings: Option<String>,
+    por_defecto: impl FnOnce(bool) -> &'static str,
+) -> Option<String> {
+    match modo {
+        ModoIconos::SegunGSettings => gsettings,
+        ModoIconos::SegunTema => match gsettings {
+            Some(t) if t.starts_with("BookOS-Tinted") => Some(t),
+            _ => Some(por_defecto(claro).to_string()),
+        },
+    }
+}
 /// El tema de iconos que el usuario eligió en Ajustes → Apariencia → Iconos
 /// (Claro, Oscuro o Tintados), que Ajustes deja en `icon-theme` de GSettings.
 ///
@@ -1058,71 +1151,84 @@ fn tamano_de(nombre: &str) -> Option<u32> {
 // 0.1.0
 fn directorios() -> std::sync::Arc<Vec<PathBuf>> {
     con_directorios(|| {
-        let elegido = tema_elegido();
-        let mut dirs = Vec::new();
-        for base in icon_dirs() {
-            if !base.is_dir() {
+        let claro = crate::tema::es_claro();
+        let modo = *MODO_ICONOS.lock().unwrap_or_else(|e| e.into_inner());
+        let elegido = resolver_elegido(modo, claro, tema_elegido(), tema_por_defecto);
+        let mut temas: Vec<&str> = Vec::new();
+        if let Some(ref nombre) = elegido {
+            temas.push(nombre.as_str());
+        }
+        for &t in temas_para(claro) {
+            if !temas.contains(&t) {
+                temas.push(t);
+            }
+        }
+        let dirs = construir_directorios(&icon_dirs(), &temas);
+        tracing::debug!(n = dirs.len(), ?elegido, "directorios de iconos");
+        dirs
+    })
+}
+
+fn construir_directorios(bases: &[PathBuf], temas: &[&str]) -> Vec<PathBuf> {
+    let existentes: Vec<PathBuf> = bases.iter().filter(|b| b.is_dir()).cloned().collect();
+    let mut dirs = Vec::new();
+    for &tema in temas {
+        for base in &existentes {
+            if base.file_name().is_some_and(|n| n == "pixmaps") {
                 continue;
             }
-            // Los planos como /usr/share/pixmaps van tal cual, sin tema.
-            dirs.push(base.clone());
-            for tema in elegido
-                .iter()
-                .map(String::as_str)
-                .chain(TEMAS.iter().copied())
-            {
-                let raiz = base.join(tema);
-                let Ok(nivel1) = std::fs::read_dir(&raiz) else {
+            let raiz = base.join(tema);
+            let Ok(nivel1) = std::fs::read_dir(&raiz) else {
+                continue;
+            };
+            // Los temas mezclan tema/tamaño/categoría y
+            // tema/categoría/tamaño, así que se mira quién de los dos es
+            // una categoría conocida y el otro da el tamaño.
+            let mut del_tema: Vec<(u32, PathBuf)> = Vec::new();
+            for a in nivel1.flatten() {
+                let Ok(nombre_a) = a.file_name().into_string() else {
                     continue;
                 };
-                // Los temas mezclan tema/tamaño/categoría y
-                // tema/categoría/tamaño, así que se mira quién de los dos es
-                // una categoría conocida y el otro da el tamaño.
-                let mut del_tema: Vec<(u32, PathBuf)> = Vec::new();
-                for a in nivel1.flatten() {
-                    let Ok(nombre_a) = a.file_name().into_string() else {
+                if let Some(tam) = tamano_de(&nombre_a) {
+                    // tema/tamaño/categoría: se comprueban las seis
+                    // categorías con `stat`. Enumerar el directorio en su
+                    // lugar costaba 43 ms de arranque —hicolor y Adwaita
+                    // tienen cientos de carpetas con miles de ficheros— y
+                    // el panel se pinta en el primer frame.
+                    for sub in CATEGORIAS {
+                        let d = a.path().join(sub);
+                        if d.is_dir() {
+                            del_tema.push((tam, d));
+                        }
+                    }
+                } else if CATEGORIAS.contains(&nombre_a.as_str()) {
+                    // tema/categoría/tamaño: aquí sí hay que enumerar, pero
+                    // solo son seis directorios por tema y contienen
+                    // carpetas, no iconos.
+                    let Ok(nivel2) = std::fs::read_dir(a.path()) else {
                         continue;
                     };
-                    if let Some(tam) = tamano_de(&nombre_a) {
-                        // tema/tamaño/categoría: se comprueban las seis
-                        // categorías con `stat`. Enumerar el directorio en su
-                        // lugar costaba 43 ms de arranque —hicolor y Adwaita
-                        // tienen cientos de carpetas con miles de ficheros— y
-                        // el panel se pinta en el primer frame.
-                        for sub in CATEGORIAS {
-                            let d = a.path().join(sub);
-                            if d.is_dir() {
-                                del_tema.push((tam, d));
-                            }
-                        }
-                    } else if CATEGORIAS.contains(&nombre_a.as_str()) {
-                        // tema/categoría/tamaño: aquí sí hay que enumerar, pero
-                        // solo son seis directorios por tema y contienen
-                        // carpetas, no iconos.
-                        let Ok(nivel2) = std::fs::read_dir(a.path()) else {
+                    for b in nivel2.flatten() {
+                        let Ok(nombre_b) = b.file_name().into_string() else {
                             continue;
                         };
-                        for b in nivel2.flatten() {
-                            let Ok(nombre_b) = b.file_name().into_string() else {
-                                continue;
-                            };
-                            if let Some(tam) = tamano_de(&nombre_b)
-                                && b.path().is_dir()
-                            {
-                                del_tema.push((tam, b.path()));
-                            }
+                        if let Some(tam) = tamano_de(&nombre_b)
+                            && b.path().is_dir()
+                        {
+                            del_tema.push((tam, b.path()));
                         }
                     }
                 }
-                // De mayor a menor dentro del tema; los temas conservan entre
-                // sí el orden de preferencia de `TEMAS`.
-                del_tema.sort_by_key(|d| std::cmp::Reverse(d.0));
-                dirs.extend(del_tema.into_iter().map(|(_, d)| d));
             }
+            // De mayor a menor dentro del tema; los temas conservan entre
+            // sí el orden de preferencia elegido y las bases planas quedan al final.
+            del_tema.sort_by_key(|d| std::cmp::Reverse(d.0));
+            dirs.extend(del_tema.into_iter().map(|(_, d)| d));
         }
-        tracing::debug!(n = dirs.len(), "directorios de iconos");
-        dirs
-    })
+    }
+    // Los planos como /usr/share/pixmaps van al final para no tapar los temas.
+    dirs.extend(existentes);
+    dirs
 }
 
 // 0.1.0
@@ -1158,25 +1264,27 @@ pub fn olvidar_ausentes() {
     }
 }
 
-// 0.1.0
-pub fn recargar_tema() {
+fn limpiar_cache_interna() {
     *DIRS.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if let Some(cache) = CACHE.get() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
+    crate::apps::olvidar_cache();
 }
 
-/// Descarta únicamente el icono de respaldo del launchpad, cuya variante de
-/// serie cambia entre claro y oscuro sin necesidad de releer `gsettings` ni los
-/// directorios de temas de iconos.
+// 0.1.0
+pub fn recargar_tema() {
+    *MODO_ICONOS.lock().unwrap_or_else(|e| e.into_inner()) = ModoIconos::SegunGSettings;
+    limpiar_cache_interna();
+}
+
+/// Descarta la caché de directorios e iconos cuando cambia claro/oscuro sin
+/// depender de que `gsettings` haya terminado de actualizarse.
 // added 0.2.3
+// modified 0.2.4 -- vacía DIRS, CACHE y caché de apps para recargar todo el tema
 pub fn refrescar_segun_tema() {
-    if let Some(cache) = CACHE.get() {
-        cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(LAUNCHPAD);
-    }
+    *MODO_ICONOS.lock().unwrap_or_else(|e| e.into_inner()) = ModoIconos::SegunTema;
+    limpiar_cache_interna();
 }
 
 // 0.1.0
@@ -1333,5 +1441,130 @@ mod tests {
         assert!(cargar("network-disconnect").is_some());
         // La segunda consulta recorre el camino caliente de la caché.
         assert!(cargar("network-disconnect").is_some());
+    }
+
+    #[test]
+    fn temas_para_pone_el_pack_del_tema_primero() {
+        let claro = temas_para(true);
+        let oscuro = temas_para(false);
+        let pos = |lista: &[&str], nombre: &str| {
+            lista
+                .iter()
+                .position(|&t| t == nombre)
+                .expect("tema esperado en la tabla")
+        };
+        assert!(pos(claro, "BookOS-Light") < pos(claro, "BookOS-Dark"));
+        assert!(pos(claro, "breeze") < pos(claro, "breeze-dark"));
+        assert!(pos(oscuro, "BookOS-Dark") < pos(oscuro, "BookOS-Light"));
+        assert!(pos(oscuro, "breeze-dark") < pos(oscuro, "breeze"));
+    }
+
+    #[test]
+    fn resolver_elegido_ignora_gsettings_viejo_al_cambiar_tema_salvo_tintados() {
+        let por_defecto = |claro| if claro { "BookOS-Light" } else { "BookOS-Dark" };
+        assert_eq!(
+            resolver_elegido(
+                ModoIconos::SegunTema,
+                false,
+                Some("BookOS-Light".into()),
+                por_defecto,
+            ),
+            Some("BookOS-Dark".into())
+        );
+        assert_eq!(
+            resolver_elegido(
+                ModoIconos::SegunTema,
+                true,
+                Some("BookOS-Dark".into()),
+                por_defecto,
+            ),
+            Some("BookOS-Light".into())
+        );
+        assert_eq!(
+            resolver_elegido(
+                ModoIconos::SegunTema,
+                false,
+                Some("BookOS-Tinted-B".into()),
+                por_defecto,
+            ),
+            Some("BookOS-Tinted-B".into())
+        );
+        assert_eq!(
+            resolver_elegido(
+                ModoIconos::SegunGSettings,
+                true,
+                Some("BookOS-Dark".into()),
+                por_defecto,
+            ),
+            Some("BookOS-Dark".into())
+        );
+    }
+
+    #[test]
+    fn construir_directorios_prioriza_tema_activo_sobre_base_local() {
+        let raiz = std::env::temp_dir().join(format!("bookos-icon-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&raiz);
+        let user = raiz.join("user");
+        let sys = raiz.join("sys");
+        let user_light = user.join("BookOS-Light/scalable/apps");
+        let user_hicolor = user.join("hicolor/scalable/apps");
+        let sys_dark = sys.join("BookOS-Dark/scalable/apps");
+        for d in [&user_light, &user_hicolor, &sys_dark] {
+            std::fs::create_dir_all(d).expect("crear árbol temporal");
+        }
+
+        let dirs = construir_directorios(
+            &[user.clone(), sys.clone()],
+            &["BookOS-Dark", "BookOS-Light", "hicolor"],
+        );
+        let idx_dark = dirs.iter().position(|d| d == &sys_dark).expect("sys_dark");
+        let idx_light = dirs
+            .iter()
+            .position(|d| d == &user_light)
+            .expect("user_light");
+        let idx_hicolor = dirs
+            .iter()
+            .position(|d| d == &user_hicolor)
+            .expect("user_hicolor");
+        assert!(idx_dark < idx_light);
+        assert!(idx_light < idx_hicolor);
+
+        let _ = std::fs::remove_dir_all(&raiz);
+    }
+
+    #[test]
+    fn tema_por_defecto_exige_directories_no_vacio() {
+        let raiz = std::env::temp_dir().join(format!("bookos-icon-idx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&raiz);
+        let dir_tema = raiz.join("BookOS-Dark");
+        std::fs::create_dir_all(&dir_tema).expect("crear dir");
+        std::fs::write(dir_tema.join("index.theme"), "[Icon Theme]\nName=BookOS\n")
+            .expect("escribir index sin Directories");
+        assert_eq!(
+            tema_por_defecto_en(false, std::slice::from_ref(&raiz)),
+            "breeze-dark"
+        );
+
+        std::fs::write(
+            dir_tema.join("index.theme"),
+            "[Icon Theme]\nName=BookOS\nDirectories=\n",
+        )
+        .expect("escribir index con Directories vacío");
+        assert_eq!(
+            tema_por_defecto_en(false, std::slice::from_ref(&raiz)),
+            "breeze-dark"
+        );
+
+        std::fs::write(
+            dir_tema.join("index.theme"),
+            "[Icon Theme]\nName=BookOS\nDirectories=scalable/apps\n",
+        )
+        .expect("escribir index válido");
+        assert_eq!(
+            tema_por_defecto_en(false, std::slice::from_ref(&raiz)),
+            "BookOS-Dark"
+        );
+
+        let _ = std::fs::remove_dir_all(&raiz);
     }
 }

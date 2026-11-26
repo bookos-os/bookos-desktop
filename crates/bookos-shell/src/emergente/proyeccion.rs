@@ -4,7 +4,7 @@ use iced_core::alignment::Horizontal;
 use iced_core::{Border, Length};
 use iced_widget::{Space, column, container, row, text};
 
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 use crate::tema;
 use crate::view::PanelElement;
 use crate::{Accion, TeclaPulsada};
@@ -41,11 +41,11 @@ impl Modo {
     // 0.1.0
     fn nombre(self) -> &'static str {
         match self {
-            Self::Principal => "Solo principal",
-            Self::Externa => "Solo externa",
-            Self::Duplicar => "Duplicar",
-            Self::Extender => "Extender",
-            Self::SinCambios => "Sin cambios",
+            Self::Principal => t("Solo principal", "Built-in only"),
+            Self::Externa => t("Solo externa", "External only"),
+            Self::Duplicar => t("Duplicar", "Duplicate"),
+            Self::Extender => t("Extender", "Extend"),
+            Self::SinCambios => t("Sin cambios", "No change"),
         }
     }
     // 0.1.0
@@ -145,7 +145,7 @@ impl Proyeccion {
     }
     // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
-        let titulo = text("Proyección de pantalla")
+        let titulo = text(t("Proyección de pantalla", "Project"))
             .size(tema::T_TITULO)
             .color(tema::texto());
         if self.conectadas < 2 {
@@ -153,9 +153,12 @@ impl Proyeccion {
                 column![
                     titulo,
                     Space::new().height(18),
-                    text("Conecta otra pantalla para elegir cómo usarla.")
-                        .size(tema::T_CUERPO)
-                        .color(tema::texto2())
+                    text(t(
+                        "Conecta otra pantalla para elegir cómo usarla.",
+                        "Connect another display to choose how to use it."
+                    ))
+                    .size(tema::T_CUERPO)
+                    .color(tema::texto2())
                 ]
                 .align_x(Horizontal::Center),
             )

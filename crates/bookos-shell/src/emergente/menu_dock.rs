@@ -481,10 +481,10 @@ impl MenuDock {
         let k = match &self.entradas[i] {
             Entrada::Fila(_) => 0,
             Entrada::Rapidas(r) => {
-                let paso = self.ancho_rapido(r.len()) + HUECO_RAPIDO;
-                if y - self.y_de(i) > RAPIDO {
+                if r.is_empty() || y - self.y_de(i) > RAPIDO {
                     return None;
                 }
+                let paso = self.ancho_rapido(r.len()) + HUECO_RAPIDO;
                 (((x - MARGEN) / paso).floor().max(0.0) as usize).min(r.len() - 1)
             }
             Entrada::Colores { .. } => {
@@ -562,6 +562,7 @@ impl MenuDock {
         let abierto = self.tiene_sub(o).then_some(o.entrada);
         let cambia = self.abierto != abierto;
         self.abierto = abierto;
+        self.foco_sub = false;
         self.señalado.señalar(Some(n)) | self.señalada_sub.señalar(None) | cambia
     }
 
@@ -583,6 +584,8 @@ impl MenuDock {
             // Para quien no usa el ratón con hover (táctil): el toque abre el
             // submenú, y el siguiente elige.
             self.abierto = Some(o.entrada);
+            self.foco_sub = false;
+            self.señalada_sub.señalar(None);
             return None;
         }
         self.accion_de(o)
@@ -680,6 +683,8 @@ impl MenuDock {
                 self.señalado.señalar(Some(paradas[siguiente]));
                 // Moverse a otra fila cierra el submenú que hubiera.
                 self.abierto = None;
+                self.foco_sub = false;
+                self.señalada_sub.señalar(None);
                 Tecla::Consumida
             }
             T::Intro => match objetivo.and_then(|o| self.accion_de(o)) {
@@ -1231,5 +1236,43 @@ mod tests {
             let m = MenuDock::escritorio(entradas, (100.0, 100.0));
             assert!(m.ancho >= ANCHO_RICO, "ancho={} < {ANCHO_RICO}", m.ancho);
         }
+    }
+
+    #[test]
+    fn volver_al_menu_principal_con_puntero_limpia_el_foco_del_submenu() {
+        use crate::TeclaPulsada as T;
+        let mut m = MenuDock::dock(
+            vec![
+                Entrada::Fila(Fila::new(
+                    "Nueva ventana",
+                    "ventana",
+                    Accion::Lanzar("uno".into()),
+                )),
+                Entrada::Fila(Fila::submenu(
+                    "Opciones",
+                    "preferencias",
+                    vec![Entrada::Fila(Fila::marcada(
+                        "Mantener",
+                        Marca::Casilla(true),
+                        Accion::Lanzar("sub".into()),
+                    ))],
+                )),
+            ],
+            100.0,
+        );
+        m.tecla(T::Abajo);
+        m.tecla(T::Abajo);
+        m.tecla(T::Derecha);
+        assert!(m.foco_sub);
+        assert_eq!(m.abierto, Some(1));
+
+        let x = m.origen.0 + m.ancho / 2.0;
+        assert!(m.puntero(Some((x, m.origen.1 + m.y_de(0) + FILA / 2.0))));
+        assert!(!m.foco_sub);
+        assert_eq!(m.abierto, None);
+
+        assert!(m.puntero(Some((x, m.origen.1 + m.y_de(1) + FILA / 2.0))));
+        assert_eq!(m.abierto, Some(1));
+        assert!(!m.foco_sub);
     }
 }

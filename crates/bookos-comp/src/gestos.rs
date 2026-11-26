@@ -33,10 +33,15 @@ pub struct Suelta {
 impl Suelta {
     // modificado en la 0.2.0 -- el impulso pesa por su recorrido, no por cruzar una velocidad arbitraria.
     pub fn destino(&self) -> f32 {
-        if self.cancelada {
+        if self.cancelada || !self.progreso.is_finite() {
             0.0
         } else {
-            bookos_shell::tema::proyectar_impulso(self.progreso, self.velocidad)
+            let velocidad = if self.velocidad.is_finite() {
+                self.velocidad
+            } else {
+                0.0
+            };
+            bookos_shell::tema::proyectar_impulso(self.progreso, velocidad)
                 .clamp(-1.0, 1.0)
                 .round()
         }
@@ -63,8 +68,70 @@ impl Agarre {
 
     // añadido en la 0.2.0 -- invertir en un extremo mueve desde el primer incremento contrario.
     pub fn seguir(&mut self, progreso: f32, minimo: f32, maximo: f32) -> f32 {
+        if !progreso.is_finite() {
+            return self.posicion;
+        }
         self.posicion = (self.posicion + progreso - self.ultimo).clamp(minimo, maximo);
         self.ultimo = progreso;
+        self.posicion
+    }
+
+    /// Sigue el gesto permitiendo un sobrepaso elástico amortiguado fuera de `[minimo, maximo]`
+    /// (`holgura_min` por debajo, `holgura_max` por encima; HIG §8) y retorno inmediato 1:1
+    /// al invertir la dirección. Con movimiento reducido activo (o holgura `<= 0`) recorta al límite.
+    pub fn seguir_con_goma(
+        &mut self,
+        progreso: f32,
+        minimo: f32,
+        maximo: f32,
+        holgura_min: f32,
+        holgura_max: f32,
+    ) -> f32 {
+        if !progreso.is_finite() {
+            return self.posicion;
+        }
+        let delta = progreso - self.ultimo;
+        self.ultimo = progreso;
+        if bookos_shell::tema::efectos_reducidos() {
+            self.posicion = (self.posicion + delta).clamp(minimo, maximo);
+            return self.posicion;
+        }
+        let lineal = self.posicion + delta;
+        self.posicion = if delta > 0.0 && lineal > maximo {
+            if holgura_max <= 0.0 {
+                maximo
+            } else {
+                let r_prev = if self.posicion > maximo {
+                    desde_goma(self.posicion - maximo, holgura_max)
+                } else {
+                    0.0
+                };
+                let exceso = if self.posicion > maximo {
+                    r_prev + delta
+                } else {
+                    lineal - maximo
+                };
+                maximo + hacia_goma(exceso, holgura_max)
+            }
+        } else if delta < 0.0 && lineal < minimo {
+            if holgura_min <= 0.0 {
+                minimo
+            } else {
+                let r_prev = if self.posicion < minimo {
+                    desde_goma(minimo - self.posicion, holgura_min)
+                } else {
+                    0.0
+                };
+                let exceso = if self.posicion < minimo {
+                    r_prev - delta
+                } else {
+                    minimo - lineal
+                };
+                minimo - hacia_goma(exceso, holgura_min)
+            }
+        } else {
+            lineal
+        };
         self.posicion
     }
 
@@ -82,12 +149,31 @@ impl Agarre {
     }
 }
 
+const RESISTENCIA_GOMA: f32 = 0.55;
+
+fn hacia_goma(exceso: f32, holgura: f32) -> f32 {
+    if exceso <= 0.0 || holgura <= 0.0 {
+        return 0.0;
+    }
+    (1.0 - 1.0 / (exceso * RESISTENCIA_GOMA / holgura + 1.0)) * holgura
+}
+
+fn desde_goma(desplazamiento: f32, holgura: f32) -> f32 {
+    if desplazamiento <= 0.0 || holgura <= 0.0 {
+        return 0.0;
+    }
+    let acotado = desplazamiento.min(holgura * 0.999);
+    (holgura / RESISTENCIA_GOMA) * (acotado / (holgura - acotado))
+}
+
 /// Dedos del pellizco del launchpad. Solo cinco: con cuatro, separar un poco
 /// la mano al deslizar entre escritorios lo convertía en pellizco.
 // modificado en la 0.2.0 -- antes 4..=5
 const DEDOS: std::ops::RangeInclusive<u32> = 5..=5;
-const CERRAR: f64 = 0.6;
-const ABRIR: f64 = 1.9;
+// Con 5 dedos juntos, reducir el radio medio un 32 % y abrirlo un 55 % resulta
+// simétrico al alcance natural de la mano antes de que los dedos choquen.
+const CERRAR: f64 = 0.68;
+const ABRIR: f64 = 1.55;
 const DESLIZAR: f64 = 120.0;
 // añadido en la 0.2.0 -- con 240 la exposición llegaba al tope con un tercio
 // de la mano y un gesto amplio se sentía demasiado rápido. Sin medir en el
@@ -99,13 +185,16 @@ const UMBRAL_DESLIZAMIENTO: f64 = 10.0;
 
 // añadido en la 0.2.0 -- la ventana temporal incluye el fin: parar antes de soltar elimina el impulso.
 #[derive(Debug, Default)]
-struct Velocidad {
+pub(crate) struct Velocidad {
     muestras: VecDeque<(u64, f32)>,
 }
 
 impl Velocidad {
     // añadido en la 0.2.0
-    fn anotar(&mut self, tiempo: u64, valor: f32) {
+    pub(crate) fn anotar(&mut self, tiempo: u64, valor: f32) {
+        if !valor.is_finite() {
+            return;
+        }
         let tiempo = self.muestras.back().map_or(tiempo, |(t, _)| tiempo.max(*t));
         self.muestras.push_back((tiempo, valor));
         while self.muestras.len() > 2
@@ -118,8 +207,15 @@ impl Velocidad {
         }
     }
 
+    pub(crate) fn al_soltar(&mut self, tiempo: u64) -> f32 {
+        if let Some(&(_, ultimo)) = self.muestras.back() {
+            self.anotar(tiempo, ultimo);
+        }
+        self.valor()
+    }
+
     // añadido en la 0.2.0
-    fn valor(&self) -> f32 {
+    pub(crate) fn valor(&self) -> f32 {
         match (self.muestras.front(), self.muestras.back()) {
             (Some((inicio, desde)), Some((fin, hasta))) if fin > inicio => {
                 (hasta - desde) * 1_000_000.0 / (fin - inicio) as f32
@@ -188,6 +284,9 @@ impl Gestos {
 
     // modificado en la 0.2.0 -- reconocer el eje inicia el seguimiento; cruzar un umbral ya no cambia de escritorio.
     pub fn deslizamiento_avance(&mut self, dx: f64, dy: f64, tiempo: u64) -> Option<Gesto> {
+        if !dx.is_finite() || !dy.is_finite() {
+            return None;
+        }
         let d = self.deslizamiento.as_mut()?;
         d.x += dx;
         d.y += dy;
@@ -218,7 +317,7 @@ impl Gestos {
         }
         let movimiento = d.movimiento?;
         self.progreso = match movimiento {
-            Movimiento::Escritorio => (-d.x / d.ancho) as f32,
+            Movimiento::Escritorio => (-d.x / d.ancho.max(1.0)) as f32,
             Movimiento::Exposicion => (-d.y / RECORRIDO_VERTICAL) as f32,
             Movimiento::Despeje => (d.y * d.despeje.unwrap_or(1.0) / RECORRIDO_VERTICAL) as f32,
             Movimiento::Vista => (-d.y / RECORRIDO_VERTICAL) as f32,
@@ -266,6 +365,9 @@ impl Gestos {
 
     // modificado en la 0.2.0 -- el signo representa cerrar o abrir; la asimetría conserva el recorrido de libinput medido.
     pub fn pellizco_avance(&mut self, escala: f64, tiempo: u64) -> Option<f32> {
+        if !escala.is_finite() || escala <= 0.0 {
+            return None;
+        }
         if !DEDOS.contains(&self.pellizco?) {
             return None;
         }
@@ -535,6 +637,9 @@ mod tests {
             g.pellizco_de_la_ventana(),
             "con cuatro dedos ya no abre el launchpad"
         );
+        assert_eq!(g.pellizco_avance(0.7, 10_000), None);
+        assert!(g.pellizco_fin(false, 20_000).is_none());
+        assert!(!g.pellizco_de_la_ventana());
         g.pellizco_inicio(5, 0);
         assert_eq!(g.pellizco_avance(CERRAR, 100_000), Some(1.0));
         assert_eq!(g.pellizco_avance(ABRIR, 200_000), Some(-1.0));
@@ -592,6 +697,84 @@ mod tests {
         assert_eq!(
             g.deslizamiento_avance(0.0, -100.0, 2),
             Some(Gesto::SubirCuatroDedos)
+        );
+    }
+
+    #[test]
+    fn la_goma_frena_el_sobrepaso_y_devuelve_al_invertir() {
+        let mut a = Agarre::nuevo(0.0, 0.0);
+        // Sube dentro del rango 1:1.
+        assert!((a.seguir_con_goma(0.6, 0.0, 1.0, 0.0, 0.14) - 0.6).abs() < 1e-6);
+        // Al pasar de 1.0, avanza menos que el dedo y siempre por debajo de 1.0 + holgura.
+        let p1 = a.seguir_con_goma(1.2, 0.0, 1.0, 0.0, 0.14);
+        let p2 = a.seguir_con_goma(1.6, 0.0, 1.0, 0.0, 0.14);
+        assert!(p1 > 1.0 && p1 < 1.14, "p1={p1}");
+        assert!(p2 > p1 && p2 < 1.14, "p2={p2}");
+        assert!((p2 - p1) < 0.4, "debe amortiguar el exceso");
+
+        // Invertir 0.02 responde de inmediato sin zona muerta.
+        let vuelta = a.seguir_con_goma(1.58, 0.0, 1.0, 0.0, 0.14);
+        assert!(vuelta < p2, "vuelta={vuelta} debería bajar respecto a p2={p2}");
+        assert!((vuelta - (p2 - 0.02)).abs() < 1e-5);
+
+        // Sin holgura inferior no pasa de 0.0 al empujar en negativo, y sí con holgura > 0.
+        let mut sin_min = Agarre::nuevo(0.0, 0.0);
+        assert_eq!(sin_min.seguir_con_goma(-0.3, 0.0, 1.0, 0.0, 0.14), 0.0);
+        let mut b = Agarre::nuevo(0.0, 0.0);
+        let neg = b.seguir_con_goma(-0.3, 0.0, 1.0, 0.14, 0.14);
+        assert!(neg < 0.0 && neg > -0.14, "neg={neg}");
+    }
+
+    #[test]
+    fn ancho_cero_y_progreso_no_finito_no_producen_nan() {
+        let mut a = Agarre::nuevo(0.4, 0.0);
+        assert_eq!(a.seguir(f32::NAN, 0.0, 1.0), 0.4);
+        assert_eq!(a.seguir_con_goma(f32::INFINITY, 0.0, 1.0, 0.1, 0.1), 0.4);
+
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 0.0, 0);
+        let Some(Gesto::Continuo(Movimiento::Escritorio, p)) = g.deslizamiento_avance(-20.0, 0.0, 1)
+        else {
+            panic!("esperado movimiento de escritorio");
+        };
+        assert!(p.is_finite());
+    }
+
+    #[test]
+    fn deltas_y_sueltas_no_finitos_o_escala_no_positiva_no_corrompen_gestos() {
+        let mut g = Gestos::default();
+        g.deslizamiento_inicio(4, 1000.0, 0);
+        assert_eq!(g.deslizamiento_avance(f64::NAN, 0.0, 5), None);
+        assert_eq!(g.deslizamiento_avance(0.0, f64::INFINITY, 6), None);
+        assert!(matches!(
+            g.deslizamiento_avance(-200.0, 0.0, 10_000),
+            Some(Gesto::Continuo(Movimiento::Escritorio, p)) if p.is_finite()
+        ));
+
+        g.pellizco_inicio(5, 20_000);
+        assert_eq!(g.pellizco_avance(0.0, 21_000), None);
+        assert_eq!(g.pellizco_avance(-1.0, 22_000), None);
+        assert_eq!(g.pellizco_avance(f64::NAN, 23_000), None);
+
+        assert_eq!(
+            Suelta {
+                movimiento: Movimiento::Escritorio,
+                progreso: f32::NAN,
+                velocidad: 1.0,
+                cancelada: false,
+            }
+            .destino(),
+            0.0
+        );
+        assert_eq!(
+            Suelta {
+                movimiento: Movimiento::Escritorio,
+                progreso: 0.8,
+                velocidad: f32::INFINITY,
+                cancelada: false,
+            }
+            .destino(),
+            1.0
         );
     }
 }

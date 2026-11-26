@@ -40,6 +40,8 @@ pub enum Accion {
     /// El buscador de Meta+Espacio: aplicaciones, comandos y estados.
     Buscador,
     Emojis,
+    /// Meta+, — historial del portapapeles con fotos y textos.
+    Portapapeles,
     /// Meta+Alt+C — coger un color de la pantalla.
     Cuentagotas,
     /// Meta+W — vista general y gestión de escritorios.
@@ -170,6 +172,17 @@ fn es_tecla_de_pantalla(sym: u32, codigo_xkb: u32) -> bool {
         || matches!(codigo_xkb, SWITCH_VIDEO_MODE_XKB | DISPLAY_TOGGLE_XKB)
 }
 
+/// Reconoce teclas dedicadas de ajustes (`Fn+F1` / `XF86Launch1` y `XF86Tools`).
+// añadido en la 0.2.3
+fn es_tecla_de_ajustes(sym: u32, codigo_xkb: u32) -> bool {
+    const XF86_LAUNCH1: u32 = 0x1008_FF41;
+    const XF86_TOOLS: u32 = 0x1008_FF81;
+    const PROG1_XKB: u32 = 148 + 8;
+    const CONFIG_XKB: u32 = 171 + 8;
+
+    matches!(sym, XF86_LAUNCH1 | XF86_TOOLS) || matches!(codigo_xkb, PROG1_XKB | CONFIG_XKB)
+}
+
 /// Abre el conmutador o avanza en él.
 ///
 /// Alt toma la ventana más reciente de cada aplicación; Meta conserva todas
@@ -209,6 +222,10 @@ fn conmutar(state: &mut BookosComp, modo: bookos_shell::conmutador::Modo, sentid
             state.conmutador_pegado = false;
             state.conmutador_entrada = None;
             state.exposicion_gesto = None;
+            state.exposicion_salida_escritorio = None;
+            state.exposicion_escritorio_sujeto = false;
+            state.arrastre_exposicion = None;
+            state.exposicion_desplazamiento_x.fijar(0.0);
             state.conmutador_destinos.clear();
             state.conmutador_modo = None;
             if let Some(shell) = state.shell.as_mut() {
@@ -345,9 +362,16 @@ pub(crate) fn celda_bajo(state: &BookosComp, x: f64, y: f64) -> Option<usize> {
         .conmutador_entrada
         .as_ref()
         .map_or(1.0, |m| m.valor().clamp(0.0, 1.0) as f64);
+    let desplazamiento_x = f64::from(state.exposicion_desplazamiento_x.valor());
+    let salida_esc = state
+        .exposicion_salida_escritorio
+        .as_ref()
+        .map_or(0.0, |m| m.valor().clamp(0.0, 1.0) as f64);
     // El final del muelle ya coincide con la rejilla a la vista, y solo esta
     // sabe de la celda completa, con su nombre debajo de la miniatura.
-    if entrada >= 0.98 || state.conmutador_modo != Some(bookos_shell::conmutador::Modo::Ventanas) {
+    if (entrada >= 0.98 && desplazamiento_x.abs() <= 0.001 && salida_esc <= 0.001)
+        || state.conmutador_modo != Some(bookos_shell::conmutador::Modo::Ventanas)
+    {
         return shell.conmutador_en(x, y);
     }
     let origen = state
@@ -362,9 +386,16 @@ pub(crate) fn celda_bajo(state: &BookosComp, x: f64, y: f64) -> Option<usize> {
         .iter()
         .zip(shell.conmutador_miniaturas())
         .position(|(w, hueco)| {
-            crate::conmutador::hueco_pintado(state.space.element_geometry(w), hueco, origen, entrada)
-                .to_f64()
-                .contains(punto)
+            crate::conmutador::hueco_pintado_vivo(
+                state.space.element_geometry(w),
+                hueco,
+                origen,
+                entrada,
+                desplazamiento_x,
+                salida_esc,
+            )
+            .to_f64()
+            .contains(punto)
         })
 }
 
@@ -372,6 +403,7 @@ pub(crate) fn celda_bajo(state: &BookosComp, x: f64, y: f64) -> Option<usize> {
 // 0.1.0
 fn conmutar_fin(state: &mut BookosComp) {
     state.conmutador_pegado = false;
+    state.arrastre_exposicion = None;
     let elegida = state.shell.as_mut().and_then(|s| s.cerrar_conmutador());
     let destinos = std::mem::take(&mut state.conmutador_destinos);
     state.conmutador_modo = None;
@@ -450,6 +482,18 @@ pub fn resolver(
             .any(|raw| es_tecla_de_pantalla(raw.raw(), codigo_xkb))
     {
         return Some(Accion::Proyeccion);
+    }
+
+    if !modifiers.ctrl
+        && !modifiers.alt
+        && !modifiers.logo
+        && (es_tecla_de_ajustes(sym, codigo_xkb)
+            || handle
+                .raw_syms()
+                .iter()
+                .any(|raw| es_tecla_de_ajustes(raw.raw(), codigo_xkb)))
+    {
+        return Some(Accion::Lanzar("bookos-settings".into()));
     }
 
     // Las teclas de función no llevan modificador y valen aunque el foco lo
@@ -582,6 +626,9 @@ pub fn resolver(
             keysyms::KEY_period if !modifiers.alt && !modifiers.ctrl && !modifiers.shift => {
                 return Some(Accion::Emojis);
             }
+            keysyms::KEY_comma if !modifiers.alt && !modifiers.ctrl && !modifiers.shift => {
+                return Some(Accion::Portapapeles);
+            }
             keysyms::KEY_z | keysyms::KEY_Z => return Some(Accion::MenuBookos),
             keysyms::KEY_x | keysyms::KEY_X => return Some(Accion::CentroControl),
             keysyms::KEY_e | keysyms::KEY_E => return Some(Accion::Explorador),
@@ -630,16 +677,28 @@ impl Accion {
     }
 }
 
+pub(crate) fn menu_separador(state: &mut BookosComp, ventana: Window) {
+    state.menu_ventana = Some(ventana);
+    if let Some(shell) = state.shell.as_mut() {
+        shell.menu_ventana(vec![(
+            bookos_shell::t("Separar ventanas", "Separate windows").into(),
+            bookos_shell::Accion::VentanaSeparar,
+        )]);
+    }
+    state.needs_redraw = true;
+}
+
 // 0.1.0
 // modified 0.1.1 -- opciones para unir, separar y cambiar la disposición de grupos
 pub fn menu_ventana(state: &mut BookosComp, window: Window) {
+    use bookos_shell::t;
     crate::escritorios::terminar_todos(state);
     let salida = crate::escritorios::salida_de(state, &window);
     let mut opciones = vec![(
         if crate::ventanas::siempre_encima(&window) {
-            "Dejar de mantener encima"
+            t("Dejar de mantener encima", "Remove from top")
         } else {
-            "Siempre encima"
+            t("Siempre encima", "Always on top")
         }
         .into(),
         bookos_shell::Accion::VentanaEncima,
@@ -652,7 +711,7 @@ pub fn menu_ventana(state: &mut BookosComp, window: Window) {
             continue;
         }
         opciones.push((
-            format!("Mover a {nombre}"),
+            format!("{} {nombre}", t("Mover a", "Move to")),
             bookos_shell::Accion::VentanaEscritorio(n),
         ));
     }
@@ -664,32 +723,44 @@ pub fn menu_ventana(state: &mut BookosComp, window: Window) {
         let visible =
             crate::pantallas::nombre_visible(&nombre, &output.physical_properties().model);
         opciones.push((
-            format!("Mover a {visible}"),
+            format!("{} {visible}", t("Mover a", "Move to")),
             bookos_shell::Accion::VentanaMonitor(nombre),
         ));
     }
     if crate::multitarea::agrupada(state, &window) {
         opciones.push((
-            "Ver como pestañas".into(),
+            t("Ver como pestañas", "Show as tabs").into(),
             bookos_shell::Accion::VentanaDisposicion(true),
         ));
         if crate::multitarea::admite_dos_paneles(state, &window) {
             opciones.push((
-                "Ver lado a lado".into(),
+                t("Ver lado a lado", "Show side by side").into(),
                 bookos_shell::Accion::VentanaDisposicion(false),
             ));
         }
-        opciones.push(("Separar grupo".into(), bookos_shell::Accion::VentanaSeparar));
+        opciones.push((
+            t("Separar grupo", "Ungroup").into(),
+            bookos_shell::Accion::VentanaSeparar,
+        ));
     }
     state.menu_ventana_companera = crate::multitarea::candidata(state, &window);
     if let Some(otra) = state.menu_ventana_companera.as_ref() {
-        let titulo = crate::handlers::titulo(otra).unwrap_or_else(|| "otra aplicación".into());
+        let titulo =
+            crate::handlers::titulo(otra).unwrap_or_else(|| t("otra aplicación", "other app").into());
         opciones.push((
-            format!("Unir lado a lado con «{titulo}»"),
+            if t("es", "en") == "es" {
+                format!("Unir lado a lado con «{titulo}»")
+            } else {
+                format!("Split side by side with “{titulo}”")
+            },
             bookos_shell::Accion::VentanaUnir(false),
         ));
         opciones.push((
-            format!("Unir en pestañas con «{titulo}»"),
+            if t("es", "en") == "es" {
+                format!("Unir en pestañas con «{titulo}»")
+            } else {
+                format!("Group as tabs with “{titulo}”")
+            },
             bookos_shell::Accion::VentanaUnir(true),
         ));
     }
@@ -738,7 +809,13 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
                 shell.mostrar_osd(
                     "salir",
                     None,
-                    Some("Pulsa otra vez para cerrar la sesión".into()),
+                    Some(
+                        bookos_shell::t(
+                            "Pulsa otra vez para cerrar la sesión",
+                            "Press again to end the session",
+                        )
+                        .into(),
+                    ),
                 );
             }
             state.needs_redraw = true;
@@ -780,6 +857,7 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
             state.needs_redraw = true;
         }
         Accion::Emojis => crate::emojis::alternar(state),
+        Accion::Portapapeles => crate::portapapeles::alternar(state),
         Accion::Cuentagotas => crate::cuentagotas::alternar(state),
         Accion::VistaEscritorios => alternar_vista_escritorios(state),
         Accion::EnfocarPanel => {
@@ -871,6 +949,7 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
         }
         Accion::Desbloquear => {
             state.bloqueo_generacion = state.bloqueo_generacion.wrapping_add(1);
+            cancelar_medios_bloqueo(state);
             marcar_bloqueo_sesion(false);
             crate::backend::cancelar_suspension_inactividad(state);
             // Antes de soltarlo, no después: `Default::default()` reemplaza
@@ -884,6 +963,7 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
             crate::multimedia::sonar_interfaz(state, "screen-unlock");
             state.last_input = Some(std::time::Instant::now());
             crate::backend::programar_bloqueo_inactividad(state);
+            crate::salvapantallas::retirar(state);
             crate::backend::despertar_dpms(state);
             state.needs_redraw = true;
         }
@@ -912,7 +992,12 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
             }
         }
         Accion::BloqueoComprobar => comprobar_bloqueo(state),
-        Accion::BloqueoHuella => comprobar_huella(state),
+        Accion::BloqueoHuella => {
+            if state.bloqueo.huella.is_none() {
+                state.bloqueo.huella_sin_lector = false;
+            }
+            comprobar_huella(state);
+        }
         Accion::Multimedia(tecla) => {
             if matches!(tecla, crate::multimedia::Tecla::Volumen(_)) {
                 crate::multimedia::retener_chasquido(state);
@@ -929,24 +1014,30 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
         // la pantalla de bloqueo no hay forma de contestarle a un diálogo de
         // «hay una aplicación que impide apagar».
         Accion::Energia(peticion) => {
+            use crate::arranque::MotivoSalida;
             use bookos_shell::bloqueo::Peticion;
-            let orden = match peticion {
-                // Sin `systemctl`: es el compositor el que se va, como al
-                // cerrar sesión desde el menú del panel.
+            match peticion {
                 Peticion::CerrarSesion => {
-                    state.loop_signal.stop();
-                    return;
+                    crate::arranque::solicitar_salida(state, MotivoSalida::CerrarSesion);
                 }
-                // Respetar los inhibidores de logind: una aplicación que está
-                // guardando datos o una presentación activa debe poder
-                // retrasar la transición. Forzar desde la UI escondería ese
-                // estado y puede cortar trabajo del usuario.
-                Peticion::Apagar => "systemctl poweroff",
-                Peticion::Reiniciar => "systemctl reboot",
-                Peticion::Suspender => "systemctl suspend",
-                Peticion::Hibernar => "systemctl hibernate",
-            };
-            lanzar(state, orden);
+                Peticion::Apagar => {
+                    crate::arranque::solicitar_salida(state, MotivoSalida::Apagar);
+                }
+                Peticion::Reiniciar => {
+                    crate::arranque::solicitar_salida(state, MotivoSalida::Reiniciar);
+                }
+                Peticion::Suspender => {
+                    let _ = preparar_para_dormir(state);
+                    lanzar(state, "systemctl suspend");
+                }
+                Peticion::Hibernar => {
+                    let _ = preparar_para_dormir(state);
+                    lanzar(state, "systemctl hibernate");
+                }
+                // Sin solicitar_salida: la sesión sigue viva en su terminal.
+                // El bloqueo ya está puesto y se mantiene al volver.
+                Peticion::CambiarUsuario => lanzar(state, "bookos-cambiar-usuario"),
+            }
         }
         Accion::Minimizar => {
             if let Some(window) = state.ventana_con_foco() {
@@ -970,6 +1061,10 @@ pub fn ejecutar(state: &mut BookosComp, accion: Accion) {
             state.conmutador_destinos.clear();
             state.conmutador_modo = None;
             state.conmutador_pegado = false;
+            state.exposicion_salida_escritorio = None;
+            state.exposicion_escritorio_sujeto = false;
+            state.arrastre_exposicion = None;
+            state.exposicion_desplazamiento_x.fijar(0.0);
             if state
                 .shell
                 .as_mut()
@@ -1030,7 +1125,9 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             use bookos_shell::confirmacion::Energia;
             match energia {
                 Energia::Bloquear => bloquear(state),
-                Energia::CerrarSesion => state.loop_signal.stop(),
+                Energia::CerrarSesion => {
+                    crate::arranque::solicitar_salida(state, crate::arranque::MotivoSalida::CerrarSesion);
+                }
                 // Bloqueada **antes** de dormir, no al despertar: al volver lo
                 // primero que se pinta tiene que ser el bloqueo. Pero no se
                 // enseña: `systemctl` pasa por logind y tarda en dormir, y ese
@@ -1041,24 +1138,32 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                 // despertar. El equipo duerme ~0,4 s después de lanzarlo y lo
                 // que queda en el búfer de la salida de audio sale al reanudar.
                 Energia::Suspender => {
-                    echar_bloqueo(state);
-                    crate::backend::apagar_dpms(state);
+                    let _ = preparar_para_dormir(state);
                     lanzar(state, "systemctl suspend");
                 }
                 // Igual que dormir: al volver lo primero tiene que ser el
                 // bloqueo, y hasta que el equipo se apaga no hay nada que ver.
                 Energia::Hibernar => {
-                    echar_bloqueo(state);
-                    crate::backend::apagar_dpms(state);
+                    let _ = preparar_para_dormir(state);
                     lanzar(state, "systemctl hibernate");
                 }
-                Energia::Reiniciar => lanzar(state, "systemctl reboot"),
-                Energia::Apagar => lanzar(state, "systemctl poweroff"),
+                Energia::Reiniciar => {
+                    crate::arranque::solicitar_salida(state, crate::arranque::MotivoSalida::Reiniciar);
+                }
+                Energia::Apagar => {
+                    crate::arranque::solicitar_salida(state, crate::arranque::MotivoSalida::Apagar);
+                }
             }
         }
         bookos_shell::Accion::Lanzar(cmd) => lanzar(state, &cmd),
         bookos_shell::Accion::InsertarEmoji(texto) => crate::emojis::insertar(state, &texto),
-        bookos_shell::Accion::CopiarTexto(texto) => crate::emojis::copiar(state, &texto),
+        bookos_shell::Accion::PortapapelesPegar(id) => crate::portapapeles::pegar(state, id),
+        bookos_shell::Accion::PortapapelesFijar(id) => crate::portapapeles::fijar(state, id),
+        bookos_shell::Accion::PortapapelesEliminar(id) => crate::portapapeles::eliminar(state, id),
+        bookos_shell::Accion::PortapapelesVaciar => crate::portapapeles::vaciar(state),
+        bookos_shell::Accion::CopiarTexto(texto) => {
+            crate::backend::texto_al_portapapeles(state, &texto);
+        }
         bookos_shell::Accion::Launchpad => {
             if let Some(shell) = state.shell.as_mut() {
                 shell.alternar_launchpad();
@@ -1102,6 +1207,25 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
         }
         bookos_shell::Accion::Compartir { sesion, pantalla } => {
             crate::portal::responder(state, sesion, pantalla);
+        }
+        bookos_shell::Accion::PolkitEnviar { id } => {
+            crate::polkit::enviar(state, id);
+        }
+        bookos_shell::Accion::PolkitCancelar { id } => {
+            crate::polkit::cancelar(state, id);
+        }
+        bookos_shell::Accion::PolkitCambiarIdentidad { id, indice } => {
+            crate::polkit::cambiar_identidad(state, id, indice);
+        }
+        bookos_shell::Accion::PortalAcceso {
+            id,
+            permitido,
+            opciones,
+        } => {
+            crate::portal::responder_acceso(state, id, permitido, opciones);
+        }
+        bookos_shell::Accion::PortalElegirApp { id, eleccion } => {
+            crate::portal::responder_elegir_app(state, id, eleccion);
         }
         bookos_shell::Accion::Acerca => {
             if let Some(shell) = state.shell.as_mut() {
@@ -1162,7 +1286,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             crate::apariencia::programar_cambio(state);
             // Y las aplicaciones de fuera se enteran por el portal: sin esto,
             // una ventana GTK ya abierta se queda con el tema de antes.
-            crate::portal::apariencia_cambiada(state);
+            crate::portal::apariencia_cambiada(state, cambia_el_tema);
             state.needs_redraw = true;
         }
         bookos_shell::Accion::Capturar {
@@ -1217,6 +1341,62 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
             state.needs_redraw = true;
         }
+        bookos_shell::Accion::CapturaCerrar => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.cerrar_captura();
+            }
+            crate::input::cursor_de_captura(state);
+            state.needs_redraw = true;
+        }
+        bookos_shell::Accion::GrabarIniciar {
+            x,
+            y,
+            ancho,
+            alto,
+            cursor: _,
+            retardo,
+            audio,
+        } => {
+            if let Some(shell) = state.shell.as_mut() {
+                shell.cerrar_captura();
+            }
+            crate::input::cursor_de_captura(state);
+            let iniciar = move |state: &mut BookosComp| {
+                iniciar_grabacion(state, x, y, ancho, alto, audio);
+            };
+            if retardo == 0 {
+                iniciar(state);
+            } else {
+                use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+                let res = state.loop_handle.insert_source(
+                    Timer::from_duration(std::time::Duration::from_secs(u64::from(retardo))),
+                    move |_, _, state| {
+                        iniciar(state);
+                        TimeoutAction::Drop
+                    },
+                );
+                if res.is_err() {
+                    iniciar(state);
+                }
+            }
+        }
+        bookos_shell::Accion::GrabarDetener => {
+            detener_grabacion(state);
+        }
+        bookos_shell::Accion::GrabarPausar(pausado) => {
+            if let Some(ref g) = state.grabacion_activa {
+                let sig = if pausado { "-STOP" } else { "-CONT" };
+                let _ = std::process::Command::new("kill")
+                    .args([sig, &g.proceso.id().to_string()])
+                    .status();
+            }
+        }
+        bookos_shell::Accion::GrabarSilenciar(silenciado) => {
+            let arg = if silenciado { "1" } else { "0" };
+            let _ = std::process::Command::new("pactl")
+                .args(["set-source-mute", "@DEFAULT_SOURCE@", arg])
+                .spawn();
+        }
         bookos_shell::Accion::Fondo { claro, oscuro } => {
             // Las dos rutas de golpe: es lo que hace que el cambio de tema
             // pueda llevarse el fondo con él. `fondo` a secas se borra, o
@@ -1247,13 +1427,22 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             if let Some(shell) = state.shell.as_mut() {
                 shell.poner_perfil_ahorro(perfil == "power-saver");
             }
-            lanzar(
-                state,
-                &format!(
-                    "busctl --system set-property net.hadess.PowerProfiles \
-                     /net/hadess/PowerProfiles net.hadess.PowerProfiles ActiveProfile s {perfil}",
-                ),
+            let set_perfil = format!(
+                "busctl --system set-property net.hadess.PowerProfiles \
+                 /net/hadess/PowerProfiles net.hadess.PowerProfiles ActiveProfile s {perfil}",
             );
+            let cmd = if perfil == "power-saver"
+                && std::fs::read_to_string("/run/bookos-termico/estado")
+                    .is_ok_and(|s| s.trim() == "balanced-quiet")
+            {
+                format!(
+                    "busctl --system call org.bookos.Termico /org/bookos/Termico \
+                     org.bookos.Termico Liberar >/dev/null 2>&1 || true; {set_perfil}",
+                )
+            } else {
+                set_perfil
+            };
+            lanzar(state, &cmd);
             state.needs_redraw = true;
         }
         bookos_shell::Accion::MantenerDespierto => {
@@ -1404,7 +1593,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             );
             // Las aplicaciones de fuera lo leen como `reduced-motion`, así que
             // calmar el escritorio también calma sus animaciones.
-            crate::portal::apariencia_cambiada(state);
+            crate::portal::apariencia_cambiada(state, false);
             crate::backend::programar_fondo_animado(state);
             // No hace falta repintar el panel ni el dock: su buffer lleva su
             // color y el cristal es un elemento aparte de la escena. Basta con
@@ -1424,10 +1613,12 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                     id,
                     crate::notificaciones::CERRADA_POR_EL_USUARIO,
                 );
+                crate::extras::notificaciones_cambiaron(state);
             }
             state.needs_redraw = true;
         }
         bookos_shell::Accion::CerrarNotificaciones(ids) => {
+            let mut alguna = false;
             for id in ids {
                 let cerrada = state
                     .shell
@@ -1439,7 +1630,11 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                         id,
                         crate::notificaciones::CERRADA_POR_EL_USUARIO,
                     );
+                    alguna = true;
                 }
+            }
+            if alguna {
+                crate::extras::notificaciones_cambiaron(state);
             }
             state.needs_redraw = true;
         }
@@ -1489,7 +1684,13 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             crate::notificaciones::despertar_para_la_salida(state);
         }
         bookos_shell::Accion::NotificacionAccion { id, clave } => {
-            crate::notificaciones::accion_invocada(state.bus_notificaciones.as_ref(), id, &clave);
+            if !crate::notificaciones::abrir_ruta_de_notificacion(state, id) {
+                crate::notificaciones::accion_invocada(
+                    state.bus_notificaciones.as_ref(),
+                    id,
+                    &clave,
+                );
+            }
             // Atendida: la especificación pide cerrarla tras la acción, y
             // hay apps que esperan `NotificationClosed` para limpiar lo suyo.
             // Antes se quedaba en la lista de la campana como sin leer.
@@ -1503,6 +1704,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                     id,
                     crate::notificaciones::CERRADA_POR_EL_USUARIO,
                 );
+                crate::extras::notificaciones_cambiaron(state);
             }
             state.needs_redraw = true;
             crate::notificaciones::despertar_para_la_salida(state);
@@ -1520,6 +1722,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                     crate::notificaciones::CERRADA_POR_EL_USUARIO,
                 );
             }
+            crate::extras::notificaciones_cambiaron(state);
             state.needs_redraw = true;
         }
         bookos_shell::Accion::AbrirAppDeActividad { app_id, exec } => {
@@ -1527,7 +1730,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
                 .space
                 .elements()
                 .rev()
-                .filter_map(|w| crate::handlers::app_id(w))
+                .filter_map(crate::handlers::app_id)
                 .find(|suyo| bookos_shell::es_de_la_app(&app_id, suyo));
             match ventana {
                 Some(suyo) => hacer(state, bookos_shell::Accion::Mostrar { app_id: suyo, exec }),
@@ -1695,6 +1898,105 @@ fn hacer_captura(state: &mut BookosComp, pedida: crate::state::CapturaPedida, cu
     state.needs_redraw = true;
 }
 
+fn carpeta_videos() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_VIDEOS_DIR").filter(|d| !d.is_empty()) {
+        return std::path::PathBuf::from(dir);
+    }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    for nombre in ["Vídeos", "Videos"] {
+        let cand = home.join(nombre);
+        if cand.is_dir() {
+            return cand;
+        }
+    }
+    home.join("Vídeos")
+}
+
+fn iniciar_grabacion(
+    state: &mut BookosComp,
+    x: i32,
+    y: i32,
+    ancho: i32,
+    alto: i32,
+    audio: bookos_shell::captura::AudioGrabacion,
+) {
+    detener_grabacion(state);
+    let dir = carpeta_videos();
+    let _ = std::fs::create_dir_all(&dir);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let ruta = dir.join(format!("Grabacion-{ts}.mp4"));
+
+    let mut cmd = std::process::Command::new("wf-recorder");
+    cmd.arg("-f").arg(&ruta);
+    let pantalla = state.pantalla();
+    if x > 0 || y > 0 || ancho < pantalla.size.w || alto < pantalla.size.h {
+        cmd.arg("-g")
+            .arg(format!("{x},{y} {}x{}", ancho.max(2), alto.max(2)));
+    }
+    match audio {
+        bookos_shell::captura::AudioGrabacion::Ninguno => {}
+        bookos_shell::captura::AudioGrabacion::Mic => {
+            cmd.arg("-a");
+        }
+        bookos_shell::captura::AudioGrabacion::Sistema => {
+            if let Ok(out) = std::process::Command::new("pactl")
+                .args(["get-default-sink"])
+                .output()
+            {
+                let sink = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !sink.is_empty() {
+                    cmd.arg(format!("--audio={sink}.monitor"));
+                }
+            }
+        }
+        bookos_shell::captura::AudioGrabacion::Ambos => {
+            cmd.arg("-a");
+        }
+    }
+    match cmd.spawn() {
+        Ok(proceso) => {
+            let tiene_mic = matches!(
+                audio,
+                bookos_shell::captura::AudioGrabacion::Mic
+                    | bookos_shell::captura::AudioGrabacion::Ambos
+            );
+            state.grabacion_activa = Some(crate::state::GrabacionActiva { proceso, ruta });
+            if let Some(shell) = state.shell.as_mut() {
+                shell.abrir_grabacion_pill(tiene_mic);
+            }
+            state.needs_redraw = true;
+        }
+        Err(err) => {
+            tracing::error!("no se pudo iniciar wf-recorder: {err}");
+        }
+    }
+}
+
+fn detener_grabacion(state: &mut BookosComp) {
+    let Some(mut g) = state.grabacion_activa.take() else {
+        return;
+    };
+    let _ = std::process::Command::new("kill")
+        .args(["-INT", &g.proceso.id().to_string()])
+        .status();
+    let _ = g.proceso.wait();
+    if let Some(shell) = state.shell.as_mut() {
+        shell.cerrar_grabacion_pill();
+    }
+    let _ = std::process::Command::new("notify-send")
+        .args([
+            "BookOS",
+            &format!("Grabación guardada en {}", g.ruta.display()),
+        ])
+        .spawn();
+    state.needs_redraw = true;
+}
+
 // 0.1.0
 fn guardar_y_actualizar_escritorios(state: &mut BookosComp) {
     let activo = crate::escritorios::activo_aqui(state);
@@ -1786,134 +2088,116 @@ fn mensaje_huella(state: &mut BookosComp, huella: bookos_shell::bloqueo::Huella)
     state.needs_redraw = true;
 }
 
-/// A partir de cuánto un «no disponible» de la huella es que se agotó la
-/// espera y no que falte el lector. La mitad del `timeout` de PAM: lejos de
-/// los dos casos medidos (0,26 s y 15,4 s).
-const HUELLA_AGOTADA: std::time::Duration = std::time::Duration::from_secs(7);
-
 // 0.1.0
-// modified 0.1.1 -- tras suspender no confunde el lector soltado con «sin lector»
+// modified 0.2.3 -- vigilancia pasiva continua sobre fprintd sin timeout de 15 s
 fn comprobar_huella(state: &mut BookosComp) {
-    use bookos_shell::bloqueo::Huella;
-    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     if !state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
         || !bookos_shell::Config::cargar().bloqueo_huella
         || state.bloqueo.huella_sin_lector
         || state.bloqueo.huella.is_some()
-        || state
-            .bloqueo
-            .huella_reintentar
-            .is_some_and(|t| t > std::time::Instant::now())
     {
         return;
     }
-    let Some(worker) = crate::autenticar::Comprobacion::huella(&crate::autenticar::usuario())
-    else {
-        mensaje_huella(
-            state,
-            Huella::Aviso("Huella no disponible. Usa la contraseña o pulsa F9 para reintentar."),
-        );
-        return;
-    };
-    state.bloqueo.huella = Some(worker);
-    mensaje_huella(
-        state,
-        Huella::Aviso("Coloca el dedo en el lector o introduce tu contraseña."),
-    );
-    // Cada 25 ms. Eran 100, pero con el driver egismoc parcheado el lector
-    // casa en ~53 ms (medido): con 100 el sondeo tardaba de media lo mismo que
-    // el sensor. Solo corre mientras PAM espera el dedo, como mucho 15 s.
-    const CADA: std::time::Duration = std::time::Duration::from_millis(25);
     let generacion = state.bloqueo_generacion;
-    let reanudaciones = state.bloqueo.huella_reanudaciones;
-    let lanzada = std::time::Instant::now();
-    let resultado = state.loop_handle.insert_source(
-        Timer::from_duration(CADA),
-        move |_, _, state: &mut BookosComp| {
-            if state.bloqueo_generacion != generacion { return TimeoutAction::Drop; }
-            let Some(worker) = state.bloqueo.huella.as_mut() else { return TimeoutAction::Drop; };
-            use crate::autenticar::Veredicto;
-            match worker.resultado() {
-                None => {
-                    // Un dedo que no casa no acaba la conversación —PAM da tres
-                    // intentos—, así que no llega como veredicto: llega como
-                    // aviso por el camino, y es lo único que distingue en
-                    // pantalla «no te he leído» de «te he leído y no eres tú».
-                    if worker.dedo_no_casa() {
-                        mensaje_huella(state, Huella::NoCoincide);
-                    }
-                    TimeoutAction::ToDuration(CADA)
-                }
-                Some(Veredicto::Correcto) => {
-                    // Se dice antes de irse: la salida del bloqueo lleva la
-                    // última imagen pintada, y así lo que se desvanece es el
-                    // «reconocida» y no el «coloca el dedo».
-                    mensaje_huella(state, Huella::Reconocida);
-                    ejecutar(state, Accion::Desbloquear);
-                    TimeoutAction::Drop
-                }
-                // No hay lector, o fprintd no tiene nada inscrito. **No es un
-                // fallo del bloqueo** y no puede anunciarse como tal: en una
-                // máquina sin sensor, eso abría el bloqueo diciendo «no se pudo
-                // verificar la huella» y parecía que la autenticación estaba
-                // rota cuando lo único que pasaba es que sobraba el intento.
-                // Se calla, se deja el aviso de siempre y no se reintenta.
-                // `pam_fprintd` contesta **lo mismo** cuando se le acaba el
-                // `timeout=15` de `session/bookos-fingerprint.pam` sin que
-                // nadie toque el lector. Lo que los separa es el tiempo:
-                // medido, sin huellas inscritas contesta en 0,26 s, y por
-                // tiempo agotado a los 15,4. Tomarlo por «no hay lector»
-                // apagaba la huella a los 15 s de bloquear, o sea justo al
-                // volver al portátil. Se vuelve a esperar el dedo.
-                // Y hay un tercer «no disponible» que el tiempo no separa:
-                // «Suspender» bloquea y duerme seguido, fprintd suelta el
-                // lector al recibir `PrepareForSleep` y PAM contesta en 0,52 s
-                // (medido: bloqueo 13:53:21,55, veredicto 13:53:22,07). El
-                // veredicto se recoge al despertar, y `Instant` no cuenta el
-                // rato dormido, así que parecía una máquina sin lector y la
-                // huella quedaba apagada hasta desbloquear con contraseña.
-                Some(Veredicto::NoDisponible)
-                    if lanzada.elapsed() >= HUELLA_AGOTADA
-                        || state.bloqueo.huella_reanudaciones != reanudaciones =>
-                {
-                    state.bloqueo.huella = None;
-                    comprobar_huella(state);
-                    TimeoutAction::Drop
-                }
-                Some(Veredicto::NoDisponible) => {
-                    state.bloqueo.huella = None;
-                    state.bloqueo.huella_sin_lector = true;
-                    tracing::info!("sin lector de huellas: solo contraseña");
-                    // Vacío y no un mensaje: el campo ya dice «Introduce tu
-                    // contraseña para desbloquear» un poco más arriba, y
-                    // repetirlo aquí debajo salía como dos avisos idénticos
-                    // apilados, siempre, en cualquier máquina sin sensor.
-                    mensaje_huella(state, Huella::Callada);
-                    TimeoutAction::Drop
-                }
-                Some(Veredicto::Rechazado) => {
-                    state.bloqueo.huella = None;
-                    state.bloqueo.huella_reintentar = Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
-                    mensaje_huella(state, Huella::Aviso("No se pudo verificar la huella. Usa la contraseña o reintenta con F9 en 3 s."));
-                    TimeoutAction::Drop
-                }
+    let usuario = crate::autenticar::usuario();
+    state.bloqueo.huella = crate::autenticar::VigilanciaHuella::iniciar(
+        &usuario,
+        generacion,
+        state.huella_canal.clone(),
+    );
+}
+
+/// Procesa en el bucle del compositor los eventos del lector de huellas.
+// 0.2.3
+pub fn procesar_evento_huella(
+    state: &mut BookosComp,
+    generacion: u64,
+    evento: crate::autenticar::EventoHuella,
+) {
+    use bookos_shell::bloqueo::Huella;
+    use crate::autenticar::EventoHuella;
+    if generacion != state.bloqueo_generacion
+        || !state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
+    {
+        return;
+    }
+    match evento {
+        EventoHuella::Listo => {
+            mensaje_huella(
+                state,
+                Huella::Aviso(bookos_shell::t(
+                    "Coloca el dedo en el lector o introduce tu contraseña.",
+                    "Place your finger on the reader or enter your password.",
+                )),
+            );
+        }
+        EventoHuella::NoCoincide => {
+            crate::salvapantallas::retirar(state);
+            crate::backend::despertar_dpms(state);
+            mensaje_huella(state, Huella::NoCoincide);
+        }
+        EventoHuella::ReintentarLectura => {
+            crate::salvapantallas::retirar(state);
+            crate::backend::despertar_dpms(state);
+            mensaje_huella(
+                state,
+                Huella::Aviso(bookos_shell::t(
+                    "Vuelve a colocar el dedo en el lector.",
+                    "Place your finger on the reader again.",
+                )),
+            );
+        }
+        EventoHuella::Enfriamiento => {
+            crate::salvapantallas::retirar(state);
+            crate::backend::despertar_dpms(state);
+            mensaje_huella(
+                state,
+                Huella::Aviso(bookos_shell::t(
+                    "Huella no reconocida. Espera unos segundos o usa tu contraseña.",
+                    "Fingerprint not recognized. Wait a few seconds or use your password.",
+                )),
+            );
+        }
+        EventoHuella::Coincide => {
+            crate::salvapantallas::retirar(state);
+            crate::backend::despertar_dpms(state);
+            state.bloqueo.huella = None;
+            mensaje_huella(state, Huella::Reconocida);
+            if bookos_shell::tema::efectos_reducidos() {
+                ejecutar(state, Accion::Desbloquear);
+            } else {
+                // Breve pausa (~210 ms) para que la animación verde de «Huella
+                // reconocida» se vea completar antes de abrir el escritorio.
+                use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+                let _ = state.loop_handle.insert_source(
+                    Timer::from_duration(std::time::Duration::from_millis(210)),
+                    move |_, _, state| {
+                        if state.bloqueo_generacion == generacion
+                            && state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
+                        {
+                            ejecutar(state, Accion::Desbloquear);
+                        }
+                        TimeoutAction::Drop
+                    },
+                );
             }
-        });
-    if let Err(err) = resultado {
-        tracing::error!("no se pudo recoger la huella: {err}");
-        state.bloqueo.huella = None;
-        mensaje_huella(state, Huella::Callada);
+        }
+        EventoHuella::SinLector => {
+            state.bloqueo.huella = None;
+            state.bloqueo.huella_sin_lector = true;
+            tracing::info!("sin lector de huellas o sin huellas registradas: solo contraseña");
+            // Vacío y no un mensaje: el campo ya dice «Introduce tu
+            // contraseña para desbloquear» un poco más arriba.
+            mensaje_huella(state, Huella::Callada);
+        }
     }
 }
 
 /// Vuelve a pedir la huella al despertar con el bloqueo echado.
-///
-/// El veredicto de antes de dormir puede haberse recogido ya —y haber dejado
-/// `huella_sin_lector`— o seguir pendiente: lo primero se deshace aquí, lo
-/// segundo lo reconoce el sondeo por el contador.
 // 0.1.1
+// modified 0.2.3 -- cancela la vigilancia previa al sueño y arranca una nueva
 pub fn reanudar_huella(state: &mut BookosComp) {
-    state.bloqueo.huella_reanudaciones = state.bloqueo.huella_reanudaciones.wrapping_add(1);
+    state.bloqueo.huella = None;
     state.bloqueo.huella_sin_lector = false;
     comprobar_huella(state);
 }
@@ -2128,9 +2412,9 @@ fn alternar_lector(state: &mut BookosComp) {
     tracing::info!(encender, "lector de pantalla");
     if let Some(shell) = state.shell.as_mut() {
         let texto = if encender {
-            "Lector de pantalla activado"
+            bookos_shell::t("Lector de pantalla activado", "Screen reader enabled")
         } else {
-            "Lector de pantalla desactivado"
+            bookos_shell::t("Lector de pantalla desactivado", "Screen reader disabled")
         };
         shell.mostrar_osd("ojo", None, Some(texto.into()));
     }
@@ -2140,22 +2424,50 @@ fn alternar_lector(state: &mut BookosComp) {
 // 0.1.0
 // modified 0.1.1 -- el entorno del hijo sale de orden(); avisa al dock y apunta el uso para el launchpad
 pub fn lanzar(state: &mut BookosComp, cmd: &str) {
+    lanzar_con(state, cmd, |_| {});
+}
+
+/// Recoge procesos hijos ya terminados, guarda el nuevo hijo y, opcionalmente,
+/// avisa al dock y apunta el uso para el launchpad.
+pub fn registrar_hijo(
+    state: &mut BookosComp,
+    hijo: std::process::Child,
+    cmd_dock: Option<&str>,
+) {
+    state
+        .hijos
+        .retain_mut(|h| !matches!(h.try_wait(), Ok(Some(_))));
+    state.hijos.push(hijo);
+    if let Some(cmd) = cmd_dock {
+        if state.shell.as_mut().is_some_and(|s| s.dock_lanzando(cmd)) {
+            state.needs_redraw = true;
+        }
+        if let Err(err) = bookos_shell::sumar_uso(cmd) {
+            tracing::warn!("no se pudo apuntar el uso de {cmd}: {err}");
+        }
+    }
+}
+
+/// Igual que [`lanzar`], permitiendo ajustar el `Command` (directorio inicial,
+/// entorno extra, etc.) antes de arrancar el proceso hijo.
+pub fn lanzar_con(
+    state: &mut BookosComp,
+    cmd: &str,
+    ajustar: impl FnOnce(&mut std::process::Command),
+) {
     // Los hijos ya terminados se recogen aquí, no con un manejador de SIGCHLD:
     // el bucle es de un solo hilo y esto no necesita señales ni dependencias.
     state
         .hijos
         .retain_mut(|hijo| !matches!(hijo.try_wait(), Ok(Some(_))));
 
-    match orden(state, cmd).spawn() {
+    let mut comando = orden(state, cmd);
+    ajustar(&mut comando);
+
+    match comando.spawn() {
         Ok(hijo) => {
             tracing::info!(cmd, pid = hijo.id(), "cliente lanzado");
-            state.hijos.push(hijo);
-            if state.shell.as_mut().is_some_and(|s| s.dock_lanzando(cmd)) {
-                state.needs_redraw = true;
-            }
-            if let Err(err) = bookos_shell::sumar_uso(cmd) {
-                tracing::warn!("no se pudo apuntar el uso de {cmd}: {err}");
-            }
+            registrar_hijo(state, hijo, Some(cmd));
         }
         Err(err) => tracing::error!(cmd, "no se pudo lanzar: {err}"),
     }
@@ -2203,23 +2515,9 @@ pub fn lanzar_kiosko(state: &mut BookosComp, cmd: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// La orden para lanzar `cmd` dentro de la sesión, con el entorno que necesita
-/// para encontrar este compositor.
-// 0.1.1
-pub fn orden(state: &mut BookosComp, cmd: &str) -> std::process::Command {
-    // `sh -c` para que valga cualquier cosa que se escriba en BOOKOS_TERMINAL,
-    // con sus argumentos; `exec` evita dejar un shell de más colgando.
-    //
-    // Pero **solo con un comando suelto**: `exec A || B` no ejecuta B si A no
-    // existe, porque `exec` con un programa inexistente termina el shell antes
-    // de llegar al `||`. Así se quedaron sin funcionar las entradas del menú que
-    // llevan respaldo — el log decía "exec: bookos-about: no encontrado" y ahí
-    // se acababa. Cuando hay encadenado, el shell se queda de padre.
-    let linea = if cmd.contains("||") || cmd.contains("&&") || cmd.contains(';') {
-        cmd.to_string()
-    } else {
-        format!("exec {cmd}")
-    };
+/// Aplica al `Command` el entorno de sesión Wayland/XWayland, cursor y un vale
+/// de activación nuevo (`XDG_ACTIVATION_TOKEN`).
+pub fn configurar_entorno(state: &mut BookosComp, orden: &mut std::process::Command) {
     // El tema de cursor va en el entorno porque en Wayland **lo dibuja cada
     // cliente**: Qt y GTK cargan el tema ellos mismos y mandan su propia
     // superficie de cursor. Sin esto, el puntero cambia de aspecto según sobre
@@ -2255,10 +2553,7 @@ pub fn orden(state: &mut BookosComp, cmd: &str) -> std::process::Command {
         token.as_str().to_string()
     };
 
-    let mut orden = std::process::Command::new("/bin/sh");
     orden
-        .arg("-c")
-        .arg(linea)
         .env("WAYLAND_DISPLAY", &state.socket_name)
         .env("XCURSOR_THEME", tema)
         .env("XCURSOR_SIZE", tamano)
@@ -2282,6 +2577,41 @@ pub fn orden(state: &mut BookosComp, cmd: &str) -> std::process::Command {
         Some(n) => orden.env("DISPLAY", format!(":{n}")),
         None => orden.env_remove("DISPLAY"),
     };
+}
+
+/// Construye un `Command` directo al ejecutable (sin pasar por `/bin/sh`)
+/// con todo el entorno Wayland/XWayland de esta sesión.
+pub fn comando_directo(
+    state: &mut BookosComp,
+    programa: &str,
+    argumentos: &[String],
+) -> std::process::Command {
+    let mut orden = std::process::Command::new(programa);
+    orden.args(argumentos);
+    configurar_entorno(state, &mut orden);
+    orden
+}
+
+/// La orden para lanzar `cmd` dentro de la sesión, con el entorno que necesita
+/// para encontrar este compositor.
+// 0.1.1
+pub fn orden(state: &mut BookosComp, cmd: &str) -> std::process::Command {
+    // `sh -c` para que valga cualquier cosa que se escriba en BOOKOS_TERMINAL,
+    // con sus argumentos; `exec` evita dejar un shell de más colgando.
+    //
+    // Pero **solo con un comando suelto**: `exec A || B` no ejecuta B si A no
+    // existe, porque `exec` con un programa inexistente termina el shell antes
+    // de llegar al `||`. Así se quedaron sin funcionar las entradas del menú que
+    // llevan respaldo — el log decía "exec: bookos-about: no encontrado" y ahí
+    // se acababa. Cuando hay encadenado, el shell se queda de padre.
+    let linea = if cmd.contains("||") || cmd.contains("&&") || cmd.contains(';') {
+        cmd.to_string()
+    } else {
+        format!("exec {cmd}")
+    };
+    let mut orden = std::process::Command::new("/bin/sh");
+    orden.arg("-c").arg(linea);
+    configurar_entorno(state, &mut orden);
     orden
 }
 
@@ -2311,11 +2641,14 @@ pub fn inhibir_boton_de_encendido() {
                 &(
                     "handle-power-key",
                     "BookOS",
-                    "El botón de encendido abre el diálogo de energía",
+                    bookos_shell::t(
+                "El botón de encendido abre el diálogo de energía",
+                "Power key opens the power dialog",
+            ),
                     "block",
                 ),
             )
-            .and_then(|respuesta| Ok(respuesta.body().deserialize::<zbus::zvariant::OwnedFd>()?))
+            .and_then(|respuesta| respuesta.body().deserialize::<zbus::zvariant::OwnedFd>())
     });
     match fd {
         Ok(fd) => {
@@ -2358,6 +2691,7 @@ fn alternar_dialogo_energia(state: &mut BookosComp) {
 /// retiene la suya (`retenida_por_emergente`).
 // 0.1.0
 fn alternar_tarjeta_del_panel(state: &mut BookosComp, nombre: &str, widget: &'static str) {
+    crate::extras::toque_fuera(state);
     let Some(shell) = state.shell.as_mut() else {
         return;
     };
@@ -2402,15 +2736,32 @@ fn bloquear(state: &mut BookosComp) {
 /// `true` si lo ha echado ahora; `false` si ya estaba puesto.
 // 0.1.1
 fn echar_bloqueo(state: &mut BookosComp) -> bool {
+    echar_bloqueo_con(state, true)
+}
+
+/// Igual que [`echar_bloqueo`], pero permite omitir la activación inmediata de
+/// `fprintd` cuando se bloquea justo antes de suspender (el sensor USB se
+/// armará al reanudar en `reanudar_huella`).
+// añadido en la 0.2.3
+fn echar_bloqueo_con(state: &mut BookosComp, con_huella: bool) -> bool {
     crate::salvapantallas::retirar(state);
     if state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()) {
         return false;
     }
     // modificado en la 0.2.0 -- levantar los dedos bajo el bloqueo se filtra; no puede quedar un gesto sujeto.
     state.gestos = crate::gestos::Gestos::default();
+    state.cinco_dedos = crate::cinco_dedos::Cinco::default();
     crate::escritorios::terminar_todos(state);
+    if state.cuentagotas {
+        crate::cuentagotas::cancelar(state);
+    }
+    state.cuentagotas_clic = false;
+    state.decoracion.pulsado = None;
+    state.decoracion.señalado = None;
     // añadido en la 0.2.0 -- una liberación posterior al bloqueo no puede confirmar el botón anterior.
     crate::input::toque_cancelar(state, state.start_time.elapsed().as_millis() as u32);
+    crate::multitarea_tactil::cancelar(state);
+    crate::extras::toque_fuera(state);
     marcar_bloqueo_sesion(true);
     // Lo que estuviera abierto se cierra antes de echar el bloqueo. El
     // conmutador y la vista de escritorios componen ventanas vivas, y la
@@ -2423,10 +2774,15 @@ fn echar_bloqueo(state: &mut BookosComp) -> bool {
     state.conmutador_salida = None;
     state.conmutador_entrada = None;
     state.exposicion_gesto = None;
+    state.exposicion_salida_escritorio = None;
+    state.exposicion_escritorio_sujeto = false;
+    state.arrastre_exposicion = None;
+    state.exposicion_desplazamiento_x.fijar(0.0);
     ejecutar(state, Accion::ConmutarCancelar);
     if let Some(shell) = state.shell.as_mut() {
         shell.cerrar_emergente();
         shell.cerrar_captura();
+        shell.cancelar_gestos();
     }
     crate::input::cursor_de_captura(state);
     state.soltar_arrastre();
@@ -2448,37 +2804,78 @@ fn echar_bloqueo(state: &mut BookosComp) -> bool {
     // El bloqueo ya está puesto antes de preguntar por MPRIS: un reproductor
     // lento nunca puede retrasar la barrera de seguridad ni el primer frame.
     state.bloqueo_generacion = state.bloqueo_generacion.wrapping_add(1);
-    comprobar_huella(state);
-    leer_medios_bloqueo(state);
-    // modificado en la 0.2.3 -- se relee cada segundo: la barra y los tiempos
-    // se quedaban en lo que sonaba al bloquear.
+    if con_huella {
+        comprobar_huella(state);
+        if state.dpms_encendido {
+            leer_medios_bloqueo(state);
+            programar_medios_bloqueo(state);
+        } else {
+            cancelar_medios_bloqueo(state);
+        }
+        crate::backend::programar_dpms_bloqueo(state);
+        crate::backend::programar_suspension_inactividad(state);
+    } else {
+        cancelar_medios_bloqueo(state);
+    }
+    tracing::info!("bloqueo echado");
+    state.needs_redraw = true;
+    true
+}
+
+/// Cancela el segundero de lectura MPRIS del bloqueo si sigue activo.
+// añadido en la 0.2.3
+pub(crate) fn cancelar_medios_bloqueo(state: &mut BookosComp) {
+    if let Some(token) = state.tick_medios_bloqueo.take() {
+        state.loop_handle.remove(token);
+    }
+}
+
+/// Programa la relectura periódica de MPRIS mientras la pantalla de bloqueo
+/// esté bloqueada y con el panel encendido.
+// añadido en la 0.2.3
+pub(crate) fn programar_medios_bloqueo(state: &mut BookosComp) {
+    cancelar_medios_bloqueo(state);
+    if !state.dpms_encendido || !state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()) {
+        return;
+    }
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     const CADA_MEDIOS: std::time::Duration = std::time::Duration::from_secs(1);
     let generacion = state.bloqueo_generacion;
-    let _ = state
-        .loop_handle
-        .insert_source(
-            Timer::from_duration(CADA_MEDIOS),
-            move |_, _, state: &mut BookosComp| {
-                if state.bloqueo_generacion != generacion
-                    || !state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
-                {
-                    return TimeoutAction::Drop;
-                }
-                // Con el panel apagado nadie la ve: sin esto serían varios
-                // `busctl` por segundo toda la noche.
-                if state.dpms_encendido {
-                    leer_medios_bloqueo(state);
-                }
-                TimeoutAction::ToDuration(CADA_MEDIOS)
-            },
-        )
-        .inspect_err(|err| tracing::warn!("sin relectura de la música del bloqueo: {err}"));
-    tracing::info!("bloqueo echado");
-    crate::backend::programar_dpms_bloqueo(state);
-    crate::backend::programar_suspension_inactividad(state);
-    state.needs_redraw = true;
-    true
+    match state.loop_handle.insert_source(
+        Timer::from_duration(CADA_MEDIOS),
+        move |_, _, state: &mut BookosComp| {
+            if state.bloqueo_generacion != generacion
+                || !state.dpms_encendido
+                || !state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
+            {
+                state.tick_medios_bloqueo = None;
+                return TimeoutAction::Drop;
+            }
+            leer_medios_bloqueo(state);
+            TimeoutAction::ToDuration(CADA_MEDIOS)
+        },
+    ) {
+        Ok(token) => state.tick_medios_bloqueo = Some(token),
+        Err(err) => tracing::warn!("sin relectura de la música del bloqueo: {err}"),
+    }
+}
+
+/// Prepara el compositor antes de suspender o hibernar: echa el bloqueo sin
+/// arrancar `fprintd`, apaga DPMS, cancela el segundero de medios y extrae
+/// cualquier vigilancia de huella viva para cerrarla antes del freeze.
+// añadido en la 0.2.3
+pub(crate) fn preparar_para_dormir(
+    state: &mut BookosComp,
+) -> Option<crate::autenticar::VigilanciaHuella> {
+    echar_bloqueo_con(state, false);
+    crate::backend::cancelar_suspension_inactividad(state);
+    cancelar_medios_bloqueo(state);
+    crate::backend::apagar_dpms(state);
+    let huella = state.bloqueo.huella.take();
+    if let Some(ref h) = huella {
+        h.cancelar();
+    }
+    huella
 }
 
 /// Lee MPRIS en un hilo y entrega el resultado al bloqueo por el canal. Una
@@ -2637,6 +3034,15 @@ mod tests {
         assert!(es_tecla_de_pantalla(0, 227 + 8));
         assert!(es_tecla_de_pantalla(0, 431 + 8));
         assert!(!es_tecla_de_pantalla(keysyms::KEY_F4, 62));
+    }
+
+    #[test]
+    fn reconoce_las_teclas_de_ajustes() {
+        assert!(es_tecla_de_ajustes(0x1008_FF41, 0));
+        assert!(es_tecla_de_ajustes(0x1008_FF81, 0));
+        assert!(es_tecla_de_ajustes(0, 148 + 8));
+        assert!(es_tecla_de_ajustes(0, 171 + 8));
+        assert!(!es_tecla_de_ajustes(keysyms::KEY_F1, 67));
     }
 
     #[test]

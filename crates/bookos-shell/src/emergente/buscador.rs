@@ -50,7 +50,7 @@ use crate::view::PanelElement;
 use crate::{Accion, PanelData, apps};
 
 use super::control::{self, ENTRE_BARRA, ICONO_BARRA};
-use super::{Ancla, Tecla, t};
+use super::{Ancla, FilaAccesible, Tecla, t};
 
 /// Ancho de referencia del diálogo. El valor real se adapta a la pantalla
 /// lógica: en un monitor grande no se queda como una miniatura centrada y en
@@ -204,6 +204,7 @@ pub enum Resultado {
     /// Una aplicación instalada.
     App {
         nombre: String,
+        detalle: Option<String>,
         exec: String,
         icono: Option<Icono>,
         /// El `app_id` de su ventana si ya está abierta: entonces elegirla te
@@ -264,10 +265,12 @@ pub enum Resultado {
         /// El dibujo de los extremos de la barra, sin la insignia de color.
         glifo: Option<Icono>,
     },
-    /// Una respuesta que se lee aquí mismo: no hay nada que lanzar.
+    /// Una respuesta que se lee aquí mismo; si `copiar` trae texto, Intro la
+    /// copia al portapapeles.
     Dato {
         titulo: String,
         valor: String,
+        copiar: Option<String>,
         icono: Option<Icono>,
     },
 }
@@ -309,6 +312,14 @@ impl Resultado {
         }
     }
 
+    /// ¿Acepta confirmación con `Intro` (lanzar, entrar o copiar)?
+    fn tiene_intro(&self) -> bool {
+        match self {
+            Self::Dato { copiar, .. } => copiar.is_some(),
+            _ => true,
+        }
+    }
+
     /// El renglón pequeño de debajo: qué es esto y qué va a pasar al pulsarlo.
     // 0.1.0
     // modified 0.1.1 -- las abiertas dicen «Abierta · ir a la ventana»
@@ -316,9 +327,13 @@ impl Resultado {
         match self {
             Self::App {
                 abierta: Some(_), ..
-            } => "Abierta · ir a la ventana".to_string(),
-            Self::App { exec, .. } => exec.clone(),
-            Self::Comando(_) => "Ejecutar orden".to_string(),
+            } => t("Abierta · ir a la ventana", "Open · switch to window").to_string(),
+            Self::App {
+                detalle: Some(desc),
+                ..
+            } => desc.clone(),
+            Self::App { detalle: None, .. } => t("Aplicación", "Application").to_string(),
+            Self::Comando(_) => t("Ejecutar comando", "Run command").to_string(),
             Self::Accion { detalle, .. } => detalle.clone(),
             Self::Dato { valor, .. } => valor.clone(),
             Self::Archivo { ruta, .. } => ruta.parent().map(con_tilde).unwrap_or_default(),
@@ -368,7 +383,7 @@ impl Resultado {
         }
     }
 
-    /// Qué hacer al elegirlo. Un dato no lanza nada: ya ha contestado.
+    /// Qué hacer al elegirlo. Un dato con valor copiable lo lleva al portapapeles.
     // 0.1.0
     // modified 0.1.1 -- una app abierta lleva a su ventana en vez de abrir otra
     fn accion(&self) -> Option<Accion> {
@@ -384,7 +399,7 @@ impl Resultado {
             Self::App { exec, .. } => Some(Accion::Lanzar(exec.clone())),
             Self::Comando(orden) => Some(Accion::Lanzar(orden.clone())),
             Self::Accion { accion, .. } => Some(accion.clone()),
-            Self::Dato { .. } => None,
+            Self::Dato { copiar, .. } => copiar.clone().map(Accion::CopiarTexto),
             Self::Respuesta { ruta, .. } => {
                 Some(Accion::CopiarTexto(ruta.to_string_lossy().into_owned()))
             }
@@ -434,8 +449,13 @@ pub struct Buscador {
     /// el tamaño aparente o desplace el hit-test.
     ancho: f32,
     consulta: String,
+    /// Posición del cursor en bytes dentro de `consulta` (siempre frontera UTF-8).
+    cursor: usize,
     // añadido en la 0.2.2
     ambito: Ambito,
+    /// Búsqueda de archivos pendiente de debounce (evita lanzar un `plocate`
+    /// por cada tecla cuando se escribe rápido).
+    pendiente_archivos: Option<(String, std::time::Instant)>,
     /// La búsqueda de archivos en marcha. Una nueva sustituye a la anterior:
     /// soltar el receptor basta para que su resultado se tire al llegar.
     // añadido en la 0.2.2
@@ -466,7 +486,7 @@ pub struct Buscador {
     // añadido en la 0.2.0
     alto: tema::Transicion,
     /// Tras Ctrl+A: lo siguiente que se escriba o borre sustituye la consulta
-    /// entera. No hay cursor movible, así que basta con esto y no un rango.
+    /// entera.
     todo_seleccionado: bool,
     /// Lo movido en la barra de brillo o volumen y aún sin aplicar: Intro lo
     /// aplica. Aplicar al arrastrar dejaba la pantalla a oscuras a medio gesto.
@@ -475,9 +495,8 @@ pub struct Buscador {
     /// La barra está agarrada con el ratón.
     // añadido en la 0.2.2
     agarrada: bool,
-    /// Lo último aplicado desde la barra: cubre la línea de la fila con el
-    /// sello ✓ y lo que quedó, y al vencer cierra el buscador. Cerrar de golpe
-    /// al dar Intro no dejaba ver que había funcionado.
+    /// Lo último aplicado desde la barra o copiado: cubre la línea de la fila
+    /// con el sello ✓ y lo que quedó, y al vencer cierra el buscador.
     // añadido en la 0.2.2
     confirmando: Option<(std::time::Instant, String)>,
     /// El sello crece de 0,4 a 1 al aparecer.
@@ -488,6 +507,8 @@ pub struct Buscador {
 /// «Brillo al 30 %», sin hacer esperar a quien ya ha terminado.
 // añadido en la 0.2.2
 const CONFIRMACION: std::time::Duration = std::time::Duration::from_millis(1200);
+/// Espera tras la última pulsación antes de lanzar `plocate` en segundo plano.
+const DEBOUNCE_ARCHIVOS: std::time::Duration = std::time::Duration::from_millis(65);
 
 impl Buscador {
     // 0.1.0
@@ -498,7 +519,9 @@ impl Buscador {
         let mut buscador = Self {
             ancho: ancho_para(pantalla.0),
             consulta: String::new(),
+            cursor: 0,
             ambito: Ambito::Todo,
+            pendiente_archivos: None,
             en_curso: None,
             apps,
             usos: crate::config::cargar_usos(),
@@ -524,6 +547,12 @@ impl Buscador {
     // 0.1.0
     pub fn ancla(&self) -> Ancla {
         Ancla::Centrada
+    }
+
+    /// Relee los `.desktop` y vuelve a resolver los iconos tras cambiar de tema.
+    pub fn recargar_iconos(&mut self) {
+        self.apps = apps::leer();
+        self.buscar();
     }
 
     // 0.1.0
@@ -596,6 +625,7 @@ impl Buscador {
     // 0.1.0
     // modified 0.1.1 -- ordena con usos y abiertas
     fn buscar(&mut self) {
+        self.cursor = self.cursor.min(self.consulta.len());
         // «@» sin espacio aún: es la lista de a quién se le puede hablar, no una búsqueda.
         let mencion = (self.ambito == Ambito::Todo)
             .then(|| self.consulta.strip_prefix('@'))
@@ -624,17 +654,28 @@ impl Buscador {
         };
         let nombre = match self.ambito {
             Ambito::Todo => None,
-            Ambito::Zenith => archivo_pedido(self.consulta.trim()),
-            Ambito::Archivos => Some(self.consulta.trim()),
+            Ambito::Zenith => archivo_pedido(self.consulta.trim()).map(str::to_string),
+            Ambito::Archivos => Some(self.consulta.trim().to_string()),
         };
-        self.en_curso = nombre.filter(|n| n.chars().count() >= 2).map(|nombre| {
-            let (emisor, receptor) = std::sync::mpsc::channel();
-            let nombre = nombre.to_string();
-            let buscado = nombre.clone();
-            std::thread::spawn(move || {
-                let _ = emisor.send(buscar_archivos(&buscado));
-            });
-            (nombre, receptor)
+        self.en_curso = None;
+        self.pendiente_archivos = nombre.filter(|n| n.chars().count() >= 2).map(|nombre| {
+            // Los archivos usados hace poco aparecen al momento, sin esperar a `plocate`.
+            let recientes = buscar_recientes(&nombre);
+            if !recientes.is_empty() {
+                let mut nuevos = Vec::new();
+                if self.ambito == Ambito::Zenith
+                    && let Some(ruta) = recientes.first()
+                {
+                    nuevos.push(respuesta_zenith(ruta));
+                }
+                let hueco = MAXIMO
+                    .saturating_sub(nuevos.len())
+                    .saturating_sub(usize::from(self.ambito == Ambito::Zenith));
+                nuevos.extend(recientes.into_iter().take(hueco).map(resultado_archivo));
+                self.resultados.splice(0..0, nuevos);
+                self.resultados.truncate(MAXIMO);
+            }
+            (nombre, std::time::Instant::now())
         });
         self.seleccion = 0;
         self.pendiente = None;
@@ -709,7 +750,9 @@ impl Buscador {
     /// El alto que debe tener la tarjeta con lo que hay y lo elegido.
     // añadido en la 0.2.2
     fn alto_objetivo(&self) -> f32 {
-        if self.resultados.is_empty() {
+        if self.confirmando.is_some() {
+            FILA + MARGEN * 2.0
+        } else if self.resultados.is_empty() {
             CAMPO
         } else {
             CAMPO + DIVISOR + SEPARACION + self.alto_lista() + MARGEN
@@ -802,6 +845,19 @@ impl Buscador {
         self.pendiente = Some((que, nuevo));
     }
 
+    fn iniciar_confirmacion(&mut self, titulo: String) {
+        self.confirmando = Some((std::time::Instant::now(), titulo));
+        self.pendiente = None;
+        self.agarrada = false;
+        self.todo_seleccionado = false;
+        self.pendiente_archivos = None;
+        self.en_curso = None;
+        self.señalada = tema::Realce::nuevo();
+        self.sello = tema::Transicion::nueva(0.4, tema::M_REBOTE);
+        self.sello.ir_a(1.0);
+        self.alto.ir_a(self.alto_objetivo());
+    }
+
     /// Lo que Intro aplica en una fila de nivel: lo pendiente, y nada si no se
     /// ha tocado la barra.
     // añadido en la 0.2.2
@@ -818,9 +874,7 @@ impl Buscador {
             Que::Volumen if nivel == 0 => t("Volumen silenciado", "Volume muted").to_string(),
             Que::Volumen => format!("{} {nivel} %", t("Volumen al", "Volume to")),
         };
-        self.confirmando = Some((std::time::Instant::now(), titulo));
-        self.sello = tema::Transicion::nueva(0.4, tema::M_REBOTE);
-        self.sello.ir_a(1.0);
+        self.iniciar_confirmacion(titulo);
         Some(que.accion(nivel))
     }
 
@@ -841,6 +895,9 @@ impl Buscador {
 
     // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
+        if self.confirmando.is_some() {
+            return false;
+        }
         // Agarrada, la barra sigue a la mano aunque salga de la tarjeta.
         if self.agarrada {
             return punto.is_some_and(|(x, _)| self.poner_desde_x(x));
@@ -853,6 +910,9 @@ impl Buscador {
     // modificado en la 0.2.0 -- aplica lo que la acción no lleva consigo
     // modificado en la 0.2.2 -- las menciones entran en su ámbito y la barra de nivel se agarra
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
+        if self.confirmando.is_some() {
+            return None;
+        }
         let i = self.fila_en(x, y)?;
         if let Some(Resultado::Mencion { ambito, .. }) = self.resultados.get(i) {
             let ambito = *ambito;
@@ -870,7 +930,110 @@ impl Buscador {
             }
             return None;
         }
-        self.resultados.get(i)?.accion().map(aplicar)
+        let accion = self.resultados.get(i)?.accion().map(aplicar)?;
+        if matches!(self.resultados.get(i), Some(Resultado::Dato { .. })) {
+            self.elegir(i);
+            self.iniciar_confirmacion(
+                t("Copiado al portapapeles", "Copied to clipboard").to_string(),
+            );
+        }
+        Some(accion)
+    }
+
+    /// Inserta texto limpio en la posición del cursor, sustituyendo toda la
+    /// consulta si estaba seleccionada con `Ctrl+A`.
+    fn insertar_cadena(&mut self, texto: &str) {
+        let mut limpio = String::with_capacity(texto.len());
+        for c in texto.chars() {
+            if matches!(c, '\r' | '\n' | '\t') {
+                limpio.push(' ');
+            } else if !c.is_control() {
+                limpio.push(c);
+            }
+        }
+        if limpio.is_empty() {
+            return;
+        }
+        if std::mem::take(&mut self.todo_seleccionado) {
+            self.consulta.clear();
+            self.cursor = 0;
+        }
+        let pos = self.cursor.min(self.consulta.len());
+        self.consulta.insert_str(pos, &limpio);
+        self.cursor = pos + limpio.len();
+        self.buscar();
+    }
+
+    fn mover_cursor_izquierda(&mut self) {
+        self.todo_seleccionado = false;
+        self.cursor = self.consulta.floor_char_boundary(self.cursor);
+        if self.cursor == 0 {
+            return;
+        }
+        if let Some((i, _)) = self.consulta[..self.cursor].char_indices().next_back() {
+            self.cursor = i;
+        }
+    }
+
+    fn mover_cursor_derecha(&mut self) {
+        self.todo_seleccionado = false;
+        self.cursor = self.consulta.floor_char_boundary(self.cursor);
+        if self.cursor >= self.consulta.len() {
+            return;
+        }
+        if let Some(c) = self.consulta[self.cursor..].chars().next() {
+            self.cursor += c.len_utf8();
+        }
+    }
+
+    /// Los controles del buscador para Orca / AT-SPI2.
+    pub fn accesible(&self) -> Vec<FilaAccesible> {
+        if let Some((_, titulo)) = &self.confirmando {
+            return vec![FilaAccesible {
+                id: "confirmacion".into(),
+                rol: accesskit::Role::Status,
+                nombre: titulo.clone(),
+                valor: t("Aplicado", "Applied").into(),
+                rect: (MARGEN, MARGEN, self.ancho - MARGEN * 2.0, FILA),
+                marcada: None,
+                seleccionada: false,
+            }];
+        }
+        let mut nodos = Vec::with_capacity(1 + self.resultados.len().min(MAXIMO));
+        let ayuda = match self.ambito {
+            Ambito::Todo => t(
+                "Buscar apps, ajustes o acciones",
+                "Search apps, settings or actions",
+            ),
+            Ambito::Zenith => t("Pide algo a Zenith", "Ask Zenith anything"),
+            Ambito::Archivos => t("Nombre del archivo", "File name"),
+        };
+        nodos.push(FilaAccesible {
+            id: "campo".into(),
+            rol: accesskit::Role::TextInput,
+            nombre: ayuda.into(),
+            valor: self.consulta.clone(),
+            rect: (0.0, 0.0, self.ancho, CAMPO),
+            marcada: None,
+            seleccionada: false,
+        });
+        for (i, r) in self.resultados.iter().take(MAXIMO).enumerate() {
+            nodos.push(FilaAccesible {
+                id: format!("fila-{i}"),
+                rol: accesskit::Role::ListBoxOption,
+                nombre: r.nombre().to_string(),
+                valor: r.detalle(),
+                rect: (
+                    MARGEN,
+                    self.y_lista() + self.y_fila(i),
+                    self.ancho - MARGEN * 2.0,
+                    self.alto_de(i),
+                ),
+                marcada: None,
+                seleccionada: i == self.seleccion,
+            });
+        }
+        nodos
     }
 
     /// Se suelta la barra. `true` si hay que repintar.
@@ -886,32 +1049,54 @@ impl Buscador {
     /// Para el reconocimiento táctil: ¿es aquí un arrastre de la barra?
     // añadido en la 0.2.2
     pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
-        self.en_barra(x, y)
+        self.confirmando.is_none() && self.en_barra(x, y)
     }
 
     // 0.1.0
     // modificado en la 0.2.0 -- Intro aplica lo que la acción no lleva consigo
     pub fn tecla(&mut self, tecla: crate::TeclaPulsada) -> Tecla {
+        if self.confirmando.is_some() {
+            return Tecla::Consumida;
+        }
         use crate::TeclaPulsada as T;
         let visibles = self.resultados.len().min(MAXIMO);
-        if std::mem::take(&mut self.todo_seleccionado)
-            && matches!(tecla, T::Caracter(_) | T::Retroceso | T::BorrarTodo)
+        if self.todo_seleccionado
+            && matches!(
+                tecla,
+                T::Caracter(c) if !c.is_control()
+            )
+            || (self.todo_seleccionado
+                && matches!(
+                    tecla,
+                    T::Retroceso | T::Suprimir | T::BorrarTodo | T::Pegar(_)
+                ))
         {
+            self.todo_seleccionado = false;
             self.consulta.clear();
-            if let T::Caracter(c) = tecla {
-                self.consulta.push(c);
+            self.cursor = 0;
+            match tecla {
+                T::Caracter(c) if !c.is_control() => self.consulta.push(c),
+                T::Pegar(s) => {
+                    self.insertar_cadena(&s);
+                    return Tecla::Consumida;
+                }
+                _ => {}
             }
+            self.cursor = self.consulta.len();
             self.buscar();
             return Tecla::Consumida;
         }
         match tecla {
             T::SeleccionarTodo => {
                 self.todo_seleccionado = !self.consulta.is_empty();
+                self.cursor = self.consulta.len();
                 Tecla::Consumida
             }
             // Esc borra lo escrito antes de cerrar, como el launchpad.
             T::Escape if !self.consulta.is_empty() => {
+                self.todo_seleccionado = false;
                 self.consulta.clear();
+                self.cursor = 0;
                 self.buscar();
                 Tecla::Consumida
             }
@@ -920,14 +1105,17 @@ impl Buscador {
                 Tecla::Consumida
             }
             T::Escape => Tecla::Cerrar,
+            T::Pegar(texto) => {
+                self.insertar_cadena(&texto);
+                Tecla::Consumida
+            }
             // «zenith» + espacio: la palabra se vuelve píldora.
-            T::Caracter(' ') if self.ambito == Ambito::Todo => {
+            T::Caracter(' ')
+                if self.ambito == Ambito::Todo && self.cursor == self.consulta.len() =>
+            {
                 match Ambito::por_palabra(self.consulta.trim()) {
                     Some(ambito) => self.entrar(ambito, String::new()),
-                    None => {
-                        self.consulta.push(' ');
-                        self.buscar();
-                    }
+                    None => self.insertar_cadena(" "),
                 }
                 Tecla::Consumida
             }
@@ -980,6 +1168,24 @@ impl Buscador {
                 self.mover_nivel(if tecla == T::Izquierda { -5 } else { 5 });
                 Tecla::Consumida
             }
+            T::Izquierda => {
+                self.mover_cursor_izquierda();
+                Tecla::Consumida
+            }
+            T::Derecha => {
+                self.mover_cursor_derecha();
+                Tecla::Consumida
+            }
+            T::Inicio => {
+                self.todo_seleccionado = false;
+                self.cursor = 0;
+                Tecla::Consumida
+            }
+            T::Fin => {
+                self.todo_seleccionado = false;
+                self.cursor = self.consulta.len();
+                Tecla::Consumida
+            }
             T::Intro
                 if matches!(
                     self.resultados.get(self.seleccion),
@@ -990,32 +1196,57 @@ impl Buscador {
                 ) =>
             {
                 let texto = std::mem::take(&mut self.consulta);
+                self.cursor = 0;
                 self.entrar(Ambito::Archivos, texto);
                 Tecla::Consumida
             }
-            T::Caracter(c) => {
-                self.consulta.push(c);
-                self.buscar();
+            T::Caracter(c) if !c.is_control() => {
+                let mut buf = [0u8; 4];
+                self.insertar_cadena(c.encode_utf8(&mut buf));
                 Tecla::Consumida
             }
             T::Retroceso => {
-                self.consulta.pop();
-                self.buscar();
+                let pos = self.cursor.min(self.consulta.len());
+                if pos > 0
+                    && let Some((prev, _)) = self.consulta[..pos].char_indices().next_back()
+                {
+                    self.consulta.drain(prev..pos);
+                    self.cursor = prev;
+                    self.buscar();
+                }
                 Tecla::Consumida
             }
-            // Ctrl+Retroceso borra la última palabra, como en cualquier campo
-            // de texto. Antes caía en `Ignorada` y el compositor se la pasaba
-            // a la ventana con foco, que borraba una palabra suya por detrás.
+            T::Suprimir => {
+                let pos = self.cursor.min(self.consulta.len());
+                if pos < self.consulta.len()
+                    && let Some(c) = self.consulta[pos..].chars().next()
+                {
+                    self.consulta.drain(pos..pos + c.len_utf8());
+                    self.buscar();
+                }
+                Tecla::Consumida
+            }
+            // Ctrl+Retroceso borra la última palabra antes del cursor.
             T::BorrarTodo => {
-                borrar_palabra(&mut self.consulta);
-                self.buscar();
+                let pos = self.cursor.min(self.consulta.len());
+                if pos > 0 {
+                    let mut prefijo = self.consulta[..pos].to_string();
+                    borrar_palabra(&mut prefijo);
+                    let nuevo_cursor = prefijo.len();
+                    prefijo.push_str(&self.consulta[pos..]);
+                    self.consulta = prefijo;
+                    self.cursor = nuevo_cursor;
+                    self.buscar();
+                }
                 Tecla::Consumida
             }
             T::Abajo if visibles > 0 => {
+                self.todo_seleccionado = false;
                 self.elegir((self.seleccion + 1) % visibles);
                 Tecla::Consumida
             }
             T::Arriba if visibles > 0 => {
+                self.todo_seleccionado = false;
                 self.elegir((self.seleccion + visibles - 1) % visibles);
                 Tecla::Consumida
             }
@@ -1025,9 +1256,15 @@ impl Buscador {
                 .and_then(|r| r.accion())
                 .map(aplicar)
             {
-                Some(accion) => Tecla::Hacer(accion),
-                // Un dato ya ha contestado: Intro sobre él no cierra la
-                // ventana, porque lo que quieres es seguir leyéndolo.
+                Some(accion) => {
+                    if matches!(self.resultados.get(self.seleccion), Some(Resultado::Dato { .. })) {
+                        self.iniciar_confirmacion(
+                            t("Copiado al portapapeles", "Copied to clipboard").to_string(),
+                        );
+                    }
+                    Tecla::Hacer(accion)
+                }
+                // Un dato sin valor copiable no cierra la ventana.
                 None => Tecla::Consumida,
             },
             // El buscador es modal: lo que no entiende tampoco es para la
@@ -1036,10 +1273,24 @@ impl Buscador {
         }
     }
 
-    /// Mete los archivos si ya han llegado. Lo llama el shell antes de
-    /// pintar. En Zenith van delante de «Preguntar a Zenith», que se queda.
+    /// Lanza `plocate` cuando vence el debounce y recoge resultados al llegar.
+    /// En Zenith van delante de «Preguntar a Zenith», que se queda.
     // añadido en la 0.2.2
     pub fn recoger(&mut self) {
+        if self.confirmando.is_some() {
+            return;
+        }
+        if let Some((_, desde)) = &self.pendiente_archivos
+            && desde.elapsed() >= DEBOUNCE_ARCHIVOS
+            && let Some((nombre, _)) = self.pendiente_archivos.take()
+        {
+            let (emisor, receptor) = std::sync::mpsc::channel();
+            let buscado = nombre.clone();
+            std::thread::spawn(move || {
+                let _ = emisor.send(buscar_archivos(&buscado));
+            });
+            self.en_curso = Some((nombre, receptor));
+        }
         let Some((_, receptor)) = &self.en_curso else {
             return;
         };
@@ -1051,49 +1302,67 @@ impl Buscador {
         let Some((nombre, _)) = self.en_curso.take() else {
             return;
         };
-        // Con Zenith, la primera fila es su respuesta —dónde está—, como
-        // contesta Siri en Spotlight; debajo los archivos y al final, siempre,
-        // preguntarle. Sin nada, lo dice en vez de dejar solo la pregunta.
+        let mut vistas: std::collections::HashSet<std::path::PathBuf> = self
+            .resultados
+            .iter()
+            .filter_map(|r| match r {
+                Resultado::Archivo { ruta, .. } => Some(ruta.clone()),
+                _ => None,
+            })
+            .collect();
+        let rutas_nuevas: Vec<std::path::PathBuf> =
+            rutas.into_iter().filter(|r| vistas.insert(r.clone())).collect();
+        let hay_alguna = !rutas_nuevas.is_empty()
+            || self
+                .resultados
+                .iter()
+                .any(|r| matches!(r, Resultado::Archivo { .. }));
         let mut nuevos: Vec<Resultado> = Vec::new();
-        if self.ambito == Ambito::Zenith {
-            nuevos.push(match rutas.first() {
-                Some(ruta) => Resultado::Respuesta {
-                    titulo: format!(
-                        "{} {} {}",
-                        ruta.file_name()
-                            .map(|n| n.to_string_lossy())
-                            .unwrap_or_default(),
-                        t("está en", "is in"),
-                        ruta.parent().map(con_tilde).unwrap_or_default()
-                    ),
-                    ruta: ruta.clone(),
-                    icono: icono_zenith(),
-                },
-                None => Resultado::Dato {
+        if self.ambito == Ambito::Zenith
+            && !self
+                .resultados
+                .iter()
+                .any(|r| matches!(r, Resultado::Respuesta { .. }))
+        {
+            nuevos.push(match rutas_nuevas.first() {
+                Some(ruta) => respuesta_zenith(ruta),
+                None if !hay_alguna => Resultado::Dato {
                     titulo: format!("{} «{nombre}»", t("No encuentro", "Can't find")),
                     valor: t(
                         "Ni en tu carpeta personal · pregúntale a Zenith abajo",
                         "Not in your home folder · ask Zenith below",
                     )
                     .to_string(),
+                    copiar: None,
                     icono: icono_zenith(),
                 },
+                None => {
+                    return;
+                }
             });
         }
-        let hueco = MAXIMO - nuevos.len() - usize::from(self.ambito == Ambito::Zenith);
-        nuevos.extend(rutas.into_iter().take(hueco).map(resultado_archivo));
-        self.resultados.splice(0..0, nuevos);
+        let existentes = self
+            .resultados
+            .iter()
+            .filter(|r| matches!(r, Resultado::Archivo { .. } | Resultado::Respuesta { .. }))
+            .count();
+        let hueco = MAXIMO
+            .saturating_sub(existentes)
+            .saturating_sub(nuevos.len())
+            .saturating_sub(usize::from(self.ambito == Ambito::Zenith));
+        nuevos.extend(rutas_nuevas.into_iter().take(hueco).map(resultado_archivo));
+        if nuevos.is_empty() {
+            return;
+        }
+        self.resultados.splice(existentes..existentes, nuevos);
+        self.resultados.truncate(MAXIMO);
         self.seleccion = 0;
         self.señalada = tema::Realce::nuevo();
         self.elegida_y.fijar(0.0);
         self.alto.ir_a(self.alto_objetivo());
     }
 
-    /// Lo escrito que cabe entre las píldoras. Si no cabe se ve el final, que
-    /// es donde se está escribiendo, con «…» delante: recortado por detrás,
-    /// el cursor desaparecía y la píldora de la derecha salía de la tarjeta.
-    // añadido en la 0.2.2
-    fn cola_visible(&self) -> std::borrow::Cow<'_, str> {
+    fn ancho_disponible_campo(&self) -> f32 {
         let pildora = |nombre: &str| {
             crate::widget::ancho_con_fuente(
                 nombre,
@@ -1111,24 +1380,79 @@ impl Buscador {
             .get(self.seleccion)
             .and_then(Resultado::destino)
             .map_or(0.0, pildora);
-        let cabe = self.ancho - 40.0 - izquierda - derecha;
-        let mide = |texto: &str| crate::widget::ancho_de(&format!("{texto}▏"), TEXTO_CAMPO);
+        (self.ancho - 40.0 - izquierda - derecha - 6.0).max(80.0)
+    }
+
+    /// Partes antes y después del cursor que caben entre las píldoras,
+    /// manteniendo siempre el cursor visible con `…` en los extremos recortados.
+    fn partes_visibles(&self, cabe: f32) -> (String, String) {
+        let mide = |t: &str| crate::widget::ancho_de(t, TEXTO_CAMPO);
+        let pos = self.cursor.min(self.consulta.len());
         if mide(&self.consulta) <= cabe {
-            return self.consulta.as_str().into();
+            return (self.consulta[..pos].to_string(), self.consulta[pos..].to_string());
         }
-        self.consulta
+        let bordes: Vec<usize> = self
+            .consulta
             .char_indices()
-            .map(|(i, _)| format!("…{}", &self.consulta[i..]))
-            .find(|cola| mide(cola) <= cabe)
-            .unwrap_or_default()
-            .into()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(self.consulta.len()))
+            .collect();
+        let cur_idx = bordes
+            .iter()
+            .position(|&b| b >= pos)
+            .unwrap_or(bordes.len() - 1);
+        let mut izq_idx = 0usize;
+        let mut der_idx = bordes.len() - 1;
+        let armar = |ii: usize, di: usize| -> (String, String) {
+            let b_izq = bordes[ii];
+            let b_der = bordes[di];
+            let pre = if ii > 0 {
+                format!("…{}", &self.consulta[b_izq..pos])
+            } else {
+                self.consulta[b_izq..pos].to_string()
+            };
+            let suf = if di + 1 < bordes.len() {
+                format!("{}…", &self.consulta[pos..b_der])
+            } else {
+                self.consulta[pos..b_der].to_string()
+            };
+            (pre, suf)
+        };
+        loop {
+            let (pre, suf) = armar(izq_idx, der_idx);
+            if mide(&pre) + mide(&suf) <= cabe {
+                return (pre, suf);
+            }
+            let dist_izq = cur_idx.saturating_sub(izq_idx);
+            let dist_der = der_idx.saturating_sub(cur_idx);
+            if dist_izq == 0 && dist_der == 0 {
+                return (pre, suf);
+            }
+            if dist_der > dist_izq && der_idx > cur_idx {
+                der_idx -= 1;
+            } else if izq_idx < cur_idx {
+                izq_idx += 1;
+            } else if der_idx > cur_idx {
+                der_idx -= 1;
+            }
+        }
     }
 
     // añadido en la 0.2.2
     fn entrar(&mut self, ambito: Ambito, texto: String) {
         self.ambito = ambito;
+        self.todo_seleccionado = false;
+        self.cursor = texto.len();
         self.consulta = texto;
         self.buscar();
+    }
+
+    /// Tiempo restante para cerrar automáticamente la confirmación actual, si
+    /// la hay, para despertar una sola vez sin repintar fotogramas en reposo.
+    pub fn proxima_alarma(&self) -> Option<std::time::Duration> {
+        self.confirmando
+            .as_ref()
+            .map(|(desde, _)| CONFIRMACION.saturating_sub(desde.elapsed()))
     }
 
     // modified 0.2.0 -- elegida, realce y alto
@@ -1136,20 +1460,37 @@ impl Buscador {
         self.elegida_y.animando()
             || self.señalada.animando()
             || self.alto.animando()
+            || self.pendiente_archivos.is_some()
             || self.en_curso.is_some()
-            || self.confirmando.is_some()
+            || (self.confirmando.is_some() && self.sello.animando())
     }
 
     // 0.1.0
     // modified 0.1.1 -- campo más grande y texto de ayuda nuevo
     pub fn view(&self) -> PanelElement<'_> {
         let colores = Colores::actuales();
+        if let Some((_, titulo)) = &self.confirmando {
+            return container(self.confirmacion(titulo, colores))
+                .width(Length::Fixed(self.ancho))
+                .height(Length::Fixed(self.alto.valor()))
+                .center_x(Length::Fixed(self.ancho))
+                .center_y(Length::Fixed(self.alto.valor()))
+                .clip(true)
+                .style(move |_theme| container::Style {
+                    background: Some(colores.tarjeta.into()),
+                    border: Border {
+                        radius: tema::R_DIALOGO.into(),
+                        width: 1.0,
+                        color: colores.borde,
+                    },
+                    ..Default::default()
+                })
+                .into();
+        }
         let lupa = icono::propio("buscar")
             .map(|ic| icono::ver_teñido_propio(&ic, 26.0, colores.secundario))
             .unwrap_or_else(crate::widget::vacio);
-        // El cursor va pegado al texto y siempre a la vista: no parpadea. Un
-        // parpadeo son dos repintados por segundo de una tarjeta de 640 px
-        // mientras no haces nada, y este compositor no despierta para eso.
+        let cabe = self.ancho_disponible_campo();
         let escrito: PanelElement<'_> = if self.consulta.is_empty() {
             text(match self.ambito {
                 Ambito::Todo => t(
@@ -1164,8 +1505,9 @@ impl Buscador {
             .into()
         } else if self.todo_seleccionado {
             let acento = colores.acento;
+            let visible = recortar_ancho(&self.consulta, cabe, TEXTO_CAMPO);
             container(
-                text(&self.consulta)
+                text(visible)
                     .size(TEXTO_CAMPO)
                     .color(tema::tinta_sobre(acento)),
             )
@@ -1180,10 +1522,30 @@ impl Buscador {
             })
             .into()
         } else {
-            text(format!("{}▏", self.cola_visible()))
-                .size(TEXTO_CAMPO)
-                .color(colores.texto)
-                .into()
+            let (antes, despues) = self.partes_visibles(cabe);
+            let acento = colores.acento;
+            // Barra de cursor propia: evita depender de glifos Unicode de caja
+            // («▏») que en algunas fuentes se ven desalineados o como tofu.
+            let barra_cursor = container(Space::new())
+                .width(Length::Fixed(2.0))
+                .height(Length::Fixed(24.0))
+                .style(move |_theme| container::Style {
+                    background: Some(acento.into()),
+                    border: Border {
+                        radius: 1.0.into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                });
+            let mut fila_texto = row![].align_y(Vertical::Center);
+            if !antes.is_empty() {
+                fila_texto = fila_texto.push(text(antes).size(TEXTO_CAMPO).color(colores.texto));
+            }
+            fila_texto = fila_texto.push(barra_cursor);
+            if !despues.is_empty() {
+                fila_texto = fila_texto.push(text(despues).size(TEXTO_CAMPO).color(colores.texto));
+            }
+            fila_texto.into()
         };
         // modificado en la 0.2.2 -- píldora del ámbito a la izquierda y de la app destino a la derecha
         let izquierda: PanelElement<'_> = match self.ambito {
@@ -1319,45 +1681,48 @@ impl Buscador {
         };
         // Lo escrito se marca en negrita en el principio del nombre, como en el
         // diseño: se ve por qué ha salido esa fila.
-        let nombre = super::recortar_texto(resultado.nombre(), self.ancho - 140.0, 15.0);
+        let tiene_badge = i == self.seleccion && resultado.tiene_intro();
+        let ancho_texto = (self.ancho
+            - MARGEN * 2.0
+            - (18.0 - MARGEN)
+            - ICONO
+            - 14.0
+            - 14.0
+            - if tiene_badge { 36.0 } else { 0.0 })
+        .max(120.0);
+        let nombre = recortar_ancho(resultado.nombre(), ancho_texto, 15.0);
         let escrito = self.consulta.trim();
         let marcadas = if self.ambito == Ambito::Todo
             && !escrito.is_empty()
             && !escrito.starts_with('@')
-            && apps::normalizar(&nombre).starts_with(&apps::normalizar(escrito))
         {
-            escrito.chars().count()
+            prefijo_coincidente(&nombre, escrito)
         } else {
             0
         };
         let titulo: PanelElement<'a> = if marcadas == 0 {
-            text(nombre.to_string()).size(15.0).color(colores.texto).into()
+            text(nombre).size(15.0).color(colores.texto).into()
         } else {
             row![
-                text(nombre.chars().take(marcadas).collect::<String>())
+                text(nombre[..marcadas].to_string())
                     .size(15.0)
                     .font(super::control::peso(iced_core::font::Weight::Semibold))
                     .color(colores.texto),
-                text(nombre.chars().skip(marcadas).collect::<String>())
+                text(nombre[marcadas..].to_string())
                     .size(15.0)
                     .color(colores.texto),
             ]
+            .align_y(Vertical::Center)
             .into()
         };
         let textos = column![
             titulo,
-            text(super::recortar_texto(
-                &resultado.detalle(),
-                self.ancho - 140.0,
-                12.0
-            ))
-            .size(12.0)
-            .color(colores.secundario),
+            text(recortar_ancho(&resultado.detalle(), ancho_texto, 12.0))
+                .size(12.0)
+                .color(colores.secundario),
         ];
-        // La tecla que hará la fila elegida. Los datos ya han contestado y no
-        // tienen nada que hacer.
-        let intro: PanelElement<'a> = if i == self.seleccion && !matches!(resultado, Resultado::Dato { .. })
-        {
+        // La tecla que hará la fila elegida.
+        let intro: PanelElement<'a> = if tiene_badge {
             let (tarjeta, borde, texto) = (colores.tarjeta, colores.borde, colores.texto);
             container(
                 text("↵")
@@ -1434,14 +1799,16 @@ impl Buscador {
         } else {
             Color::from_rgb8(0x30, 0xd1, 0x58)
         };
-        let lado = ICONO * self.sello.valor().clamp(0.0, 1.2);
+        let escala_sello = self.sello.valor().clamp(0.0, 1.2);
+        let lado = ICONO * escala_sello;
+        let visto_lado = (18.0 * escala_sello).max(1.0);
         let visto = icono::desde_svg(
             r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>"##,
         );
         let visto: PanelElement<'a> = match visto {
             Icono::Svg(h) => iced_widget::svg(h)
-                .width(Length::Fixed(18.0))
-                .height(Length::Fixed(18.0))
+                .width(Length::Fixed(visto_lado))
+                .height(Length::Fixed(visto_lado))
                 .into(),
             _ => Space::new().into(),
         };
@@ -1663,20 +2030,105 @@ fn en_zenith(consulta: &str) -> Vec<Resultado> {
     }]
 }
 
+fn respuesta_zenith(ruta: &std::path::Path) -> Resultado {
+    Resultado::Respuesta {
+        titulo: format!(
+            "{} {} {}",
+            ruta.file_name()
+                .map(|n| n.to_string_lossy())
+                .unwrap_or_default(),
+            t("está en", "is in"),
+            ruta.parent().map(con_tilde).unwrap_or_default()
+        ),
+        ruta: ruta.to_path_buf(),
+        icono: icono_zenith(),
+    }
+}
+
+/// Busca coincidencias en los archivos recientes de `recently-used.xbel` (sin
+/// latencia de disco ni esperar a `updatedb`).
+fn buscar_recientes(nombre: &str) -> Vec<std::path::PathBuf> {
+    let q = apps::normalizar(nombre);
+    let mut rutas: Vec<std::path::PathBuf> = apps::recientes_todos(40)
+        .into_iter()
+        .filter(|r| {
+            r.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| apps::normalizar(n).contains(&q))
+        })
+        .collect();
+    rutas.sort_by_cached_key(|ruta| {
+        let empieza = ruta
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| apps::normalizar(n).starts_with(&q));
+        (!empieza, ruta.components().count())
+    });
+    rutas.truncate(MAXIMO);
+    rutas
+}
+
+/// Recorta texto midiendo su ancho real con `iced` en lugar de estimar por carácter.
+fn recortar_ancho(texto: &str, max_ancho: f32, tamaño: f32) -> String {
+    if crate::widget::ancho_de(texto, tamaño) <= max_ancho {
+        return texto.to_string();
+    }
+    let cortes: Vec<usize> = texto
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(texto.len()))
+        .collect();
+    let (mut lo, mut hi) = (0usize, cortes.len() - 1);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let candidato = format!("{}…", &texto[..cortes[mid]]);
+        if crate::widget::ancho_de(&candidato, tamaño) <= max_ancho {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 {
+        "…".into()
+    } else {
+        format!("{}…", &texto[..cortes[lo]])
+    }
+}
+
+/// Índice en bytes de `nombre` donde termina el prefijo que casa con `escrito`.
+fn prefijo_coincidente(nombre: &str, escrito: &str) -> usize {
+    let q = apps::normalizar(escrito);
+    let n_chars = q.chars().count();
+    if n_chars == 0 {
+        return 0;
+    }
+    let Some((ultimo_i, ultimo_c)) = nombre.char_indices().nth(n_chars - 1) else {
+        return 0;
+    };
+    let fin = ultimo_i + ultimo_c.len_utf8();
+    if apps::normalizar(&nombre[..fin]) == q {
+        fin
+    } else {
+        0
+    }
+}
+
 /// El nombre en «busca un archivo llamado X», «abre la carpeta X», «encuentra
 /// X». Sin verbo de buscar o abrir no es una petición de archivo.
 // añadido en la 0.2.2
 fn archivo_pedido(texto: &str) -> Option<&str> {
     let bajo = texto.to_lowercase();
-    // `to_lowercase` puede cambiar longitudes en algunos alfabetos; los
-    // índices solo valen si no lo ha hecho.
-    if bajo.len() != texto.len() {
-        return None;
-    }
     if let Some(i) = bajo.find("llamad") {
-        let resto = &texto[i..];
-        let nombre = resto.split_once(' ')?.1.trim();
-        return (!nombre.is_empty()).then_some(nombre);
+        let resto = bajo[i..].split_once(' ')?.1.trim();
+        if resto.is_empty() {
+            return None;
+        }
+        // Si las longitudes coinciden preservamos las mayúsculas originales.
+        if bajo.len() == texto.len() {
+            let offset = texto.len() - resto.len();
+            return Some(texto[offset..].trim());
+        }
+        return Some(texto.rsplit(' ').next()?.trim());
     }
     let verbos = [
         "busca ",
@@ -1688,7 +2140,11 @@ fn archivo_pedido(texto: &str) -> Option<&str> {
         "open ",
     ];
     let verbo = verbos.iter().find(|v| bajo.starts_with(*v))?;
-    let mut nombre = texto[verbo.len()..].trim();
+    let mut nombre = if bajo.len() == texto.len() {
+        texto[verbo.len()..].trim()
+    } else {
+        texto.split_once(' ')?.1.trim()
+    };
     for articulo in [
         "el archivo ",
         "un archivo ",
@@ -1700,7 +2156,7 @@ fn archivo_pedido(texto: &str) -> Option<&str> {
         "of ",
     ] {
         if nombre.to_lowercase().starts_with(articulo) {
-            nombre = nombre[articulo.len()..].trim();
+            nombre = nombre.get(articulo.len()..).unwrap_or(nombre).trim();
         }
     }
     (!nombre.is_empty()).then_some(nombre)
@@ -1836,9 +2292,15 @@ fn resultados(
         lista.push(ajuste);
     }
     if let Some(valor) = calcular(consulta) {
+        let numero = formatear_numero(valor);
         lista.push(Resultado::Dato {
-            titulo: format!("= {}", formatear_numero(valor)),
-            valor: format!("Resultado de {consulta}"),
+            titulo: format!("= {numero}"),
+            valor: format!(
+                "{} · {}",
+                t("Resultado del cálculo", "Calculation result"),
+                t("Intro copia el valor", "Enter copies the value")
+            ),
+            copiar: Some(numero),
             icono: insignia("control"),
         });
     }
@@ -1907,7 +2369,11 @@ fn resultados(
     let primera_palabra = consulta.split_whitespace().next().unwrap_or(consulta);
     if en_el_path(primera_palabra) {
         let comando = Resultado::Comando(consulta.to_string());
-        if primera_palabra == consulta {
+        let consulta_norm = apps::normalizar(consulta);
+        let hay_app_preferente = lista.iter().any(|r| {
+            matches!(r, Resultado::App { nombre, .. } if apps::normalizar(nombre).starts_with(&consulta_norm))
+        });
+        if primera_palabra == consulta && !hay_app_preferente {
             lista.insert(0, comando);
         } else {
             lista.push(comando);
@@ -1920,6 +2386,7 @@ fn resultados(
 fn resultado_app(app: &apps::App, abierta: Option<String>) -> Resultado {
     Resultado::App {
         nombre: app.nombre.clone(),
+        detalle: app.detalle.clone(),
         exec: app.exec.clone(),
         icono: icono::cargar(&app.icono),
         abierta,
@@ -1962,7 +2429,7 @@ fn atajos() -> Vec<Atajo> {
     let tema = |nombre: &str, claves, modo| {
         atajo(
             nombre,
-            "Apariencia del escritorio",
+            t("Apariencia del escritorio", "Desktop appearance"),
             match modo {
                 crate::tema::ModoTema::Claro => "brillo",
                 crate::tema::ModoTema::Oscuro => "noche",
@@ -1980,251 +2447,326 @@ fn atajos() -> Vec<Atajo> {
     let despierto = super::mantener_despierto();
     let mut lista = vec![
         atajo(
-            "Bloquear sesión",
-            "Pedir contraseña para volver",
+            t("Bloquear sesión", "Lock session"),
+            t("Pedir contraseña para volver", "Require password to unlock"),
             "bloquear",
             &["bloqueo", "lock"],
             Accion::Bloquear,
         ),
         atajo(
-            "Apagar o reiniciar",
-            "Abrir controles de energía",
+            t("Apagar o reiniciar", "Shut down or restart"),
+            t("Abrir controles de energía", "Open power controls"),
             "apagar",
             &[
                 "apagado",
                 "poweroff",
                 "reiniciar",
+                "restart",
                 "suspender",
+                "suspend",
                 "cerrar sesion",
+                "log out",
             ],
             Accion::Emergente("apagar"),
         ),
         atajo(
             if reducidos {
-                "Efectos completos"
+                t("Efectos completos", "Full visual effects")
             } else {
-                "Reducir efectos"
+                t("Reducir efectos", "Reduce visual effects")
             },
             if reducidos {
-                "Devolver el desenfoque y las animaciones"
+                t(
+                    "Devolver el desenfoque y las animaciones",
+                    "Restore blur and animations",
+                )
             } else {
-                "Quitar el desenfoque y las animaciones de ventana"
+                t(
+                    "Quitar el desenfoque y las animaciones de ventana",
+                    "Disable blur and window animations",
+                )
             },
             "apariencia",
-            &["efectos", "animaciones", "desenfoque"],
+            &["efectos", "animaciones", "desenfoque", "effects", "animations"],
             Accion::AlternarEfectos,
         ),
         atajo(
             if nocturna {
-                "Apagar luz nocturna"
+                t("Apagar luz nocturna", "Turn off night light")
             } else {
-                "Encender luz nocturna"
+                t("Encender luz nocturna", "Turn on night light")
             },
-            "Tono cálido en la pantalla",
+            t("Tono cálido en la pantalla", "Warm screen color temperature"),
             "noche",
-            &["luz nocturna", "night", "calido"],
+            &["luz nocturna", "night", "calido", "warm"],
             Accion::LuzNocturna(!nocturna),
         ),
         atajo(
             if despierto {
-                "Dejar de mantener despierto"
+                t("Dejar de mantener despierto", "Allow screen sleep")
             } else {
-                "Mantener despierto"
+                t("Mantener despierto", "Keep awake")
             },
-            "Que la pantalla no se apague sola",
+            t("Que la pantalla no se apague sola", "Prevent display sleep"),
             "mantener",
-            &["cafeina", "no dormir", "despierto"],
+            &["cafeina", "no dormir", "despierto", "awake", "caffeine"],
             Accion::MantenerDespierto,
         ),
         atajo(
-            "Captura de pantalla",
-            "Elegir zona, ventana o pantalla",
+            t("Captura de pantalla", "Screenshot"),
+            t("Elegir zona, ventana o pantalla", "Select area, window or screen"),
             "captura",
             &["screenshot", "capturar", "foto"],
             Accion::AbrirCaptura,
         ),
         atajo(
-            "Vista de escritorios",
-            "Todos los escritorios y sus ventanas",
+            t("Vista de escritorios", "Desktops overview"),
+            t("Todos los escritorios y sus ventanas", "All desktops and open windows"),
             "control",
-            &["escritorios", "mission control", "ventanas"],
+            &["escritorios", "mission control", "ventanas", "desktops", "overview"],
             Accion::VistaEscritorios,
         ),
         atajo(
-            "Nuevo escritorio",
-            "Añadir un escritorio vacío",
+            t("Nuevo escritorio", "New desktop"),
+            t("Añadir un escritorio vacío", "Add an empty desktop"),
             "vista-anadir",
-            &["crear escritorio", "anadir escritorio"],
+            &["crear escritorio", "anadir escritorio", "new desktop"],
             Accion::CrearEscritorio,
         ),
         atajo(
             "Launchpad",
-            "Todas las aplicaciones",
+            t("Todas las aplicaciones", "All applications"),
             "launchpad",
             &["aplicaciones", "apps"],
             Accion::Launchpad,
         ),
         atajo(
-            "Borrar notificaciones",
-            "Vaciar el centro de notificaciones",
+            t("Borrar notificaciones", "Clear notifications"),
+            t("Vaciar el centro de notificaciones", "Empty notification center"),
             "papelera",
-            &["limpiar notificaciones"],
+            &["limpiar notificaciones", "clear notifications"],
             Accion::BorrarNotificaciones,
         ),
         atajo(
-            "Acerca de este equipo",
-            "Versión de BookOS y hardware",
+            t("Acerca de este equipo", "About this computer"),
+            t("Versión de BookOS y hardware", "BookOS version and hardware"),
             "acerca",
             &["sistema", "version", "about"],
             Accion::Acerca,
         ),
         atajo(
-            "Atajos de teclado",
-            "Todos los atajos y gestos",
+            t("Atajos de teclado", "Keyboard shortcuts"),
+            t("Todos los atajos y gestos", "All shortcuts and gestures"),
             "teclado",
             &["atajos", "teclas", "shortcuts", "gestos", "ayuda"],
             Accion::Atajos,
         ),
         tarjeta(
-            "Sonido",
-            "Volumen y salida de audio",
+            t("Sonido", "Sound"),
+            t("Volumen y salida de audio", "Volume and audio output"),
             "volumen-alto",
-            &["volumen", "audio", "altavoces"],
+            &["volumen", "audio", "altavoces", "volume", "sound"],
             "volumen",
         ),
         tarjeta(
-            "Brillo",
-            "Brillo de la pantalla",
+            t("Brillo", "Brightness"),
+            t("Brillo de la pantalla", "Display brightness"),
             "brillo",
-            &["pantalla"],
+            &["pantalla", "brightness", "display"],
             "brillo",
         ),
         tarjeta(
-            "Wi-Fi y red",
-            "Redes disponibles",
+            t("Wi-Fi y red", "Wi-Fi & network"),
+            t("Redes disponibles", "Available networks"),
             "wifi",
-            &["wifi", "red", "internet"],
+            &["wifi", "red", "internet", "network"],
             "red",
         ),
         tarjeta(
             "Bluetooth",
-            "Dispositivos cercanos",
+            t("Dispositivos cercanos", "Nearby devices"),
             "bluetooth",
-            &["auriculares", "buds"],
+            &["auriculares", "buds", "headphones"],
             "bluetooth",
         ),
         tarjeta(
-            "Energía",
-            "Batería y perfil de rendimiento",
+            t("Energía", "Power"),
+            t("Batería y perfil de rendimiento", "Battery and performance profile"),
             "bateria-carga",
-            &["energia", "bateria", "power", "rendimiento"],
+            &["energia", "bateria", "power", "battery", "rendimiento"],
             // El widget se llama «bateria»: con «energia», que era lo que
             // mandaba esto antes, el shell no encontraba tarjeta y no abría nada.
             "bateria",
         ),
         tarjeta(
-            "Notificaciones",
-            "Avisos y no molestar",
+            t("Notificaciones", "Notifications"),
+            t("Avisos y no molestar", "Alerts and do not disturb"),
             "notificaciones",
-            &["no molestar", "avisos"],
+            &["no molestar", "avisos", "do not disturb"],
             "notificaciones",
         ),
         tarjeta(
-            "Calendario",
-            "Fecha y eventos",
+            t("Calendario", "Calendar"),
+            t("Fecha y eventos", "Date and events"),
             "emoji-clock",
-            &["fecha", "eventos"],
+            &["fecha", "eventos", "calendar", "date"],
             "reloj",
         ),
         tarjeta(
-            "Centro de control",
-            "Interruptores rápidos",
+            t("Centro de control", "Control Center"),
+            t("Interruptores rápidos", "Quick toggles"),
             "control",
             &["control"],
             "control",
         ),
         tema(
-            "Modo oscuro",
+            t("Modo oscuro", "Dark mode"),
             &["oscuro", "dark", "tema"],
             crate::tema::ModoTema::Oscuro,
         ),
         tema(
-            "Modo claro",
+            t("Modo claro", "Light mode"),
             &["claro", "light", "tema"],
             crate::tema::ModoTema::Claro,
         ),
         tema(
-            "Tema automático",
+            t("Tema automático", "Automatic theme"),
             &["automatico", "auto", "tema"],
             crate::tema::ModoTema::Automatico,
         ),
     ];
     // Las páginas de Ajustes, por los ids de BookOS-Settings (`pages` en
     // src/main.js): uno que no esté ahí se ignora en silencio.
-    const PAGINAS: &[(&str, &str, &str, &[&str])] = &[
-        ("Conexiones", "conexiones", "wifi", &["wifi", "red"]),
+    const PAGINAS: &[(&str, &str, &str, &str, &[&str])] = &[
+        (
+            "Conexiones",
+            "Connections",
+            "conexiones",
+            "wifi",
+            &["wifi", "red", "network"],
+        ),
         (
             "Pantalla",
+            "Display",
             "pantalla",
             "pantalla",
-            &["resolucion", "escala", "monitor"],
+            &["resolucion", "escala", "monitor", "resolution", "scale"],
         ),
-        ("Sonido", "sonido", "volumen-alto", &["audio", "volumen"]),
-        ("Batería", "bateria", "bateria-100", &["energia", "bateria"]),
-        ("Notificaciones", "notificaciones", "notificaciones", &[]),
+        (
+            "Sonido",
+            "Sound",
+            "sonido",
+            "volumen-alto",
+            &["audio", "volumen", "volume"],
+        ),
+        (
+            "Batería",
+            "Battery",
+            "bateria",
+            "bateria-100",
+            &["energia", "bateria", "power"],
+        ),
+        (
+            "Notificaciones",
+            "Notifications",
+            "notificaciones",
+            "notificaciones",
+            &[],
+        ),
         (
             "Temas",
+            "Themes",
             "temas",
             "apariencia",
-            &["apariencia", "acento", "colores"],
+            &["apariencia", "acento", "colores", "colors"],
         ),
         (
             "Fondos de pantalla",
+            "Wallpaper",
             "fondos",
             "fondo",
             &["fondo", "wallpaper"],
         ),
-        ("Bloqueo de pantalla", "bloqueo", "bloquear", &["bloqueo"]),
-        ("Bluetooth", "bluetooth", "bluetooth", &[]),
-        ("Teclado", "teclado", "teclado", &["distribucion", "idioma"]),
+        (
+            "Bloqueo de pantalla",
+            "Lock screen",
+            "bloqueo",
+            "bloquear",
+            &["bloqueo", "lock"],
+        ),
+        ("Bluetooth", "Bluetooth", "bluetooth", "bluetooth", &[]),
+        (
+            "Teclado",
+            "Keyboard",
+            "teclado",
+            "teclado",
+            &["distribucion", "idioma", "layout", "language"],
+        ),
         (
             "Touchpad y ratón",
+            "Touchpad and mouse",
             "touchpadmouse",
             "touchpad",
-            &["raton", "gestos", "mouse"],
+            &["raton", "gestos", "mouse", "gestures"],
         ),
-        ("Huella", "huella", "bloquear", &["huella", "dactilar"]),
-        ("Cuentas", "cuentas", "acerca", &["usuario", "contrasena"]),
+        (
+            "Huella",
+            "Fingerprint and password",
+            "huella",
+            "bloquear",
+            &["huella", "dactilar", "fingerprint"],
+        ),
+        (
+            "Cuentas",
+            "Accounts",
+            "cuentas",
+            "acerca",
+            &["usuario", "contrasena", "user", "password"],
+        ),
         (
             "Aplicaciones",
+            "Applications",
             "aplicaciones",
             "launchpad",
-            &["predeterminadas"],
+            &["predeterminadas", "default"],
         ),
         (
             "Actualizaciones",
+            "Software update",
             "actualizacion",
             "reiniciar",
             &["actualizar", "update"],
         ),
         (
             "Accesibilidad",
+            "Accessibility",
             "accesibilidad",
             "ojo",
-            &["zoom", "contraste"],
+            &["zoom", "contraste", "contrast"],
         ),
-        ("Seguridad", "seguridad", "bloquear", &["privacidad"]),
+        (
+            "Seguridad",
+            "Security and privacy",
+            "seguridad",
+            "bloquear",
+            &["privacidad", "privacy"],
+        ),
         (
             "Fecha, idioma y general",
+            "General management",
             "general",
             "preferencias",
-            &["fecha", "idioma", "hora"],
+            &["fecha", "idioma", "hora", "date", "language", "time"],
         ),
     ];
-    lista.extend(PAGINAS.iter().map(|(nombre, id, icono, claves)| {
+    lista.extend(PAGINAS.iter().map(|(es, en, id, icono, claves)| {
         atajo(
-            &format!("Ajustes de {}", nombre.to_lowercase()),
-            "Abrir en Ajustes",
+            &format!(
+                "{} {}",
+                t("Ajustes de", "Settings:"),
+                t(es, en).to_lowercase()
+            ),
+            t("Abrir en Ajustes", "Open in Settings"),
             icono,
             claves,
             Accion::Lanzar(format!("bookos-settings --page {id}")),
@@ -2414,10 +2956,10 @@ fn en_el_path(orden: &str) -> bool {
 /// icono del panel tienen que decir lo mismo.
 // 0.1.0
 fn estado(consulta: &str) -> Option<Resultado> {
-    let q = consulta.to_lowercase();
+    let q = apps::normalizar(consulta.trim());
     let quiere = |claves: &[&str]| claves.iter().any(|c| c.starts_with(&q) && q.len() >= 3);
 
-    if quiere(&["bateria", "batería", "battery"]) {
+    if quiere(&["bateria", "battery"]) {
         let bat = PanelData::read().battery?;
         let restante = match bat.minutes {
             Some(m) if m >= 60 => format!(", {}h {:02}min", m / 60, m % 60),
@@ -2425,15 +2967,17 @@ fn estado(consulta: &str) -> Option<Resultado> {
             None => String::new(),
         };
         let como = if bat.charging {
-            "cargando"
+            t("cargando", "charging")
         } else if bat.plugged {
-            "enchufada"
+            t("enchufada", "plugged in")
         } else {
-            "con batería"
+            t("con batería", "on battery")
         };
+        let pct = format!("{} %", bat.percent);
         return Some(Resultado::Dato {
-            titulo: format!("Batería al {} %", bat.percent),
+            titulo: format!("{} {pct}", t("Batería al", "Battery at")),
             valor: format!("{como}{restante}"),
+            copiar: Some(pct),
             icono: insignia(if bat.charging {
                 "bateria-carga"
             } else if bat.percent > 60 {
@@ -2445,52 +2989,69 @@ fn estado(consulta: &str) -> Option<Resultado> {
             }),
         });
     }
-    if quiere(&["red", "wifi", "internet"]) {
+    if quiere(&["red", "wifi", "internet", "network"]) {
         let red = PanelData::read().network;
         let (titulo, icono) = match red {
             Some(r) if r.up => (
                 match r.kind {
-                    crate::state::Link::Wifi => "Wi-Fi conectado",
-                    crate::state::Link::Cable => "Cable conectado",
+                    crate::state::Link::Wifi => t("Wi-Fi conectado", "Wi-Fi connected"),
+                    crate::state::Link::Cable => t("Cable conectado", "Wired connected"),
                 },
                 "wifi",
             ),
-            _ => ("Sin conexión", "sin-red"),
+            _ => (t("Sin conexión", "Offline"), "sin-red"),
         };
         return Some(Resultado::Dato {
             titulo: titulo.to_string(),
-            valor: "Estado de la red".to_string(),
+            valor: t("Estado de la red", "Network status").to_string(),
+            copiar: Some(titulo.to_string()),
             icono: insignia(icono),
         });
     }
-    if quiere(&["hora", "fecha", "reloj"]) {
+    if quiere(&["hora", "fecha", "reloj", "time", "clock", "date"]) {
+        let reloj = PanelData::read().clock;
         return Some(Resultado::Dato {
-            titulo: PanelData::read().clock,
-            valor: "Hora local".to_string(),
+            titulo: reloj.clone(),
+            valor: t("Hora local · Intro copia", "Local time · Enter copies").to_string(),
+            copiar: Some(reloj),
             icono: insignia("acerca"),
         });
     }
-    if quiere(&["memoria", "ram"]) {
+    if quiere(&["memoria", "ram", "memory"]) {
         let (usada, total) = memoria()?;
+        let titulo = format!("{usada:.1} / {total:.1} GiB");
         return Some(Resultado::Dato {
-            titulo: format!("{:.1} de {:.1} GiB en uso", usada, total),
-            valor: format!("{} % de la memoria", (usada / total * 100.0).round() as u32),
+            titulo: format!("{} {}", titulo, t("en uso", "used")),
+            valor: format!(
+                "{} % {}",
+                (usada / total * 100.0).round() as u32,
+                t("de la memoria", "of memory")
+            ),
+            copiar: Some(titulo),
             icono: insignia("cpu"),
         });
     }
-    if quiere(&["cpu", "procesador", "carga"]) {
+    if quiere(&["cpu", "procesador", "carga", "processor"]) {
         let (carga, hilos) = cpu_estado()?;
+        let pct = format!("{:.0} %", (carga / hilos as f32 * 100.0).min(999.0));
         return Some(Resultado::Dato {
-            titulo: format!("CPU al {:.0} %", (carga / hilos as f32 * 100.0).min(999.0)),
-            valor: format!("carga de 1 minuto · {hilos} hilos lógicos"),
+            titulo: format!("CPU {pct}"),
+            valor: format!(
+                "{} · {hilos} {}",
+                t("carga de 1 minuto", "1-minute load"),
+                t("hilos lógicos", "logical threads")
+            ),
+            copiar: Some(pct),
             icono: insignia("cpu"),
         });
     }
-    if quiere(&["gpu", "grafica", "gráfica"]) {
+    if quiere(&["gpu", "grafica"]) {
         let uso = gpu_estado()?;
+        let pct = format!("{uso} %");
         return Some(Resultado::Dato {
-            titulo: format!("GPU al {uso} %"),
-            valor: "ocupación del motor gráfico".to_string(),
+            titulo: format!("GPU {pct}"),
+            valor: t("ocupación del motor gráfico", "graphics engine usage").to_string(),
+            copiar: Some(pct),
             icono: insignia("control"),
         });
     }
@@ -2798,10 +3359,57 @@ mod pruebas {
     fn app(nombre: &str, exec: &str) -> apps::App {
         apps::App {
             nombre: nombre.to_string(),
+            detalle: None,
             exec: exec.to_string(),
             icono: String::new(),
             normalizado: nombre.to_lowercase(),
         }
+    }
+
+    #[test]
+    fn el_detalle_de_una_app_no_ensena_el_exec_crudo() {
+        let mut a = app("Navegador", "flatpak run --branch=stable org.mozilla.firefox");
+        let sin_desc = resultado_app(&a, None);
+        assert!(!sin_desc.detalle().contains("flatpak run"));
+        a.detalle = Some("Navega por la web".into());
+        let con_desc = resultado_app(&a, None);
+        assert_eq!(con_desc.detalle(), "Navega por la web");
+    }
+
+    #[test]
+    fn cursor_movible_y_pegado_limpio() {
+        use crate::TeclaPulsada as T;
+        let mut b = Buscador::new((1440.0, 900.0), Vec::new());
+        for c in "ac".chars() {
+            b.tecla(T::Caracter(c));
+        }
+        b.tecla(T::Izquierda);
+        b.tecla(T::Caracter('b'));
+        assert_eq!(b.consulta, "abc");
+        b.tecla(T::Inicio);
+        b.tecla(T::Suprimir);
+        assert_eq!(b.consulta, "bc");
+        b.tecla(T::Fin);
+        b.tecla(T::Pegar("d\ne\tf\x07".into()));
+        assert_eq!(b.consulta, "bcd e f");
+    }
+
+    #[test]
+    fn calculo_se_copia_con_intro_y_muestra_confirmacion() {
+        use crate::TeclaPulsada as T;
+        let mut b = buscador_con("2+3*4");
+        let Tecla::Hacer(accion) = b.tecla(T::Intro) else {
+            panic!("Intro sobre una cuenta tiene que copiar el resultado");
+        };
+        assert_eq!(accion, Accion::CopiarTexto("14".into()));
+        assert!(b.confirmando());
+    }
+
+    #[test]
+    fn una_app_que_casa_gana_al_binario_del_path() {
+        let apps = [app("Sh", "mi-sh")];
+        let lista = resultados(&apps, &Default::default(), &[], "sh");
+        assert!(matches!(&lista[0], Resultado::App { nombre, .. } if nombre == "Sh"));
     }
 
     #[test]
@@ -2870,7 +3478,7 @@ mod pruebas {
 
     #[test]
     fn los_comandos_del_escritorio_son_acciones_controladas() {
-        let lista = resultados(&[], &Default::default(), &[], "bloquear");
+        let lista = resultados(&[], &Default::default(), &[], t("bloquear", "lock"));
         assert!(matches!(
             lista.first(),
             Some(Resultado::Accion {
@@ -2926,11 +3534,17 @@ mod pruebas {
     #[test]
     fn las_acciones_se_encuentran_por_cualquier_palabra() {
         for (consulta, buscada) in [
-            ("luz noc", "luz nocturna"),
-            ("oscuro", "Modo oscuro"),
-            ("ajustes tecl", "Ajustes de teclado"),
-            ("volumen", "Sonido"),
-            ("captura", "Captura de pantalla"),
+            (t("luz noc", "night li"), t("luz nocturna", "night light")),
+            (t("oscuro", "dark"), t("Modo oscuro", "Dark mode")),
+            (
+                t("ajustes tecl", "settings keyb"),
+                t("Ajustes de teclado", "Settings: keyboard"),
+            ),
+            (t("volumen", "volume"), t("Sonido", "Sound")),
+            (
+                t("captura", "screenshot"),
+                t("Captura de pantalla", "Screenshot"),
+            ),
         ] {
             let lista = resultados(&[], &Default::default(), &[], consulta);
             assert!(
@@ -2942,7 +3556,7 @@ mod pruebas {
 
     #[test]
     fn energia_abre_la_tarjeta_de_la_bateria() {
-        let lista = resultados(&[], &Default::default(), &[], "energía");
+        let lista = resultados(&[], &Default::default(), &[], t("energía", "power"));
         assert!(lista.iter().any(|r| matches!(
             r,
             Resultado::Accion {
@@ -2992,5 +3606,69 @@ mod pruebas {
         assert_eq!(ancho_para(800.0), ANCHO_MIN);
         assert_eq!(ancho_para(1920.0), ANCHO);
         assert_eq!(ancho_para(3840.0), ANCHO_MAX);
+    }
+
+    #[test]
+    fn confirmando_deja_de_animar_cuando_el_sello_asienta_y_programa_alarma() {
+        let mut b = Buscador::new((1920.0, 1080.0), Vec::new());
+        b.iniciar_confirmacion("Brillo al 50 %".into());
+        assert!(b.confirmando());
+        let alarma = b.proxima_alarma().expect("debe programar cierre único");
+        assert!(alarma <= CONFIRMACION && alarma > std::time::Duration::from_millis(900));
+
+        // Al asentarse el sello, la espera restante no pide repintados CPU a 60/120 Hz.
+        b.sello.fijar(1.0);
+        b.elegida_y.fijar(b.elegida_y.valor());
+        b.alto.fijar(b.alto.valor());
+        assert!(!b.animando());
+        assert!(b.confirmando());
+        assert!(b.proxima_alarma().is_some());
+    }
+
+    #[test]
+    fn confirmando_oculta_el_resto_y_bloquea_nueva_interaccion() {
+        use crate::TeclaPulsada as T;
+        let mut b = buscador_con("2+3*4");
+        b.agarrada = true;
+        b.pendiente = Some((Que::Brillo, 55));
+        let Tecla::Hacer(_) = b.tecla(T::Intro) else {
+            panic!("Intro sobre una cuenta tiene que confirmar");
+        };
+        assert!(b.confirmando());
+        assert!(!b.agarrado());
+        assert_eq!(b.pendiente, None);
+        assert_eq!(b.alto_objetivo(), FILA + MARGEN * 2.0);
+        // No se puede escribir, mover, pulsar ni volver a confirmar.
+        assert!(matches!(b.tecla(T::Caracter('x')), Tecla::Consumida));
+        assert!(matches!(b.tecla(T::Intro), Tecla::Consumida));
+        assert!(matches!(b.tecla(T::Escape), Tecla::Consumida));
+        assert_eq!(b.consulta, "2+3*4");
+        assert!(!b.puntero(Some((20.0, b.y_lista() + 10.0))));
+        assert_eq!(b.pulsar(20.0, b.y_lista() + 10.0), None);
+        assert!(!b.arrastre_en(20.0, b.y_lista() + FILA + 5.0));
+        let nodos = b.accesible();
+        assert_eq!(nodos.len(), 1);
+        assert_eq!(nodos[0].rol, accesskit::Role::Status);
+    }
+
+    #[test]
+    fn tecla_control_con_todo_seleccionado_no_borra_la_consulta() {
+        use crate::TeclaPulsada as T;
+        let mut b = buscador_con("hola");
+        b.todo_seleccionado = true;
+        b.tecla(T::Caracter('\x07'));
+        assert_eq!(b.consulta, "hola");
+        assert!(b.todo_seleccionado);
+    }
+
+    #[test]
+    fn mover_cursor_resiste_indice_desalineado() {
+        let mut b = buscador_con("añ");
+        b.cursor = 2; // dentro del carácter 'ñ'
+        b.mover_cursor_izquierda();
+        assert_eq!(b.cursor, 0);
+        b.cursor = 999;
+        b.mover_cursor_derecha();
+        assert_eq!(b.cursor, b.consulta.len());
     }
 }

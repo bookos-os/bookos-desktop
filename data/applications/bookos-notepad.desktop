@@ -1,10 +1,12 @@
 [Desktop Entry]
 Name=Notepad
 Name[es]=Notas
-Comment=Editor de texto sencillo de BookOS
+Comment=Simple text editor for BookOS
+Comment[es]=Editor de texto sencillo de BookOS
 Exec=bookos-notepad %F
 TryExec=bookos-notepad
 Icon=bookos-notepad
 Type=Application
 Categories=Utility;TextEditor;
-Keywords=notas;texto;editor;notepad;
+Keywords=notes;text;editor;notepad;
+Keywords[es]=notas;texto;editor;notepad;

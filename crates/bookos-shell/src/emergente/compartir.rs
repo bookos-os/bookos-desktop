@@ -205,7 +205,7 @@ impl Compartir {
                 None
             }
             Zona::Boton(0) => Some(self.denegar()),
-            Zona::Boton(_) => Some(self.aceptar()),
+            Zona::Boton(_) => (!self.pantallas.is_empty()).then(|| self.aceptar()),
             Zona::Nada => None,
         }
     }
@@ -240,13 +240,17 @@ impl Compartir {
     // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
         let cabecera = column![
-            text("Compartir pantalla")
+            text(super::t("Compartir pantalla", "Share screen"))
                 .size(tema::T_TITULO)
                 .color(tema::texto()),
             Space::new().height(6),
-            text(format!("«{}» quiere ver tu pantalla.", self.app))
-                .size(tema::T_CUERPO)
-                .color(tema::texto2()),
+            text(if super::t("es", "en") == "es" {
+                format!("«{}» quiere ver tu pantalla.", self.app)
+            } else {
+                format!("“{}” wants to see your screen.", self.app)
+            })
+            .size(tema::T_CUERPO)
+            .color(tema::texto2()),
         ];
 
         let mut celdas = row![].spacing(HUECO);
@@ -300,9 +304,9 @@ impl Compartir {
         }
 
         let botones = row![
-            self.boton("Cancelar", 0),
+            self.boton(super::t("Cancelar", "Cancel"), 0),
             Space::new().width(HUECO),
-            self.boton("Compartir", 1),
+            self.boton(super::t("Compartir", "Share"), 1),
         ];
 
         let tarjeta = container(
@@ -437,6 +441,22 @@ mod pruebas {
         assert!(matches!(
             c.tecla(TeclaPulsada::Escape),
             Tecla::Hacer(Accion::Compartir { pantalla: None, .. })
+        ));
+    }
+
+    #[test]
+    fn pulsar_compartir_sin_pantallas_no_acepta_indice_invalido() {
+        let mut c = Compartir::new(9, "App".into(), Vec::new());
+        let by = MARGEN_SOMBRA + c.botones_y() + BOTON_H / 2.0;
+        let bx_ok = MARGEN_SOMBRA + c.botones_x() + BOTON_W + HUECO + BOTON_W / 2.0;
+        assert_eq!(c.pulsar(bx_ok, by), None);
+        let bx_cancel = MARGEN_SOMBRA + c.botones_x() + BOTON_W / 2.0;
+        assert!(matches!(
+            c.pulsar(bx_cancel, by),
+            Some(Accion::Compartir {
+                sesion: 9,
+                pantalla: None
+            })
         ));
     }
 }

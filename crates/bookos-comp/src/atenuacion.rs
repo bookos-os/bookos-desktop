@@ -133,6 +133,17 @@ pub fn programar(state: &mut BookosComp) {
     }
 }
 
+fn objetivo_atenuacion(previo: u8, motivo: Motivo) -> Option<u8> {
+    let fraccion = match motivo {
+        Motivo::Inactividad => FRACCION_INACTIVIDAD,
+        Motivo::Bateria => FRACCION_BATERIA,
+    };
+    let objetivo = ((f64::from(previo) * fraccion).round() as u8).max(SUELO);
+    // Ya en el suelo o por debajo: no hay nada que bajar, y apuntarlo como
+    // atenuada devolvería un brillo que el usuario ya tenía.
+    (objetivo < previo).then_some(objetivo)
+}
+
 // 0.1.0
 fn atenuar(state: &mut BookosComp, motivo: Motivo) {
     if state.atenuacion.atenuada.is_some() || !state.dpms_encendido {
@@ -143,16 +154,9 @@ fn atenuar(state: &mut BookosComp, motivo: Motivo) {
     else {
         return;
     };
-    let fraccion = match motivo {
-        Motivo::Inactividad => FRACCION_INACTIVIDAD,
-        Motivo::Bateria => FRACCION_BATERIA,
-    };
-    let objetivo = ((f64::from(previo) * fraccion).round() as u8).max(SUELO);
-    // Ya en el suelo o por debajo: no hay nada que bajar, y apuntarlo como
-    // atenuada devolvería un brillo que el usuario ya tenía.
-    if objetivo >= previo {
+    let Some(objetivo) = objetivo_atenuacion(previo, motivo) else {
         return;
-    }
+    };
     tracing::info!(
         previo,
         objetivo,
@@ -165,6 +169,14 @@ fn atenuar(state: &mut BookosComp, motivo: Motivo) {
     );
     state.atenuacion.atenuada = Some(Atenuada { motivo, previo });
     crate::brillo_auto::fijar(state, objetivo);
+    if let Some(token) = state.atenuacion.rampa.take() {
+        state.loop_handle.remove(token);
+    }
+    if bookos_shell::tema::efectos_reducidos() {
+        let crudo = (f64::from(maximo) * f64::from(objetivo) / 100.0).round() as u32;
+        bookos_shell::retroiluminacion::solicitar("backlight", &dispositivo, crudo);
+        return;
+    }
 
     let pasos = (RAMPA.as_millis() / PASO_RAMPA.as_millis()).max(1) as u32;
     let mut paso = 0;
@@ -204,6 +216,9 @@ fn restaurar(state: &mut BookosComp) {
     tracing::info!(previo = atenuada.previo, "pantalla restaurada");
     crate::brillo_auto::evaluar(state);
     programar(state);
+    if atenuada.motivo == Motivo::Inactividad {
+        bateria(state);
+    }
 }
 
 /// Cualquier entrada del usuario. Es lo primero que hace `input::handle`, así
@@ -268,12 +283,30 @@ const ID_AVISO_BATERIA: u32 = u32::MAX - 1;
 fn avisar_bateria(state: &mut BookosComp, porciento: u8) {
     let mut aviso = bookos_shell::notificaciones::Notificacion::nueva(
         ID_AVISO_BATERIA,
-        "Sistema".into(),
-        "Batería baja".into(),
-        "Conecta el cargador para seguir trabajando.".into(),
+        bookos_shell::t("Sistema", "System").into(),
+        bookos_shell::t("Batería baja", "Low battery").into(),
+        bookos_shell::t(
+            "Conecta el cargador para seguir trabajando.",
+            "Plug in the charger to keep working.",
+        )
+        .into(),
         "",
         true,
     );
     aviso.forma = bookos_shell::notificaciones::Forma::Bateria(porciento);
     crate::notificaciones::recibir(state, crate::notificaciones::Aviso::Nueva(aviso, 10_000));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn objetivo_atenuacion_respeta_fraccion_suelo_y_sin_bajada() {
+        assert_eq!(objetivo_atenuacion(100, Motivo::Inactividad), Some(30));
+        assert_eq!(objetivo_atenuacion(80, Motivo::Bateria), Some(40));
+        assert_eq!(objetivo_atenuacion(10, Motivo::Inactividad), Some(SUELO));
+        assert_eq!(objetivo_atenuacion(SUELO, Motivo::Bateria), None);
+        assert_eq!(objetivo_atenuacion(2, Motivo::Inactividad), None);
+    }
 }

@@ -20,6 +20,7 @@
 //! empieza la pantalla ni cuánto mide, solo su relación con quien lo abrió.
 
 mod acerca;
+mod acceso;
 mod apagar;
 mod apariencia;
 mod atajos;
@@ -31,6 +32,7 @@ mod calendario;
 mod centro;
 mod compartir;
 pub(crate) mod control;
+mod elegir_app;
 mod emojis;
 mod energia;
 mod escritorios;
@@ -39,12 +41,15 @@ pub(crate) mod lista;
 mod menu;
 mod menu_dock;
 mod notificaciones;
+mod polkit;
+mod portapapeles;
 mod color_carpeta;
 pub mod dialogo;
 mod proyeccion;
 mod red;
 mod respuesta;
 mod sonido;
+mod usuarios;
 
 use std::sync::LazyLock;
 
@@ -53,8 +58,12 @@ use crate::view::PanelElement;
 
 /// Español si la sesión va en español, inglés en cualquier otro idioma: la
 /// misma regla que `apps.rs` con el `Name[es]` de los `.desktop`.
-static ES: LazyLock<bool> =
-    LazyLock::new(|| std::env::var("LANG").is_ok_and(|l| l.starts_with("es")));
+static ES: LazyLock<bool> = LazyLock::new(|| {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        .is_some_and(|l| l.starts_with("es"))
+});
 
 // 0.1.0
 // modificado en la 0.2.0 -- pública: el compositor la usa para sus propios avisos
@@ -99,7 +108,13 @@ pub enum Tecla {
     Hacer(Accion),
 }
 
+pub use acceso::{OpcionAcceso, PeticionAcceso};
 pub use compartir::Pantalla as PantallaCompartible;
+pub use elegir_app::PeticionElegirApp;
+pub use polkit::{Identidad as IdentidadPolkit, Peticion as PeticionPolkit};
+pub use portapapeles::{
+    ContenidoPortapapeles, ElementoPortapapeles, MiniaturaPortapapeles, miniatura_de_imagen,
+};
 pub use escritorios::RADIO_MINIATURA as RADIO_MINIATURA_ESCRITORIO;
 pub use menu_dock::{Entrada as EntradaMenu, Fila as FilaMenu, Marca as MarcaMenu, Rapida as RapidaMenu};
 pub use proyeccion::Modo as ModoProyeccion;
@@ -158,6 +173,7 @@ pub enum Emergente {
     Launchpad(launchpad::Launchpad),
     Buscador(buscador::Buscador),
     Emojis(emojis::Emojis),
+    Portapapeles(portapapeles::Portapapeles),
     Respuesta(respuesta::Respuesta),
     Escritorios(escritorios::Escritorios),
     Proyeccion(proyeccion::Proyeccion),
@@ -166,6 +182,10 @@ pub enum Emergente {
     // añadido en la 0.2.3
     Dialogo(dialogo::Dialogo),
     Compartir(compartir::Compartir),
+    Polkit(polkit::Polkit),
+    Acceso(acceso::Acceso),
+    ElegirApp(elegir_app::ElegirApp),
+    Usuarios(usuarios::Usuarios),
 }
 
 /// Un control de la tarjeta para el lector de pantalla, en coordenadas de la
@@ -200,19 +220,24 @@ impl Emergente {
             Self::MenuDock(_) => t("Menú", "Menu"),
             Self::Acerca(_) => t("Acerca de este equipo", "About this computer"),
             Self::Atajos(_) => t("Atajos de teclado", "Keyboard shortcuts"),
-            Self::Centro(_) => t("Centro de control", "Control centre"),
+            Self::Centro(_) => t("Centro de control", "Control Center"),
             Self::Notificaciones(_) => t("Notificaciones", "Notifications"),
             Self::Red(_) => "Wi-Fi",
             Self::Bluetooth(_) => "Bluetooth",
             Self::Launchpad(_) => "Launchpad",
             Self::Buscador(_) => t("Buscador", "Search"),
             Self::Emojis(_) => t("Emojis", "Emoji"),
+            Self::Portapapeles(_) => t("Portapapeles", "Clipboard"),
             Self::Respuesta(_) => t("Respuesta", "Reply"),
             Self::Escritorios(_) => t("Escritorios", "Desktops"),
             Self::Proyeccion(_) => t("Proyectar", "Project"),
-            Self::ColorCarpeta(_) => t("Color de la carpeta", "Folder colour"),
+            Self::ColorCarpeta(_) => t("Color de la carpeta", "Folder color"),
             Self::Dialogo(_) => t("Diálogo", "Dialog"),
             Self::Compartir(_) => t("Compartir pantalla", "Share screen"),
+            Self::Polkit(_) => t("Autenticación requerida", "Authentication required"),
+            Self::Acceso(_) => t("Permiso", "Permission"),
+            Self::ElegirApp(_) => t("Abrir con", "Open with"),
+            Self::Usuarios(_) => t("Cambiar de usuario", "Fast User Switching"),
         }
     }
 
@@ -225,6 +250,12 @@ impl Emergente {
             Self::Apagar(a) => a.accesible(),
             Self::Menu(m) => m.accesible(),
             Self::Dialogo(d) => d.accesible(),
+            Self::Buscador(b) => b.accesible(),
+            Self::Portapapeles(p) => p.accesible(),
+            Self::Polkit(p) => p.accesible(),
+            Self::Acceso(a) => a.accesible(),
+            Self::ElegirApp(e) => e.accesible(),
+            Self::Usuarios(u) => u.accesible(),
             _ => Vec::new(),
         }
     }
@@ -344,6 +375,10 @@ impl Emergente {
         Self::Emojis(emojis::Emojis::new(x, y, recientes))
     }
 
+    pub fn portapapeles(x: f32, y: f32, elementos: Vec<ElementoPortapapeles>) -> Self {
+        Self::Portapapeles(portapapeles::Portapapeles::new(x, y, elementos))
+    }
+
     /// El buscador de Meta+Espacio. `pantalla` está en píxeles lógicos para
     /// que el ancho sea cómodo tanto en un portátil como en un monitor 4K/8K.
     /// `abiertas` son los `(exec, app_id)` con ventana: elegir una de esas
@@ -380,6 +415,26 @@ impl Emergente {
         Self::Compartir(compartir::Compartir::new(sesion, app, pantallas))
     }
 
+    /// El diálogo de autenticación de Polkit.
+    pub fn polkit(peticion: polkit::Peticion) -> Self {
+        Self::Polkit(polkit::Polkit::new(peticion))
+    }
+
+    /// El diálogo de permisos de `xdg-desktop-portal` (`Access`).
+    pub fn acceso(peticion: acceso::PeticionAcceso) -> Self {
+        Self::Acceso(acceso::Acceso::new(peticion))
+    }
+
+    /// El diálogo «Abrir con…» de `xdg-desktop-portal` (`AppChooser`).
+    pub fn elegir_app(peticion: elegir_app::PeticionElegirApp) -> Self {
+        Self::ElegirApp(elegir_app::ElegirApp::new(peticion))
+    }
+
+    /// Tarjeta de cambio rápido de usuario del panel.
+    pub fn usuarios() -> Self {
+        Self::Usuarios(usuarios::Usuarios::new())
+    }
+
     /// Nombre para las trazas.
     // 0.1.0
     // modified 0.1.1 -- selector de emojis
@@ -408,12 +463,17 @@ impl Emergente {
             Self::Launchpad(_) => "launchpad",
             Self::Buscador(_) => "buscador",
             Self::Emojis(_) => "emojis",
+            Self::Portapapeles(_) => "portapapeles",
             Self::Respuesta(_) => "respuesta",
             Self::Escritorios(_) => "escritorios",
             Self::Proyeccion(_) => "proyeccion",
             Self::ColorCarpeta(_) => "color_carpeta",
             Self::Dialogo(_) => "dialogo",
             Self::Compartir(_) => "compartir",
+            Self::Polkit(_) => "polkit",
+            Self::Acceso(_) => "acceso",
+            Self::ElegirApp(_) => "elegir-app",
+            Self::Usuarios(_) => "usuarios",
         }
     }
 
@@ -439,12 +499,17 @@ impl Emergente {
             Self::Launchpad(l) => l.size(),
             Self::Buscador(b) => b.size(),
             Self::Emojis(e) => e.size(),
+            Self::Portapapeles(p) => p.size(),
             Self::Respuesta(r) => r.size(),
             Self::Escritorios(e) => e.size(),
             Self::Proyeccion(p) => p.size(),
             Self::ColorCarpeta(c) => c.size(),
             Self::Dialogo(d) => d.size(),
             Self::Compartir(c) => c.size(),
+            Self::Polkit(p) => p.size(),
+            Self::Acceso(a) => a.size(),
+            Self::ElegirApp(e) => e.size(),
+            Self::Usuarios(u) => u.size(),
         }
     }
 
@@ -495,12 +560,17 @@ impl Emergente {
             Self::Launchpad(l) => l.ancla(),
             Self::Buscador(b) => b.ancla(),
             Self::Emojis(e) => e.ancla(),
+            Self::Portapapeles(p) => p.ancla(),
             Self::Respuesta(r) => r.ancla(),
             Self::Escritorios(e) => e.ancla(),
             Self::Proyeccion(p) => p.ancla(),
             Self::ColorCarpeta(c) => c.ancla(),
             Self::Dialogo(d) => d.ancla(),
             Self::Compartir(c) => c.ancla(),
+            Self::Polkit(p) => p.ancla(),
+            Self::Acceso(a) => a.ancla(),
+            Self::ElegirApp(e) => e.ancla(),
+            Self::Usuarios(u) => u.ancla(),
         }
     }
 
@@ -522,6 +592,20 @@ impl Emergente {
         }
     }
 
+    /// Vuelve a resolver los iconos cacheados de la tarjeta abierta tras cambiar de tema.
+    pub fn recargar_iconos(&mut self, notificaciones: &[crate::notificaciones::Notificacion]) {
+        match self {
+            Self::Launchpad(l) => l.recargar_iconos(),
+            Self::Buscador(b) => b.recargar_iconos(),
+            Self::Centro(c) => c.recargar_iconos(),
+            Self::Notificaciones(n) => n.actualizar(notificaciones.to_vec()),
+            Self::Polkit(p) => p.recargar_iconos(),
+            Self::Acceso(a) => a.recargar_iconos(),
+            Self::ElegirApp(e) => e.recargar_iconos(),
+            _ => {}
+        }
+    }
+
     /// ¿Tiene una animación propia en marcha dentro de su buffer?
     ///
     /// No es la de entrada y salida, que la lleva el compositor moviendo la
@@ -534,6 +618,7 @@ impl Emergente {
             Self::Launchpad(l) => l.animando(),
             Self::Buscador(b) => b.animando(),
             Self::Emojis(e) => e.animando(),
+            Self::Portapapeles(p) => p.animando(),
             Self::Respuesta(r) => r.animando(),
             Self::Apariencia(a) => a.animando(),
             Self::Apagar(a) => a.animando(),
@@ -553,7 +638,19 @@ impl Emergente {
             Self::ColorCarpeta(c) => c.animando(),
             Self::Dialogo(d) => d.animando(),
             Self::Compartir(c) => c.animando(),
+            Self::Polkit(p) => p.animando(),
+            Self::Acceso(a) => a.animando(),
+            Self::ElegirApp(e) => e.animando(),
+            Self::Usuarios(u) => u.animando(),
             Self::Brillo(b) => b.animando(),
+        }
+    }
+
+    /// Próximo instante en que esta tarjeta cambia sola sin animar fotogramas.
+    pub fn proxima_alarma(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::Buscador(b) => b.proxima_alarma(),
+            _ => None,
         }
     }
 
@@ -607,6 +704,9 @@ impl Emergente {
             // También es un diálogo, y de los que hay que mirar dos veces:
             // alguien está pidiendo ver la pantalla entera.
             Self::Compartir(c) => Some(c.velo()),
+            Self::Polkit(p) => Some(p.velo()),
+            Self::Acceso(a) => Some(a.velo()),
+            Self::ElegirApp(e) => Some(e.velo()),
             Self::Dialogo(d) => Some(d.velo()),
             _ => None,
         }
@@ -654,12 +754,17 @@ impl Emergente {
             Self::Launchpad(l) => l.view(),
             Self::Buscador(b) => b.view(),
             Self::Emojis(e) => e.view(),
+            Self::Portapapeles(p) => p.view(),
             Self::Respuesta(r) => r.view(),
             Self::Escritorios(e) => e.view(),
             Self::Proyeccion(p) => p.view(),
             Self::ColorCarpeta(c) => c.view(),
             Self::Dialogo(d) => d.view(),
             Self::Compartir(c) => c.view(),
+            Self::Polkit(p) => p.view(),
+            Self::Acceso(a) => a.view(),
+            Self::ElegirApp(e) => e.view(),
+            Self::Usuarios(u) => u.view(),
         }
     }
 
@@ -695,6 +800,7 @@ impl Emergente {
             Self::Launchpad(l) => l.puntero(punto),
             Self::Buscador(b) => b.puntero(punto),
             Self::Emojis(e) => e.puntero(punto),
+            Self::Portapapeles(p) => p.puntero(punto),
             // Un campo de texto: no hay nada que señalar con el ratón.
             Self::Respuesta(_) => false,
             Self::Escritorios(e) => e.puntero(punto),
@@ -702,6 +808,10 @@ impl Emergente {
             Self::ColorCarpeta(c) => c.puntero(punto),
             Self::Dialogo(d) => d.puntero(punto),
             Self::Compartir(c) => c.puntero(punto),
+            Self::Polkit(p) => p.puntero(punto),
+            Self::Acceso(a) => a.puntero(punto),
+            Self::ElegirApp(e) => e.puntero(punto),
+            Self::Usuarios(u) => u.puntero(punto),
         }
     }
 
@@ -728,12 +838,17 @@ impl Emergente {
             Self::Launchpad(l) => l.pulsar(x, y),
             Self::Buscador(b) => b.pulsar(x, y),
             Self::Emojis(e) => e.pulsar(x, y),
+            Self::Portapapeles(p) => p.pulsar(x, y),
             Self::Respuesta(_) => None,
             Self::Escritorios(e) => e.pulsar(x, y),
             Self::Proyeccion(p) => p.pulsar(x, y),
             Self::ColorCarpeta(c) => c.pulsar(x, y),
             Self::Dialogo(d) => d.pulsar(x, y),
             Self::Compartir(c) => c.pulsar(x, y),
+            Self::Polkit(p) => p.pulsar(x, y),
+            Self::Acceso(a) => a.pulsar(x, y),
+            Self::ElegirApp(e) => e.pulsar(x, y),
+            Self::Usuarios(u) => u.pulsar(x, y),
         }
     }
 
@@ -745,12 +860,15 @@ impl Emergente {
         match self {
             Self::Launchpad(l) => l.desplazar(dx, dy),
             Self::Emojis(e) => e.desplazar(dy),
+            Self::Portapapeles(p) => p.desplazar(dy),
             Self::Sonido(s) => s.desplazar(dx, dy),
             Self::Brillo(b) => b.desplazar(dx, dy),
             Self::Red(r) => r.desplazar(dy),
             Self::Bluetooth(b) => b.desplazar(dy),
             Self::Centro(c) => c.desplazar(dy),
             Self::Notificaciones(n) => n.desplazar(dy),
+            Self::ElegirApp(e) => e.desplazar(dy),
+            Self::Usuarios(u) => u.desplazar(dy),
             // El menú y el calendario caben enteros; no hay nada que desplazar.
             _ => false,
         }
@@ -772,6 +890,7 @@ impl Emergente {
             Self::Buscador(b) => (b.soltar(), None),
             Self::Centro(c) => c.soltar(),
             Self::Emojis(e) => (e.soltar(), None),
+            Self::Portapapeles(p) => (p.soltar(), None),
             Self::Launchpad(l) => l.soltar(),
             Self::ColorCarpeta(c) => (c.soltar(), None),
             _ => (false, None),
@@ -790,6 +909,7 @@ impl Emergente {
             Self::Buscador(b) => b.agarrado(),
             Self::Centro(c) => c.agarrado(),
             Self::Emojis(e) => e.agarrado(),
+            Self::Portapapeles(p) => p.agarrado(),
             Self::Launchpad(l) => l.agarrado(),
             Self::ColorCarpeta(c) => c.agarrado(),
             _ => false,
@@ -804,6 +924,7 @@ impl Emergente {
             Self::Buscador(b) => b.arrastre_en(x, y),
             Self::Centro(c) => c.arrastre_en(x, y),
             Self::Emojis(e) => e.arrastre_en(x, y),
+            Self::Portapapeles(p) => p.arrastre_en(x, y),
             Self::Launchpad(l) => l.arrastre_en(x, y),
             Self::ColorCarpeta(c) => c.arrastre_en(x, y),
             _ => false,
@@ -831,12 +952,17 @@ impl Emergente {
             Self::Launchpad(l) => l.tecla(tecla),
             Self::Buscador(b) => b.tecla(tecla),
             Self::Emojis(e) => e.tecla(tecla),
+            Self::Portapapeles(p) => p.tecla(tecla),
             Self::Respuesta(r) => r.tecla(tecla),
             Self::Escritorios(e) => e.tecla(tecla),
             Self::Proyeccion(p) => p.tecla(tecla),
             Self::ColorCarpeta(c) => c.tecla(tecla),
             Self::Dialogo(d) => d.tecla(tecla),
             Self::Compartir(c) => c.tecla(tecla),
+            Self::Polkit(p) => p.tecla(tecla),
+            Self::Acceso(a) => a.tecla(tecla),
+            Self::ElegirApp(e) => e.tecla(tecla),
+            Self::Usuarios(u) => u.tecla(tecla),
         }
     }
 
@@ -849,6 +975,9 @@ impl Emergente {
     pub fn respuesta_pendiente(&self) -> Option<Accion> {
         match self {
             Self::Compartir(c) => Some(c.denegar()),
+            Self::Polkit(p) => Some(p.cancelar()),
+            Self::Acceso(a) => Some(a.denegar()),
+            Self::ElegirApp(e) => Some(e.cancelar()),
             _ => None,
         }
     }
@@ -865,6 +994,16 @@ impl Emergente {
     pub fn actualizar_escritorios(&mut self, activo: usize, nombres: Vec<String>) -> bool {
         match self {
             Self::Escritorios(e) => e.actualizar(activo, nombres),
+            _ => false,
+        }
+    }
+
+    pub fn actualizar_portapapeles(&mut self, elementos: Vec<ElementoPortapapeles>) -> bool {
+        match self {
+            Self::Portapapeles(p) => {
+                p.actualizar(elementos);
+                true
+            }
             _ => false,
         }
     }

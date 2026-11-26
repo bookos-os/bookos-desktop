@@ -21,6 +21,7 @@ pub(crate) mod privacidad;
 pub use privacidad::Privacidad;
 mod red;
 mod reloj;
+mod usuarios;
 pub(crate) mod volumen;
 
 use crate::widget::Widget;
@@ -38,6 +39,7 @@ pub const NOMBRES: &[&str] = &[
     "red",
     "volumen",
     "brillo",
+    "usuarios",
     "notificaciones",
     "control",
     "reloj",
@@ -62,6 +64,7 @@ pub fn por_nombre(nombre: &str) -> Option<Box<dyn Widget>> {
         "brillo" => Some(Box::new(brillo::Brillo::new())),
         "volumen" => Some(Box::new(volumen::Volumen::new())),
         "bluetooth" => Some(Box::new(bluetooth::Bluetooth::new())),
+        "usuarios" => Some(Box::new(usuarios::Usuarios::new())),
         "notificaciones" => Some(Box::new(notificaciones::Notificaciones::new())),
         "control" => Some(Box::new(control::Control::new())),
         "escritorios" => Some(Box::new(escritorios::Escritorios::new())),

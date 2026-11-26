@@ -1,0 +1,6 @@
+# Galaxy Book (SCAI-*): reenvía Fn+F12 (Fn lock activado/desactivado) como
+# eventos distintos en vez de `unknown`. Conserva `!` (force-release) porque
+# el teclado AT solo envía código de pulsación.
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svn[sS][aA][mM][sS][uU][nN][gG]*:sku*SCAI*:*
+ KEYBOARD_KEY_a8=!fn_1
+ KEYBOARD_KEY_a9=!fn_2

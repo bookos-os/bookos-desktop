@@ -171,6 +171,31 @@ pub enum Aviso {
     Descriptor { respuesta: Emisario<OwnedFd> },
     /// Una captura de la pantalla entera a un fichero.
     Captura { respuesta: Emisario<PathBuf> },
+    /// Elegir un píxel con el cuentagotas del compositor.
+    Color {
+        id: u32,
+        respuesta: Emisario<[u8; 3]>,
+    },
+    /// Cancelar un `PickColor` en curso.
+    CancelarColor { id: u32 },
+    /// Diálogo de permiso `org.freedesktop.impl.portal.Access`.
+    Acceso {
+        id: u32,
+        peticion: bookos_shell::PeticionAcceso,
+        respuesta: Emisario<Vec<(String, String)>>,
+    },
+    /// Cancelar un diálogo `Access` abierto.
+    CancelarAcceso { id: u32 },
+    /// Selector «Abrir con…» (`org.freedesktop.impl.portal.AppChooser`).
+    ElegirApp {
+        id: u32,
+        peticion: bookos_shell::PeticionElegirApp,
+        respuesta: Emisario<String>,
+    },
+    /// Actualización dinámica de opciones de un `AppChooser` abierto.
+    ActualizarApps { id: u32, opciones: Vec<String> },
+    /// Cancelar un selector `AppChooser` abierto.
+    CancelarElegirApp { id: u32 },
 }
 
 /// Lo que el hilo guarda entre llamadas.
@@ -180,6 +205,8 @@ struct Estado {
     /// PipeWire. Se comparte con las tarjetas de `Session`, que solo saben la
     /// suya.
     sesiones: Mutex<HashMap<OwnedObjectPath, u32>>,
+    /// Peticiones `AppChooser` vivas para resolver `UpdateChoices(handle, choices)`.
+    elegir_apps: Mutex<HashMap<OwnedObjectPath, u32>>,
     siguiente: AtomicU32,
 }
 
@@ -187,6 +214,15 @@ impl Estado {
     // 0.1.0
     fn avisar(&self, aviso: Aviso) -> bool {
         self.canal.send(aviso).is_ok()
+    }
+
+    fn siguiente_id(&self) -> u32 {
+        loop {
+            let id = self.siguiente.fetch_add(1, Ordering::Relaxed);
+            if id != 0 {
+                return id;
+            }
+        }
     }
 }
 
@@ -228,7 +264,7 @@ impl ScreenCast {
         _options: HashMap<String, OwnedValue>,
         #[zbus(object_server)] servidor: &zbus::ObjectServer,
     ) -> (u32, HashMap<String, OwnedValue>) {
-        let sesion = self.estado.siguiente.fetch_add(1, Ordering::Relaxed);
+        let sesion = self.estado.siguiente_id();
         let ruta: OwnedObjectPath = session_handle.to_owned().into();
         self.estado
             .sesiones
@@ -243,6 +279,11 @@ impl ScreenCast {
             ruta: ruta.clone(),
         };
         if let Err(err) = servidor.at(ruta.as_str(), tarjeta).await {
+            self.estado
+                .sesiones
+                .lock()
+                .expect("el mutex de sesiones no se comparte con nada que entre en pánico")
+                .remove(&ruta);
             tracing::warn!("no se pudo publicar la sesión del portal: {err}");
             return (FALLO, HashMap::new());
         }
@@ -412,6 +453,12 @@ enum AlCerrar {
     Captura { estado: Arc<Estado>, sesion: u32 },
     /// Cerrar la ventana del selector, que es un proceso aparte.
     Selector { pid: u32 },
+    /// Cancelar el cuentagotas lanzado para `PickColor`.
+    Color { estado: Arc<Estado>, id: u32 },
+    /// Cerrar el diálogo modal de `Access`.
+    Acceso { estado: Arc<Estado>, id: u32 },
+    /// Cerrar el selector «Abrir con…» (`AppChooser`).
+    ElegirApp { estado: Arc<Estado>, id: u32 },
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
@@ -431,6 +478,15 @@ impl Solicitud {
                 // SAFETY: `kill` no toca memoria; el peor caso es ESRCH si el
                 // hijo acaba de salir por su cuenta.
                 unsafe { libc::kill(*pid as libc::pid_t, libc::SIGTERM) };
+            }
+            AlCerrar::Color { estado, id } => {
+                estado.avisar(Aviso::CancelarColor { id: *id });
+            }
+            AlCerrar::Acceso { estado, id } => {
+                estado.avisar(Aviso::CancelarAcceso { id: *id });
+            }
+            AlCerrar::ElegirApp { estado, id } => {
+                estado.avisar(Aviso::CancelarElegirApp { id: *id });
             }
         }
         if let Err(err) = servidor.remove::<Solicitud, _>(self.ruta.as_str()).await {
@@ -616,8 +672,8 @@ impl Ajustes {
 /// Se llama desde el bucle de frames al aplicar apariencia o efectos. Sin la
 /// señal, una app GTK ya abierta se queda con el tema con el que arrancó.
 // modified 0.2.2 -- avisa también por `org.bookos.Desktop.AppearanceChanged`
-pub fn apariencia_cambiada(state: &crate::state::BookosComp) {
-    tema_gtk();
+pub fn apariencia_cambiada(state: &crate::state::BookosComp, sincronizar_iconos: bool) {
+    tema_gtk(sincronizar_iconos);
     crate::ajustes::aspecto_cambiado(state.bus_ajustes.as_ref());
     let Some(conexion) = state.bus_portal.as_ref() else {
         return;
@@ -657,10 +713,29 @@ pub fn apariencia_cambiada(state: &crate::state::BookosComp) {
 // 0.1.0
 // modified 0.1.1 -- pasa el tema y tamaño de cursor a GTK y recoge los gsettings sin dejar zombis
 // modified 0.2.3 -- consulta gsettings, carga config y reescribe settings.ini en segundo plano para no bloquear el hilo del compositor
-pub fn tema_gtk() {
+static GENERACION_GTK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ICONOS_GTK_PENDIENTES: AtomicBool = AtomicBool::new(false);
+static BLOQUEO_GTK: Mutex<()> = Mutex::new(());
+
+fn elegir_iconos_gtk(claro: bool, actual: Option<String>, sincronizar_iconos: bool) -> String {
+    if sincronizar_iconos {
+        match actual {
+            Some(t) if t.starts_with("BookOS-Tinted") => t,
+            _ => bookos_shell::icono::tema_por_defecto(claro).to_string(),
+        }
+    } else {
+        actual.unwrap_or_else(|| bookos_shell::icono::tema_por_defecto(claro).to_string())
+    }
+}
+
+pub fn tema_gtk(sincronizar_iconos: bool) {
     if std::env::var("XDG_CURRENT_DESKTOP").as_deref() != Ok("BookOS") {
         return;
     }
+    if sincronizar_iconos {
+        ICONOS_GTK_PENDIENTES.store(true, Ordering::Release);
+    }
+    let generacion = GENERACION_GTK.fetch_add(1, Ordering::AcqRel) + 1;
     let claro = bookos_shell::tema::es_claro();
     let acento = bookos_shell::tema::acento_actual();
     let reducidos = bookos_shell::tema::efectos_reducidos();
@@ -669,15 +744,21 @@ pub fn tema_gtk() {
     let cursor = crate::cursor::nombre_tema();
     let _ = std::thread::Builder::new()
         .name("tema-gtk".into())
-        .spawn(move || aplicar_tema_gtk(claro, acento, reducidos, cursor));
+        .spawn(move || aplicar_tema_gtk(generacion, claro, acento, reducidos, cursor));
 }
 
 fn aplicar_tema_gtk(
+    generacion: u64,
     claro: bool,
     acento: bookos_shell::tema::Acento,
     reducidos: bool,
     cursor: String,
 ) {
+    let _guard = BLOQUEO_GTK.lock().unwrap_or_else(|e| e.into_inner());
+    if GENERACION_GTK.load(Ordering::Acquire) != generacion {
+        return;
+    }
+    let sincronizar_iconos = ICONOS_GTK_PENDIENTES.swap(false, Ordering::AcqRel);
     // Del tema GTK solo hay variantes azul y verde; los acentos que no son
     // verdosos se quedan con la azul, que es la de serie.
     use bookos_shell::tema::Acento;
@@ -686,11 +767,15 @@ fn aplicar_tema_gtk(
         _ => "Blue",
     };
     let tema = format!("BookOS-{}-{color}", if claro { "Light" } else { "Dark" });
-    // Los tintados los elige el usuario en Ajustes y no dependen de claro u
-    // oscuro: sin esto, cada cambio de tema o de acento los pisaba con el pack
-    // claro u oscuro.
-    let tintado = bookos_shell::icono::tema_elegido().filter(|t| t.starts_with("BookOS-Tinted"));
-    let iconos = tintado.as_deref().unwrap_or_else(|| tema_iconos(claro));
+    // Si cambió el tema claro/oscuro sincronizamos el pack por defecto salvo que
+    // estén puestos los tintados; en cambios solo de acento/efectos conservamos
+    // el pack que el usuario tuviera puesto en Ajustes.
+    let iconos = elegir_iconos_gtk(
+        claro,
+        bookos_shell::icono::tema_elegido(),
+        sincronizar_iconos,
+    );
+    let iconos = iconos.as_str();
     let config = bookos_shell::Config::cargar();
     let tamano_cursor = config.cursor.to_string();
     // GTK 3 y 4 releen este factor en vivo; es la forma de agrandar el texto de
@@ -782,38 +867,6 @@ fn tema_sonido() -> Option<&'static str> {
         .then_some("bookos")
 }
 
-/// El pack de iconos de BookOS si está instalado; si no, Breeze.
-///
-/// Lo que al pack le falte ya lo busca GTK en Breeze por el `Inherits` de su
-/// `index.theme`. Aquí solo hay que evitar nombrar un tema que no existe: GTK
-/// no cae a nada razonable y las apps se quedan sin iconos.
-// 0.1.0
-fn tema_iconos(claro: bool) -> &'static str {
-    let (bookos, breeze) = if claro {
-        ("BookOS-Light", "breeze")
-    } else {
-        ("BookOS-Dark", "breeze-dark")
-    };
-    let mut bases = vec![std::path::PathBuf::from("/usr/share/icons")];
-    if let Some(home) = std::env::var_os("HOME") {
-        bases.push(std::path::PathBuf::from(home).join(".local/share/icons"));
-    }
-    // Con `Directories=`: el tema de cursores del compositor (`cursor.rs`)
-    // vive en `~/.local/share/icons/BookOS-Dark` con su propio `index.theme`,
-    // sin iconos, y bastaba para nombrarlo. GTK avisaba en cada app («Theme
-    // file for BookOS-Dark has no directories») y se quedaba sin Breeze.
-    if bases.iter().any(|b| {
-        std::fs::read_to_string(b.join(bookos).join("index.theme")).is_ok_and(|t| {
-            t.lines()
-                .any(|l| l.trim_start().starts_with("Directories="))
-        })
-    }) {
-        bookos
-    } else {
-        breeze
-    }
-}
-
 /// Sustituye esas claves en un `settings.ini` de GTK, o las añade bajo
 /// `[Settings]`, sin tocar el resto: lo escriben también KDE y el usuario.
 // 0.1.0
@@ -858,12 +911,11 @@ struct Screenshot {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Screenshot")]
 impl Screenshot {
-    /// La 1 y no la 2: la 2 añade `PickColor`, que aquí no existe. Anunciar una
-    /// versión que no se cumple es peor que anunciar la que sí.
+    /// Versión 2: añade `PickColor` apoyado en el cuentagotas nativo.
     #[zbus(property, name = "version")]
     // 0.1.0
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     // 0.1.0
@@ -893,6 +945,261 @@ impl Screenshot {
             }
         }
         (CORRECTO, resultados)
+    }
+
+    async fn pick_color(
+        &self,
+        handle: ObjectPath<'_>,
+        _app_id: &str,
+        _parent_window: &str,
+        _options: HashMap<String, OwnedValue>,
+        #[zbus(object_server)] servidor: &zbus::ObjectServer,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let id = self.estado.siguiente_id();
+        let ruta_solicitud: OwnedObjectPath = handle.to_owned().into();
+        let cancelada = Arc::new(AtomicBool::new(false));
+        let solicitud = Solicitud {
+            ruta: ruta_solicitud.clone(),
+            cancelada: cancelada.clone(),
+            al_cerrar: AlCerrar::Color {
+                estado: self.estado.clone(),
+                id,
+            },
+        };
+        let _ = servidor.at(ruta_solicitud.as_str(), solicitud).await;
+
+        let (respuesta, espera) = promesa();
+        if !self.estado.avisar(Aviso::Color { id, respuesta }) {
+            let _ = servidor
+                .remove::<Solicitud, _>(ruta_solicitud.as_str())
+                .await;
+            return (FALLO, HashMap::new());
+        }
+
+        let rgb = espera.await;
+        let _ = servidor
+            .remove::<Solicitud, _>(ruta_solicitud.as_str())
+            .await;
+
+        if cancelada.load(Ordering::Acquire) {
+            return (CANCELADO, HashMap::new());
+        }
+        let Some(rgb) = rgb else {
+            return (CANCELADO, HashMap::new());
+        };
+        match OwnedValue::try_from(Value::from(color_a_rgb_f64(rgb))) {
+            Ok(v) => (CORRECTO, HashMap::from([("color".to_string(), v)])),
+            Err(err) => {
+                tracing::warn!("no se pudo empaquetar el color elegido: {err}");
+                (FALLO, HashMap::new())
+            }
+        }
+    }
+}
+
+struct Acceso {
+    estado: Arc<Estado>,
+}
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.Access")]
+impl Acceso {
+    #[allow(clippy::too_many_arguments)]
+    async fn access_dialog(
+        &self,
+        handle: ObjectPath<'_>,
+        app_id: &str,
+        _parent_window: &str,
+        title: &str,
+        subtitle: &str,
+        body: &str,
+        mut options: HashMap<String, OwnedValue>,
+        #[zbus(object_server)] servidor: &zbus::ObjectServer,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let id = self.estado.siguiente_id();
+        let denegar = cadena(&mut options, "deny_label")
+            .map(|s| limpiar_mnemonico(&s))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| bookos_shell::t("Denegar", "Deny").to_string());
+        let permitir = cadena(&mut options, "grant_label")
+            .map(|s| limpiar_mnemonico(&s))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| bookos_shell::t("Permitir", "Allow").to_string());
+        let icono = cadena(&mut options, "icon").unwrap_or_default();
+        let opciones = parsear_opciones_acceso(&mut options);
+
+        let ruta_solicitud: OwnedObjectPath = handle.to_owned().into();
+        let cancelada = Arc::new(AtomicBool::new(false));
+        let solicitud = Solicitud {
+            ruta: ruta_solicitud.clone(),
+            cancelada: cancelada.clone(),
+            al_cerrar: AlCerrar::Acceso {
+                estado: self.estado.clone(),
+                id,
+            },
+        };
+        let _ = servidor.at(ruta_solicitud.as_str(), solicitud).await;
+
+        let peticion = bookos_shell::PeticionAcceso {
+            id,
+            app_id: app_id.to_string(),
+            titulo: title.to_string(),
+            subtitulo: subtitle.to_string(),
+            cuerpo: body.to_string(),
+            icono,
+            denegar,
+            permitir,
+            opciones,
+        };
+        let (respuesta, espera) = promesa();
+        if !self.estado.avisar(Aviso::Acceso {
+            id,
+            peticion,
+            respuesta,
+        }) {
+            let _ = servidor
+                .remove::<Solicitud, _>(ruta_solicitud.as_str())
+                .await;
+            return (FALLO, HashMap::new());
+        }
+
+        let elecciones = espera.await;
+        let _ = servidor
+            .remove::<Solicitud, _>(ruta_solicitud.as_str())
+            .await;
+
+        if cancelada.load(Ordering::Acquire) {
+            return (CANCELADO, HashMap::new());
+        }
+        let Some(elecciones) = elecciones else {
+            return (CANCELADO, HashMap::new());
+        };
+        let mut resultados = HashMap::new();
+        if !elecciones.is_empty()
+            && let Ok(v) = OwnedValue::try_from(Value::from(elecciones))
+        {
+            resultados.insert("choices".to_string(), v);
+        }
+        (CORRECTO, resultados)
+    }
+}
+
+struct ElegirApp {
+    estado: Arc<Estado>,
+}
+
+#[zbus::interface(name = "org.freedesktop.impl.portal.AppChooser")]
+impl ElegirApp {
+    async fn choose_application(
+        &self,
+        handle: ObjectPath<'_>,
+        _app_id: &str,
+        _parent_window: &str,
+        choices: Vec<String>,
+        mut options: HashMap<String, OwnedValue>,
+        #[zbus(object_server)] servidor: &zbus::ObjectServer,
+    ) -> (u32, HashMap<String, OwnedValue>) {
+        let id = self.estado.siguiente_id();
+        let ultima = cadena(&mut options, "last_choice");
+        let filename = cadena(&mut options, "filename");
+        let uri = cadena(&mut options, "uri");
+        let content_type = cadena(&mut options, "content_type");
+        let token = cadena(&mut options, "activation_token");
+        let subtitulo = construir_subtitulo_app(
+            filename.as_deref(),
+            uri.as_deref(),
+            content_type.as_deref(),
+        );
+
+        let ruta_solicitud: OwnedObjectPath = handle.to_owned().into();
+        self.estado
+            .elegir_apps
+            .lock()
+            .expect("el mutex de AppChooser no se comparte con nada que entre en pánico")
+            .insert(ruta_solicitud.clone(), id);
+
+        let cancelada = Arc::new(AtomicBool::new(false));
+        let solicitud = Solicitud {
+            ruta: ruta_solicitud.clone(),
+            cancelada: cancelada.clone(),
+            al_cerrar: AlCerrar::ElegirApp {
+                estado: self.estado.clone(),
+                id,
+            },
+        };
+        let _ = servidor.at(ruta_solicitud.as_str(), solicitud).await;
+
+        let peticion = bookos_shell::PeticionElegirApp {
+            id,
+            subtitulo,
+            opciones: choices,
+            ultima,
+        };
+        let (respuesta, espera) = promesa();
+        if !self.estado.avisar(Aviso::ElegirApp {
+            id,
+            peticion,
+            respuesta,
+        }) {
+            self.estado
+                .elegir_apps
+                .lock()
+                .expect("el mutex de AppChooser no se comparte con nada que entre en pánico")
+                .remove(&ruta_solicitud);
+            let _ = servidor
+                .remove::<Solicitud, _>(ruta_solicitud.as_str())
+                .await;
+            return (FALLO, HashMap::new());
+        }
+
+        let eleccion = espera.await;
+        self.estado
+            .elegir_apps
+            .lock()
+            .expect("el mutex de AppChooser no se comparte con nada que entre en pánico")
+            .remove(&ruta_solicitud);
+        let _ = servidor
+            .remove::<Solicitud, _>(ruta_solicitud.as_str())
+            .await;
+
+        if cancelada.load(Ordering::Acquire) {
+            return (CANCELADO, HashMap::new());
+        }
+        let Some(eleccion) = eleccion else {
+            return (CANCELADO, HashMap::new());
+        };
+        let mut resultados = HashMap::new();
+        match OwnedValue::try_from(Value::from(eleccion)) {
+            Ok(v) => {
+                resultados.insert("choice".to_string(), v);
+            }
+            Err(err) => {
+                tracing::warn!("no se pudo empaquetar la aplicación elegida: {err}");
+                return (FALLO, HashMap::new());
+            }
+        }
+        if let Some(token) = token
+            && let Ok(v) = OwnedValue::try_from(Value::from(token))
+        {
+            resultados.insert("activation_token".to_string(), v);
+        }
+        (CORRECTO, resultados)
+    }
+
+    fn update_choices(&self, handle: ObjectPath<'_>, choices: Vec<String>) {
+        let ruta: OwnedObjectPath = handle.to_owned().into();
+        let id = self
+            .estado
+            .elegir_apps
+            .lock()
+            .expect("el mutex de AppChooser no se comparte con nada que entre en pánico")
+            .get(&ruta)
+            .copied();
+        if let Some(id) = id {
+            self.estado.avisar(Aviso::ActualizarApps {
+                id,
+                opciones: choices,
+            });
+        }
     }
 }
 
@@ -1232,6 +1539,86 @@ fn uri_de_archivo(ruta: &std::path::Path) -> String {
     uri
 }
 
+/// Convierte un píxel `u8` en terna `(ddd)` de `[0.0, 1.0]` para `PickColor`.
+fn color_a_rgb_f64([r, g, b]: [u8; 3]) -> (f64, f64, f64) {
+    (
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    )
+}
+
+/// Quita mnemónicos de GTK (`_Permitir` → `Permitir`, `__` → `_`).
+fn limpiar_mnemonico(texto: &str) -> String {
+    let mut salida = String::with_capacity(texto.len());
+    let mut chars = texto.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '_' {
+            if chars.peek() == Some(&'_') {
+                salida.push('_');
+                chars.next();
+            }
+        } else {
+            salida.push(c);
+        }
+    }
+    salida
+}
+
+type OpcionAccesoCruda = (String, String, Vec<(String, String)>, String);
+
+fn parsear_opciones_acceso(
+    opciones: &mut HashMap<String, OwnedValue>,
+) -> Vec<bookos_shell::OpcionAcceso> {
+    let crudas = opciones
+        .remove("choices")
+        .and_then(|v| Vec::<OpcionAccesoCruda>::try_from(v).ok())
+        .unwrap_or_default();
+    crudas
+        .into_iter()
+        .map(|(id, etiqueta, subopciones, elegida)| {
+            let sub_limpias: Vec<(String, String)> = subopciones
+                .into_iter()
+                .map(|(k, v)| (k, limpiar_mnemonico(&v)))
+                .collect();
+            let elegida = if sub_limpias.is_empty() {
+                if elegida == "true" {
+                    "true".into()
+                } else {
+                    "false".into()
+                }
+            } else if elegida.is_empty() || !sub_limpias.iter().any(|(k, _)| k == &elegida) {
+                sub_limpias[0].0.clone()
+            } else {
+                elegida
+            };
+            bookos_shell::OpcionAcceso {
+                id,
+                etiqueta: limpiar_mnemonico(&etiqueta),
+                opciones: sub_limpias,
+                elegida,
+            }
+        })
+        .collect()
+}
+
+fn construir_subtitulo_app(
+    filename: Option<&str>,
+    uri: Option<&str>,
+    content_type: Option<&str>,
+) -> String {
+    match (filename, uri, content_type) {
+        (Some(f), _, Some(ct)) => format!("{f} · {ct}"),
+        (Some(f), _, None) => f.to_string(),
+        (None, Some(u), Some(ct)) => format!("{u} · {ct}"),
+        (None, Some(u), None) => u.to_string(),
+        (None, None, Some(ct)) => ct.to_string(),
+        (None, None, None) => {
+            bookos_shell::t("Elige una aplicación", "Choose an application").to_string()
+        }
+    }
+}
+
 /// El nombre que se le enseña al usuario en el diálogo.
 ///
 /// El `app_id` que llega es el del `.desktop` —`org.mozilla.firefox`— o la
@@ -1241,13 +1628,13 @@ fn uri_de_archivo(ruta: &std::path::Path) -> String {
 // 0.1.0
 fn nombre_legible(app_id: &str) -> String {
     if app_id.is_empty() {
-        return "Una aplicación".into();
+        return bookos_shell::t("Una aplicación", "An app").into();
     }
     let corto = app_id.rsplit('.').next().unwrap_or(app_id);
     let mut letras = corto.chars();
     match letras.next() {
         Some(primera) => primera.to_uppercase().collect::<String>() + letras.as_str(),
-        None => "Una aplicación".into(),
+        None => bookos_shell::t("Una aplicación", "An app").into(),
     }
 }
 
@@ -1261,6 +1648,7 @@ pub fn arrancar(
     let estado = Arc::new(Estado {
         canal,
         sesiones: Mutex::new(HashMap::new()),
+        elegir_apps: Mutex::new(HashMap::new()),
         siguiente: AtomicU32::new(1),
     });
     let conexion = zbus::blocking::connection::Builder::session()
@@ -1276,6 +1664,22 @@ pub fn arrancar(
             b.serve_at(
                 RUTA,
                 Screenshot {
+                    estado: estado.clone(),
+                },
+            )
+        })
+        .and_then(|b| {
+            b.serve_at(
+                RUTA,
+                Acceso {
+                    estado: estado.clone(),
+                },
+            )
+        })
+        .and_then(|b| {
+            b.serve_at(
+                RUTA,
+                ElegirApp {
                     estado: estado.clone(),
                 },
             )
@@ -1334,6 +1738,158 @@ pub fn recibir(state: &mut crate::state::BookosComp, aviso: Aviso) {
             }
         }
         Aviso::Captura { respuesta } => capturar(state, respuesta),
+        Aviso::Color { id, respuesta } => elegir_color(state, id, respuesta),
+        Aviso::CancelarColor { id } => {
+            if state
+                .color_portal
+                .as_ref()
+                .is_some_and(|(actual, _)| *actual == id)
+            {
+                crate::cuentagotas::cancelar(state);
+            }
+        }
+        Aviso::Acceso {
+            id,
+            peticion,
+            respuesta,
+        } => abrir_acceso(state, id, peticion, respuesta),
+        Aviso::CancelarAcceso { id } => {
+            if state
+                .acceso_portal
+                .as_ref()
+                .is_some_and(|(actual, _)| *actual == id)
+            {
+                state.acceso_portal = None;
+                if let Some(shell) = state.shell.as_mut() {
+                    shell.cerrar_acceso_si(id);
+                }
+                state.needs_redraw = true;
+            }
+        }
+        Aviso::ElegirApp {
+            id,
+            peticion,
+            respuesta,
+        } => abrir_elegir_app(state, id, peticion, respuesta),
+        Aviso::ActualizarApps { id, opciones } => {
+            if state
+                .elegir_app_portal
+                .as_ref()
+                .is_some_and(|(actual, _)| *actual == id)
+                && let Some(shell) = state.shell.as_mut()
+            {
+                shell.elegir_app_actualizar(id, opciones);
+                state.needs_redraw = true;
+            }
+        }
+        Aviso::CancelarElegirApp { id } => {
+            if state
+                .elegir_app_portal
+                .as_ref()
+                .is_some_and(|(actual, _)| *actual == id)
+            {
+                state.elegir_app_portal = None;
+                if let Some(shell) = state.shell.as_mut() {
+                    shell.cerrar_elegir_app_si(id);
+                }
+                state.needs_redraw = true;
+            }
+        }
+    }
+}
+
+fn elegir_color(state: &mut crate::state::BookosComp, id: u32, respuesta: Emisario<[u8; 3]>) {
+    if state.color_portal.is_some()
+        || state.cuentagotas
+        || state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
+    {
+        return;
+    }
+    if crate::cuentagotas::activar(state) {
+        state.color_portal = Some((id, respuesta));
+    }
+}
+
+fn abrir_acceso(
+    state: &mut crate::state::BookosComp,
+    id: u32,
+    peticion: bookos_shell::PeticionAcceso,
+    respuesta: Emisario<Vec<(String, String)>>,
+) {
+    if state.acceso_portal.is_some()
+        || state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
+    {
+        return;
+    }
+    let Some(shell) = state.shell.as_mut() else {
+        return;
+    };
+    shell.abrir_acceso(peticion);
+    state.acceso_portal = Some((id, respuesta));
+    state.needs_redraw = true;
+}
+
+/// Respuesta del usuario al diálogo `org.freedesktop.impl.portal.Access`.
+pub fn responder_acceso(
+    state: &mut crate::state::BookosComp,
+    id: u32,
+    permitido: bool,
+    opciones: Vec<(String, String)>,
+) {
+    let Some((actual, respuesta)) = state.acceso_portal.take() else {
+        return;
+    };
+    if actual != id {
+        state.acceso_portal = Some((actual, respuesta));
+        return;
+    }
+    if let Some(shell) = state.shell.as_mut() {
+        shell.cerrar_acceso_si(id);
+    }
+    state.needs_redraw = true;
+    if permitido {
+        respuesta.entregar(opciones);
+    }
+}
+
+fn abrir_elegir_app(
+    state: &mut crate::state::BookosComp,
+    id: u32,
+    peticion: bookos_shell::PeticionElegirApp,
+    respuesta: Emisario<String>,
+) {
+    if state.elegir_app_portal.is_some()
+        || state.shell.as_ref().is_some_and(|s| s.esta_bloqueado())
+    {
+        return;
+    }
+    let Some(shell) = state.shell.as_mut() else {
+        return;
+    };
+    shell.abrir_elegir_app(peticion);
+    state.elegir_app_portal = Some((id, respuesta));
+    state.needs_redraw = true;
+}
+
+/// Respuesta del usuario al selector «Abrir con…» (`org.freedesktop.impl.portal.AppChooser`).
+pub fn responder_elegir_app(
+    state: &mut crate::state::BookosComp,
+    id: u32,
+    eleccion: Option<String>,
+) {
+    let Some((actual, respuesta)) = state.elegir_app_portal.take() else {
+        return;
+    };
+    if actual != id {
+        state.elegir_app_portal = Some((actual, respuesta));
+        return;
+    }
+    if let Some(shell) = state.shell.as_mut() {
+        shell.cerrar_elegir_app_si(id);
+    }
+    state.needs_redraw = true;
+    if let Some(id_app) = eleccion {
+        respuesta.entregar(id_app);
     }
 }
 
@@ -1487,19 +2043,46 @@ pub fn sesion_cerrada(conexion: Option<&zbus::blocking::Connection>, ruta: &Owne
 /// se ve, desde la aplicación, como que el escritorio se ha colgado.
 // 0.1.0
 pub fn denegar_si_se_cerro(state: &mut crate::state::BookosComp) {
-    if state.consentimiento.is_none() {
-        return;
+    let bloqueado = state.shell.as_ref().is_some_and(|s| s.esta_bloqueado());
+    if state.consentimiento.is_some() {
+        let abierta = state
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.emergente_nombre())
+            == Some("compartir");
+        if !abierta || bloqueado {
+            state.consentimiento = None;
+        }
     }
-    let abierta = state
-        .shell
-        .as_ref()
-        .and_then(|shell| shell.emergente_nombre())
-        == Some("compartir");
-    if abierta {
-        return;
+    if state.acceso_portal.is_some() {
+        let abierta = state
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.emergente_nombre())
+            == Some("acceso");
+        if !abierta || bloqueado {
+            state.acceso_portal = None;
+        }
     }
-    // Soltarlo sin contestar es la negativa.
-    state.consentimiento = None;
+    if state.elegir_app_portal.is_some() {
+        let abierta = state
+            .shell
+            .as_ref()
+            .and_then(|shell| shell.emergente_nombre())
+            == Some("elegir-app");
+        if !abierta || bloqueado {
+            state.elegir_app_portal = None;
+        }
+    }
+    if state.color_portal.is_some() {
+        let esperando_pixel = state.cuentagotas
+            || state
+                .captura_pedida
+                .is_some_and(|p| p.destino == crate::state::DestinoCaptura::Color);
+        if !esperando_pixel || bloqueado {
+            state.color_portal = None;
+        }
+    }
 }
 
 /// La captura de pantalla que pide el portal: la principal entera, a fichero.
@@ -1632,7 +2215,10 @@ mod pruebas {
     fn el_nombre_de_la_aplicacion_sale_legible() {
         assert_eq!(nombre_legible("org.mozilla.firefox"), "Firefox");
         assert_eq!(nombre_legible("chromium"), "Chromium");
-        assert_eq!(nombre_legible(""), "Una aplicación");
+        assert_eq!(
+            nombre_legible(""),
+            bookos_shell::t("Una aplicación", "An app")
+        );
     }
 
     #[test]
@@ -1679,5 +2265,114 @@ mod pruebas {
         assert_eq!(filtro_inicial(&mut opciones), Some(texto));
 
         assert_eq!(filtro_inicial(&mut HashMap::new()), None);
+    }
+
+    #[test]
+    fn elegir_iconos_gtk_sincroniza_al_cambiar_tema_y_respeta_tintados_o_ajuste_manual() {
+        let claro_defecto = bookos_shell::icono::tema_por_defecto(true);
+        let oscuro_defecto = bookos_shell::icono::tema_por_defecto(false);
+
+        assert_eq!(
+            elegir_iconos_gtk(false, Some("BookOS-Light".into()), true),
+            oscuro_defecto
+        );
+        assert_eq!(
+            elegir_iconos_gtk(true, Some("BookOS-Dark".into()), true),
+            claro_defecto
+        );
+        assert_eq!(
+            elegir_iconos_gtk(false, Some("Adwaita".into()), true),
+            oscuro_defecto
+        );
+        assert_eq!(elegir_iconos_gtk(false, None, true), oscuro_defecto);
+        assert_eq!(
+            elegir_iconos_gtk(false, Some("BookOS-Tinted".into()), true),
+            "BookOS-Tinted"
+        );
+        assert_eq!(
+            elegir_iconos_gtk(true, Some("BookOS-Tinted-B".into()), true),
+            "BookOS-Tinted-B"
+        );
+
+        assert_eq!(
+            elegir_iconos_gtk(true, Some("BookOS-Dark".into()), false),
+            "BookOS-Dark"
+        );
+        assert_eq!(elegir_iconos_gtk(true, None, false), claro_defecto);
+    }
+
+    #[test]
+    fn convierte_rgb_u8_a_ddd_portal() {
+        let (r, g, b) = color_a_rgb_f64([0, 128, 255]);
+        assert!((r - 0.0).abs() < 1e-9);
+        assert!((g - (128.0 / 255.0)).abs() < 1e-9);
+        assert!((b - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn limpia_mnemonicos_de_gtk() {
+        assert_eq!(limpiar_mnemonico("_Permitir"), "Permitir");
+        assert_eq!(limpiar_mnemonico("No _volver__nunca"), "No volver_nunca");
+        assert_eq!(limpiar_mnemonico("Allow"), "Allow");
+    }
+
+    #[test]
+    fn parsea_choices_de_access_booleanos_y_selector() {
+        let crudas: Vec<OpcionAccesoCruda> = vec![
+            (
+                "remember".into(),
+                "_Recordar".into(),
+                Vec::new(),
+                String::new(),
+            ),
+            (
+                "duration".into(),
+                "Duración".into(),
+                vec![
+                    ("once".into(), "Una vez".into()),
+                    ("always".into(), "_Siempre".into()),
+                ],
+                String::new(),
+            ),
+        ];
+        let mut opciones = HashMap::from([(
+            "choices".to_string(),
+            OwnedValue::try_from(Value::from(crudas)).expect("choices"),
+        )]);
+        let parsed = parsear_opciones_acceso(&mut opciones);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].etiqueta, "Recordar");
+        assert_eq!(parsed[0].elegida, "false");
+        assert_eq!(parsed[1].elegida, "once");
+        assert_eq!(parsed[1].opciones[1].1, "Siempre");
+    }
+
+    #[test]
+    fn construye_subtitulo_de_app_chooser_por_prioridad() {
+        assert_eq!(
+            construir_subtitulo_app(Some("foto.png"), Some("file:///foto.png"), Some("image/png")),
+            "foto.png · image/png"
+        );
+        assert_eq!(
+            construir_subtitulo_app(None, Some("https://bookos.org"), None),
+            "https://bookos.org"
+        );
+        assert_eq!(
+            construir_subtitulo_app(None, None, Some("application/pdf")),
+            "application/pdf"
+        );
+    }
+
+    #[test]
+    fn siguiente_id_portal_evita_cero_al_desbordar() {
+        let (tx, _rx) = smithay::reexports::calloop::channel::channel();
+        let estado = Estado {
+            canal: tx,
+            sesiones: Mutex::new(HashMap::new()),
+            elegir_apps: Mutex::new(HashMap::new()),
+            siguiente: AtomicU32::new(u32::MAX),
+        };
+        assert_eq!(estado.siguiente_id(), u32::MAX);
+        assert_eq!(estado.siguiente_id(), 1);
     }
 }

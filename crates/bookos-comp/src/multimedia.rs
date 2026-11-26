@@ -27,6 +27,8 @@ pub const XF86_TOUCHPAD: u32 = 0x1008FFA9;
 pub const XF86_SILENCIAR_MICRO: u32 = 0x1008FFB2;
 pub const XF86_WEBCAM: u32 = 0x1008FF8F;
 pub const XF86_FN_ESC: u32 = 0x100811D1;
+pub const XF86_FN_LOCK_ON: u32 = 0x1008_11DE;
+pub const XF86_FN_LOCK_OFF: u32 = 0x1008_11DF;
 pub const XF86_CAMARA_ENABLE: u32 = 0x1008124B;
 pub const XF86_CAMARA_DISABLE: u32 = 0x1008124C;
 pub const XF86_CAMARA_TOGGLE: u32 = 0x1008124D;
@@ -48,7 +50,7 @@ pub enum Tecla {
     AlternarBrilloTeclado,
     Touchpad,
     Camara(Option<bool>),
-    FnLock,
+    FnLock(Option<bool>),
     /// Reproducir, pausar, siguiente y anterior. También son las de los
     /// auriculares Bluetooth: BlueZ pasa el doble y el triple toque de los Buds
     /// (AVRCP FORWARD/BACKWARD) como KEY_NEXTSONG/KEY_PREVIOUSSONG por su
@@ -69,7 +71,9 @@ pub fn resolver(sym: u32) -> Option<Tecla> {
         XF86_WEBCAM | XF86_CAMARA_TOGGLE => Tecla::Camara(None),
         XF86_CAMARA_ENABLE => Tecla::Camara(Some(true)),
         XF86_CAMARA_DISABLE => Tecla::Camara(Some(false)),
-        XF86_FN_ESC => Tecla::FnLock,
+        XF86_FN_ESC => Tecla::FnLock(None),
+        XF86_FN_LOCK_ON => Tecla::FnLock(Some(true)),
+        XF86_FN_LOCK_OFF => Tecla::FnLock(Some(false)),
         XF86_BRILLO_MAS => Tecla::Brillo(1),
         XF86_BRILLO_MENOS => Tecla::Brillo(-1),
         XF86_TECLADO_MAS => Tecla::BrilloTeclado(1),
@@ -105,7 +109,7 @@ pub fn ejecutar(state: &mut BookosComp, tecla: Tecla) {
         Tecla::AlternarBrilloTeclado => Some(alternar_brillo_teclado(state)),
         Tecla::Touchpad => Some(touchpad(state)),
         Tecla::Camara(estado) => Some(camara(estado)),
-        Tecla::FnLock => Some(("teclado", None, Some("Fn lock".into()))),
+        Tecla::FnLock(estado) => Some(fn_lock(estado)),
         Tecla::Reproduccion(orden) => {
             // En un hilo: buscar el reproductor son varias llamadas a busctl
             // y el bucle del compositor no puede esperarlas.
@@ -121,6 +125,23 @@ pub fn ejecutar(state: &mut BookosComp, tecla: Tecla) {
         avisar(state, osd);
     }
     state.needs_redraw = true;
+}
+
+/// Construye el aviso OSD de `Fn lock` activado, desactivado o genérico.
+// añadido en la 0.2.3
+fn fn_lock(estado: Option<bool>) -> (&'static str, Option<u8>, Option<String>) {
+    let (icono, texto) = match estado {
+        Some(true) => (
+            "teclado",
+            bookos_shell::t("Fn lock activado", "Fn lock on"),
+        ),
+        Some(false) => (
+            "teclado-desactivado",
+            bookos_shell::t("Fn lock desactivado", "Fn lock off"),
+        ),
+        None => ("teclado", "Fn lock"),
+    };
+    (icono, None, Some(texto.into()))
 }
 
 /// Sigue subiendo o bajando volumen o brillo mientras se mantenga la tecla.
@@ -494,15 +515,14 @@ pub fn recibir_sistema(state: &mut BookosComp) {
     // salía nada, como si no hubiera cambiado.
     let ahora = bookos_system::volume(false);
     let anterior = std::mem::replace(&mut state.volumen_visto, ahora);
-    // Con una tarjeta abierta no: el deslizador del centro de control mueve el
-    // volumen y el aviso saldría encima de lo que se está tocando. Tampoco la
-    // primera lectura, que no es un cambio.
-    let tarjeta = state
-        .shell
-        .as_ref()
-        .is_some_and(|s| s.emergente_nombre().is_some());
+    // Solo en las tarjetas con deslizador de volumen no: el deslizador ya mueve
+    // el volumen y el aviso saldría encima de lo que se está tocando. Otras
+    // tarjetas (Bluetooth, notificaciones, buscador…) sí enseñan el OSD si
+    // cambian el volumen desde los auriculares. Tampoco la primera lectura, que
+    // no es un cambio.
+    let emergente = state.shell.as_ref().and_then(|s| s.emergente_nombre());
     if !mostro_osd
-        && !tarjeta
+        && !ocultar_osd_volumen_externo(emergente)
         && let (Some(antes), Some((nivel, silenciado))) = (anterior, ahora)
         && antes != (nivel, silenciado)
         && let Some(shell) = state.shell.as_mut()
@@ -806,7 +826,13 @@ fn brillo(state: &mut BookosComp, paso: i32) -> (&'static str, Option<u8>, Optio
         return (
             "brillo",
             None,
-            Some("Brillo de pantalla no disponible".into()),
+            Some(
+                bookos_shell::t(
+                    "Brillo de pantalla no disponible",
+                    "Screen brightness unavailable",
+                )
+                .into(),
+            ),
         );
     };
     poner_brillo(state, (actual as i32 + paso).clamp(5, 100) as u8)
@@ -825,7 +851,13 @@ pub fn poner_brillo(
         return (
             "brillo",
             None,
-            Some("Brillo de pantalla no disponible".into()),
+            Some(
+                bookos_shell::t(
+                    "Brillo de pantalla no disponible",
+                    "Screen brightness unavailable",
+                )
+                .into(),
+            ),
         );
     };
     let crudo = (maximo as f64 * nuevo as f64 / 100.0).round() as u32;
@@ -839,7 +871,11 @@ pub fn poner_brillo(
 // 0.1.0
 fn brillo_teclado(state: &mut BookosComp, paso: i32) -> (&'static str, Option<u8>, Option<String>) {
     let Some((dispositivo, actual, maximo)) = bookos_shell::brillo_teclado_actual() else {
-        return ("teclado", None, Some("Sin luz de teclado".into()));
+        return (
+            "teclado",
+            None,
+            Some(bookos_shell::t("Sin luz de teclado", "No keyboard backlight").into()),
+        );
     };
     let actual = crate::brillo_auto::partida_tecla_teclado(state, &dispositivo, actual);
     let nuevo = (i64::from(actual) + i64::from(paso)).clamp(0, i64::from(maximo)) as u32;
@@ -854,7 +890,11 @@ fn brillo_teclado(state: &mut BookosComp, paso: i32) -> (&'static str, Option<u8
 // 0.1.0
 fn alternar_brillo_teclado(state: &mut BookosComp) -> (&'static str, Option<u8>, Option<String>) {
     let Some((dispositivo, actual, maximo)) = bookos_shell::brillo_teclado_actual() else {
-        return ("teclado", None, Some("Sin luz de teclado".into()));
+        return (
+            "teclado",
+            None,
+            Some(bookos_shell::t("Sin luz de teclado", "No keyboard backlight").into()),
+        );
     };
     let actual = crate::brillo_auto::partida_tecla_teclado(state, &dispositivo, actual);
     let nuevo = if actual == 0 { 1.min(maximo) } else { 0 };
@@ -867,9 +907,12 @@ fn alternar_brillo_teclado(state: &mut BookosComp) -> (&'static str, Option<u8>,
 // 0.1.0
 fn camara(estado: Option<bool>) -> (&'static str, Option<u8>, Option<String>) {
     let (icono, texto) = match estado {
-        Some(true) => ("camara", "Cámara activada"),
-        Some(false) => ("camara-desactivado", "Cámara desactivada"),
-        None => ("camara", "Cámara"),
+        Some(true) => ("camara", bookos_shell::t("Cámara activada", "Camera on")),
+        Some(false) => (
+            "camara-desactivado",
+            bookos_shell::t("Cámara desactivada", "Camera off"),
+        ),
+        None => ("camara", bookos_shell::t("Cámara", "Camera")),
     };
     // Icono propio: `camera-web` es del tema del sistema y en esta máquina no
     // resolvía a nada, así que el aviso salía sin dibujo.
@@ -889,9 +932,15 @@ fn touchpad(state: &mut BookosComp) -> (&'static str, Option<u8>, Option<String>
         aplicar(state.touchpad_activo);
     }
     let (icono, texto) = if state.touchpad_activo {
-        ("touchpad", "Touchpad activado")
+        (
+            "touchpad",
+            bookos_shell::t("Touchpad activado", "Touchpad on"),
+        )
     } else {
-        ("touchpad-desactivado", "Touchpad desactivado")
+        (
+            "touchpad-desactivado",
+            bookos_shell::t("Touchpad desactivado", "Touchpad off"),
+        )
     };
     (icono, None, Some(texto.into()))
 }
@@ -983,6 +1032,430 @@ mod pruebas {
         assert!(c.confirmar_lote(true, true, false));
         assert_eq!(c.estado, EstadoChasquido::Libre);
     }
+
+    #[test]
+    fn resuelve_fn_lock_y_forma_avisos() {
+        assert_eq!(resolver(XF86_FN_ESC), Some(Tecla::FnLock(None)));
+        assert_eq!(resolver(XF86_FN_LOCK_ON), Some(Tecla::FnLock(Some(true))));
+        assert_eq!(resolver(XF86_FN_LOCK_OFF), Some(Tecla::FnLock(Some(false))));
+        assert_eq!(fn_lock(None).0, "teclado");
+        assert_eq!(fn_lock(Some(true)).0, "teclado");
+        assert_eq!(fn_lock(Some(false)).0, "teclado-desactivado");
+    }
+
+    fn empujar_nla(dst: &mut Vec<u8>, tipo: u16, payload: &[u8]) {
+        let len = (4 + payload.len()) as u16;
+        dst.extend_from_slice(&len.to_ne_bytes());
+        dst.extend_from_slice(&tipo.to_ne_bytes());
+        dst.extend_from_slice(payload);
+        let pad = (4 - (dst.len() % 4)) % 4;
+        dst.extend(std::iter::repeat_n(0u8, pad));
+    }
+
+    #[test]
+    fn extrae_grupo_multicast_acpi_de_respuesta_genl() {
+        let mut otro = Vec::new();
+        empujar_nla(&mut otro, CTRL_ATTR_MCAST_GRP_NAME, b"otro_grupo\0");
+        empujar_nla(&mut otro, CTRL_ATTR_MCAST_GRP_ID, &7u32.to_ne_bytes());
+
+        let mut acpi = Vec::new();
+        empujar_nla(&mut acpi, CTRL_ATTR_MCAST_GRP_NAME, b"acpi_mc_group\0");
+        empujar_nla(&mut acpi, CTRL_ATTR_MCAST_GRP_ID, &12u32.to_ne_bytes());
+
+        let mut grupos = Vec::new();
+        empujar_nla(&mut grupos, 1, &otro);
+        empujar_nla(&mut grupos, 2, &acpi);
+
+        let mut cuerpo = Vec::new();
+        empujar_nla(&mut cuerpo, CTRL_ATTR_FAMILY_NAME, b"acpi_event\0");
+        empujar_nla(&mut cuerpo, CTRL_ATTR_MCAST_GROUPS, &grupos);
+
+        let total = (20 + cuerpo.len()) as u32;
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&total.to_ne_bytes());
+        msg.extend_from_slice(&GENL_ID_CTRL.to_ne_bytes());
+        msg.extend_from_slice(&0u16.to_ne_bytes());
+        msg.extend_from_slice(&1u32.to_ne_bytes());
+        msg.extend_from_slice(&0u32.to_ne_bytes());
+        msg.extend_from_slice(&[1u8, 1, 0, 0]);
+        msg.extend_from_slice(&cuerpo);
+
+        assert_eq!(extraer_grupo_multicast_acpi(&msg), Some(12));
+    }
+
+    #[test]
+    fn parsea_eventos_acpi_galaxybook_y_filtra_otros() {
+        fn mensaje_acpi(clase: &[u8], bus: &[u8], evento: u32, dato: u32) -> Vec<u8> {
+            let mut ev = [0u8; ACPI_GENL_EVENT_LEN];
+            ev[..clase.len()].copy_from_slice(clase);
+            ev[20..20 + bus.len()].copy_from_slice(bus);
+            ev[36..40].copy_from_slice(&evento.to_ne_bytes());
+            ev[40..44].copy_from_slice(&dato.to_ne_bytes());
+
+            let mut cuerpo = Vec::new();
+            empujar_nla(&mut cuerpo, ACPI_GENL_ATTR_EVENT, &ev);
+
+            let total = (20 + cuerpo.len()) as u32;
+            let mut msg = Vec::new();
+            msg.extend_from_slice(&total.to_ne_bytes());
+            msg.extend_from_slice(&28u16.to_ne_bytes());
+            msg.extend_from_slice(&0u16.to_ne_bytes());
+            msg.extend_from_slice(&0u32.to_ne_bytes());
+            msg.extend_from_slice(&0u32.to_ne_bytes());
+            msg.extend_from_slice(&[ACPI_GENL_CMD_EVENT, 1, 0, 0]);
+            msg.extend_from_slice(&cuerpo);
+            msg
+        }
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&mensaje_acpi(b"samsung-galaxybook", b"SAM0430:00", 0x7c, 1));
+        buf.extend_from_slice(&mensaje_acpi(b"samsung-galaxybook", b"SAM0430:00", 0x7f, 1));
+        buf.extend_from_slice(&mensaje_acpi(b"samsung-galaxybook", b"SAM0430:00", 0x80, 1));
+        buf.extend_from_slice(&mensaje_acpi(b"samsung-galaxybook", b"SAM0430:00", 0x65, 1));
+        buf.extend_from_slice(&mensaje_acpi(b"samsung-galaxybook", b"SAM0430:00", 0xff, 1));
+        buf.extend_from_slice(&mensaje_acpi(b"samsung-galaxybook", b"SAM0430:00", 0x7d, 1));
+        buf.extend_from_slice(&mensaje_acpi(b"ac_adapter", b"ACPI0003:00", 0x80, 1));
+
+        assert_eq!(
+            parsear_eventos_acpi_netlink(&buf),
+            vec![
+                EventoAcpiGalaxyBook::AbrirAjustes,
+                EventoAcpiGalaxyBook::FnLock(true),
+                EventoAcpiGalaxyBook::FnLock(false),
+            ]
+        );
+        assert!(parsear_eventos_acpi_netlink(&[0u8; 8]).is_empty());
+    }
+
+    #[test]
+    fn solo_sonido_y_centro_ocultan_osd_externo() {
+        assert!(ocultar_osd_volumen_externo(Some("sonido")));
+        assert!(ocultar_osd_volumen_externo(Some("centro")));
+        assert!(!ocultar_osd_volumen_externo(None));
+        assert!(!ocultar_osd_volumen_externo(Some("bluetooth")));
+        assert!(!ocultar_osd_volumen_externo(Some("notificaciones")));
+        assert!(!ocultar_osd_volumen_externo(Some("buscador")));
+    }
+}
+
+/// Si la tarjeta abierta lleva deslizador de volumen y debe tapar el OSD externo.
+fn ocultar_osd_volumen_externo(emergente: Option<&str>) -> bool {
+    matches!(emergente, Some("sonido" | "centro"))
+}
+
+const NETLINK_GENERIC: i32 = 16;
+const SOL_NETLINK: i32 = 270;
+const NETLINK_ADD_MEMBERSHIP: i32 = 1;
+const GENL_ID_CTRL: u16 = 0x10;
+const CTRL_CMD_GETFAMILY: u8 = 3;
+const CTRL_ATTR_FAMILY_NAME: u16 = 2;
+const CTRL_ATTR_MCAST_GROUPS: u16 = 7;
+const CTRL_ATTR_MCAST_GRP_NAME: u16 = 1;
+const CTRL_ATTR_MCAST_GRP_ID: u16 = 2;
+const NLM_F_REQUEST: u16 = 1;
+const NLA_TYPE_MASK: u16 = 0x3fff;
+const ACPI_GENL_CMD_EVENT: u8 = 1;
+const ACPI_GENL_ATTR_EVENT: u16 = 1;
+const ACPI_GENL_EVENT_LEN: usize = 44;
+
+/// Eventos de teclas Fn que el Galaxy Book5 Pro (`SAM0430:00`) emite por ACPI en
+/// vez de por `atkbd`: `Fn+F1` (`0x7c`) y `Fn+F12` (`0x7f`/`0x80`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventoAcpiGalaxyBook {
+    AbrirAjustes,
+    FnLock(bool),
+}
+
+fn evento_acpi_galaxybook(device_class: &str, event: u32) -> Option<EventoAcpiGalaxyBook> {
+    if device_class != "samsung-galaxybook" {
+        return None;
+    }
+    match event {
+        0x7c => Some(EventoAcpiGalaxyBook::AbrirAjustes),
+        0x7f => Some(EventoAcpiGalaxyBook::FnLock(true)),
+        0x80 => Some(EventoAcpiGalaxyBook::FnLock(false)),
+        _ => None,
+    }
+}
+
+fn iterar_nlas(mut buf: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
+    std::iter::from_fn(move || {
+        if buf.len() < 4 {
+            return None;
+        }
+        let nla_len = usize::from(u16::from_ne_bytes([buf[0], buf[1]]));
+        let nla_type = u16::from_ne_bytes([buf[2], buf[3]]) & NLA_TYPE_MASK;
+        if nla_len < 4 || nla_len > buf.len() {
+            return None;
+        }
+        let payload = &buf[4..nla_len];
+        let paso = ((nla_len + 3) & !3).min(buf.len());
+        buf = &buf[paso..];
+        Some((nla_type, payload))
+    })
+}
+
+fn extraer_grupo_multicast_acpi(msg: &[u8]) -> Option<u32> {
+    if msg.len() < 20 {
+        return None;
+    }
+    let nlmsg_len = u32::from_ne_bytes([msg[0], msg[1], msg[2], msg[3]]) as usize;
+    if nlmsg_len < 20 || nlmsg_len > msg.len() {
+        return None;
+    }
+    for (tipo, valor) in iterar_nlas(&msg[20..nlmsg_len]) {
+        if tipo != CTRL_ATTR_MCAST_GROUPS {
+            continue;
+        }
+        for (_, grupo) in iterar_nlas(valor) {
+            let mut nombre = None;
+            let mut id = None;
+            for (campo, dato) in iterar_nlas(grupo) {
+                match campo {
+                    CTRL_ATTR_MCAST_GRP_NAME => {
+                        let sin_nulo = dato.split(|&b| b == 0).next().unwrap_or(dato);
+                        nombre = std::str::from_utf8(sin_nulo).ok();
+                    }
+                    CTRL_ATTR_MCAST_GRP_ID if dato.len() >= 4 => {
+                        id = Some(u32::from_ne_bytes([dato[0], dato[1], dato[2], dato[3]]));
+                    }
+                    _ => {}
+                }
+            }
+            if nombre == Some("acpi_mc_group")
+                && let Some(id) = id
+            {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+fn parsear_eventos_acpi_netlink(mut buf: &[u8]) -> Vec<EventoAcpiGalaxyBook> {
+    let mut salida = Vec::new();
+    while buf.len() >= 20 {
+        let nlmsg_len = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        if nlmsg_len < 20 || nlmsg_len > buf.len() {
+            break;
+        }
+        let cmd = buf[16];
+        if cmd == ACPI_GENL_CMD_EVENT {
+            for (tipo, payload) in iterar_nlas(&buf[20..nlmsg_len]) {
+                if tipo == ACPI_GENL_ATTR_EVENT && payload.len() >= ACPI_GENL_EVENT_LEN {
+                    let clase_bytes = payload[..20].split(|&b| b == 0).next().unwrap_or(&[]);
+                    if let Ok(device_class) = std::str::from_utf8(clase_bytes) {
+                        let event = u32::from_ne_bytes([
+                            payload[36],
+                            payload[37],
+                            payload[38],
+                            payload[39],
+                        ]);
+                        if let Some(ev) = evento_acpi_galaxybook(device_class, event) {
+                            salida.push(ev);
+                        }
+                    }
+                }
+            }
+        }
+        let paso = ((nlmsg_len + 3) & !3).min(buf.len());
+        buf = &buf[paso..];
+    }
+    salida
+}
+
+#[cfg(feature = "udev")]
+fn abrir_socket_acpi_netlink() -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    // SAFETY: socket() con constantes válidas devuelve un fd nuevo o -1.
+    let raw = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+            NETLINK_GENERIC,
+        )
+    };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `raw` es un descriptor abierto de nuestra propiedad.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+
+    let timeout = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 500_000,
+    };
+    // SAFETY: `timeout` tiene el tamaño exacto de `libc::timeval`.
+    if unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw const timeout).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    // SAFETY: `sockaddr_nl` todo ceros es válido y `nl_family` se fija debajo.
+    let mut addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+    addr.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    // SAFETY: `addr` es `sockaddr_nl` completo.
+    if unsafe {
+        libc::bind(
+            fd.as_raw_fd(),
+            (&raw const addr).cast(),
+            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    const FAMILY: &[u8] = b"acpi_event\0";
+    let nla_len = (4 + FAMILY.len()) as u16;
+    let total_len = 20 + ((usize::from(nla_len) + 3) & !3);
+    let mut req = vec![0u8; total_len];
+    req[0..4].copy_from_slice(&(total_len as u32).to_ne_bytes());
+    req[4..6].copy_from_slice(&GENL_ID_CTRL.to_ne_bytes());
+    req[6..8].copy_from_slice(&NLM_F_REQUEST.to_ne_bytes());
+    req[8..12].copy_from_slice(&1u32.to_ne_bytes());
+    req[16] = CTRL_CMD_GETFAMILY;
+    req[17] = 1;
+    req[20..22].copy_from_slice(&nla_len.to_ne_bytes());
+    req[22..24].copy_from_slice(&CTRL_ATTR_FAMILY_NAME.to_ne_bytes());
+    req[24..24 + FAMILY.len()].copy_from_slice(FAMILY);
+
+    // SAFETY: `req` apunta a `total_len` bytes válidos.
+    let enviado = unsafe { libc::send(fd.as_raw_fd(), req.as_ptr().cast(), req.len(), 0) };
+    if enviado < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let mut resp = [0u8; 4096];
+    // SAFETY: `resp` es un búfer escribible de 4096 bytes.
+    let leido = unsafe { libc::recv(fd.as_raw_fd(), resp.as_mut_ptr().cast(), resp.len(), 0) };
+    if leido < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let group_id = extraer_grupo_multicast_acpi(&resp[..leido as usize])
+        .ok_or_else(|| std::io::Error::other("grupo multicast acpi_mc_group no encontrado"))?;
+
+    // SAFETY: `group_id` es un `u32` válido para `NETLINK_ADD_MEMBERSHIP`.
+    if unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            SOL_NETLINK,
+            NETLINK_ADD_MEMBERSHIP,
+            (&raw const group_id).cast(),
+            std::mem::size_of::<u32>() as libc::socklen_t,
+        )
+    } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let sin_timeout = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    // SAFETY: `sin_timeout` tiene el tamaño exacto de `libc::timeval`.
+    let _ = unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw const sin_timeout).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    // SAFETY: `fcntl(F_GETFL)` / `F_SETFL` con `O_NONBLOCK` sobre un fd propio.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(fd)
+}
+
+/// Escucha las notificaciones ACPI de `samsung-galaxybook` por netlink (`acpi_event`)
+/// para responder a `Fn+F1` (Ajustes) y `Fn+F12` (Fn lock) en modelos donde el
+/// firmware no manda códigos de teclado por `atkbd`.
+#[cfg(feature = "udev")]
+pub fn vigilar_acpi_galaxybook(state: &mut BookosComp) {
+    use smithay::reexports::calloop::generic::Generic;
+    use smithay::reexports::calloop::{Interest, Mode, PostAction};
+    use std::os::fd::AsRawFd;
+
+    if !std::path::Path::new("/sys/bus/platform/drivers/samsung-galaxybook").exists() {
+        return;
+    }
+    let fd = match abrir_socket_acpi_netlink() {
+        Ok(fd) => fd,
+        Err(err) => {
+            tracing::warn!("sin aviso ACPI de Galaxy Book: {err}");
+            return;
+        }
+    };
+
+    let mut ultimo_ajustes: Option<std::time::Instant> = None;
+    let registrado = state.loop_handle.insert_source(
+        Generic::new(fd, Interest::READ, Mode::Level),
+        move |_, fd, state| {
+            let mut buf = [0u8; 4096];
+            loop {
+                // SAFETY: `buf` es escribible de 4096 bytes y `fd` es válido.
+                let n = unsafe {
+                    libc::recv(
+                        fd.as_raw_fd(),
+                        buf.as_mut_ptr().cast(),
+                        buf.len(),
+                        libc::MSG_DONTWAIT,
+                    )
+                };
+                if n == 0 {
+                    return Ok(PostAction::Remove);
+                }
+                if n < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::WouldBlock {
+                        return Ok(PostAction::Continue);
+                    }
+                    tracing::warn!("se dejó de oír acpi_event de Galaxy Book: {err}");
+                    return Ok(PostAction::Remove);
+                }
+                let bloqueado = state.shell.as_ref().is_some_and(|s| s.esta_bloqueado());
+                if state.modo.kiosko() || bloqueado || state.salvapantallas.activo() {
+                    continue;
+                }
+                for evento in parsear_eventos_acpi_netlink(&buf[..n as usize]) {
+                    match evento {
+                        EventoAcpiGalaxyBook::AbrirAjustes => {
+                            if ultimo_ajustes.is_some_and(|t| {
+                                t.elapsed() < std::time::Duration::from_millis(400)
+                            }) {
+                                continue;
+                            }
+                            ultimo_ajustes = Some(std::time::Instant::now());
+                            crate::keybinds::ejecutar(
+                                state,
+                                crate::keybinds::Accion::Lanzar("bookos-settings".into()),
+                            );
+                        }
+                        EventoAcpiGalaxyBook::FnLock(activo) => {
+                            ejecutar(state, Tecla::FnLock(Some(activo)));
+                        }
+                    }
+                }
+            }
+        },
+    );
+    if let Err(err) = registrado {
+        tracing::warn!("sin aviso ACPI de Galaxy Book: {err}");
+    }
 }
 
 /// Repinta la pila del panel en cuanto cambia el perfil de energía.
@@ -996,8 +1469,9 @@ mod pruebas {
 // añadido en la 0.2.2
 pub fn vigilar_perfil_energia(state: &mut BookosComp) {
     use smithay::reexports::calloop::channel;
-    const RUTA: &str = "/sys/firmware/acpi/platform_profile";
-    let Ok(fichero) = std::fs::File::open(RUTA) else {
+    let Ok(fichero) = std::fs::File::open("/sys/firmware/acpi/platform_profile")
+        .or_else(|_| std::fs::File::open("/sys/class/platform-profile/platform-profile-0/profile"))
+    else {
         return;
     };
     let (emisor, receptor) = channel::channel::<()>();

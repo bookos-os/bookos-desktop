@@ -18,6 +18,9 @@ use std::time::SystemTime;
 #[derive(Clone)]
 pub struct App {
     pub nombre: String,
+    /// Descripción corta (`Comment=` o `GenericName=` del `.desktop`), si aporta
+    /// contexto distinto del nombre.
+    pub detalle: Option<String>,
     /// Ya limpio de los códigos `%f`, `%u`… de la especificación.
     pub exec: String,
     pub icono: String,
@@ -28,6 +31,16 @@ pub struct App {
 
 type CacheApps = (Vec<(PathBuf, Option<SystemTime>)>, Vec<App>);
 static CACHE_APPS: OnceLock<Mutex<Option<CacheApps>>> = OnceLock::new();
+
+/// Descarta el catálogo cacheado de `.desktop` para reevaluar `icono_del_tema`
+/// tras cambiar el tema de iconos.
+pub(crate) fn olvidar_cache() {
+    if let Some(cache) = CACHE_APPS.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        *guard = None;
+    }
+}
 
 fn huella_directorios(dirs: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
     dirs.iter()
@@ -100,6 +113,52 @@ pub fn leer() -> Vec<App> {
         *guard = Some((huella, apps.clone()));
     }
     apps
+}
+
+/// Igual que [`leer`], conservando el identificador del `.desktop` (sin `.desktop`)
+/// para responder al portal `AppChooser`.
+pub(crate) fn catalogo_con_id() -> Vec<(String, App)> {
+    let mut vistos = HashSet::new();
+    let mut apps = Vec::new();
+    for dir in directorios() {
+        let Ok(entradas) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entrada in entradas.filter_map(|e| e.ok()) {
+            let ruta = entrada.path();
+            if ruta.extension().is_none_or(|e| e != "desktop") {
+                continue;
+            }
+            let Some(nombre_fichero) = ruta.file_name().map(|n| n.to_string_lossy().into_owned())
+            else {
+                continue;
+            };
+            if !vistos.insert(nombre_fichero) {
+                continue;
+            }
+            let Some(id) = ruta.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            if let Some(app) = leer_una(&ruta) {
+                apps.push((id, app));
+            }
+        }
+    }
+    apps.sort_by(|a, b| a.1.normalizado.cmp(&b.1.normalizado));
+    apps
+}
+
+/// Busca un lanzador por su identificador `.desktop` (con o sin extensión),
+/// admitiendo entradas con `NoDisplay=true` cuando el portal las propone.
+pub(crate) fn por_desktop_id(id: &str) -> Option<App> {
+    let base = id.strip_suffix(".desktop").unwrap_or(id);
+    for dir in directorios() {
+        let ruta = dir.join(format!("{base}.desktop"));
+        if let Some((app, _)) = leer_entrada(&ruta) {
+            return Some(app);
+        }
+    }
+    por_app_id(base)
 }
 
 /// La aplicación que corresponde a un `app_id` de Wayland.
@@ -199,6 +258,36 @@ fn icono_del_tema(icono: Option<String>, clase: Option<&str>) -> Option<String> 
     }
 }
 
+fn es_espanol() -> bool {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        .is_some_and(|l| l.starts_with("es"))
+}
+
+/// Decodifica las secuencias de escape estándar de los valores string de
+/// freedesktop (`\s`, `\n`, `\r`, `\t`, `\\`) y limpia espacios sobrantes para
+/// mostrarlo en una sola línea legible.
+fn desescapar_desktop(valor: &str) -> String {
+    let mut salida = String::with_capacity(valor.len());
+    let mut chars = valor.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('s') | Some('n') | Some('r') | Some('t') => salida.push(' '),
+                Some('\\') => salida.push('\\'),
+                Some(otro) => salida.push(otro),
+                None => break,
+            }
+        } else if c.is_control() {
+            salida.push(' ');
+        } else {
+            salida.push(c);
+        }
+    }
+    salida.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// La aplicación y si pide quedarse fuera de los menús (`NoDisplay`).
 // 0.1.0
 // modificado en la 0.2.0 -- respeta TryExec
@@ -207,6 +296,12 @@ fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
 
     let mut nombre = None;
     let mut nombre_es = None;
+    let mut nombre_es_region = None;
+    let mut comentario = None;
+    let mut comentario_es = None;
+    let mut comentario_es_region = None;
+    let mut generico = None;
+    let mut generico_es = None;
     let mut exec = None;
     let mut icono = None;
     let mut oculta = false;
@@ -230,20 +325,26 @@ fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
         let Some((clave, valor)) = linea.split_once('=') else {
             continue;
         };
+        let valor = valor.trim();
         match clave.trim() {
-            // Las traducciones vienen como `Name[es]`; se ignoran a propósito
-            // hasta que el shell tenga idioma propio, para no coger la primera
-            // que aparezca en el fichero.
-            "Name" => nombre = Some(valor.trim().to_string()),
-            "Name[es]" => nombre_es = Some(valor.trim().to_string()),
-            "Exec" => exec = Some(limpiar_exec(valor.trim())),
-            "TryExec" => prueba = Some(valor.trim().to_string()),
-            "Icon" => icono = Some(valor.trim().to_string()),
+            "Name" => nombre = Some(desescapar_desktop(valor)),
+            "Name[es]" => nombre_es = Some(desescapar_desktop(valor)),
+            c if c.starts_with("Name[es_") => nombre_es_region = Some(desescapar_desktop(valor)),
+            "Comment" => comentario = Some(desescapar_desktop(valor)),
+            "Comment[es]" => comentario_es = Some(desescapar_desktop(valor)),
+            c if c.starts_with("Comment[es_") => {
+                comentario_es_region = Some(desescapar_desktop(valor))
+            }
+            "GenericName" => generico = Some(desescapar_desktop(valor)),
+            "GenericName[es]" => generico_es = Some(desescapar_desktop(valor)),
+            "Exec" => exec = Some(limpiar_exec(valor)),
+            "TryExec" => prueba = Some(valor.to_string()),
+            "Icon" => icono = Some(valor.to_string()),
             // `Hidden` es «esta entrada está borrada»; `NoDisplay`, solo «no
             // en los menús».
-            "Hidden" => oculta = valor.trim() == "true",
-            "NoDisplay" => sin_menu = valor.trim() == "true",
-            "Type" => es_app = valor.trim() == "Application",
+            "Hidden" => oculta = valor == "true",
+            "NoDisplay" => sin_menu = valor == "true",
+            "Type" => es_app = valor == "Application",
             _ => {}
         }
     }
@@ -255,11 +356,23 @@ fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
     if oculta || !es_app || prueba.is_some_and(|p| !existe_programa(&p)) {
         return None;
     }
-    let nombre = if std::env::var("LANG").unwrap_or_default().starts_with("es") {
-        nombre_es.or(nombre)
+    let es = es_espanol();
+    let nombre = if es {
+        nombre_es.or(nombre_es_region).or(nombre)
     } else {
         nombre
-    }?;
+    }
+    .filter(|n| !n.is_empty())?;
+    let detalle = if es {
+        comentario_es
+            .or(comentario_es_region)
+            .or(comentario)
+            .or(generico_es)
+            .or(generico)
+    } else {
+        comentario.or(generico)
+    }
+    .filter(|d| !d.is_empty() && !d.eq_ignore_ascii_case(&nombre));
     let exec = exec.filter(|e| !e.is_empty())?;
     let normalizado = normalizar(&nombre);
     Some((
@@ -267,6 +380,7 @@ fn leer_entrada(ruta: &std::path::Path) -> Option<(App, bool)> {
             icono: icono_del_tema(icono, startup_wm_class(&texto))
                 .unwrap_or_else(|| nombre.clone()),
             nombre,
+            detalle,
             exec,
             normalizado,
         },
@@ -387,6 +501,7 @@ mod tests {
         App {
             normalizado: normalizar(nombre),
             nombre: nombre.to_string(),
+            detalle: None,
             exec: "x".into(),
             icono: "x".into(),
         }
@@ -488,6 +603,25 @@ mod tests {
         let texto = "[Desktop Entry]\nName=VirtualBox\nStartupWMClass=VirtualBox Manager\n\
                      [Desktop Action Otra]\nStartupWMClass=Incorrecta\n";
         assert_eq!(startup_wm_class(texto), Some("VirtualBox Manager"));
+    }
+
+    #[test]
+    fn dividir_exec_quita_codigos_respeta_comillas_y_valida_binario() {
+        assert_eq!(
+            dividir_exec("/bin/sh -c 'echo hola mundo' %U %%"),
+            Some((
+                "/bin/sh".into(),
+                vec!["-c".into(), "echo hola mundo".into(), "%".into()],
+            ))
+        );
+        assert_eq!(
+            dividir_exec("\"/bin/sh\" -c \"echo \\\"ok\\\"\" %F"),
+            Some((
+                "/bin/sh".into(),
+                vec!["-c".into(), "echo \"ok\"".into()],
+            ))
+        );
+        assert_eq!(dividir_exec("bookos-binario-inexistente-xyz %f"), None);
     }
 }
 
@@ -604,7 +738,7 @@ pub fn acciones(app_id: &str) -> Vec<(String, String)> {
     }) else {
         return Vec::new();
     };
-    let es = std::env::var("LANG").unwrap_or_default().starts_with("es");
+    let es = es_espanol();
     let mut acciones = Vec::new();
     let (mut en_accion, mut nombre, mut nombre_es, mut exec) = (false, None, None, None);
     let mut cerrar = |nombre: &mut Option<String>, nombre_es: &mut Option<String>, exec: &mut Option<String>| {
@@ -647,16 +781,27 @@ pub fn acciones(app_id: &str) -> Vec<(String, String)> {
 /// guarda `name=""` para Dolphin, pero siempre lleva la orden.
 // añadido en la 0.2.3
 pub fn recientes(exec: &str, max: usize) -> Vec<PathBuf> {
-    let programa = |orden: &str| {
-        orden
-            .trim_matches('\'')
-            .split_whitespace()
-            .next()
-            .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
-    };
-    let Some(suyo) = programa(exec) else {
+    let Some(suyo) = programa_de(exec) else {
         return Vec::new();
     };
+    recientes_filtrados(Some(&suyo), max)
+}
+
+/// Los últimos archivos usados en el escritorio (`recently-used.xbel`), sin
+/// filtrar por aplicación. Sirve para sugerencias instantáneas al buscar archivos.
+pub(crate) fn recientes_todos(max: usize) -> Vec<PathBuf> {
+    recientes_filtrados(None, max)
+}
+
+fn programa_de(orden: &str) -> Option<String> {
+    orden
+        .trim_matches('\'')
+        .split_whitespace()
+        .next()
+        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+}
+
+fn recientes_filtrados(suyo: Option<&str>, max: usize) -> Vec<PathBuf> {
     let Some(ruta) = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
@@ -677,9 +822,15 @@ pub fn recientes(exec: &str, max: usize) -> Vec<PathBuf> {
             };
             let href = atributo("href", bloque)?;
             let fecha = atributo("modified", bloque).unwrap_or_default();
-            let es_suyo = bloque.split("<bookmark:application ").skip(1).any(|app| {
-                atributo("exec", app).and_then(|e| programa(&e)).as_deref() == Some(suyo.as_str())
-            });
+            let es_suyo = match suyo {
+                Some(suyo) => bloque.split("<bookmark:application ").skip(1).any(|app| {
+                    atributo("exec", app)
+                        .and_then(|e| programa_de(&e))
+                        .as_deref()
+                        == Some(suyo)
+                }),
+                None => true,
+            };
             let ruta = PathBuf::from(desescapar_uri(href.strip_prefix("file://")?));
             (es_suyo && ruta.exists()).then_some((fecha, ruta))
         })
@@ -728,6 +879,228 @@ fn ruta_autostart(app_id: &str) -> Option<PathBuf> {
 // añadido en la 0.2.3
 pub fn abre_al_iniciar(app_id: &str) -> bool {
     ruta_autostart(app_id).is_some_and(|r| r.exists())
+}
+
+/// Visor o aplicación resuelta para abrir un tipo MIME directamente sin pasar por `sh` ni `xdg-open`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LanzadorMime {
+    pub app_id: String,
+    pub wm_class: Option<String>,
+    pub programa: String,
+    pub argumentos: Vec<String>,
+}
+
+/// Resuelve el visor de imágenes (`image/png`) para lanzarlo directamente y
+/// poder emparejar su ventana por `app_id` / `StartupWMClass`.
+pub fn visor_imagenes() -> Option<LanzadorMime> {
+    let mut listas_usuario = Vec::new();
+    if let Some(cfg) = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    {
+        listas_usuario.push(cfg.join("BookOS-mimeapps.list"));
+        listas_usuario.push(cfg.join("mimeapps.list"));
+    }
+    if let Some(data) = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+    {
+        listas_usuario.push(data.join("applications/mimeapps.list"));
+    }
+    for lista in &listas_usuario {
+        for id in defaults_en_mimeapps(lista, "image/png") {
+            if let Some(lanzador) = lanzador_de_desktop(&id) {
+                return Some(lanzador);
+            }
+        }
+    }
+    if let Some(nativo) = lanzador_de_desktop("bookos-viewer") {
+        return Some(nativo);
+    }
+    for ruta in [
+        "/etc/xdg/mimeapps.list",
+        "/usr/share/applications/mimeapps.list",
+        "/usr/share/applications/kde-mimeapps.list",
+    ] {
+        for id in defaults_en_mimeapps(std::path::Path::new(ruta), "image/png") {
+            if let Some(lanzador) = lanzador_de_desktop(&id) {
+                return Some(lanzador);
+            }
+        }
+    }
+    for app in para_tipo("image/png", 4) {
+        if let Some((programa, argumentos)) = dividir_exec(&app.exec) {
+            let app_id = programa
+                .rsplit('/')
+                .next()
+                .unwrap_or(&programa)
+                .to_string();
+            return Some(LanzadorMime {
+                app_id,
+                wm_class: None,
+                programa,
+                argumentos,
+            });
+        }
+    }
+    None
+}
+
+fn defaults_en_mimeapps(ruta: &std::path::Path, mime: &str) -> Vec<String> {
+    let Ok(texto) = std::fs::read_to_string(ruta) else {
+        return Vec::new();
+    };
+    let mut en_grupo = false;
+    let mut salida = Vec::new();
+    for linea in texto.lines().map(str::trim) {
+        if linea.starts_with('[') {
+            en_grupo = linea == "[Default Applications]";
+            continue;
+        }
+        if !en_grupo {
+            continue;
+        }
+        let Some((clave, valor)) = linea.split_once('=') else {
+            continue;
+        };
+        if clave.trim() == mime {
+            for entrada in valor.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                salida.push(entrada.to_string());
+            }
+        }
+    }
+    salida
+}
+
+fn lanzador_de_desktop(id: &str) -> Option<LanzadorMime> {
+    let base = id.strip_suffix(".desktop").unwrap_or(id);
+    for dir in directorios() {
+        let ruta = dir.join(format!("{base}.desktop"));
+        let Ok(texto) = std::fs::read_to_string(&ruta) else {
+            continue;
+        };
+        let mut en_entrada = false;
+        let mut exec = None;
+        let mut try_exec = None;
+        let mut wm_class = None;
+        let mut oculta = false;
+        let mut es_app = false;
+        for linea in texto.lines().map(str::trim) {
+            if linea.starts_with('[') {
+                en_entrada = linea == "[Desktop Entry]";
+                continue;
+            }
+            if !en_entrada {
+                continue;
+            }
+            let Some((clave, valor)) = linea.split_once('=') else {
+                continue;
+            };
+            let valor = valor.trim();
+            match clave.trim() {
+                "Exec" => exec = Some(valor.to_string()),
+                "TryExec" => try_exec = Some(valor.to_string()),
+                "StartupWMClass" => wm_class = Some(desescapar_desktop(valor)),
+                "Hidden" => oculta = valor == "true",
+                "Type" => es_app = valor == "Application",
+                _ => {}
+            }
+        }
+        if oculta || !es_app || try_exec.is_some_and(|p| !existe_programa(&p)) {
+            continue;
+        }
+        let Some(exec) = exec.filter(|e| !e.is_empty()) else {
+            continue;
+        };
+        let Some((programa, argumentos)) = dividir_exec(&exec) else {
+            continue;
+        };
+        return Some(LanzadorMime {
+            app_id: base.to_string(),
+            wm_class: wm_class.filter(|s| !s.is_empty()),
+            programa,
+            argumentos,
+        });
+    }
+    None
+}
+
+fn dividir_exec(exec: &str) -> Option<(String, Vec<String>)> {
+    let mut tokens = Vec::new();
+    let mut actual = String::new();
+    let mut chars = exec.chars().peekable();
+    let mut comilla: Option<char> = None;
+    let mut en_token = false;
+
+    while let Some(c) = chars.next() {
+        match comilla {
+            Some(q) => {
+                if c == q {
+                    comilla = None;
+                } else if q == '"' && c == '\\' {
+                    if let Some(esc) = chars.next() {
+                        actual.push(esc);
+                    }
+                } else {
+                    actual.push(c);
+                }
+            }
+            None => {
+                if c.is_whitespace() {
+                    if en_token {
+                        tokens.push(std::mem::take(&mut actual));
+                        en_token = false;
+                    }
+                } else if c == '\'' || c == '"' {
+                    comilla = Some(c);
+                    en_token = true;
+                } else if c == '\\' {
+                    if let Some(esc) = chars.next() {
+                        actual.push(esc);
+                        en_token = true;
+                    }
+                } else {
+                    actual.push(c);
+                    en_token = true;
+                }
+            }
+        }
+    }
+    if en_token {
+        tokens.push(actual);
+    }
+
+    let mut limpios = Vec::new();
+    for token in tokens {
+        let mut out = String::with_capacity(token.len());
+        let mut it = token.chars().peekable();
+        while let Some(ch) = it.next() {
+            if ch != '%' {
+                out.push(ch);
+                continue;
+            }
+            match it.next() {
+                Some('%') => out.push('%'),
+                Some('f' | 'F' | 'u' | 'U' | 'd' | 'D' | 'n' | 'N' | 'i' | 'c' | 'k' | 'v' | 'm') => {}
+                Some(otro) => {
+                    out.push('%');
+                    out.push(otro);
+                }
+                None => out.push('%'),
+            }
+        }
+        if !out.is_empty() {
+            limpios.push(out);
+        }
+    }
+    let mut iter = limpios.into_iter();
+    let programa = iter.next()?;
+    if !existe_programa(&programa) {
+        return None;
+    }
+    Some((programa, iter.collect()))
 }
 
 /// Pone o quita la app del inicio de sesión. Se copia su `.desktop` tal cual:

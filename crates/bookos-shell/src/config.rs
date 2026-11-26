@@ -749,10 +749,8 @@ impl Default for Entrada {
             // Es el mismo valor que este escritorio tiene puesto en KDE
             // (`PointerAcceleration=0.300` en `kcminputrc`), o sea el que ya
             // estaba calibrado a mano contra esta máquina.
-            velocidad_touchpad: 0.3,
-            // El ratón se queda en el de serie: tiene su propia resolución y
-            // acelerarlo por defecto lo vuelve nervioso.
-            velocidad_raton: 0.0,
+            velocidad_touchpad: 0.55,
+            velocidad_raton: 0.3,
             toque_para_clic: true,
             scroll_natural: true,
             pantalla_tactil: true,
@@ -809,6 +807,7 @@ impl Default for Config {
                 "red".into(),
                 "volumen".into(),
                 "brillo".into(),
+                "usuarios".into(),
                 "notificaciones".into(),
                 "control".into(),
                 "reloj".into(),
@@ -816,7 +815,11 @@ impl Default for Config {
             dock: [
                 // El primero, como en el dock de macOS: es el cajón de todo lo
                 // demás y conviene que esté donde siempre.
-                (LAUNCHPAD, "Aplicaciones", crate::icono::LAUNCHPAD),
+                (
+                    LAUNCHPAD,
+                    crate::emergente::t("Aplicaciones", "Apps"),
+                    crate::icono::LAUNCHPAD,
+                ),
                 // El mismo por defecto que Meta+Return (`keybinds::TERMINAL`):
                 // `bookos-shell` —lo que había aquí antes— es la biblioteca del
                 // propio panel, no un programa que lanzar. No se lee
@@ -824,13 +827,29 @@ impl Default for Config {
                 // por el validador de `ajustes` (`GetConfig`/`ApplyConfig`),
                 // que rechaza `$`, `{` y `}` por ser metacaracteres de shell.
                 ("konsole", "Terminal", "utilities-terminal"),
-                ("bookos-explorer", "Archivos", "bookos-explorer"),
-                ("firefox", "Navegador", "firefox"),
+                (
+                    "bookos-explorer",
+                    crate::emergente::t("Archivos", "Files"),
+                    "bookos-explorer",
+                ),
+                (
+                    "firefox",
+                    crate::emergente::t("Navegador", "Browser"),
+                    "firefox",
+                ),
                 // Los ajustes son los de BookOS, no los de Plasma: abrir el
                 // panel de otro escritorio desde este es enseñar opciones que
                 // no gobiernan lo que se está usando.
-                ("bookos-settings", "Ajustes", "bookos-settings"),
-                ("bookos-notepad", "Notas", "bookos-notepad"),
+                (
+                    "bookos-settings",
+                    crate::emergente::t("Ajustes", "Settings"),
+                    "bookos-settings",
+                ),
+                (
+                    "bookos-notepad",
+                    crate::emergente::t("Notas", "Notes"),
+                    "bookos-notepad",
+                ),
             ]
             .into_iter()
             .map(|(e, l, i)| Lanzador {
@@ -873,7 +892,10 @@ impl Default for Config {
             escritorios: 2,
             captura_cursor: false,
             captura_retardo: 0,
-            nombres_escritorios: vec!["Escritorio 1".into(), "Escritorio 2".into()],
+            nombres_escritorios: vec![
+                format!("{} 1", crate::emergente::t("Escritorio", "Desktop")),
+                format!("{} 2", crate::emergente::t("Escritorio", "Desktop")),
+            ],
             tema: crate::tema::Tema::Oscuro,
             modo_tema: crate::tema::ModoTema::Oscuro,
             // Las siete y las ocho: ni el amanecer ni el anochecer de ningún
@@ -1425,7 +1447,8 @@ impl Config {
         config.nombres_escritorios.truncate(config.escritorios);
         while config.nombres_escritorios.len() < config.escritorios {
             config.nombres_escritorios.push(format!(
-                "Escritorio {}",
+                "{} {}",
+                crate::emergente::t("Escritorio", "Desktop"),
                 config.nombres_escritorios.len() + 1
             ));
         }
@@ -2132,13 +2155,19 @@ mod tests {
     #[test]
     fn sin_fichero_manda_lo_de_serie() {
         let c = parsear("");
-        assert_eq!(c.entrada.velocidad_touchpad, 0.3);
+        assert_eq!(c.entrada.velocidad_touchpad, 0.55);
         assert!(c.entrada.toque_para_clic);
         assert!(c.entrada.scroll_natural);
         assert!(c.entrada.pantalla_tactil);
         assert_eq!(c.escala, None);
         assert_eq!(c.escritorios, 2);
-        assert_eq!(c.nombres_escritorios, ["Escritorio 1", "Escritorio 2"]);
+        assert_eq!(
+            c.nombres_escritorios,
+            [
+                format!("{} 1", crate::emergente::t("Escritorio", "Desktop")),
+                format!("{} 2", crate::emergente::t("Escritorio", "Desktop")),
+            ]
+        );
     }
 
     #[test]
@@ -2182,9 +2211,9 @@ mod tests {
     #[test]
     fn una_velocidad_imposible_no_se_aplica() {
         let alta = parsear("velocidad_touchpad = 5");
-        assert_eq!(alta.entrada.velocidad_touchpad, 0.3);
+        assert_eq!(alta.entrada.velocidad_touchpad, 0.55);
         let absurda = parsear("velocidad_raton = mucha");
-        assert_eq!(absurda.entrada.velocidad_raton, 0.0);
+        assert_eq!(absurda.entrada.velocidad_raton, 0.3);
     }
 
     #[test]

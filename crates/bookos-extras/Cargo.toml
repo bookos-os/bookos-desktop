@@ -1,0 +1,19 @@
+[package]
+name = "bookos-extras"
+description = "Navegación táctil estilo Android y cortina de notificaciones ampliada para BookOS (paquete opcional)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
+tiny-skia = "0.11"
+cosmic-text = "0.15"
+libc = "0.2"

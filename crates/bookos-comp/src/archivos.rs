@@ -373,9 +373,10 @@ pub fn comprimir(state: &mut BookosComp) {
         return;
     };
     let base = match rutas.len() {
-        1 => primera
-            .file_stem()
-            .map_or_else(|| "Archivo".into(), |s| s.to_string_lossy().into_owned()),
+        1 => primera.file_stem().map_or_else(
+            || bookos_shell::t("Archivo", "File").to_string(),
+            |s| s.to_string_lossy().into_owned(),
+        ),
         _ => bookos_shell::t("Archivo comprimido", "Archive").to_string(),
     };
     let zip = libre(dir, &format!("{base}.zip"));
@@ -399,10 +400,56 @@ pub fn comprimir(state: &mut BookosComp) {
     });
 }
 
+/// Prepara el lanzador de shell interactivo que posiciona el primer PTY de
+/// `bookos-shell` directamente en la carpeta pedida sin teclear `cd`,
+/// preservando `$HOME`, `$SHELL` real y las pestañas posteriores.
+fn preparar_shell_en() -> Option<(PathBuf, PathBuf, PathBuf)> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    let wrapper = base.join("bookos-comp-shell");
+    let script = concat!(
+        "#!/bin/sh\n",
+        "if [ -n \"${BOOKOS_SHELL_REAL-}\" ]; then\n",
+        "  export SHELL=\"$BOOKOS_SHELL_REAL\"\n",
+        "  unset BOOKOS_SHELL_REAL\n",
+        "else\n",
+        "  export SHELL=/bin/bash\n",
+        "fi\n",
+        "if [ -n \"${BOOKOS_INICIO_MARCA-}\" ] && [ -e \"$BOOKOS_INICIO_MARCA\" ]; then\n",
+        "  rm -f -- \"$BOOKOS_INICIO_MARCA\"\n",
+        "  if [ -n \"${BOOKOS_INICIO_DIR-}\" ]; then\n",
+        "    cd -- \"$BOOKOS_INICIO_DIR\" 2>/dev/null || true\n",
+        "  fi\n",
+        "fi\n",
+        "unset BOOKOS_INICIO_MARCA BOOKOS_INICIO_DIR\n",
+        "exec \"$SHELL\" -l \"$@\"\n",
+    );
+    if std::fs::read_to_string(&wrapper).ok().as_deref() != Some(script) {
+        std::fs::write(&wrapper, script).ok()?;
+    }
+    let _ = std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700));
+
+    let id = SEQ.fetch_add(1, Ordering::Relaxed);
+    let marca = base.join(format!("bookos-dir-{}-{id}", std::process::id()));
+    std::fs::write(&marca, b"").ok()?;
+
+    let real = std::env::var_os("SHELL")
+        .map(PathBuf::from)
+        .filter(|p| *p != wrapper && p.is_file())
+        .unwrap_or_else(|| PathBuf::from("/bin/bash"));
+    Some((wrapper, real, marca))
+}
+
 /// Una terminal en la carpeta seleccionada, o en la del escritorio.
 ///
-/// Konsole y no la terminal propia: `bookos-shell` todavía no acepta una
-/// carpeta de inicio por la línea de órdenes (arranca siempre en `HOME`).
+/// Lanza `bookos-shell` directamente en esa carpeta preparando el directorio
+/// antes de arrancar el shell interactivo, sin ejecutar ni mostrar un `cd`.
 // añadido en la 0.2.3
 pub fn terminal(state: &mut BookosComp) {
     let carpeta = seleccion(state)
@@ -410,13 +457,16 @@ pub fn terminal(state: &mut BookosComp) {
         .find(|r| r.is_dir())
         .or_else(bookos_shell::escritorio::carpeta_escritorio);
     let Some(carpeta) = carpeta else { return };
-    crate::keybinds::lanzar(
-        state,
-        &format!(
-            "konsole --workdir {}",
-            bookos_shell::escritorio::entrecomillar(&carpeta)
-        ),
-    );
+    let entorno = preparar_shell_en();
+    crate::keybinds::lanzar_con(state, "bookos-shell", move |cmd| {
+        cmd.current_dir(&carpeta);
+        if let Some((wrapper, real, marca)) = entorno {
+            cmd.env("BOOKOS_SHELL_REAL", real)
+                .env("BOOKOS_INICIO_DIR", &carpeta)
+                .env("BOOKOS_INICIO_MARCA", marca)
+                .env("SHELL", wrapper);
+        }
+    });
 }
 
 /// Mueve lo seleccionado a una carpeta nueva y abre el diálogo para nombrarla.
@@ -529,5 +579,49 @@ mod tests {
         assert_eq!(libre(&dir, "informe.pdf"), dir.join("informe (2).pdf"));
         assert_eq!(libre(&dir, "otro"), dir.join("otro"));
         std::fs::remove_dir_all(&dir).expect("limpiar");
+    }
+
+    #[test]
+    fn lanzador_terminal_entra_al_directorio_una_sola_vez() {
+        let base = std::env::temp_dir().join(format!("bookos-term-{}", std::process::id()));
+        let destino = base.join("Carpeta con espacios");
+        let otro = base.join("Otro");
+        std::fs::create_dir_all(&destino).expect("destino");
+        std::fs::create_dir_all(&otro).expect("otro");
+
+        let (wrapper, _, marca) = preparar_shell_en().expect("prepara lanzador");
+        assert!(marca.exists());
+
+        let primero = std::process::Command::new(&wrapper)
+            .current_dir(&otro)
+            .env("BOOKOS_SHELL_REAL", "/bin/bash")
+            .env("BOOKOS_INICIO_DIR", &destino)
+            .env("BOOKOS_INICIO_MARCA", &marca)
+            .args(["-c", "pwd; printf '%s|%s\n' \"$SHELL\" \"${BOOKOS_INICIO_DIR-unset}\""])
+            .output()
+            .expect("primera ejecucion");
+        assert!(primero.status.success());
+        let out1 = String::from_utf8_lossy(&primero.stdout);
+        let lineas1: Vec<&str> = out1.lines().collect();
+        assert_eq!(lineas1[0], destino.to_string_lossy());
+        assert_eq!(lineas1[1], "/bin/bash|unset");
+        assert!(!marca.exists(), "la marca se consume al arrancar");
+
+        // Una segunda pestaña con el mismo entorno heredado respeta su propio cwd.
+        let segundo = std::process::Command::new(&wrapper)
+            .current_dir(&otro)
+            .env("BOOKOS_SHELL_REAL", "/bin/bash")
+            .env("BOOKOS_INICIO_DIR", &destino)
+            .env("BOOKOS_INICIO_MARCA", &marca)
+            .args(["-c", "pwd"])
+            .output()
+            .expect("segunda ejecucion");
+        assert!(segundo.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&segundo.stdout).trim(),
+            otro.to_string_lossy()
+        );
+
+        std::fs::remove_dir_all(&base).expect("limpiar");
     }
 }

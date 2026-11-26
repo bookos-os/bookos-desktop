@@ -250,7 +250,7 @@ fn abrir(
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Screen",
         *pw::keys::NODE_NAME => "bookos-screencast",
-        *pw::keys::NODE_DESCRIPTION => "Pantalla de BookOS",
+        *pw::keys::NODE_DESCRIPTION => bookos_shell::t("Pantalla de BookOS", "BookOS screen"),
     };
     let stream = pw::stream::StreamRc::new(core.clone(), "bookos-screencast", props)?;
 

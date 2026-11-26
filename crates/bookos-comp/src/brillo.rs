@@ -167,9 +167,19 @@ fn envolvente(t: Duration) -> (f32, f32) {
 /// para que ningún píxel se pinte dos veces: dos halos encima se sumarían.
 // añadido en la 0.2.0
 fn franjas(w: i32, h: i32, hondo: f32) -> [(i32, i32, i32, i32); 4] {
+    let w = w.max(1);
+    let h = h.max(1);
+    let hondo = if hondo.is_finite() { hondo.max(0.0) } else { 0.0 };
     // El filo mide 2,5: no puede quedarse fuera aunque el halo esté recogido.
-    let lado = (hondo.ceil() as i32 + 1).max(3).min(h / 2);
-    let alto = ((hondo * (1.0 + ISLA)).ceil() as i32 + 1).max(3).min(h / 2);
+    let lado = (hondo.ceil() as i32 + 1)
+        .max(3)
+        .min(h / 2)
+        .min(w / 2)
+        .max(1);
+    let alto = ((hondo * (1.0 + ISLA)).ceil() as i32 + 1)
+        .max(3)
+        .min(h / 2)
+        .max(1);
     let medio = (h - alto - lado).max(1);
     [
         (0, 0, w, alto),
@@ -224,19 +234,29 @@ pub fn elementos(
         // Vuelve a media salida: sigue desde la luz de ahora, sin otro fogonazo.
         for b in state.brillo.values_mut() {
             if b.apagando.take().is_some() {
-                b.desde = ahora - (SUBE + SOSTIENE + CRUCE.mul_f32(b.ultimo.0));
+                b.desde = ahora
+                    .checked_sub(SUBE + SOSTIENE + CRUCE.mul_f32(b.ultimo.0.clamp(0.0, 1.0)))
+                    .unwrap_or(ahora);
             }
         }
     }
     let Some(modo) = output.current_mode() else {
         return Vec::new();
     };
-    let escala = output.current_scale().fractional_scale();
+    let escala_raw = output.current_scale().fractional_scale();
+    let escala = if escala_raw.is_finite() && escala_raw > 0.0 {
+        escala_raw
+    } else {
+        1.0
+    };
     let tamano = output.current_transform().transform_size(modo.size);
     let (w, h) = (
         (f64::from(tamano.w) / escala).ceil() as i32,
         (f64::from(tamano.h) / escala).ceil() as i32,
     );
+    if w <= 0 || h <= 0 {
+        return Vec::new();
+    }
     let clave = (tamano.w, tamano.h, (escala * 100.0).round() as i32);
     let contexto = renderer.context_id();
     // Una por salida: pueden tener tamaños distintos.
@@ -262,7 +282,9 @@ pub fn elementos(
         return Vec::new();
     };
 
-    let dt = ahora.duration_since(brillo.ultimo_paso).as_secs_f32();
+    let dt = ahora
+        .saturating_duration_since(brillo.ultimo_paso)
+        .as_secs_f32();
     brillo.ultimo_paso = ahora;
     let objetivo = if fase == Some(Fase::Pensando) {
         1.0
@@ -404,5 +426,19 @@ mod tests {
     fn franjas_en_una_salida_diminuta_no_salen_negativas() {
         let [_, abajo, izq, _] = franjas(10, 4, 46.0);
         assert!(abajo.1 >= 0 && izq.3 >= 1);
+    }
+
+    #[test]
+    fn franjas_con_salida_estrecha_o_no_finita_no_solapan_en_horizontal() {
+        for (w, h, hondo) in [(4, 100, 46.0), (0, 0, f32::NAN)] {
+            let f = franjas(w, h, hondo);
+            for (x, y, fw, fh) in f {
+                assert!(x >= 0 && y >= 0 && fw >= 1 && fh >= 1, "{f:?}");
+            }
+            let [_, _, izq, der] = f;
+            if w > 1 {
+                assert!(izq.0 + izq.2 <= der.0, "{f:?}");
+            }
+        }
     }
 }

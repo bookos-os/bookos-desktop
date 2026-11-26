@@ -266,6 +266,39 @@ pub fn icono_aviso(bat: &Battery) -> Icono {
 /// batería, y solo sobre una foto se lee como un adorno. Se deja la pila, en
 /// verde, con el rayo dentro.
 ///
+fn leer_perfil_plataforma() -> Option<String> {
+    const RUTAS: [&str; 2] = [
+        "/sys/firmware/acpi/platform_profile",
+        "/sys/class/platform-profile/platform-profile-0/profile",
+    ];
+    RUTAS.iter().find_map(|ruta| {
+        std::fs::read_to_string(ruta)
+            .ok()
+            .map(|s| s.trim().to_string())
+    })
+}
+
+fn silencio_adaptativo_activo() -> bool {
+    std::fs::read_to_string("/run/bookos-termico/estado")
+        .is_ok_and(|s| s.trim() == "balanced-quiet")
+}
+
+fn normalizar_perfil_adaptativo(perfil: Option<String>, adaptativo: bool) -> Option<String> {
+    if adaptativo
+        && matches!(
+            perfil.as_deref(),
+            Some("low-power" | "quiet" | "power-saver")
+        )
+    {
+        return Some("balanced".to_string());
+    }
+    perfil
+}
+
+fn leer_perfil_efectivo() -> Option<String> {
+    normalizar_perfil_adaptativo(leer_perfil_plataforma(), silencio_adaptativo_activo())
+}
+
 /// Devuelve el pictograma, su tamaño, la etiqueta y el color de la etiqueta.
 // 0.1.1
 pub fn sobre_fondo(bat: &Battery) -> (Icono, (f32, f32), String, iced_core::Color) {
@@ -273,7 +306,7 @@ pub fn sobre_fondo(bat: &Battery) -> (Icono, (f32, f32), String, iced_core::Colo
     let color = if bat.plugged {
         tema::verde()
     } else {
-        let perfil = std::fs::read_to_string("/sys/firmware/acpi/platform_profile").ok();
+        let perfil = leer_perfil_efectivo();
         match Bateria::color(bat, perfil.as_deref().map(str::trim)) {
             // Sin perfil conocido el panel usa el color del texto del tema.
             color if color == TEXT() => blanco,
@@ -588,9 +621,7 @@ impl Bateria {
             return self.perfil.clone();
         }
         self.perfil_leido = Instant::now();
-        std::fs::read_to_string("/sys/firmware/acpi/platform_profile")
-            .ok()
-            .map(|s| s.trim().to_string())
+        leer_perfil_efectivo()
     }
 
     /// Lo que se enseña al lado del icono.
@@ -982,5 +1013,25 @@ mod tests {
     fn la_tinta_del_simbolo_depende_del_relleno() {
         assert!(pictograma(80, Simbolo::Rayo, tema::acento()).contains("#000000"));
         assert!(!pictograma(20, Simbolo::Rayo, tema::acento()).contains("#000000"));
+    }
+
+    #[test]
+    fn el_silencio_adaptativo_muestra_el_perfil_equilibrado() {
+        assert_eq!(
+            normalizar_perfil_adaptativo(Some("quiet".into()), true).as_deref(),
+            Some("balanced")
+        );
+        assert_eq!(
+            normalizar_perfil_adaptativo(Some("low-power".into()), true).as_deref(),
+            Some("balanced")
+        );
+        assert_eq!(
+            normalizar_perfil_adaptativo(Some("low-power".into()), false).as_deref(),
+            Some("low-power")
+        );
+        assert_eq!(
+            normalizar_perfil_adaptativo(Some("performance".into()), true).as_deref(),
+            Some("performance")
+        );
     }
 }

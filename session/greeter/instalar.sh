@@ -70,12 +70,21 @@ fi
 # tapaba la distribución del sistema, la que deja el asistente de primer
 # arranque. Sin él, bookos-greeter-start la toma de localed.
 install -Dm644 "$aqui/50-bookos-greeter.rules" "$destino/etc/polkit-1/rules.d/50-bookos-greeter.rules"
+# Cambio rápido de usuario: el guion que llaman el menú del logo, el bloqueo y
+# el greeter, la segunda ventana de inicio por terminal y su permiso.
+install -Dm755 "$aqui/bookos-cambiar-usuario" "$destino/usr/local/bin/bookos-cambiar-usuario"
+install -Dm644 "$aqui/51-bookos-cambiar-usuario.rules" "$destino/etc/polkit-1/rules.d/51-bookos-cambiar-usuario.rules"
+install -d "$destino/etc/systemd/system"
+sed "s|@GREETD@|$greetd_bin|" "$aqui/bookos-greetd@.service" > "$destino/etc/systemd/system/bookos-greetd@.service.nuevo"
+mv "$destino/etc/systemd/system/bookos-greetd@.service.nuevo" "$destino/etc/systemd/system/bookos-greetd@.service"
+chmod 644 "$destino/etc/systemd/system/bookos-greetd@.service"
 install -d "$destino/etc/systemd/system/greetd.service.d"
-if [ ! -e "$destino/etc/systemd/system/greetd.service.d/bookos.conf" ]; then
-    printf '[Service]\nExecStart=\nExecStart=%s --config /etc/greetd/bookos.toml\n' \
-        "$greetd_bin" > "$destino/etc/systemd/system/greetd.service.d/bookos.conf"
-    chmod 644 "$destino/etc/systemd/system/greetd.service.d/bookos.conf"
-fi
+# Limpia e invisibiliza tty1 antes de arrancar greetd y manda su salida fuera de
+# la consola para que ningún mensaje de arranque o de servicio reaparezca en el
+# breve hueco entre cage y el compositor.
+printf '[Service]\nTTYPath=/dev/tty1\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes\nStandardOutput=null\nStandardError=journal\nExecStartPre=-/bin/sh -c '\''printf "\\033[?25l\\033[30;40m\\033[3J\\033[2J\\033[H" > /dev/tty1 2>/dev/null || true'\''\nExecStart=\nExecStart=%s --config /etc/greetd/bookos.toml\n' \
+    "$greetd_bin" > "$destino/etc/systemd/system/greetd.service.d/bookos.conf"
+chmod 644 "$destino/etc/systemd/system/greetd.service.d/bookos.conf"
 if [ -z "$destino" ]; then
     systemctl daemon-reload
 fi

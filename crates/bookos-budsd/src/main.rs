@@ -92,7 +92,13 @@ impl Servicio {
     fn con<T>(&self, f: impl FnOnce(&Conexion) -> Result<T, String>) -> zbus::fdo::Result<T> {
         let e = self.estado();
         let c = e.conexion.as_ref().ok_or_else(|| {
-            zbus::fdo::Error::Failed("No hay conexión activa con los Buds".into())
+            zbus::fdo::Error::Failed(
+                t(
+                    "No hay conexión activa con los Buds",
+                    "No active connection to Buds",
+                )
+                .into(),
+            )
         })?;
         f(c).map_err(zbus::fdo::Error::Failed)
     }
@@ -472,8 +478,15 @@ async fn buds_conectados(sistema: &Connection) -> Vec<OwnedObjectPath> {
 }
 
 // 0.1.0
-fn en_castellano() -> bool {
-    std::env::var("LANG").is_ok_and(|l| l.starts_with("es"))
+pub(crate) fn en_castellano() -> bool {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+        .is_some_and(|l| l.starts_with("es"))
+}
+
+pub(crate) fn t<'a>(es: &'a str, en: &'a str) -> &'a str {
+    if en_castellano() { es } else { en }
 }
 
 // 0.1.0

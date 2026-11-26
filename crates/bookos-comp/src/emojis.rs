@@ -47,6 +47,9 @@ pub fn alternar(state: &mut BookosComp) {
 
 // 0.1.1
 pub fn insertar(state: &mut BookosComp, texto: &str) {
+    if texto.is_empty() {
+        return;
+    }
     let Some(teclado) = state.seat.get_keyboard() else {
         return;
     };
@@ -58,8 +61,12 @@ pub fn insertar(state: &mut BookosComp, texto: &str) {
                 bookos_shell::notificaciones::Notificacion::nueva(
                     0,
                     "BookOS".into(),
-                    "Emoji copiado".into(),
-                    "Puedes pegarlo en cualquier aplicación".into(),
+                    bookos_shell::t("Emoji copiado", "Emoji copied").into(),
+                    bookos_shell::t(
+                        "Puedes pegarlo en cualquier aplicación",
+                        "You can paste it in any app",
+                    )
+                    .into(),
                     "input-keyboard",
                     false,
                 ),
@@ -86,36 +93,49 @@ pub fn insertar(state: &mut BookosComp, texto: &str) {
         entrada.done(false);
         tracing::debug!("emoji enviado por text-input");
     } else {
-        let tecla_v = teclado.with_xkb_state(state, |ctx| {
-            let xkb = ctx.xkb().lock().expect("el mutex de xkb no se envenena");
-            // SAFETY: la referencia al mapa solo se utiliza dentro del cierre.
-            let mapa = unsafe { xkb.keymap() };
-            let mut encontrada = None;
-            mapa.key_for_each(|mapa, codigo| {
-                if mapa
-                    .key_get_syms_by_level(codigo, xkb.active_layout().0, 0)
-                    .iter()
-                    .any(|s| s.raw() == keysyms::KEY_v)
-                {
-                    encontrada = Some(codigo);
-                }
-            });
-            encontrada
-        });
-        let Some(tecla_v) = tecla_v else {
-            tracing::warn!("el mapa de teclado no tiene una V para pegar el emoji");
-            return;
-        };
-        let terminal = state
-            .window_for_surface(&destino)
-            .and_then(|v| crate::handlers::app_id(&v))
-            .is_some_and(|id| es_terminal(&id));
         copiar(state, texto);
-        pegar(state, &teclado, &destino, tecla_v, terminal);
-        tracing::debug!("emoji enviado mediante pegado");
+        if enviar_pegado(state, &destino) {
+            tracing::debug!("emoji enviado mediante pegado");
+        } else {
+            return;
+        }
     }
     recordar(&mut state.emojis.recientes, texto);
     state.needs_redraw = true;
+}
+
+/// Envía `Ctrl+V` (o `Ctrl+Mayús+V` en terminales) a `destino`.
+// añadido para el historial del portapapeles (reutilizado por emojis)
+pub(crate) fn enviar_pegado(state: &mut BookosComp, destino: &WlSurface) -> bool {
+    let Some(teclado) = state.seat.get_keyboard() else {
+        return false;
+    };
+    let tecla_v = teclado.with_xkb_state(state, |ctx| {
+        let xkb = ctx.xkb().lock().expect("el mutex de xkb no se envenena");
+        // SAFETY: la referencia al mapa solo se utiliza dentro del cierre.
+        let mapa = unsafe { xkb.keymap() };
+        let mut encontrada = None;
+        mapa.key_for_each(|mapa, codigo| {
+            if mapa
+                .key_get_syms_by_level(codigo, xkb.active_layout().0, 0)
+                .iter()
+                .any(|s| s.raw() == keysyms::KEY_v)
+            {
+                encontrada = Some(codigo);
+            }
+        });
+        encontrada
+    });
+    let Some(tecla_v) = tecla_v else {
+        tracing::warn!("el mapa de teclado no tiene una V para pegar");
+        return false;
+    };
+    let terminal = state
+        .window_for_surface(destino)
+        .and_then(|v| crate::handlers::app_id(&v))
+        .is_some_and(|id| es_terminal(&id));
+    pegar(state, &teclado, destino, tecla_v, terminal);
+    true
 }
 
 // 0.1.1
@@ -209,6 +229,9 @@ fn es_terminal(id: &str) -> bool {
 
 // 0.1.1
 fn recordar(recientes: &mut Vec<String>, texto: &str) {
+    if texto.is_empty() {
+        return;
+    }
     recientes.retain(|s| s != texto);
     recientes.insert(0, texto.to_string());
     recientes.truncate(32);
@@ -242,5 +265,12 @@ mod tests {
             assert!(es_terminal(id), "{id}");
         }
         assert!(!es_terminal("org.bookos.notepad"));
+    }
+
+    #[test]
+    fn recordar_ignora_cadenas_vacias() {
+        let mut recientes = vec!["😀".into()];
+        recordar(&mut recientes, "");
+        assert_eq!(recientes, ["😀"]);
     }
 }

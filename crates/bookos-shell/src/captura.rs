@@ -59,17 +59,36 @@ pub const PASTILLA_ANCHO: f32 = 132.0;
 /// Aire entre la selección y la pastilla.
 const PASTILLA_HUECO: f32 = 8.0;
 
-/// Alto de la barra de modos y su separación del borde de abajo.
-const BARRA_ALTO: f32 = 76.0;
-const BARRA_MARGEN: f32 = 28.0;
-const BARRA_PADDING: f32 = 10.0;
-const CELDA_W: f32 = 116.0;
-const CELDA_H: f32 = 56.0;
-const CELDA_HUECO: f32 = 8.0;
-/// Lo que ocupa el divisor entre los dos grupos, con su aire a los lados.
+/// Dimensiones 1:1 de la barra flotante inferior (concéntrica: 20 - 6 = 14, 14 - 3 = 11).
+const BARRA_ALTO: f32 = 48.0;
+const BARRA_MARGEN: f32 = 22.0;
+const BARRA_PADDING: f32 = 6.0;
+const BARRA_RADIO: f32 = 20.0;
+const CONTROL_ALTO: f32 = 36.0;
+const CONTROL_RADIO: f32 = 14.0;
+const SEG_PADDING: f32 = 3.0;
+const THUMB_ALTO: f32 = 30.0;
+const THUMB_RADIO: f32 = 11.0;
+const GAP_BARRA: f32 = 6.0;
+const GAP_SEG: f32 = 2.0;
+
+const CERRAR_W: f32 = 36.0;
+const TIPO_BTN_W: f32 = 76.0;
+const AREA_BTN_W: f32 = 96.0;
+const OPCIONES_W: f32 = 104.0;
+const ACCION_W: f32 = 104.0;
+
 const DIVISOR_ANCHO: f32 = 1.0;
-const DIVISOR_AIRE: f32 = 12.0;
-const DIVISOR_HUECO: f32 = DIVISOR_ANCHO + DIVISOR_AIRE * 2.0;
+
+/// Dimensiones del popover de opciones sobre el botón «Opciones».
+pub const OPCIONES_POPOVER_W: f32 = 280.0;
+pub const OPCIONES_POPOVER_H_FOTO: f32 = 212.0;
+pub const OPCIONES_POPOVER_H_VIDEO: f32 = 212.0;
+const OPCIONES_POPOVER_HUECO: f32 = 10.0;
+
+/// Dimensiones del pill flotante de grabación (excluido del vídeo por el compositor).
+pub const PILL_GRABACION_W: f32 = 252.0;
+pub const PILL_GRABACION_H: f32 = 42.0;
 
 /// Lo mínimo que tiene que medir una selección para valer.
 ///
@@ -146,44 +165,51 @@ pub enum Destino {
 
 impl Destino {
     const TODOS: [Self; 2] = [Self::Portapapeles, Self::Guardar];
+}
 
-    // 0.1.0
+/// Tipo de captura: foto o vídeo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TipoCaptura {
+    Foto,
+    Video,
+}
+
+impl TipoCaptura {
+    const TODOS: [Self; 2] = [Self::Foto, Self::Video];
+
     fn nombre(self) -> &'static str {
         match self {
-            Self::Portapapeles => "Copiar",
-            Self::Guardar => "Guardar",
+            Self::Foto => crate::emergente::t("Foto", "Photo"),
+            Self::Video => crate::emergente::t("Vídeo", "Video"),
         }
     }
 
-    // 0.1.0
     fn simbolo(self) -> &'static str {
         match self {
-            Self::Portapapeles => "copiar",
-            Self::Guardar => "guardar",
+            Self::Foto => "foto",
+            Self::Video => "video",
         }
     }
 }
 
-/// Lo que se ajusta de la captura sin ser ni el modo ni el destino. Son botones
-/// que se quedan puestos —y se recuerdan— en vez de acciones.
-// añadido en la 0.2.0
+/// Fuente de audio al grabar la pantalla.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Opcion {
-    /// Si el cursor sale en la foto.
-    Cursor,
-    /// Cuántos segundos esperar antes de capturar, para dar tiempo a abrir un
-    /// menú o a quitar la mano del ratón.
-    Espera,
+pub enum AudioGrabacion {
+    Ninguno,
+    Mic,
+    Sistema,
+    Ambos,
 }
 
-impl Opcion {
-    const TODOS: [Self; 2] = [Self::Cursor, Self::Espera];
+impl AudioGrabacion {
+    const TODOS: [Self; 4] = [Self::Ninguno, Self::Mic, Self::Sistema, Self::Ambos];
 
-    // añadido en la 0.2.0
-    fn simbolo(self) -> &'static str {
+    fn nombre(self) -> &'static str {
         match self {
-            Self::Cursor => "cursor",
-            Self::Espera => "reloj",
+            Self::Ninguno => crate::emergente::t("Sin audio", "Muted"),
+            Self::Mic => crate::emergente::t("Micrófono", "Mic"),
+            Self::Sistema => crate::emergente::t("Sistema", "System"),
+            Self::Ambos => crate::emergente::t("Ambos", "Both"),
         }
     }
 }
@@ -192,27 +218,30 @@ impl Opcion {
 pub enum Modo {
     /// La pantalla entera, sin recortar.
     Pantalla,
+    /// Una ventana elegida con el puntero.
+    Ventana,
     /// Lo que se marque arrastrando.
     Seleccion,
 }
 
 impl Modo {
-    const TODOS: [Self; 2] = [Self::Pantalla, Self::Seleccion];
+    const TODOS: [Self; 3] = [Self::Pantalla, Self::Ventana, Self::Seleccion];
 
     // 0.1.0
     fn nombre(self) -> &'static str {
         match self {
-            Self::Pantalla => "Pantalla",
-            Self::Seleccion => "Selección",
+            Self::Pantalla => crate::emergente::t("Pantalla", "Screen"),
+            Self::Ventana => crate::emergente::t("Ventana", "Window"),
+            Self::Seleccion => crate::emergente::t("Selección", "Selection"),
         }
     }
 
-    /// El icono propio que lo dibuja. Eran caracteres (⛶ ⧉ ⤓ ↖) y la ISO no
-    /// trae ninguna fuente que los tenga: salían como cajas vacías.
+    /// El icono propio que lo dibuja.
     // 0.1.0
     fn simbolo(self) -> &'static str {
         match self {
             Self::Pantalla => "monitor",
+            Self::Ventana => "ventana",
             Self::Seleccion => "seleccion",
         }
     }
@@ -301,32 +330,65 @@ impl Recuadro {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CeldaBarra {
+    Cerrar,
+    Tipo(usize),
+    Area(usize),
+    Opciones,
+    Accion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CeldaPopover {
+    Retardo(usize),
+    Cursor,
+    Destino(usize),
+    Audio(usize),
+}
+
 pub struct Captura {
     /// La pantalla, en lógicos.
     pantalla: (f32, f32),
+    tipo: TipoCaptura,
     modo: Modo,
+    destino: Destino,
+    audio: AudioGrabacion,
     arrastre: Option<Arrastre>,
     /// Lo último que se marcó y sigue marcado tras soltar.
     hecho: Option<Recuadro>,
-    /// Qué celda de la barra tiene el ratón encima.
-    señalada: Option<usize>,
-    /// Si el cursor sale en la foto.
-    // añadido en la 0.2.0
+    /// Ventana bajo el puntero cuando está activo `Modo::Ventana`.
+    ventana_hover: Option<Recuadro>,
+    /// Qué control de la barra tiene el ratón encima.
+    señalada: Option<CeldaBarra>,
+    /// Qué control del popover de opciones tiene el ratón encima.
+    señalada_popover: Option<CeldaPopover>,
+    popover_abierto: bool,
+    /// Si el cursor sale en la foto o el vídeo.
     cursor: bool,
-    /// Segundos de espera antes de capturar: 0 es inmediata.
-    // añadido en la 0.2.0
+    /// Segundos de espera antes de capturar o empezar a grabar: 0 es inmediata.
     retardo: u8,
 }
 
 impl Captura {
     // 0.1.0
     pub fn new(pantalla: (f32, f32)) -> Self {
+        let pantalla = (
+            if pantalla.0.is_finite() { pantalla.0.max(1.0) } else { 1.0 },
+            if pantalla.1.is_finite() { pantalla.1.max(1.0) } else { 1.0 },
+        );
         Self {
             pantalla,
+            tipo: TipoCaptura::Foto,
             modo: Modo::Seleccion,
+            destino: Destino::Portapapeles,
+            audio: AudioGrabacion::Mic,
             arrastre: None,
             hecho: None,
+            ventana_hover: None,
             señalada: None,
+            señalada_popover: None,
+            popover_abierto: false,
             cursor: false,
             retardo: 0,
         }
@@ -345,6 +407,23 @@ impl Captura {
         self.modo
     }
 
+    pub fn tipo(&self) -> TipoCaptura {
+        self.tipo
+    }
+
+    pub fn popover_abierto(&self) -> bool {
+        self.popover_abierto
+    }
+
+    /// Actualiza el rectángulo de la ventana bajo el puntero en `Modo::Ventana`.
+    pub fn establecer_ventana(&mut self, rect: Option<Recuadro>) -> bool {
+        if self.ventana_hover == rect {
+            return false;
+        }
+        self.ventana_hover = rect;
+        self.modo == Modo::Ventana
+    }
+
     /// Lo que se capturaría ahora mismo. `None` cuando en modo selección
     /// todavía no se ha marcado nada que valga.
     // 0.1.0
@@ -356,6 +435,7 @@ impl Captura {
                 w: self.pantalla.0,
                 h: self.pantalla.1,
             }),
+            Modo::Ventana => self.ventana_hover.filter(Recuadro::vale),
             Modo::Seleccion => self.marcando().filter(Recuadro::vale),
         }
     }
@@ -380,9 +460,7 @@ impl Captura {
         }
     }
 
-    /// Lo marcado que se ve: el velo tiene el agujero ahí. Es lo mismo que se
-    /// capturaría, así que en modo pantalla es la pantalla entera y el marco
-    /// la rodea por dentro: es como se ve que la foto va a ser toda.
+    /// Lo marcado que se ve: el velo tiene el agujero ahí.
     // 0.1.0
     pub fn marcado(&self) -> Option<Recuadro> {
         self.recuadro()
@@ -399,12 +477,27 @@ impl Captura {
         (self.ancho_barra(), BARRA_ALTO)
     }
 
-    /// Esquina de la pastilla de las medidas. Debajo del recuadro si cabe y
-    /// dentro si no: en una selección que llega al borde de abajo, fuera se
-    /// saldría de la pantalla.
-    ///
-    /// En modo pantalla no hay pastilla: las medidas son las de la pantalla, y
-    /// abajo del todo se montaría encima de la barra.
+    /// Esquina del popover de opciones cuando está abierto.
+    pub fn origen_opciones(&self) -> Option<(f32, f32)> {
+        if !self.popover_abierto {
+            return None;
+        }
+        let (ox, _, _, _) = self.rect_opciones();
+        let (pw, ph) = self.tamano_opciones();
+        let x = (ox + OPCIONES_W - pw).clamp(8.0, (self.pantalla.0 - pw - 8.0).max(8.0));
+        let y = (self.y_barra() - ph - OPCIONES_POPOVER_HUECO).max(8.0);
+        Some((x, y))
+    }
+
+    pub fn tamano_opciones(&self) -> (f32, f32) {
+        let h = match self.tipo {
+            TipoCaptura::Foto => OPCIONES_POPOVER_H_FOTO,
+            TipoCaptura::Video => OPCIONES_POPOVER_H_VIDEO,
+        };
+        (OPCIONES_POPOVER_W, h)
+    }
+
+    /// Esquina de la pastilla de las medidas.
     // 0.1.0
     pub fn origen_pastilla(&self) -> Option<(f32, f32)> {
         let (pw, ph) = self.pantalla;
@@ -419,76 +512,180 @@ impl Captura {
         Some((px, py))
     }
 
-    /// Lo que pone la pastilla. Solo cambia cuando cambian los píxeles
-    /// enteros, que es lo que decide si hay que repintarla.
+    /// Lo que pone la pastilla.
     // 0.1.0
     pub fn medidas(&self) -> Option<(i32, i32)> {
         match self.modo {
-            Modo::Pantalla => None,
+            Modo::Pantalla | Modo::Ventana => None,
             Modo::Seleccion => self.marcado().map(|r| (r.w as i32, r.h as i32)),
         }
     }
 
-    /// `y` donde empieza la barra de modos.
-    // 0.1.0
     fn y_barra(&self) -> f32 {
         self.pantalla.1 - BARRA_MARGEN - BARRA_ALTO
     }
 
-    /// Cuántas celdas tiene la barra: los modos, los destinos y las opciones.
-    // modificado en la 0.2.0 -- el tercer grupo, con el cursor y la espera.
-    const CELDAS: usize = Modo::TODOS.len() + Destino::TODOS.len() + Opcion::TODOS.len();
-    /// Dónde empieza cada grupo después del primero.
-    const DESTINOS: usize = Modo::TODOS.len();
-    const OPCIONES: usize = Modo::TODOS.len() + Destino::TODOS.len();
+    fn ancho_tipo() -> f32 {
+        SEG_PADDING * 2.0 + TIPO_BTN_W * 2.0 + GAP_SEG
+    }
 
-    // 0.1.0
+    fn ancho_area() -> f32 {
+        SEG_PADDING * 2.0 + AREA_BTN_W * 3.0 + GAP_SEG * 2.0
+    }
+
     fn ancho_barra(&self) -> f32 {
-        CELDA_W * Self::CELDAS as f32
-            + CELDA_HUECO * (Self::CELDAS - 1) as f32
-            + DIVISOR_HUECO * 2.0
-            + BARRA_PADDING * 2.0
+        BARRA_PADDING * 2.0
+            + CERRAR_W
+            + Self::ancho_tipo()
+            + DIVISOR_ANCHO
+            + Self::ancho_area()
+            + DIVISOR_ANCHO
+            + OPCIONES_W
+            + ACCION_W
+            + GAP_BARRA * 6.0
     }
 
-    /// La `x` donde empieza la celda `i`, relativa al borde de la pantalla.
-    ///
-    /// El divisor va entre los dos grupos, así que a partir de la primera celda
-    /// de destino todo se corre lo que ocupa. Se calcula aquí y no en el `view`
-    /// para que el hit-test y el dibujo no puedan discrepar, que es el fallo
-    /// que ya salió una vez en el buscador.
-    // 0.1.0
-    fn x_celda(&self, i: usize) -> f32 {
-        let base = self.x_barra() + BARRA_PADDING + i as f32 * (CELDA_W + CELDA_HUECO);
-        // Un divisor por cada frontera de grupo que se haya cruzado.
-        let divisores = usize::from(i >= Self::DESTINOS) + usize::from(i >= Self::OPCIONES);
-        base + DIVISOR_HUECO * divisores as f32
-    }
-
-    // 0.1.0
     fn x_barra(&self) -> f32 {
         (self.pantalla.0 - self.ancho_barra()) / 2.0
     }
 
-    /// Qué celda de la barra cae en ese punto.
-    ///
-    /// Se recorren las celdas en vez de dividir por el paso: con el divisor en
-    /// medio, la cuenta con un solo paso dejaría de valer a partir del segundo
-    /// grupo, y cuatro comparaciones no cuestan nada.
-    // 0.1.0
-    fn celda_en(&self, x: f32, y: f32) -> Option<usize> {
-        let y0 = self.y_barra() + BARRA_PADDING;
-        if y < y0 || y > y0 + CELDA_H {
-            return None;
-        }
-        (0..Self::CELDAS).find(|i| {
-            let x0 = self.x_celda(*i);
-            x >= x0 && x < x0 + CELDA_W
-        })
+    fn rect_cerrar(&self) -> (f32, f32, f32, f32) {
+        let x = self.x_barra() + BARRA_PADDING;
+        let y = self.y_barra() + BARRA_PADDING;
+        (x, y, CERRAR_W, CONTROL_ALTO)
     }
 
-    /// ¿Cae el punto sobre la barra de modos? Ahí el arrastre no empieza: si
-    /// no, ir a pulsar «Pantalla» marcaría un recuadro por el camino.
-    // 0.1.0
+    fn x_tipo_inicio(&self) -> f32 {
+        self.x_barra() + BARRA_PADDING + CERRAR_W + GAP_BARRA + SEG_PADDING
+    }
+
+    fn x_area_inicio(&self) -> f32 {
+        self.x_barra()
+            + BARRA_PADDING
+            + CERRAR_W
+            + GAP_BARRA
+            + Self::ancho_tipo()
+            + GAP_BARRA
+            + DIVISOR_ANCHO
+            + GAP_BARRA
+            + SEG_PADDING
+    }
+
+    fn rect_opciones(&self) -> (f32, f32, f32, f32) {
+        let x = self.x_barra()
+            + BARRA_PADDING
+            + CERRAR_W
+            + GAP_BARRA
+            + Self::ancho_tipo()
+            + GAP_BARRA
+            + DIVISOR_ANCHO
+            + GAP_BARRA
+            + Self::ancho_area()
+            + GAP_BARRA
+            + DIVISOR_ANCHO
+            + GAP_BARRA;
+        let y = self.y_barra() + BARRA_PADDING;
+        (x, y, OPCIONES_W, CONTROL_ALTO)
+    }
+
+    fn rect_accion(&self) -> (f32, f32, f32, f32) {
+        let (ox, y, _, _) = self.rect_opciones();
+        (ox + OPCIONES_W + GAP_BARRA, y, ACCION_W, CONTROL_ALTO)
+    }
+
+    fn celda_en(&self, x: f32, y: f32) -> Option<CeldaBarra> {
+        let y_ctrl = self.y_barra() + BARRA_PADDING;
+        if y < y_ctrl || y > y_ctrl + CONTROL_ALTO {
+            return None;
+        }
+        let (cx, _, cw, _) = self.rect_cerrar();
+        if x >= cx && x < cx + cw {
+            return Some(CeldaBarra::Cerrar);
+        }
+        let y_thumb = y_ctrl + SEG_PADDING;
+        if y >= y_thumb && y <= y_thumb + THUMB_ALTO {
+            let tx = self.x_tipo_inicio();
+            for i in 0..TipoCaptura::TODOS.len() {
+                let x0 = tx + i as f32 * (TIPO_BTN_W + GAP_SEG);
+                if x >= x0 && x < x0 + TIPO_BTN_W {
+                    return Some(CeldaBarra::Tipo(i));
+                }
+            }
+            let ax = self.x_area_inicio();
+            for i in 0..Modo::TODOS.len() {
+                let x0 = ax + i as f32 * (AREA_BTN_W + GAP_SEG);
+                if x >= x0 && x < x0 + AREA_BTN_W {
+                    return Some(CeldaBarra::Area(i));
+                }
+            }
+        }
+        let (ox, _, ow, _) = self.rect_opciones();
+        if x >= ox && x < ox + ow {
+            return Some(CeldaBarra::Opciones);
+        }
+        let (ax, _, aw, _) = self.rect_accion();
+        if x >= ax && x < ax + aw {
+            return Some(CeldaBarra::Accion);
+        }
+        None
+    }
+
+    fn celda_popover_en(&self, x: f32, y: f32) -> Option<CeldaPopover> {
+        let (ox, oy) = self.origen_opciones()?;
+        let (pw, ph) = self.tamano_opciones();
+        if x < ox || x > ox + pw || y < oy || y > oy + ph {
+            return None;
+        }
+        let lx = x - ox - 12.0;
+        let ly = y - oy - 12.0;
+        if lx < 0.0 || lx > pw - 24.0 || ly < 0.0 {
+            return None;
+        }
+        if (22.0..=52.0).contains(&ly) {
+            let pill_w = (pw - 24.0 - 12.0) / 4.0;
+            for i in 0..4 {
+                let x0 = i as f32 * (pill_w + 4.0);
+                if lx >= x0 && lx <= x0 + pill_w {
+                    return Some(CeldaPopover::Retardo(i));
+                }
+            }
+        }
+        if (64.0..=100.0).contains(&ly) {
+            return Some(CeldaPopover::Cursor);
+        }
+        if (134.0..=168.0).contains(&ly) {
+            match self.tipo {
+                TipoCaptura::Foto => {
+                    let pill_w = (pw - 24.0 - 6.0) / 2.0;
+                    for i in 0..2 {
+                        let x0 = i as f32 * (pill_w + 6.0);
+                        if lx >= x0 && lx <= x0 + pill_w {
+                            return Some(CeldaPopover::Destino(i));
+                        }
+                    }
+                }
+                TipoCaptura::Video => {
+                    let pill_w = (pw - 24.0 - 12.0) / 4.0;
+                    for i in 0..4 {
+                        let x0 = i as f32 * (pill_w + 4.0);
+                        if lx >= x0 && lx <= x0 + pill_w {
+                            return Some(CeldaPopover::Audio(i));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn en_el_popover(&self, x: f32, y: f32) -> bool {
+        let Some((ox, oy)) = self.origen_opciones() else {
+            return false;
+        };
+        let (pw, ph) = self.tamano_opciones();
+        x >= ox && x <= ox + pw && y >= oy && y <= oy + ph
+    }
+
     fn en_la_barra(&self, x: f32, y: f32) -> bool {
         x >= self.x_barra()
             && x <= self.x_barra() + self.ancho_barra()
@@ -496,13 +693,17 @@ impl Captura {
             && y <= self.y_barra() + BARRA_ALTO
     }
 
-    /// Mueve el puntero. `true` si hay que repintar **la barra**: lo que
-    /// cambie en el recuadro lo dicen [`Self::marcado`] y [`Self::medidas`].
+    /// Mueve el puntero. `true` si hay que repintar barra u opciones.
     // 0.1.0
     pub fn puntero(&mut self, x: f32, y: f32) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
         let señalada = self.celda_en(x, y);
-        let cambio_señal = señalada != self.señalada;
+        let señalada_popover = self.celda_popover_en(x, y);
+        let cambio_señal = señalada != self.señalada || señalada_popover != self.señalada_popover;
         self.señalada = señalada;
+        self.señalada_popover = señalada_popover;
         let punto = (x.clamp(0.0, self.pantalla.0), y.clamp(0.0, self.pantalla.1));
         match self.arrastre.as_mut() {
             Some(Arrastre::Nuevo(_, hasta)) | Some(Arrastre::Ajuste { hasta, .. }) => {
@@ -513,14 +714,18 @@ impl Captura {
         cambio_señal
     }
 
-    /// La forma del cursor en ese punto: lo que haría un clic ahí, o lo que se
-    /// está haciendo si hay un arrastre.
+    /// La forma del cursor en ese punto.
     // 0.1.0
     pub fn forma(&self, x: f32, y: f32) -> Forma {
+        if !x.is_finite() || !y.is_finite() {
+            return Forma::Cruz;
+        }
+        if self.en_la_barra(x, y) || self.en_el_popover(x, y) || self.modo == Modo::Ventana {
+            return Forma::Flecha;
+        }
         let agarre = match self.arrastre {
             Some(Arrastre::Nuevo(..)) => return Forma::Cruz,
             Some(Arrastre::Ajuste { agarre, .. }) => Some(agarre),
-            None if self.en_la_barra(x, y) => return Forma::Flecha,
             None => self.hecho_ajustable().and_then(|r| r.agarre(x, y)),
         };
         match agarre {
@@ -535,46 +740,75 @@ impl Captura {
         }
     }
 
-    /// Lo marcado, si se puede ajustar: en modo pantalla no hay aristas que
-    /// coger, la foto es toda.
-    // 0.1.0
     fn hecho_ajustable(&self) -> Option<Recuadro> {
         self.hecho.filter(|_| self.modo == Modo::Seleccion)
     }
 
-    /// Empieza un arrastre o pulsa un botón de la barra. `Some` solo al pulsar
-    /// «Copiar» o «Guardar» con algo que capturar.
+    /// Empieza un arrastre o pulsa un botón de la barra/opciones.
     // 0.1.0
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
-        if let Some(i) = self.celda_en(x, y) {
-            // Las últimas son opciones: se quedan puestas y se recuerdan.
-            if i >= Self::OPCIONES {
-                match Opcion::TODOS[i - Self::OPCIONES] {
-                    Opcion::Cursor => self.cursor = !self.cursor,
-                    Opcion::Espera => {
-                        let siguiente = crate::config::RETARDOS_CAPTURA
-                            .iter()
-                            .position(|r| *r == self.retardo)
-                            .map_or(0, |p| (p + 1) % crate::config::RETARDOS_CAPTURA.len());
-                        self.retardo = crate::config::RETARDOS_CAPTURA[siguiente];
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        if self.popover_abierto {
+            if let Some(celda) = self.celda_popover_en(x, y) {
+                match celda {
+                    CeldaPopover::Retardo(i) => {
+                        self.retardo = crate::config::RETARDOS_CAPTURA[i];
+                        return Some(Accion::CapturaOpciones {
+                            cursor: self.cursor,
+                            retardo: self.retardo,
+                        });
+                    }
+                    CeldaPopover::Cursor => {
+                        self.cursor = !self.cursor;
+                        return Some(Accion::CapturaOpciones {
+                            cursor: self.cursor,
+                            retardo: self.retardo,
+                        });
+                    }
+                    CeldaPopover::Destino(i) => {
+                        self.destino = Destino::TODOS[i];
+                        return None;
+                    }
+                    CeldaPopover::Audio(i) => {
+                        self.audio = AudioGrabacion::TODOS[i];
+                        return None;
                     }
                 }
-                return Some(Accion::CapturaOpciones {
-                    cursor: self.cursor,
-                    retardo: self.retardo,
-                });
             }
-            // Las primeras celdas son los modos y las de después los destinos.
-            if let Some(destino) = Destino::TODOS.get(i.wrapping_sub(Modo::TODOS.len())) {
-                return self.accion(*destino);
+            if self.en_el_popover(x, y) {
+                return None;
             }
-            // Elegir modo no captura: «Pantalla» deja la pantalla entera
-            // marcada, y qué hacer con ella se decide con los botones.
-            self.modo = Modo::TODOS[i];
-            return None;
+        }
+        if let Some(celda) = self.celda_en(x, y) {
+            if celda != CeldaBarra::Opciones {
+                self.popover_abierto = false;
+            }
+            match celda {
+                CeldaBarra::Cerrar => return Some(Accion::CapturaCerrar),
+                CeldaBarra::Tipo(i) => {
+                    self.tipo = TipoCaptura::TODOS[i];
+                    return None;
+                }
+                CeldaBarra::Area(i) => {
+                    self.arrastre = None;
+                    self.modo = Modo::TODOS[i];
+                    return None;
+                }
+                CeldaBarra::Opciones => {
+                    self.popover_abierto = !self.popover_abierto;
+                    return None;
+                }
+                CeldaBarra::Accion => return self.ejecutar_accion(),
+            }
         }
         if self.en_la_barra(x, y) {
             return None;
+        }
+        self.popover_abierto = false;
+        if self.modo == Modo::Ventana {
+            return self.ejecutar_accion();
         }
         let punto = (x.clamp(0.0, self.pantalla.0), y.clamp(0.0, self.pantalla.1));
         if let Some(antes) = self.hecho_ajustable()
@@ -594,12 +828,6 @@ impl Captura {
         None
     }
 
-    /// Suelta el arrastre. **No captura**: deja el recuadro marcado para
-    /// elegir después si va al portapapeles o a un fichero.
-    ///
-    /// Un clic suelto sobre el velo no deja nada marcado: se entiende como «no
-    /// quiero nada de aquí» y la capa sigue abierta para volver a intentarlo.
-    // 0.1.0
     pub fn soltar(&mut self) {
         let Some(arrastre) = self.arrastre else {
             return;
@@ -608,39 +836,61 @@ impl Captura {
         self.arrastre = None;
         self.hecho = match arrastre {
             Arrastre::Nuevo(..) => nuevo,
-            // Encogerlo por debajo del mínimo no borra lo marcado: se queda
-            // como estaba, que perderlo por un tirón de más es peor.
             Arrastre::Ajuste { antes, .. } => nuevo.or(Some(antes)),
         };
     }
 
-    // 0.1.0
-    fn accion(&self, destino: Destino) -> Option<Accion> {
+    pub fn cancelar_arrastre(&mut self) {
+        let Some(arrastre) = self.arrastre.take() else {
+            return;
+        };
+        self.hecho = match arrastre {
+            Arrastre::Nuevo(..) => None,
+            Arrastre::Ajuste { antes, .. } => Some(antes),
+        };
+    }
+
+    fn ejecutar_accion(&self) -> Option<Accion> {
         let r = self.recuadro()?;
-        Some(Accion::Capturar {
-            x: r.x as i32,
-            y: r.y as i32,
-            ancho: r.w as i32,
-            alto: r.h as i32,
-            guardar: destino == Destino::Guardar,
-            cursor: self.cursor,
-            retardo: self.retardo,
-        })
+        match self.tipo {
+            TipoCaptura::Foto => Some(Accion::Capturar {
+                x: r.x as i32,
+                y: r.y as i32,
+                ancho: r.w as i32,
+                alto: r.h as i32,
+                guardar: self.destino == Destino::Guardar,
+                cursor: self.cursor,
+                retardo: self.retardo,
+            }),
+            TipoCaptura::Video => Some(Accion::GrabarIniciar {
+                x: r.x as i32,
+                y: r.y as i32,
+                ancho: r.w as i32,
+                alto: r.h as i32,
+                cursor: self.cursor,
+                retardo: self.retardo,
+                audio: self.audio,
+            }),
+        }
     }
 
     // 0.1.0
     pub fn tecla(&mut self, tecla: TeclaPulsada) -> crate::Tecla {
         use crate::Tecla;
         match tecla {
-            TeclaPulsada::Escape => Tecla::Cerrar,
-            // Intro copia lo que haya: la pantalla entera si no se ha marcado
-            // nada, que es lo que se espera de abrir y darle a Intro. Es el
-            // atajo del botón «Copiar»; guardar pide el clic.
+            TeclaPulsada::Escape => {
+                if self.popover_abierto {
+                    self.popover_abierto = false;
+                    Tecla::Consumida
+                } else {
+                    Tecla::Cerrar
+                }
+            }
             TeclaPulsada::Intro => {
                 if self.recuadro().is_none() {
                     self.modo = Modo::Pantalla;
                 }
-                match self.accion(Destino::Portapapeles) {
+                match self.ejecutar_accion() {
                     Some(accion) => Tecla::Hacer(accion),
                     None => Tecla::Consumida,
                 }
@@ -655,6 +905,7 @@ impl Captura {
                 } else {
                     Modo::TODOS.len() - 1
                 };
+                self.arrastre = None;
                 self.modo = Modo::TODOS[(i + paso) % Modo::TODOS.len()];
                 Tecla::Consumida
             }
@@ -662,15 +913,10 @@ impl Captura {
         }
     }
 
-    /// ¿Hay algo moviéndose? El recuadro se mueve con el ratón, así que sí
-    /// mientras se arrastra.
-    // 0.1.0
     pub fn animando(&self) -> bool {
         self.arrastre.is_some()
     }
 
-    /// La pastilla con las medidas, sola en su lienzo.
-    // 0.1.0
     pub fn vista_pastilla(&self) -> PanelElement<'_> {
         let (w, h) = self.medidas().unwrap_or_default();
         container(
@@ -682,9 +928,6 @@ impl Captura {
         .height(Length::Fixed(PASTILLA_ALTO))
         .align_x(Horizontal::Center)
         .align_y(Vertical::Center)
-        // El mismo fondo y el mismo trato que cualquier tarjeta del shell
-        // (`emergente::control::tarjeta`): `card()` opaco y sin borde. Lo
-        // único propio es el radio, porque esto es una pastilla.
         .style(|_| iced_widget::container::Style {
             background: Some(tema::card().into()),
             border: Border {
@@ -696,142 +939,759 @@ impl Captura {
         .into()
     }
 
-    /// La barra, sola en su lienzo: los modos a la izquierda y a dónde va la
-    /// captura a la derecha, separados por un divisor. Dónde va en la pantalla
-    /// lo dice [`Self::origen_barra`].
-    // 0.1.0
+    /// Barra flotante inferior 1:1 con el diseño HIG:
+    /// `[×] [Foto | Vídeo] | [Pantalla | Ventana | Selección] | [Opciones] [Capturar/Grabar]`
     pub fn vista_barra(&self) -> PanelElement<'_> {
-        let mut celdas = row![];
-        for i in 0..Self::CELDAS {
-            if i > 0 {
-                celdas = celdas.push(Space::new().width(Length::Fixed(CELDA_HUECO)));
-            }
-            // El divisor entre los dos grupos: la misma línea que separa las
-            // secciones de las tarjetas del panel.
-            if i == Self::DESTINOS || i == Self::OPCIONES {
-                celdas = celdas
-                    .push(Space::new().width(Length::Fixed(DIVISOR_AIRE - CELDA_HUECO)))
-                    .push(
-                        container(Space::new())
-                            .width(Length::Fixed(DIVISOR_ANCHO))
-                            .height(Length::Fixed(CELDA_H * 0.6))
-                            .style(|_| iced_widget::container::Style {
-                                background: Some(tema::alfa(tema::tinta(), 0.14).into()),
-                                ..Default::default()
-                            }),
-                    )
-                    .push(Space::new().width(Length::Fixed(DIVISOR_AIRE)));
-            }
-            // Los modos se encienden cuando están elegidos. Los destinos son
-            // botones: no se quedan encendidos, y se apagan mientras no haya
-            // nada marcado que capturar.
-            let (simbolo, nombre, activa, apagada) = if i >= Self::OPCIONES {
-                let o = Opcion::TODOS[i - Self::OPCIONES];
-                match o {
-                    Opcion::Cursor => (
-                        o.simbolo(),
-                        if self.cursor {
-                            "Con cursor"
-                        } else {
-                            "Sin cursor"
-                        }
-                        .to_string(),
-                        self.cursor,
-                        false,
-                    ),
-                    Opcion::Espera => (
-                        o.simbolo(),
-                        if self.retardo == 0 {
-                            "Sin espera".to_string()
-                        } else {
-                            format!("{} s", self.retardo)
-                        },
-                        self.retardo > 0,
-                        false,
-                    ),
-                }
+        let thumb_fondo = if tema::es_claro() {
+            iced_core::Color::WHITE
+        } else {
+            tema::alfa(iced_core::Color::WHITE, 0.16)
+        };
+        let track_fondo = tema::alfa(tema::tinta(), 0.08);
+        let divisor = || {
+            container(Space::new())
+                .width(Length::Fixed(DIVISOR_ANCHO))
+                .height(Length::Fixed(22.0))
+                .style(|_| iced_widget::container::Style {
+                    background: Some(tema::alfa(tema::tinta(), 0.08).into()),
+                    ..Default::default()
+                })
+        };
+
+        let cerrar_señal = self.señalada == Some(CeldaBarra::Cerrar);
+        let btn_cerrar = container(match crate::icono::propio("cerrar") {
+            Some(ic) => crate::icono::ver_teñido_propio(
+                &ic,
+                15.0,
+                if cerrar_señal { tema::texto() } else { tema::texto2() },
+            ),
+            None => Space::new().width(Length::Fixed(15.0)).into(),
+        })
+        .width(Length::Fixed(CERRAR_W))
+        .height(Length::Fixed(CONTROL_ALTO))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(move |_| iced_widget::container::Style {
+            background: Some(if cerrar_señal { tema::hover() } else { track_fondo }.into()),
+            border: Border {
+                radius: CONTROL_RADIO.into(),
+                width: 1.0,
+                color: tema::borde(),
+            },
+            ..Default::default()
+        });
+
+        let mut seg_tipo = row![].spacing(GAP_SEG);
+        for (i, t) in TipoCaptura::TODOS.iter().enumerate() {
+            let activa = *t == self.tipo;
+            let señal = self.señalada == Some(CeldaBarra::Tipo(i));
+            let color_txt = if activa || señal {
+                tema::texto()
             } else {
-                match Destino::TODOS.get(i.wrapping_sub(Modo::TODOS.len())) {
-                    Some(d) => (
-                        d.simbolo(),
-                        d.nombre().to_string(),
-                        false,
-                        self.recuadro().is_none(),
-                    ),
-                    None => {
-                        let m = Modo::TODOS[i];
-                        (m.simbolo(), m.nombre().to_string(), m == self.modo, false)
-                    }
-                }
+                tema::texto2()
             };
-            let señalada = self.señalada == Some(i) && !apagada;
-            celdas = celdas.push(
+            seg_tipo = seg_tipo.push(
                 container(
-                    column![
-                        match crate::icono::propio(simbolo) {
-                            Some(ic) => crate::icono::ver_teñido_propio(
-                                &ic,
-                                22.0,
-                                if activa { tema::acento() } else { tema::texto2() },
-                            ),
-                            None => Space::new().height(Length::Fixed(22.0)).into(),
+                    row![
+                        match crate::icono::propio(t.simbolo()) {
+                            Some(ic) => crate::icono::ver_teñido_propio(&ic, 15.0, color_txt),
+                            None => Space::new().width(Length::Fixed(15.0)).into(),
                         },
-                        Space::new().height(Length::Fixed(2.0)),
-                        text(nombre).size(tema::T_PEQUENO).color(if apagada {
-                            tema::texto2()
-                        } else {
-                            tema::texto()
-                        }),
+                        text(t.nombre()).size(tema::T_CUERPO).color(color_txt),
                     ]
-                    .align_x(Horizontal::Center),
+                    .spacing(6.0)
+                    .align_y(Vertical::Center),
                 )
-                .width(Length::Fixed(CELDA_W))
-                .height(Length::Fixed(CELDA_H))
-                // `center(Length::Fill)` **no**, aunque sea lo que usan las
-                // tarjetas del panel: pone el ancho y el alto a `Fill` y se
-                // lleva por delante los fijos de arriba. Allí no se nota porque
-                // la emergente ya viene medida al contenido; aquí el padre es
-                // la pantalla entera y las celdas se repartían los 1280 px.
+                .width(Length::Fixed(TIPO_BTN_W))
+                .height(Length::Fixed(THUMB_ALTO))
                 .align_x(Horizontal::Center)
                 .align_y(Vertical::Center)
                 .style(move |_| iced_widget::container::Style {
                     background: Some(
                         if activa {
-                            tema::alfa(tema::acento(), 0.16)
-                        } else if señalada {
-                            tema::hover()
+                            thumb_fondo
                         } else {
                             iced_core::Color::TRANSPARENT
                         }
                         .into(),
                     ),
                     border: Border {
-                        radius: tema::R_CONTROL.into(),
-                        width: if activa { 2.0 } else { 0.0 },
-                        color: tema::acento(),
+                        radius: THUMB_RADIO.into(),
+                        ..Default::default()
                     },
                     ..Default::default()
                 }),
             );
         }
+        let track_tipo = container(seg_tipo)
+            .padding(SEG_PADDING)
+            .height(Length::Fixed(CONTROL_ALTO))
+            .style(move |_| iced_widget::container::Style {
+                background: Some(track_fondo.into()),
+                border: Border {
+                    radius: CONTROL_RADIO.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
 
-        container(celdas)
+        let mut seg_area = row![].spacing(GAP_SEG);
+        for (i, m) in Modo::TODOS.iter().enumerate() {
+            let activa = *m == self.modo;
+            let señal = self.señalada == Some(CeldaBarra::Area(i));
+            let color_txt = if activa || señal {
+                tema::texto()
+            } else {
+                tema::texto2()
+            };
+            seg_area = seg_area.push(
+                container(
+                    row![
+                        match crate::icono::propio(m.simbolo()) {
+                            Some(ic) => crate::icono::ver_teñido_propio(&ic, 15.0, color_txt),
+                            None => Space::new().width(Length::Fixed(15.0)).into(),
+                        },
+                        text(m.nombre()).size(tema::T_CUERPO).color(color_txt),
+                    ]
+                    .spacing(6.0)
+                    .align_y(Vertical::Center),
+                )
+                .width(Length::Fixed(AREA_BTN_W))
+                .height(Length::Fixed(THUMB_ALTO))
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .style(move |_| iced_widget::container::Style {
+                    background: Some(
+                        if activa {
+                            thumb_fondo
+                        } else {
+                            iced_core::Color::TRANSPARENT
+                        }
+                        .into(),
+                    ),
+                    border: Border {
+                        radius: THUMB_RADIO.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
+        let track_area = container(seg_area)
+            .padding(SEG_PADDING)
+            .height(Length::Fixed(CONTROL_ALTO))
+            .style(move |_| iced_widget::container::Style {
+                background: Some(track_fondo.into()),
+                border: Border {
+                    radius: CONTROL_RADIO.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+        let opt_señal = self.señalada == Some(CeldaBarra::Opciones) || self.popover_abierto;
+        let btn_opciones = container(
+            row![
+                match crate::icono::propio("control") {
+                    Some(ic) => crate::icono::ver_teñido_propio(&ic, 15.0, tema::texto()),
+                    None => Space::new().width(Length::Fixed(15.0)).into(),
+                },
+                text(crate::emergente::t("Opciones", "Options"))
+                    .size(tema::T_CUERPO)
+                    .color(tema::texto()),
+            ]
+            .spacing(6.0)
+            .align_y(Vertical::Center),
+        )
+        .width(Length::Fixed(OPCIONES_W))
+        .height(Length::Fixed(CONTROL_ALTO))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(move |_| iced_widget::container::Style {
+            background: Some(if opt_señal { tema::hover() } else { track_fondo }.into()),
+            border: Border {
+                radius: CONTROL_RADIO.into(),
+                width: 1.0,
+                color: tema::borde(),
+            },
+            ..Default::default()
+        });
+
+        let puede = self.recuadro().is_some();
+        let etiqueta_accion = match self.tipo {
+            TipoCaptura::Foto => match self.destino {
+                Destino::Portapapeles => crate::emergente::t("Copiar", "Copy").to_string(),
+                Destino::Guardar => crate::emergente::t("Capturar", "Capture").to_string(),
+            },
+            TipoCaptura::Video => {
+                if self.retardo > 0 {
+                    format!("{} ({}s)", crate::emergente::t("Grabar", "Record"), self.retardo)
+                } else {
+                    crate::emergente::t("Grabar", "Record").to_string()
+                }
+            }
+        };
+        let color_accion = match self.tipo {
+            TipoCaptura::Foto => tema::acento(),
+            TipoCaptura::Video => tema::rojo(),
+        };
+        let fondo_accion = if puede {
+            color_accion
+        } else {
+            tema::alfa(color_accion, 0.45)
+        };
+        let btn_accion = container(
+            text(etiqueta_accion)
+                .size(tema::T_CUERPO)
+                .color(iced_core::Color::WHITE),
+        )
+        .width(Length::Fixed(ACCION_W))
+        .height(Length::Fixed(CONTROL_ALTO))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(move |_| iced_widget::container::Style {
+            background: Some(fondo_accion.into()),
+            border: Border {
+                radius: CONTROL_RADIO.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let fila = row![
+            btn_cerrar,
+            track_tipo,
+            divisor(),
+            track_area,
+            divisor(),
+            btn_opciones,
+            btn_accion,
+        ]
+        .spacing(GAP_BARRA)
+        .align_y(Vertical::Center);
+
+        container(fila)
             .padding(BARRA_PADDING)
-            // Medida a lo suyo y no a `Fill`: el lienzo se redondea hacia
-            // arriba a píxel entero, y la barra tiene que medir lo mismo que
-            // usa `celda_en` para que el clic caiga donde se ve.
             .width(Length::Fixed(self.ancho_barra()))
             .height(Length::Fixed(BARRA_ALTO))
             .style(|_| iced_widget::container::Style {
                 background: Some(tema::card().into()),
                 border: Border {
-                    radius: tema::R_TARJETA.into(),
-                    ..Default::default()
+                    radius: BARRA_RADIO.into(),
+                    width: 1.0,
+                    color: tema::borde(),
                 },
                 ..Default::default()
             })
             .into()
     }
+
+    /// Popover flotante de opciones encima del botón «Opciones».
+    pub fn vista_opciones(&self) -> PanelElement<'_> {
+        let (_, ph) = self.tamano_opciones();
+        let pill = |etiqueta: String, activa: bool, señal: bool, w: f32| -> PanelElement<'_> {
+            container(
+                text(etiqueta)
+                    .size(tema::T_PEQUENO)
+                    .color(if activa {
+                        iced_core::Color::WHITE
+                    } else if señal {
+                        tema::texto()
+                    } else {
+                        tema::texto2()
+                    }),
+            )
+            .width(Length::Fixed(w))
+            .height(Length::Fixed(28.0))
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .style(move |_| iced_widget::container::Style {
+                background: Some(
+                    if activa {
+                        tema::acento()
+                    } else if señal {
+                        tema::hover()
+                    } else {
+                        tema::alfa(tema::tinta(), 0.08)
+                    }
+                    .into(),
+                ),
+                border: Border {
+                    radius: tema::R_PILL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+        };
+
+        let mut retardos = row![].spacing(4.0);
+        let pill_w4 = (OPCIONES_POPOVER_W - 24.0 - 12.0) / 4.0;
+        for (i, &r) in crate::config::RETARDOS_CAPTURA.iter().enumerate() {
+            let lbl = if r == 0 {
+                crate::emergente::t("Sin espera", "None").to_string()
+            } else {
+                format!("{r} s")
+            };
+            retardos = retardos.push(pill(
+                lbl,
+                self.retardo == r,
+                self.señalada_popover == Some(CeldaPopover::Retardo(i)),
+                pill_w4,
+            ));
+        }
+
+        let cursor_señal = self.señalada_popover == Some(CeldaPopover::Cursor);
+        let toggle = container(
+            container(Space::new())
+                .width(Length::Fixed(18.0))
+                .height(Length::Fixed(18.0))
+                .style(|_| iced_widget::container::Style {
+                    background: Some(iced_core::Color::WHITE.into()),
+                    border: Border {
+                        radius: tema::R_PILL.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        )
+        .width(Length::Fixed(42.0))
+        .height(Length::Fixed(24.0))
+        .padding(3.0)
+        .align_x(if self.cursor {
+            Horizontal::Right
+        } else {
+            Horizontal::Left
+        })
+        .align_y(Vertical::Center)
+        .style(|_| iced_widget::container::Style {
+            background: Some(
+                if self.cursor {
+                    tema::acento()
+                } else {
+                    tema::alfa(tema::tinta(), 0.22)
+                }
+                .into(),
+            ),
+            border: Border {
+                radius: tema::R_PILL.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let fila_cursor = container(
+            row![
+                text(crate::emergente::t("Mostrar puntero", "Show cursor"))
+                    .size(tema::T_CUERPO)
+                    .color(tema::texto()),
+                Space::new().width(Length::Fill),
+                toggle,
+            ]
+            .align_y(Vertical::Center),
+        )
+        .height(Length::Fixed(36.0))
+        .padding([0.0, 6.0])
+        .align_y(Vertical::Center)
+        .style(move |_| iced_widget::container::Style {
+            background: Some(
+                if cursor_señal {
+                    tema::hover()
+                } else {
+                    iced_core::Color::TRANSPARENT
+                }
+                .into(),
+            ),
+            border: Border {
+                radius: tema::R_ITEM_POPOVER.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let (subtitulo_3, grupo_3): (&str, PanelElement<'_>) = match self.tipo {
+            TipoCaptura::Foto => {
+                let mut dest = row![].spacing(6.0);
+                let w2 = (OPCIONES_POPOVER_W - 24.0 - 6.0) / 2.0;
+                for (i, d) in Destino::TODOS.iter().enumerate() {
+                    let lbl = match d {
+                        Destino::Portapapeles => crate::emergente::t("Portapapeles", "Clipboard"),
+                        Destino::Guardar => crate::emergente::t("Imágenes", "Pictures"),
+                    };
+                    dest = dest.push(pill(
+                        lbl.to_string(),
+                        *d == self.destino,
+                        self.señalada_popover == Some(CeldaPopover::Destino(i)),
+                        w2,
+                    ));
+                }
+                (crate::emergente::t("Guardar en", "Save to"), dest.into())
+            }
+            TipoCaptura::Video => {
+                let mut aud = row![].spacing(4.0);
+                for (i, a) in AudioGrabacion::TODOS.iter().enumerate() {
+                    aud = aud.push(pill(
+                        a.nombre().to_string(),
+                        *a == self.audio,
+                        self.señalada_popover == Some(CeldaPopover::Audio(i)),
+                        pill_w4,
+                    ));
+                }
+                (crate::emergente::t("Audio", "Audio"), aud.into())
+            }
+        };
+
+        let contenido = column![
+            text(crate::emergente::t("Temporizador", "Timer"))
+                .size(tema::T_PEQUENO)
+                .color(tema::texto2()),
+            Space::new().height(Length::Fixed(6.0)),
+            retardos,
+            Space::new().height(Length::Fixed(10.0)),
+            fila_cursor,
+            Space::new().height(Length::Fixed(10.0)),
+            text(subtitulo_3).size(tema::T_PEQUENO).color(tema::texto2()),
+            Space::new().height(Length::Fixed(6.0)),
+            grupo_3,
+        ];
+
+        container(contenido)
+            .padding(12.0)
+            .width(Length::Fixed(OPCIONES_POPOVER_W))
+            .height(Length::Fixed(ph))
+            .style(|_| iced_widget::container::Style {
+                background: Some(tema::card().into()),
+                border: Border {
+                    radius: tema::R_POPOVER.into(),
+                    width: 1.0,
+                    color: tema::borde(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+}
+
+/// Pill flotante durante la grabación de pantalla.
+///
+/// El compositor lo excluye de la escena cuando compone fotogramas para
+/// grabación/emisión, así que no aparece en el vídeo resultante.
+pub struct GrabacionPill {
+    pantalla: (f32, f32),
+    origen: (f32, f32),
+    arrastre: Option<((f32, f32), (f32, f32))>,
+    inicio: std::time::Instant,
+    pausado: bool,
+    acumulado: std::time::Duration,
+    silenciado: bool,
+    tiene_mic: bool,
+    señalado: Option<usize>,
+}
+
+impl GrabacionPill {
+    pub fn new(pantalla: (f32, f32), tiene_mic: bool) -> Self {
+        let origen = (
+            (pantalla.0 - PILL_GRABACION_W - 20.0).max(12.0),
+            48.0,
+        );
+        Self {
+            pantalla,
+            origen,
+            arrastre: None,
+            inicio: std::time::Instant::now(),
+            pausado: false,
+            acumulado: std::time::Duration::ZERO,
+            silenciado: false,
+            tiene_mic,
+            señalado: None,
+        }
+    }
+
+    pub fn origen(&self) -> (f32, f32) {
+        self.origen
+    }
+
+    pub fn tamano(&self) -> (f32, f32) {
+        (PILL_GRABACION_W, PILL_GRABACION_H)
+    }
+
+    pub fn segundos(&self) -> u64 {
+        let extra = if self.pausado {
+            std::time::Duration::ZERO
+        } else {
+            self.inicio.elapsed()
+        };
+        (self.acumulado + extra).as_secs()
+    }
+
+    pub fn contiene(&self, x: f32, y: f32) -> bool {
+        x >= self.origen.0
+            && x <= self.origen.0 + PILL_GRABACION_W
+            && y >= self.origen.1
+            && y <= self.origen.1 + PILL_GRABACION_H
+    }
+
+    fn boton_en(&self, x: f32, y: f32) -> Option<usize> {
+        if !self.contiene(x, y) {
+            return None;
+        }
+        let lx = x - self.origen.0;
+        let ly = y - self.origen.1;
+        if !(6.0..=36.0).contains(&ly) {
+            return None;
+        }
+        if (78.0..=106.0).contains(&lx) && self.tiene_mic {
+            Some(0)
+        } else if (112.0..=140.0).contains(&lx) {
+            Some(1)
+        } else if (146.0..=PILL_GRABACION_W - 6.0).contains(&lx) {
+            Some(2)
+        } else {
+            None
+        }
+    }
+
+    pub fn puntero(&mut self, x: f32, y: f32) -> bool {
+        if let Some((desde_puntero, desde_origen)) = self.arrastre {
+            let nx = (desde_origen.0 + x - desde_puntero.0)
+                .clamp(12.0, (self.pantalla.0 - PILL_GRABACION_W - 12.0).max(12.0));
+            let ny = (desde_origen.1 + y - desde_puntero.1)
+                .clamp(40.0, (self.pantalla.1 - PILL_GRABACION_H - 12.0).max(40.0));
+            self.origen = (nx, ny);
+            return false;
+        }
+        let nuevo = self.boton_en(x, y);
+        let cambio = nuevo != self.señalado;
+        self.señalado = nuevo;
+        cambio
+    }
+
+    pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
+        if !self.contiene(x, y) {
+            return None;
+        }
+        match self.boton_en(x, y) {
+            Some(0) => {
+                self.silenciado = !self.silenciado;
+                Some(Accion::GrabarSilenciar(self.silenciado))
+            }
+            Some(1) => {
+                if self.pausado {
+                    self.inicio = std::time::Instant::now();
+                    self.pausado = false;
+                } else {
+                    self.acumulado += self.inicio.elapsed();
+                    self.pausado = true;
+                }
+                Some(Accion::GrabarPausar(self.pausado))
+            }
+            Some(2) => Some(Accion::GrabarDetener),
+            _ => {
+                self.arrastre = Some(((x, y), self.origen));
+                None
+            }
+        }
+    }
+
+    pub fn soltar(&mut self) {
+        self.arrastre = None;
+    }
+
+    pub fn vista(&self) -> PanelElement<'_> {
+        let segs = self.segundos();
+        let tiempo = format!("{:02}:{:02}", segs / 60, segs % 60);
+        let punto_color = if self.pausado {
+            iced_core::Color::from_rgb(1.0, 0.624, 0.039)
+        } else {
+            tema::rojo()
+        };
+        let punto = container(Space::new())
+            .width(Length::Fixed(9.0))
+            .height(Length::Fixed(9.0))
+            .style(move |_| iced_widget::container::Style {
+                background: Some(punto_color.into()),
+                border: Border {
+                    radius: tema::R_PILL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+
+        let icono_btn = |nombre: &str, señal: bool, acento_naranja: bool| -> PanelElement<'_> {
+            let color = if acento_naranja {
+                iced_core::Color::from_rgb(1.0, 0.624, 0.039)
+            } else {
+                tema::texto()
+            };
+            container(match crate::icono::propio(nombre) {
+                Some(ic) => crate::icono::ver_teñido_propio(&ic, 15.0, color),
+                None => Space::new().width(Length::Fixed(15.0)).into(),
+            })
+            .width(Length::Fixed(28.0))
+            .height(Length::Fixed(28.0))
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .style(move |_| iced_widget::container::Style {
+                background: Some(
+                    if señal {
+                        tema::hover()
+                    } else {
+                        tema::alfa(tema::tinta(), 0.08)
+                    }
+                    .into(),
+                ),
+                border: Border {
+                    radius: tema::R_PILL.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+        };
+
+        let mut fila = row![
+            punto,
+            text(tiempo).size(tema::T_CUERPO).color(tema::texto()),
+        ]
+        .spacing(8.0)
+        .align_y(Vertical::Center);
+
+        if self.tiene_mic {
+            fila = fila.push(icono_btn(
+                if self.silenciado { "micro-silencio" } else { "micro" },
+                self.señalado == Some(0),
+                self.silenciado,
+            ));
+        } else {
+            fila = fila.push(Space::new().width(Length::Fixed(28.0)));
+        }
+
+        fila = fila.push(icono_btn(
+            if self.pausado { "reproducir" } else { "pausa" },
+            self.señalado == Some(1),
+            self.pausado,
+        ));
+
+        let btn_detener = container(
+            row![
+                container(Space::new())
+                    .width(Length::Fixed(9.0))
+                    .height(Length::Fixed(9.0))
+                    .style(|_| iced_widget::container::Style {
+                        background: Some(iced_core::Color::WHITE.into()),
+                        border: Border {
+                            radius: 2.0.into(),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                text(crate::emergente::t("Detener", "Stop"))
+                    .size(tema::T_PEQUENO)
+                    .color(iced_core::Color::WHITE),
+            ]
+            .spacing(6.0)
+            .align_y(Vertical::Center),
+        )
+        .width(Length::Fixed(92.0))
+        .height(Length::Fixed(28.0))
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .style(|_| iced_widget::container::Style {
+            background: Some(tema::rojo().into()),
+            border: Border {
+                radius: tema::R_PILL.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        fila = fila.push(btn_detener);
+
+        container(fila)
+            .padding([6.0, 8.0])
+            .width(Length::Fixed(PILL_GRABACION_W))
+            .height(Length::Fixed(PILL_GRABACION_H))
+            .align_y(Vertical::Center)
+            .style(|_| iced_widget::container::Style {
+                background: Some(tema::card().into()),
+                border: Border {
+                    radius: tema::R_PILL.into(),
+                    width: 1.0,
+                    color: tema::borde(),
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+}
+
+/// Reserva una ruta única en disco para la próxima captura sin codificar aún el PNG.
+pub fn reservar_ruta_png() -> std::io::Result<std::path::PathBuf> {
+    let base = carpeta_de_capturas();
+    std::fs::create_dir_all(&base)?;
+    let marca = sello_de_tiempo();
+    let directa = base.join(format!("Captura {marca}.png"));
+    if !directa.exists() {
+        return Ok(directa);
+    }
+    for n in 2..1000 {
+        let candidata = base.join(format!("Captura {marca} ({n}).png"));
+        if !candidata.exists() {
+            return Ok(candidata);
+        }
+    }
+    Ok(base.join(format!("Captura {marca}-{}.png", std::process::id())))
+}
+
+/// Escribe bytes PNG ya codificados de forma atómica (`.part` + rename) para
+/// no recodificar ni exponer ficheros a medio escribir al visor.
+pub fn guardar_bytes_png(
+    png: &[u8],
+    destino: Option<std::path::PathBuf>,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write as _;
+
+    let ruta = match destino {
+        Some(r) => {
+            if let Some(dir) = r.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            r
+        }
+        None => reservar_ruta_png()?,
+    };
+    let nombre = ruta
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "captura.png".into());
+    let temporal = ruta.with_file_name(format!(".{nombre}.{}.part", std::process::id()));
+    let escrito = (|| -> std::io::Result<()> {
+        let mut fichero = std::fs::File::create(&temporal)?;
+        fichero.write_all(png)?;
+        fichero.flush()?;
+        std::fs::rename(&temporal, &ruta)?;
+        Ok(())
+    })();
+    if let Err(err) = escrito {
+        let _ = std::fs::remove_file(&temporal);
+        return Err(err);
+    }
+    if let Ok(mut guard) = ULTIMA.lock() {
+        *guard = Some(ruta.clone());
+    }
+    Ok(ruta)
+}
+
+/// Guarda una captura en `destino` (o una ruta nueva si es `None`) usando
+/// codificación rápida y escritura atómica.
+pub fn guardar_png_en(
+    rgba: &[u8],
+    ancho: u32,
+    alto: u32,
+    destino: Option<std::path::PathBuf>,
+) -> std::io::Result<std::path::PathBuf> {
+    let png = png_en_memoria(rgba, ancho, alto)?;
+    guardar_bytes_png(&png, destino)
 }
 
 /// Guarda una captura en el disco y devuelve dónde quedó.
@@ -842,15 +1702,7 @@ impl Captura {
 /// escribir en un nombre de fichero en todos los sistemas de archivos.
 // 0.1.0
 pub fn guardar_png(rgba: &[u8], ancho: u32, alto: u32) -> std::io::Result<std::path::PathBuf> {
-    let base = carpeta_de_capturas();
-    std::fs::create_dir_all(&base)?;
-    let ruta = base.join(format!("Captura {}.png", sello_de_tiempo()));
-    let fichero = std::fs::File::create(&ruta)?;
-    codificar_png(std::io::BufWriter::new(fichero), rgba, ancho, alto)?;
-    if let Ok(mut guard) = ULTIMA.lock() {
-        *guard = Some(ruta.clone());
-    }
-    Ok(ruta)
+    guardar_png_en(rgba, ancho, alto, None)
 }
 
 /// La misma captura, pero en memoria: es lo que se pone en el portapapeles.
@@ -862,6 +1714,7 @@ pub fn png_en_memoria(rgba: &[u8], ancho: u32, alto: u32) -> std::io::Result<Vec
 }
 
 // 0.1.0
+// modified 0.2.4 -- compresión Fast + filtro Sub para minimizar la latencia al capturar y abrir
 fn codificar_png<W: std::io::Write>(
     destino: W,
     rgba: &[u8],
@@ -871,7 +1724,8 @@ fn codificar_png<W: std::io::Write>(
     // El mismo `image` que ya usa el shell para los avatares y los fondos: vive
     // aquí y no en el compositor para no añadirle una dependencia que ya está a
     // un crate de distancia.
-    image::codecs::png::PngEncoder::new(destino)
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    PngEncoder::new_with_quality(destino, CompressionType::Fast, FilterType::Sub)
         .write_image(rgba, ancho, alto, image::ExtendedColorType::Rgba8)
         .map_err(std::io::Error::other)
 }
@@ -1046,16 +1900,30 @@ mod tests {
         assert_eq!(c.forma(1000.0, 700.0), Forma::Cruz);
     }
 
-    /// El centro de la celda `i` de la barra.
-    fn celda(c: &Captura, i: usize) -> (f32, f32) {
+    fn centro_area(c: &Captura, i: usize) -> (f32, f32) {
         (
-            c.x_celda(i) + CELDA_W / 2.0,
-            c.y_barra() + BARRA_PADDING + CELDA_H / 2.0,
+            c.x_area_inicio() + i as f32 * (AREA_BTN_W + GAP_SEG) + AREA_BTN_W / 2.0,
+            c.y_barra() + BARRA_PADDING + CONTROL_ALTO / 2.0,
         )
     }
 
-    /// El arrastre se queda dentro de la pantalla: sacar el ratón por el borde
-    /// no puede pedir píxeles que no existen.
+    fn centro_tipo(c: &Captura, i: usize) -> (f32, f32) {
+        (
+            c.x_tipo_inicio() + i as f32 * (TIPO_BTN_W + GAP_SEG) + TIPO_BTN_W / 2.0,
+            c.y_barra() + BARRA_PADDING + CONTROL_ALTO / 2.0,
+        )
+    }
+
+    fn centro_opciones(c: &Captura) -> (f32, f32) {
+        let (ox, oy, ow, oh) = c.rect_opciones();
+        (ox + ow / 2.0, oy + oh / 2.0)
+    }
+
+    fn centro_accion(c: &Captura) -> (f32, f32) {
+        let (ax, ay, aw, ah) = c.rect_accion();
+        (ax + aw / 2.0, ay + ah / 2.0)
+    }
+
     #[test]
     fn el_arrastre_no_se_sale_de_la_pantalla() {
         let mut c = Captura::new(PANTALLA);
@@ -1065,149 +1933,59 @@ mod tests {
         assert_eq!((r.x + r.w, r.y + r.h), (PANTALLA.0, PANTALLA.1));
     }
 
-    /// Cada celda de la barra responde en su sitio, con el divisor en medio: si
-    /// el dibujo y el hit-test se separan, se pulsa una y se enciende otra.
     #[test]
     fn cada_celda_de_la_barra_responde_en_su_sitio() {
         let c = Captura::new(PANTALLA);
-        let y = c.y_barra() + BARRA_PADDING + 4.0;
-        for i in 0..Captura::CELDAS {
-            assert_eq!(c.celda_en(c.x_celda(i) + 2.0, y), Some(i), "la celda {i}");
-            assert_eq!(
-                c.celda_en(c.x_celda(i) + CELDA_W - 1.0, y),
-                Some(i),
-                "el borde derecho de la celda {i}"
-            );
-            // Y el hueco que hay justo después no es de nadie.
-            assert_eq!(c.celda_en(c.x_celda(i) + CELDA_W + 2.0, y), None);
+        let (cx, cy, cw, ch) = c.rect_cerrar();
+        assert_eq!(c.celda_en(cx + cw / 2.0, cy + ch / 2.0), Some(CeldaBarra::Cerrar));
+        for i in 0..TipoCaptura::TODOS.len() {
+            let (tx, ty) = centro_tipo(&c, i);
+            assert_eq!(c.celda_en(tx, ty), Some(CeldaBarra::Tipo(i)));
         }
-        // La barra entera cabe en la pantalla y va centrada.
+        for i in 0..Modo::TODOS.len() {
+            let (ax, ay) = centro_area(&c, i);
+            assert_eq!(c.celda_en(ax, ay), Some(CeldaBarra::Area(i)));
+        }
+        let (ox, oy) = centro_opciones(&c);
+        assert_eq!(c.celda_en(ox, oy), Some(CeldaBarra::Opciones));
+        let (ax, ay) = centro_accion(&c);
+        assert_eq!(c.celda_en(ax, ay), Some(CeldaBarra::Accion));
         assert!(c.x_barra() > 0.0);
         assert!(c.x_barra() + c.ancho_barra() < PANTALLA.0);
     }
 
-    /// Con algo marcado, «Copiar» y «Guardar» capturan eso mismo, cada uno a
-    /// su sitio.
     #[test]
     fn copiar_y_guardar_capturan_lo_marcado() {
         let mut c = Captura::new(PANTALLA);
         c.pulsar(200.0, 150.0);
         c.puntero(600.0, 450.0);
         c.soltar();
-        let esperada = |guardar| {
+        let (ax, ay) = centro_accion(&c);
+        assert_eq!(
+            c.pulsar(ax, ay),
             Some(Accion::Capturar {
                 x: 200,
                 y: 150,
                 ancho: 400,
                 alto: 300,
-                guardar,
+                guardar: false,
                 cursor: false,
                 retardo: 0,
             })
-        };
-        let copiar = celda(&c, Modo::TODOS.len());
-        let guardar = celda(&c, Modo::TODOS.len() + 1);
-        assert_eq!(c.pulsar(copiar.0, copiar.1), esperada(false));
-        assert_eq!(c.pulsar(guardar.0, guardar.1), esperada(true));
-    }
-
-    /// El cursor sale fuera por defecto y las opciones viajan con la captura.
-    // añadido en la 0.2.0
-    #[test]
-    fn el_cursor_y_la_espera_viajan_con_la_captura() {
-        let mut c = Captura::new(PANTALLA);
-        c.pulsar(200.0, 150.0);
-        c.puntero(600.0, 450.0);
-        c.soltar();
-        let cursor = celda(&c, Captura::OPCIONES);
-        let espera = celda(&c, Captura::OPCIONES + 1);
-        // Pulsar una opción no captura: pide guardarla y se queda puesta.
-        assert_eq!(
-            c.pulsar(cursor.0, cursor.1),
-            Some(Accion::CapturaOpciones {
-                cursor: true,
-                retardo: 0
-            })
         );
+        // Abrir Opciones y elegir "Guardar en Imágenes"
+        let (ox, oy) = centro_opciones(&c);
+        c.pulsar(ox, oy);
+        let (px, py) = c.origen_opciones().unwrap();
+        let pill_w2 = (OPCIONES_POPOVER_W - 24.0 - 6.0) / 2.0;
+        c.pulsar(px + 12.0 + pill_w2 + 6.0 + pill_w2 / 2.0, py + 12.0 + 150.0);
         assert_eq!(
-            c.pulsar(espera.0, espera.1),
-            Some(Accion::CapturaOpciones {
-                cursor: true,
-                retardo: 3
-            })
-        );
-        let copiar = celda(&c, Modo::TODOS.len());
-        assert!(matches!(
-            c.pulsar(copiar.0, copiar.1),
+            c.pulsar(ax, ay),
             Some(Accion::Capturar {
-                cursor: true,
-                retardo: 3,
-                guardar: false,
-                ..
-            })
-        ));
-        // La espera da la vuelta: 3, 5, 10 y otra vez sin espera.
-        for esperado in [5, 10, 0] {
-            let Some(Accion::CapturaOpciones { retardo, .. }) = c.pulsar(espera.0, espera.1) else {
-                panic!("la espera es una opción");
-            };
-            assert_eq!(retardo, esperado);
-        }
-    }
-
-    /// Con las opciones recordadas, la capa abre como se dejó.
-    // añadido en la 0.2.0
-    #[test]
-    fn la_capa_abre_con_las_opciones_recordadas() {
-        let mut c = Captura::new(PANTALLA).con_opciones(true, 5);
-        let (x, y) = celda(&c, Modo::TODOS.len());
-        assert_eq!(c.pulsar(x, y), None, "sin marcar, copiar no hace nada");
-        c.pulsar(100.0, 100.0);
-        c.puntero(300.0, 300.0);
-        c.soltar();
-        assert!(matches!(
-            c.pulsar(x, y),
-            Some(Accion::Capturar {
-                cursor: true,
-                retardo: 5,
-                ..
-            })
-        ));
-    }
-
-    /// Sin nada marcado los botones no hacen nada: no hay foto que decidir.
-    #[test]
-    fn sin_marcar_los_botones_no_capturan() {
-        let mut c = Captura::new(PANTALLA);
-        let (x, y) = celda(&c, Modo::TODOS.len() + 1);
-        assert_eq!(c.pulsar(x, y), None);
-        assert!(
-            c.arrastre.is_none(),
-            "pulsar un botón no empieza un arrastre"
-        );
-    }
-
-    /// «Pantalla» marca la pantalla entera y espera a que se elija qué hacer.
-    #[test]
-    fn pantalla_marca_todo_y_espera() {
-        let mut c = Captura::new(PANTALLA);
-        let (x, y) = celda(&c, 0);
-        assert_eq!(c.pulsar(x, y), None, "elegir el modo no captura");
-        let r = c.marcado().expect("la pantalla queda marcada");
-        assert_eq!((r.w, r.h), PANTALLA);
-        assert_eq!(
-            c.origen_pastilla(),
-            None,
-            "en pantalla entera no hay pastilla"
-        );
-        let (x, y) = celda(&c, Modo::TODOS.len() + 1);
-        assert_eq!(
-            c.pulsar(x, y),
-            Some(Accion::Capturar {
-                x: 0,
-                y: 0,
-                ancho: 1920,
-                alto: 1080,
+                x: 200,
+                y: 150,
+                ancho: 400,
+                alto: 300,
                 guardar: true,
                 cursor: false,
                 retardo: 0,
@@ -1215,7 +1993,98 @@ mod tests {
         );
     }
 
-    /// Intro copia sin más: lo marcado, o la pantalla entera si no hay nada.
+    #[test]
+    fn el_cursor_y_la_espera_viajan_con_la_captura() {
+        let mut c = Captura::new(PANTALLA);
+        c.pulsar(200.0, 150.0);
+        c.puntero(600.0, 450.0);
+        c.soltar();
+        let (ox, oy) = centro_opciones(&c);
+        c.pulsar(ox, oy);
+        let (px, py) = c.origen_opciones().unwrap();
+        let pill_w4 = (OPCIONES_POPOVER_W - 24.0 - 12.0) / 4.0;
+        // Activar cursor
+        assert_eq!(
+            c.pulsar(px + 40.0, py + 12.0 + 82.0),
+            Some(Accion::CapturaOpciones { cursor: true, retardo: 0 })
+        );
+        // Elegir 3 s
+        assert_eq!(
+            c.pulsar(px + 12.0 + (pill_w4 + 4.0) + pill_w4 / 2.0, py + 12.0 + 36.0),
+            Some(Accion::CapturaOpciones { cursor: true, retardo: 3 })
+        );
+        let (ax, ay) = centro_accion(&c);
+        assert!(matches!(
+            c.pulsar(ax, ay),
+            Some(Accion::Capturar { cursor: true, retardo: 3, guardar: false, .. })
+        ));
+    }
+
+    #[test]
+    fn la_capa_abre_con_las_opciones_recordadas() {
+        let mut c = Captura::new(PANTALLA).con_opciones(true, 5);
+        let (ax, ay) = centro_accion(&c);
+        assert_eq!(c.pulsar(ax, ay), None, "sin marcar, copiar no hace nada");
+        c.pulsar(100.0, 100.0);
+        c.puntero(300.0, 300.0);
+        c.soltar();
+        assert!(matches!(
+            c.pulsar(ax, ay),
+            Some(Accion::Capturar { cursor: true, retardo: 5, .. })
+        ));
+    }
+
+    #[test]
+    fn sin_marcar_los_botones_no_capturan() {
+        let mut c = Captura::new(PANTALLA);
+        let (ax, ay) = centro_accion(&c);
+        assert_eq!(c.pulsar(ax, ay), None);
+        assert!(c.arrastre.is_none());
+    }
+
+    #[test]
+    fn pantalla_marca_todo_y_espera() {
+        let mut c = Captura::new(PANTALLA);
+        let (px, py) = centro_area(&c, 0);
+        assert_eq!(c.pulsar(px, py), None, "elegir el modo no captura");
+        let r = c.marcado().expect("la pantalla queda marcada");
+        assert_eq!((r.w, r.h), PANTALLA);
+        assert_eq!(c.origen_pastilla(), None);
+        let (ax, ay) = centro_accion(&c);
+        assert_eq!(
+            c.pulsar(ax, ay),
+            Some(Accion::Capturar {
+                x: 0,
+                y: 0,
+                ancho: 1920,
+                alto: 1080,
+                guardar: false,
+                cursor: false,
+                retardo: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn modo_video_pide_grabacion_y_pill_detiene() {
+        let mut c = Captura::new(PANTALLA);
+        let (vx, vy) = centro_tipo(&c, 1);
+        c.pulsar(vx, vy);
+        let (px, py) = centro_area(&c, 0);
+        c.pulsar(px, py);
+        let (ax, ay) = centro_accion(&c);
+        assert!(matches!(
+            c.pulsar(ax, ay),
+            Some(Accion::GrabarIniciar { ancho: 1920, alto: 1080, .. })
+        ));
+
+        let mut pill = GrabacionPill::new(PANTALLA, true);
+        let (ox, oy) = pill.origen();
+        assert_eq!(pill.pulsar(ox + 90.0, oy + 20.0), Some(Accion::GrabarSilenciar(true)));
+        assert_eq!(pill.pulsar(ox + 125.0, oy + 20.0), Some(Accion::GrabarPausar(true)));
+        assert_eq!(pill.pulsar(ox + 200.0, oy + 20.0), Some(Accion::GrabarDetener));
+    }
+
     #[test]
     fn intro_copia() {
         let mut c = Captura::new(PANTALLA);
@@ -1230,19 +2099,82 @@ mod tests {
         ));
     }
 
-    /// Y la barra no marca recuadro: ir a pulsar un botón no puede dejar una
-    /// selección hecha por el camino.
     #[test]
     fn la_barra_no_arrastra() {
         let mut c = Captura::new(PANTALLA);
-        // Un punto de la tarjeta que no cae en ninguna celda: el relleno.
         let x = c.x_barra() + 2.0;
         let y = c.y_barra() + 2.0;
         assert_eq!(c.celda_en(x, y), None);
         assert_eq!(c.pulsar(x, y), None);
-        assert!(
-            c.arrastre.is_none(),
-            "la barra no puede empezar un arrastre"
-        );
+        assert!(c.arrastre.is_none());
+    }
+
+    #[test]
+    fn guardar_bytes_png_escribe_atomico_sin_fichero_parcial() {
+        let dir = std::env::temp_dir().join(format!("bookos-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("crear dir");
+        let destino = dir.join("prueba.png");
+        let rgba = vec![255u8; 4 * 4 * 4];
+        let png = png_en_memoria(&rgba, 4, 4).expect("codificar png");
+        let ruta = guardar_bytes_png(&png, Some(destino.clone())).expect("guardar atomico");
+        assert_eq!(ruta, destino);
+        let leido = std::fs::read(&ruta).expect("leer fichero");
+        assert_eq!(leido, png);
+        let hay_part = std::fs::read_dir(&dir)
+            .expect("leer dir")
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().ends_with(".part"));
+        assert!(!hay_part, "no debe quedar ningún .part");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cambiar_modo_cancela_arrastre_activo() {
+        let mut c = Captura::new(PANTALLA);
+        c.pulsar(100.0, 100.0);
+        c.puntero(400.0, 300.0);
+        assert!(c.animando());
+        assert!(matches!(
+            c.tecla(TeclaPulsada::Derecha),
+            crate::Tecla::Consumida
+        ));
+        assert!(!c.animando());
+        assert!(c.arrastre.is_none());
+
+        c.pulsar(100.0, 100.0);
+        assert!(c.animando());
+        let (x, y) = centro_area(&c, 0);
+        c.pulsar(x, y);
+        assert!(!c.animando());
+        assert!(c.arrastre.is_none());
+    }
+
+    #[test]
+    fn coordenadas_no_finitas_y_cancelar_arrastre_respetan_seleccion_previa() {
+        let mut c = Captura::new((f32::NAN, 0.0));
+        assert_eq!(c.pantalla, (1.0, 1.0));
+
+        let mut c = Captura::new(PANTALLA);
+        assert!(!c.puntero(f32::NAN, 100.0));
+        assert_eq!(c.forma(f32::INFINITY, 100.0), Forma::Cruz);
+        assert_eq!(c.pulsar(100.0, f32::NAN), None);
+        assert!(!c.animando());
+
+        c.pulsar(100.0, 100.0);
+        c.puntero(300.0, 260.0);
+        c.cancelar_arrastre();
+        assert!(!c.animando());
+        assert_eq!(c.marcado(), None);
+
+        c.pulsar(100.0, 100.0);
+        c.puntero(300.0, 260.0);
+        c.soltar();
+        let original = c.marcado().expect("selección confirmada");
+        c.pulsar(200.0, 180.0);
+        c.puntero(500.0, 420.0);
+        c.cancelar_arrastre();
+        assert!(!c.animando());
+        assert_eq!(c.marcado(), Some(original));
     }
 }

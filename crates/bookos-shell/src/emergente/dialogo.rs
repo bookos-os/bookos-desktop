@@ -609,6 +609,7 @@ impl Dialogo {
         {
             let letras: Vec<char> = texto.chars().collect();
             let n = letras.len();
+            let c = (*cursor).min(n);
             // Primero se decide el texto nuevo y dónde queda el cursor; luego
             // se aplica de una vez.
             let cortar = |desde: usize, hasta: usize, poner: &str| -> (String, usize) {
@@ -620,14 +621,28 @@ impl Dialogo {
                 )
             };
             let editado = match tecla {
-                TeclaPulsada::Caracter(c) if !c.is_control() => Some(if *todo {
-                    cortar(0, n, &c.to_string())
+                TeclaPulsada::Caracter(ch) if !ch.is_control() => Some(if *todo {
+                    cortar(0, n, &ch.to_string())
                 } else {
-                    cortar(*cursor, *cursor, &c.to_string())
+                    cortar(c, c, &ch.to_string())
                 }),
+                TeclaPulsada::Pegar(ref s) => {
+                    let limpio: String = s.chars().filter(|ch| !ch.is_control()).collect();
+                    if *todo {
+                        let pos = limpio.chars().count();
+                        Some((limpio, pos))
+                    } else if !limpio.is_empty() {
+                        Some(cortar(c, c, &limpio))
+                    } else {
+                        return Tecla::Consumida;
+                    }
+                }
                 TeclaPulsada::Retroceso if *todo => Some((String::new(), 0)),
-                TeclaPulsada::Retroceso if *cursor > 0 => Some(cortar(*cursor - 1, *cursor, "")),
+                TeclaPulsada::Retroceso if c > 0 => Some(cortar(c - 1, c, "")),
                 TeclaPulsada::Retroceso => return Tecla::Consumida,
+                TeclaPulsada::Suprimir if *todo => Some((String::new(), 0)),
+                TeclaPulsada::Suprimir if c < n => Some(cortar(c, c + 1, "")),
+                TeclaPulsada::Suprimir => return Tecla::Consumida,
                 TeclaPulsada::BorrarTodo => Some((String::new(), 0)),
                 _ => None,
             };
@@ -674,7 +689,9 @@ impl Dialogo {
             },
             // Arriba y Abajo recorren las opciones de pegar.
             TeclaPulsada::Arriba | TeclaPulsada::Abajo | TeclaPulsada::Tabulador => {
-                if let Contenido::Elegir { opciones, .. } = &self.contenido {
+                if let Contenido::Elegir { opciones, .. } = &self.contenido
+                    && !opciones.is_empty()
+                {
                     let n = opciones.len();
                     let actual = match self.señalado {
                         Some(Pieza::Opcion(i)) => Some(i),
@@ -1227,5 +1244,34 @@ mod tests {
             d.tecla(TeclaPulsada::Intro),
             Tecla::Hacer(Accion::EscritorioPegarComo(false))
         ));
+    }
+
+    #[test]
+    fn renombrar_soporta_pegar_suprimir_y_cursor_acotado_y_elegir_vacio_no_falla() {
+        let mut d = Dialogo::renombrar("hola");
+        if let Contenido::Renombrar { cursor, todo, .. } = &mut d.contenido {
+            *cursor = 999;
+            *todo = false;
+        }
+        d.tecla(TeclaPulsada::Pegar("!\x07".into()));
+        d.tecla(TeclaPulsada::Inicio);
+        d.tecla(TeclaPulsada::Suprimir);
+        assert!(matches!(
+            d.tecla(TeclaPulsada::Intro),
+            Tecla::Hacer(Accion::EscritorioRenombrarA(t)) if t == "ola!"
+        ));
+
+        let mut vacio = Dialogo::construir(
+            ANCHO,
+            "Sin opciones",
+            Contenido::Elegir {
+                mensaje: vec![],
+                opciones: vec![],
+            },
+            None,
+            "Cancelar".into(),
+        );
+        assert!(matches!(vacio.tecla(TeclaPulsada::Arriba), Tecla::Consumida));
+        assert!(matches!(vacio.tecla(TeclaPulsada::Intro), Tecla::Consumida));
     }
 }

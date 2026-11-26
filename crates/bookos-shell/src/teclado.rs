@@ -189,6 +189,14 @@ fn variante(c: char) -> Option<char> {
     })
 }
 
+fn pista_variante(c: char, mayus: Mayus) -> Option<char> {
+    let v = variante(c.to_lowercase().next().unwrap_or(c))?;
+    Some(match mayus {
+        Mayus::No => v,
+        Mayus::Una | Mayus::Fija => v.to_uppercase().next().unwrap_or(v),
+    })
+}
+
 /// Los colores del teclado, del acento y el tema de ahora.
 ///
 /// Las proporciones son a ojo contra capturas de Gboard con Material You: el
@@ -239,6 +247,11 @@ pub struct Teclado {
 impl Teclado {
     // 0.1.1
     pub fn new(ancho: f32, capa: Capa) -> Self {
+        let ancho = if ancho.is_finite() {
+            ancho.max(1.0)
+        } else {
+            1.0
+        };
         let mut visible = tema::Transicion::nueva(0.0, tema::M_SUAVE);
         visible.ir_a(1.0);
         Self {
@@ -257,12 +270,16 @@ impl Teclado {
     }
 
     /// Vuelve a entrar si se estaba yendo, con la capa que pida el campo.
+    /// Devuelve `true` si cambia la visibilidad destino o la capa activa.
     // 0.1.1
-    pub fn mostrar(&mut self, capa: Capa) {
-        if self.visible.destino() < 1.0 {
-            self.capa = capa;
+    pub fn mostrar(&mut self, capa: Capa) -> bool {
+        let reabrir = self.visible.destino() < 1.0;
+        let cambia_capa = self.capa != capa;
+        if reabrir {
             self.visible.ir_a(1.0);
         }
+        self.capa = capa;
+        reabrir || cambia_capa
     }
 
     // 0.1.1
@@ -296,14 +313,14 @@ impl Teclado {
 
     // 0.1.1
     fn teclas(&self) -> Vec<Colocada> {
-        let bloque = self.ancho - 2.0 * MARGEN;
+        let bloque = (self.ancho - 2.0 * MARGEN).max(0.0);
         let x0 = (self.ancho - bloque) / 2.0;
         // La unidad sale de la fila de diez letras, que es la que llena el
         // bloque; las demás se centran con lo que les sobre.
-        let unidad = (bloque - 9.0 * HUECO) / 10.0;
+        let unidad = ((bloque - 9.0 * HUECO) / 10.0).max(1.0);
         let mut colocadas = vec![Colocada {
             tecla: Tecla::Ocultar,
-            x: x0 + bloque - FRANJA * 1.5,
+            x: (x0 + bloque - FRANJA * 1.5).max(0.0),
             y: MARGEN,
             ancho: FRANJA * 1.5,
             alto: FRANJA,
@@ -315,7 +332,7 @@ impl Teclado {
                 .collect();
             let total: f32 = anchos.iter().sum::<f32>() + (fila.len() - 1) as f32 * HUECO;
             let y = MARGEN + FRANJA + HUECO + i as f32 * (ALTO_TECLA + HUECO);
-            let mut x = x0 + (bloque - total) / 2.0;
+            let mut x = (x0 + (bloque - total) / 2.0).max(0.0);
             for ((tecla, _), ancho) in fila.iter().zip(anchos) {
                 colocadas.push(Colocada {
                     tecla: *tecla,
@@ -341,6 +358,9 @@ impl Teclado {
     /// Un dedo baja en `(x, y)`, en lógicos relativos al teclado.
     // 0.1.1
     pub fn pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
+        if self.saliendo() {
+            return None;
+        }
         let tecla = self.tecla_en(x, y)?;
         self.pulsada = Some((tecla, Instant::now()));
         (tecla == Tecla::Borrar).then_some(Accion::Pulsa(Salida::Retroceso))
@@ -399,12 +419,13 @@ impl Teclado {
         let mut y_previo = 0.0;
         for fila in teclas.chunk_by(|a, b| a.y == b.y) {
             let primera = fila[0];
-            columna = columna.push(Space::new().height(Length::Fixed(primera.y - y_previo)));
+            columna =
+                columna.push(Space::new().height(Length::Fixed((primera.y - y_previo).max(0.0))));
             let mut r = Row::new();
             let mut x_previo = 0.0;
             for c in fila {
                 r = r
-                    .push(Space::new().width(Length::Fixed(c.x - x_previo)))
+                    .push(Space::new().width(Length::Fixed((c.x - x_previo).max(0.0))))
                     .push(self.tecla(c, &colores, pulsada == Some(c.tecla)));
                 x_previo = c.x + c.ancho;
             }
@@ -442,7 +463,7 @@ impl Teclado {
                     text(ch.to_string()).size(T_TECLA).color(tinta).into();
                 // La variante, pequeña arriba a la derecha: sin la pista nadie
                 // sabe que manteniendo la «a» sale la «á».
-                match variante(ch.to_lowercase().next().unwrap_or(ch)) {
+                match pista_variante(ch, self.mayus) {
                     Some(v) => stack![
                         container(letra).center(Length::Fill),
                         container(
@@ -615,5 +636,47 @@ mod pruebas {
         let (x, y) = centro(&t, Tecla::Borrar);
         assert_eq!(t.pulsar(x, y), Some(Accion::Pulsa(Salida::Retroceso)));
         assert_eq!(t.soltar(), Some(Accion::Suelta(Salida::Retroceso)));
+    }
+
+    #[test]
+    fn mostrar_cambia_capa_aunque_el_teclado_ya_este_abierto() {
+        let mut t = Teclado::new(1280.0, Capa::Letras);
+        assert!(!t.mostrar(Capa::Letras));
+        assert!(t.mostrar(Capa::Simbolos));
+        let (x, y) = centro(&t, Tecla::Car('1'));
+        t.pulsar(x, y);
+        assert_eq!(t.soltar(), Some(Accion::Escribe(Salida::Caracter('1'))));
+    }
+
+    #[test]
+    fn pulsar_ignora_toques_mientras_se_oculta() {
+        let mut t = Teclado::new(1280.0, Capa::Letras);
+        let (bx, by) = centro(&t, Tecla::Borrar);
+        t.ocultar();
+        assert!(t.saliendo());
+        assert_eq!(t.pulsar(bx, by), None);
+        assert_eq!(t.soltar(), None);
+    }
+
+    #[test]
+    fn ancho_pequeno_o_no_finito_produce_teclas_con_dimensiones_positivas() {
+        for ancho in [0.0, 40.0, f32::NAN] {
+            let t = Teclado::new(ancho, Capa::Letras);
+            assert!(t.size().0.is_finite() && t.size().0 >= 1.0);
+            for c in t.teclas() {
+                assert!(c.x.is_finite() && c.x >= 0.0);
+                assert!(c.y.is_finite() && c.y >= 0.0);
+                assert!(c.ancho.is_finite() && c.ancho > 0.0);
+                assert!(c.alto.is_finite() && c.alto > 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn pista_variante_sigue_estado_de_mayusculas() {
+        assert_eq!(pista_variante('a', Mayus::No), Some('á'));
+        assert_eq!(pista_variante('a', Mayus::Una), Some('Á'));
+        assert_eq!(pista_variante('A', Mayus::Fija), Some('Á'));
+        assert_eq!(pista_variante('q', Mayus::Una), None);
     }
 }

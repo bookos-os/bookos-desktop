@@ -36,13 +36,13 @@ const AIRE: f32 = 10.0;
 /// Lado de la celda, que es lo que se realza al seleccionar.
 const CELDA: f32 = ICONO + AIRE * 2.0;
 /// Margen de la tarjeta.
-const MARGEN: f32 = 14.0;
+const MARGEN: f32 = 16.0;
 /// Alto del renglón del nombre, debajo de la fila.
 const NOMBRE: f32 = 26.0;
 /// El renglón de Meta+Tab: icono grande, aplicación y título. Con 18 px de icono
 /// y una línea no se sabía de un vistazo a qué aplicación se iba a saltar.
 // añadido en la 0.2.0
-const ROTULO: f32 = 64.0;
+const ROTULO: f32 = 56.0;
 const ROTULO_ICONO: f32 = 44.0;
 const ROTULO_SEP: f32 = 12.0;
 
@@ -85,28 +85,24 @@ pub enum Modo {
 
 const PREVIA_ANCHO_MAX: f32 = 300.0;
 const PREVIA_ALTO_MAX: f32 = 250.0;
-const PREVIA_HUECO: f32 = 14.0;
-const PREVIA_MARGEN_PANTALLA: f32 = 48.0;
+const PREVIA_HUECO: f32 = 16.0;
+const PREVIA_MARGEN_PANTALLA: f32 = 24.0;
 /// Hasta qué parte de la pantalla puede crecer una miniatura.
 // añadido en la 0.2.0
-const PREVIA_TOPE_ANCHO: f32 = 0.45;
-const PREVIA_TOPE_ALTO: f32 = 0.5;
-/// Qué fracción de la mejor celda posible basta para quedarse con la
-/// disposición de menos filas.
-// añadido en la 0.2.0
-const PREVIA_GANANCIA_MIN: f32 = 0.8;
+const PREVIA_TOPE_ANCHO: f32 = 0.56;
+const PREVIA_TOPE_ALTO: f32 = 0.68;
 /// Lo que se deja libre arriba y abajo para el panel y el dock. La tarjeta va
 /// centrada, así que manda el lado mayor —el dock, con su margen—: con la
 /// rejilla más grande, sin esto el rótulo se montaba sobre los iconos del dock
 /// (visto en el anidado).
 // añadido en la 0.2.0
-const PREVIA_RESERVA_ALTO: f32 = 110.0;
+const PREVIA_RESERVA_ALTO: f32 = 64.0;
 /// Aire entre el borde de la celda y la ventana viva que se compone dentro.
 ///
-/// 8 y no 4: la ventana se dibuja **por delante** de la tarjeta y con esquinas
-/// rectas, así que con menos aire tapaba el radio de la celda y el marco se
-/// veía cortado en las cuatro esquinas.
-const PREVIA_BORDE: f32 = 8.0;
+/// 6 px con radio exterior `R_POPOVER` (18) y radio interior `R_BOTON` (12)
+/// mantiene esquinas concéntricas exactas (18 - 6 = 12) y evita que la ventana
+/// con esquinas rectas tape el radio de la celda.
+const PREVIA_BORDE: f32 = 6.0;
 
 /// Una celda de la fila: una ventana.
 pub struct Entrada {
@@ -185,8 +181,8 @@ impl Conmutador {
         if self.entradas.is_empty() {
             return;
         }
-        let n = self.entradas.len() as i32;
-        self.elegida = (((self.elegida as i32 + pasos) % n + n) % n) as usize;
+        let n = self.entradas.len() as isize;
+        self.elegida = (self.elegida as isize + pasos as isize).rem_euclid(n) as usize;
         self.marca.señalar(Some(self.elegida));
     }
 
@@ -208,7 +204,7 @@ impl Conmutador {
     // 0.1.0
     pub fn realce(&self) -> Option<Rectangle> {
         let r = self.rejilla?;
-        (self.elegida < self.entradas.len()).then(|| r.celda(self.elegida))
+        (self.elegida < self.entradas.len()).then(|| r.celda(self.elegida, self.entradas.len()))
     }
 
     /// La franja del rótulo —icono y título de la elegida— en lógicos de la
@@ -237,10 +233,10 @@ impl Conmutador {
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_theme: &iced_widget::Theme| container::Style {
-                background: Some(tema::alfa(tema::acento(), 0.22).into()),
+                background: Some(tema::alfa(tema::acento(), 0.18).into()),
                 border: Border {
-                    radius: tema::R_CONTROL.into(),
-                    width: 3.0,
+                    radius: tema::R_POPOVER.into(),
+                    width: if tema::alto_contraste() { 3.0 } else { 2.5 },
                     color: tema::acento(),
                 },
                 ..Default::default()
@@ -261,7 +257,7 @@ impl Conmutador {
             rotulo = rotulo.push(icono::ver(ic, ROTULO_ICONO, ROTULO_ICONO));
         }
         // Sin recortar, un título largo empujaba el icono fuera del renglón.
-        let ancho = self.rotulo().map_or(0.0, |r| r.width) - ROTULO_ICONO - ROTULO_SEP;
+        let ancho = (self.rotulo().map_or(0.0, |r| r.width) - ROTULO_ICONO - ROTULO_SEP).max(0.0);
         let linea =
             |texto: &str, tamaño: f32| crate::emergente::lista::recortar(texto, ancho, tamaño);
         let (app, titulo) = elegida.map_or((String::new(), String::new()), |e| {
@@ -286,7 +282,7 @@ impl Conmutador {
             textos = textos.push(
                 text(titulo)
                     .size(tema::T_CUERPO)
-                    .color(tema::mezclar(tema::texto(), tema::texto2(), 0.75))
+                    .color(tema::texto2())
                     .wrapping(iced_core::text::Wrapping::None),
             );
         }
@@ -302,6 +298,9 @@ impl Conmutador {
     /// Qué celda cae en un punto, para poder elegir con el ratón.
     // 0.1.0
     pub fn en(&self, x: f32, y: f32) -> Option<usize> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
         match self.rejilla {
             None => {
                 if x < MARGEN || y < MARGEN || y >= MARGEN + CELDA {
@@ -347,7 +346,8 @@ impl Conmutador {
         let Some(r) = self.rejilla else {
             return Vec::new();
         };
-        (0..self.entradas.len()).map(|i| r.miniatura(i)).collect()
+        let n = self.entradas.len();
+        (0..n).map(|i| r.miniatura(i, n)).collect()
     }
 
     // 0.1.0
@@ -426,7 +426,9 @@ impl Conmutador {
         let r = self
             .rejilla
             .expect("el modo ventanas siempre tiene rejilla");
-        let mut rejilla = Column::new().spacing(PREVIA_HUECO);
+        let mut rejilla = Column::new()
+            .spacing(PREVIA_HUECO)
+            .align_x(Horizontal::Center);
         for fila_i in 0..r.filas {
             let mut fila = Row::new().spacing(PREVIA_HUECO);
             for columna in 0..r.columnas {
@@ -449,27 +451,21 @@ impl Conmutador {
                                 // marco, y sin él la celda era un marco flotando.
                                 background: Some(
                                     tema::mezclar(
-                                        tema::alfa(tema::tinta(), 0.10),
-                                        tema::alfa(tema::acento(), 0.22),
+                                        tema::alfa(tema::tinta(), 0.07),
+                                        tema::alfa(tema::acento(), 0.18),
                                         elegida,
                                     )
                                     .into(),
                                 ),
                                 border: Border {
-                                    radius: tema::R_CONTROL.into(),
+                                    radius: tema::R_POPOVER.into(),
                                     // El marco de la elegida es más grueso: crece
                                     // con ella en vez de aparecer de golpe.
-                                    width: 1.0 + 2.0 * elegida,
+                                    width: 1.0 + 1.5 * elegida,
                                     color: tema::mezclar(tema::borde(), tema::acento(), elegida),
                                 },
                                 ..Default::default()
                             }),
-                    );
-                } else {
-                    fila = fila.push(
-                        Space::new()
-                            .width(Length::Fixed(r.celda_ancho))
-                            .height(Length::Fixed(r.celda_alto)),
                     );
                 }
             }
@@ -498,6 +494,10 @@ impl Rejilla {
     /// en una pantalla pequeña deja de caber, y entonces sí se parte.
     // 0.1.0
     fn new(n: usize, pantalla: (f32, f32)) -> Self {
+        let pantalla = (
+            if pantalla.0.is_finite() { pantalla.0 } else { 1280.0 },
+            if pantalla.1.is_finite() { pantalla.1 } else { 720.0 },
+        );
         let n = n.max(1);
         let ancho = (pantalla.0 - (PREVIA_MARGEN_PANTALLA + MARGEN) * 2.0).max(160.0);
         let alto = (pantalla.1 - (PREVIA_RESERVA_ALTO + MARGEN) * 2.0 - ROTULO).max(120.0);
@@ -530,20 +530,34 @@ impl Rejilla {
             )
         };
 
-        // La disposición que da la celda mayor, pero sin renunciar a la fila
-        // única por una ganancia pequeña: es la forma del conmutador de macOS
-        // y se lee de un vistazo, y una rejilla obliga a buscar dónde saltó la
-        // selección. Se prefiere la de menos filas que llegue al 80 % de lo
-        // mejor posible. Antes la fila única mandaba hasta que la celda bajaba
-        // de 150 px, y con ocho ventanas eran miniaturas de 152×95 en una
-        // pantalla vacía.
-        let mejor = (1..=n)
-            .map(|columnas| medidas(columnas).0)
-            .fold(0.0_f32, f32::max);
-        let columnas = (1..=n)
-            .rev()
-            .find(|columnas| medidas(*columnas).0 >= mejor * PREVIA_GANANCIA_MIN)
-            .unwrap_or(1);
+        // Hasta 5 ventanas van en una sola fila. A partir de 6 se reparten en
+        // filas equilibradas de como mucho 4 columnas (6 → 3+3, 7 → 4+3,
+        // 8 → 4+4, 9 → 3+3+3, 10 → 4+4+2, 11 → 4+4+3, 12 → 4+4+4) evitando
+        // tanto filas de 5 en rejilla como dejar 1 ventana suelta abajo.
+        // Si con muchas ventanas (p. ej. 48) no cupieran de alto, se amplían
+        // las columnas lo justo para no salirse de la pantalla.
+        let columnas = if n <= 5 {
+            n
+        } else {
+            let filas_min = n.div_ceil(4).max(2);
+            let pref = n.div_ceil(filas_min);
+            let cabe_alto = |c: usize| {
+                let f = n.div_ceil(c);
+                let (_, ch) = medidas(c);
+                f as f32 * ch + (f - 1) as f32 * PREVIA_HUECO <= alto + 0.1
+            };
+            if cabe_alto(pref) {
+                pref
+            } else {
+                (pref..=n)
+                    .find(|&c| cabe_alto(c))
+                    .unwrap_or_else(|| {
+                        (1..=n)
+                            .max_by(|a, b| medidas(*a).0.total_cmp(&medidas(*b).0))
+                            .unwrap_or(1)
+                    })
+            }
+        };
         let filas = n.div_ceil(columnas);
         let (celda_ancho, celda_alto) = medidas(columnas);
         Self {
@@ -565,13 +579,20 @@ impl Rejilla {
         )
     }
 
+    fn sangria(self, fila: usize, n: usize) -> f32 {
+        let inicio = fila * self.columnas;
+        let en_fila = n.saturating_sub(inicio).min(self.columnas);
+        let faltan = self.columnas.saturating_sub(en_fila);
+        faltan as f32 * (self.celda_ancho + PREVIA_HUECO) * 0.5
+    }
+
     /// La celda entera, marco incluido.
     // 0.1.0
-    fn celda(self, i: usize) -> Rectangle {
+    fn celda(self, i: usize, n: usize) -> Rectangle {
         let columna = i % self.columnas;
         let fila = i / self.columnas;
         Rectangle {
-            x: MARGEN + columna as f32 * (self.celda_ancho + PREVIA_HUECO),
+            x: MARGEN + self.sangria(fila, n) + columna as f32 * (self.celda_ancho + PREVIA_HUECO),
             y: MARGEN + fila as f32 * (self.celda_alto + PREVIA_HUECO),
             width: self.celda_ancho,
             height: self.celda_alto,
@@ -579,11 +600,14 @@ impl Rejilla {
     }
 
     // 0.1.0
-    fn miniatura(self, i: usize) -> Rectangle {
+    fn miniatura(self, i: usize, n: usize) -> Rectangle {
         let columna = i % self.columnas;
         let fila = i / self.columnas;
         Rectangle {
-            x: MARGEN + columna as f32 * (self.celda_ancho + PREVIA_HUECO) + PREVIA_BORDE,
+            x: MARGEN
+                + self.sangria(fila, n)
+                + columna as f32 * (self.celda_ancho + PREVIA_HUECO)
+                + PREVIA_BORDE,
             y: MARGEN + fila as f32 * (self.celda_alto + PREVIA_HUECO) + PREVIA_BORDE,
             width: (self.celda_ancho - PREVIA_BORDE * 2.0).max(1.0),
             height: (self.celda_alto - PREVIA_BORDE * 2.0).max(1.0),
@@ -592,22 +616,102 @@ impl Rejilla {
 
     // 0.1.0
     fn en(self, x: f32, y: f32, n: usize) -> Option<usize> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
         let (x, y) = (x - MARGEN, y - MARGEN);
         if x < 0.0 || y < 0.0 {
             return None;
         }
         let paso_x = self.celda_ancho + PREVIA_HUECO;
         let paso_y = self.celda_alto + PREVIA_HUECO;
-        let columna = (x / paso_x) as usize;
         let fila = (y / paso_y) as usize;
-        if columna >= self.columnas || fila >= self.filas {
+        if fila >= self.filas {
             return None;
         }
-        let dentro_x = x - columna as f32 * paso_x < self.celda_ancho;
+        let x_fila = x - self.sangria(fila, n);
+        if x_fila < 0.0 {
+            return None;
+        }
+        let columna = (x_fila / paso_x) as usize;
+        if columna >= self.columnas {
+            return None;
+        }
+        let dentro_x = x_fila - columna as f32 * paso_x < self.celda_ancho;
         let dentro_y = y - fila as f32 * paso_y < self.celda_alto;
         let i = fila * self.columnas + columna;
         (dentro_x && dentro_y && i < n).then_some(i)
     }
+}
+
+const FUENTE_TACTIL: iced_core::Font = iced_core::Font {
+    weight: iced_core::font::Weight::Semibold,
+    ..iced_core::Font::DEFAULT
+};
+const ICONO_TACTIL: f32 = 24.0;
+const SEP_TACTIL: f32 = 8.0;
+const MARGEN_TACTIL: f32 = 16.0;
+
+pub fn ancho_etiqueta_tactil(entradas: &[Entrada]) -> f32 {
+    entradas
+        .iter()
+        .map(|e| {
+            crate::widget::ancho_con_fuente(&e.nombre, tema::T_CUERPO, FUENTE_TACTIL)
+                + e.icono.as_ref().map_or(0.0, |_| ICONO_TACTIL + SEP_TACTIL)
+        })
+        .sum::<f32>()
+        + 2.0 * MARGEN_TACTIL
+        + SEP_TACTIL * entradas.len().saturating_sub(1) as f32
+}
+
+pub(crate) fn etiqueta_tactil(entradas: &[Entrada], ancho: f32, foco: bool) -> PanelElement<'_> {
+    let fondo = tema::card();
+    let tinta = tema::texto();
+    let mut contenido = Row::new()
+        .spacing(SEP_TACTIL)
+        .align_y(iced_core::Alignment::Center);
+    let libre = ancho - 2.0 * MARGEN_TACTIL - SEP_TACTIL * entradas.len().saturating_sub(1) as f32;
+    let ajustar = ancho_etiqueta_tactil(entradas) > ancho;
+    let hueco = libre / entradas.len().max(1) as f32;
+    for e in entradas {
+        let ancho_icono = e.icono.as_ref().map_or(0.0, |_| ICONO_TACTIL + SEP_TACTIL);
+        if let Some(icono) = &e.icono {
+            contenido = contenido.push(icono::ver(icono, ICONO_TACTIL, ICONO_TACTIL));
+        }
+        let nombre = if ajustar {
+            std::borrow::Cow::Owned(crate::emergente::lista::recortar(
+                &e.nombre,
+                (hueco - ancho_icono).max(0.0),
+                tema::T_CUERPO,
+            ))
+        } else {
+            std::borrow::Cow::Borrowed(e.nombre.as_str())
+        };
+        contenido = contenido.push(
+            text(nombre)
+                .size(tema::T_CUERPO)
+                .font(FUENTE_TACTIL)
+                .color(tinta)
+                .wrapping(iced_core::text::Wrapping::None),
+        );
+    }
+    container(contenido)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(move |_| container::Style {
+            background: Some(fondo.into()),
+            border: Border {
+                radius: tema::R_POPOVER.into(),
+                width: if foco || tema::alto_contraste() {
+                    2.0
+                } else {
+                    0.0
+                },
+                color: tinta,
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 #[cfg(test)]
@@ -696,11 +800,40 @@ mod tests {
     }
 
     #[test]
+    fn la_rejilla_equilibra_filas_sin_dejar_una_suelta() {
+        assert_eq!(Rejilla::new(4, (1280.0, 720.0)).columnas, 4);
+        assert_eq!(Rejilla::new(5, (1280.0, 720.0)).columnas, 5);
+        assert_eq!(Rejilla::new(6, (1280.0, 720.0)).columnas, 3);
+        assert_eq!(Rejilla::new(7, (1280.0, 720.0)).columnas, 4);
+        assert_eq!(Rejilla::new(8, (1280.0, 720.0)).columnas, 4);
+        assert_eq!(Rejilla::new(9, (1280.0, 720.0)).columnas, 3);
+        assert_eq!(Rejilla::new(10, (1280.0, 720.0)).columnas, 4);
+        assert_eq!(Rejilla::new(12, (1280.0, 720.0)).columnas, 4);
+    }
+
+    #[test]
     fn muchas_ventanas_siguen_dentro_de_la_pantalla() {
         let c = Conmutador::new(Modo::Ventanas, entradas(48), (1280.0, 720.0));
         assert_eq!(c.miniaturas().len(), 48);
         let (w, h) = c.size();
         assert!(w <= 1280.0 - PREVIA_MARGEN_PANTALLA * 2.0 + 0.1);
         assert!(h <= 720.0 - PREVIA_MARGEN_PANTALLA * 2.0 + 0.1);
+    }
+
+    #[test]
+    fn mover_extremos_y_coordenadas_o_pantalla_no_finita_son_seguros() {
+        let mut c = Conmutador::new(Modo::Aplicaciones, entradas(3), (1280.0, 720.0));
+        c.mover(i32::MAX);
+        assert!(c.elegida().is_some_and(|i| i < 3));
+        c.mover(i32::MIN);
+        assert!(c.elegida().is_some_and(|i| i < 3));
+        assert_eq!(c.en(f32::NAN, 40.0), None);
+        assert_eq!(c.en(MARGEN + 5.0, f32::INFINITY), None);
+
+        let v = Conmutador::new(Modo::Ventanas, entradas(4), (f32::NAN, f32::NAN));
+        let (w, h) = v.size();
+        assert!(w.is_finite() && w > 0.0);
+        assert!(h.is_finite() && h > 0.0);
+        assert_eq!(v.en(f32::NAN, 40.0), None);
     }
 }

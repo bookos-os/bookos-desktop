@@ -356,6 +356,7 @@ fn todos_los_widgets_abren_su_tarjeta() {
         ("red", "red"),
         ("volumen", "sonido"),
         ("brillo", "brillo"),
+        ("usuarios", "usuarios"),
         ("notificaciones", "notificaciones"),
         ("control", "centro"),
         ("reloj", "calendario"),
@@ -594,6 +595,101 @@ fn el_osd_se_pinta() {
         tinta(&buf, w, h, 0, w) > 0,
         "el aviso del escritorio sale en blanco"
     );
+}
+
+#[test]
+fn el_osd_de_escritorios_se_adapta_y_se_centra() {
+    let textos = [
+        "1",
+        "Work",
+        "Desktop 1",
+        "Escritorio 2",
+        "Escritorio 2 · HDMI-A-1",
+        "Escritorio de desarrollo y pruebas muy largo para comprobar el recorte",
+    ];
+    for escala in [1.0, 1.75] {
+        let mut shell = shell(escala);
+        let mut anchos_capsula = Vec::new();
+        for texto in textos {
+            shell.mostrar_osd("escritorio-2", None, Some(texto.into()));
+            let (w, h) = shell.osd_buffer_size().expect("tiene buffer");
+            let (lw, lh) = shell.osd_logical_size().expect("tiene tamaño lógico");
+            assert!(
+                (lw * escala - w as f32).abs() < 0.01 && (lh * escala - h as f32).abs() < 0.01,
+                "escala={escala} {texto:?}: lógico ({lw}, {lh}) no cuadra con buffer ({w}, {h})"
+            );
+
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            shell.draw_osd(&mut buf);
+
+            let (mut px_min, mut px_max) = (w, 0u32);
+            let (mut py_min, mut py_max) = (h, 0u32);
+            for y in 0..h {
+                for x in 0..w {
+                    let a = buf[((y * w + x) * 4 + 3) as usize];
+                    if a >= 245 {
+                        px_min = px_min.min(x);
+                        px_max = px_max.max(x);
+                        py_min = py_min.min(y);
+                        py_max = py_max.max(y);
+                    }
+                }
+            }
+            assert!(px_max > px_min && py_max > py_min, "{texto:?} sin cápsula");
+
+            let margen_izq = px_min as i32;
+            let margen_der = (w - 1 - px_max) as i32;
+            let tol_capsula = (2.0 * escala).ceil() as i32;
+            assert!(
+                (margen_izq - margen_der).abs() <= tol_capsula,
+                "escala={escala} {texto:?}: cápsula descentrada (izq={margen_izq}, der={margen_der})"
+            );
+
+            let fondo_capsula = luma(&buf, w, px_min + 3, py_min + 3);
+            let (mut fg_min, mut fg_max) = (px_max, px_min);
+            let (mut fg_ymin, mut fg_ymax) = (py_max, py_min);
+            for y in (py_min + 2)..=(py_max.saturating_sub(2)) {
+                for x in (px_min + 2)..=(px_max.saturating_sub(2)) {
+                    if (luma(&buf, w, x, y) - fondo_capsula).abs() > 60 {
+                        fg_min = fg_min.min(x);
+                        fg_max = fg_max.max(x);
+                        fg_ymin = fg_ymin.min(y);
+                        fg_ymax = fg_ymax.max(y);
+                    }
+                }
+            }
+            assert!(
+                fg_max > fg_min && fg_ymax > fg_ymin,
+                "{texto:?} sin contenido"
+            );
+
+            let pad_izq = (fg_min - px_min) as i32;
+            let pad_der = (px_max - fg_max) as i32;
+            let tol_contenido = (3.0 * escala).ceil() as i32;
+            assert!(
+                (pad_izq - pad_der).abs() <= tol_contenido,
+                "escala={escala} {texto:?}: contenido descentrado (izq={pad_izq}, der={pad_der})"
+            );
+            assert!(
+                fg_ymax - fg_ymin < (26.0 * escala).ceil() as u32,
+                "escala={escala} {texto:?}: el texto saltó de línea (alto={})",
+                fg_ymax - fg_ymin + 1
+            );
+
+            anchos_capsula.push(px_max - px_min + 1);
+        }
+
+        assert!(anchos_capsula[0] <= anchos_capsula[1], "{anchos_capsula:?}");
+        assert!(anchos_capsula[1] < anchos_capsula[2], "{anchos_capsula:?}");
+        assert!(anchos_capsula[2] < anchos_capsula[3], "{anchos_capsula:?}");
+        assert!(anchos_capsula[3] < anchos_capsula[4], "{anchos_capsula:?}");
+        assert!(anchos_capsula[4] <= anchos_capsula[5], "{anchos_capsula:?}");
+        assert!(
+            anchos_capsula[5] <= (480.0 * escala).ceil() as u32 + 2,
+            "excede el máximo a escala={escala}: {:?}",
+            anchos_capsula
+        );
+    }
 }
 
 /// «Acerca de este PC» se dibuja con los datos de esta máquina.

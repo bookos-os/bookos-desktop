@@ -88,6 +88,9 @@ struct Deslizamiento {
     salientes: Vec<Apartada>,
     /// Y las que entran, con la posición en la que tienen que acabar.
     entrantes: Vec<Apartada>,
+    /// Compensación subpíxel respecto al mapeo entero en `Space` ([-0.5, 0.5]).
+    fraccion_salientes: f64,
+    fraccion_entrantes: f64,
 }
 
 /// Una ventana del despeje: ella, su sitio, el punto fuera de la pantalla y
@@ -156,7 +159,11 @@ impl Escritorios {
         let cuantos = cuantos.clamp(1, MAXIMO);
         nombres.truncate(cuantos);
         while nombres.len() < cuantos {
-            nombres.push(format!("Escritorio {}", nombres.len() + 1));
+            nombres.push(format!(
+                "{} {}",
+                bookos_shell::t("Escritorio", "Desktop"),
+                nombres.len() + 1
+            ));
         }
         // Con uno solo no hay a dónde ir y el gesto de cambiar de escritorio no
         // puede hacer nada: se dice al arrancar para no diagnosticarlo a ciegas.
@@ -286,6 +293,13 @@ impl Escritorios {
             .map(|(w, _)| w)
     }
 
+    pub(crate) fn escondidas_en(&self, salida: &str) -> &[Apartada] {
+        self.escondidas
+            .get(salida)
+            .and_then(|listas| listas.get(self.activo_en(salida)))
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// Las ventanas que no están en el `Space` pero siguen vivas: las de los
     /// otros escritorios y las que apartó «mostrar escritorio».
     // 0.1.1
@@ -352,10 +366,11 @@ pub fn crear(state: &mut BookosComp) -> bool {
         lista.push(Vec::new());
     }
     state.escritorios.cuantos += 1;
-    state
-        .escritorios
-        .nombres
-        .push(format!("Escritorio {}", state.escritorios.cuantos));
+    state.escritorios.nombres.push(format!(
+        "{} {}",
+        bookos_shell::t("Escritorio", "Desktop"),
+        state.escritorios.cuantos
+    ));
     avisar_al_panel(state);
     state.needs_redraw = true;
     true
@@ -423,6 +438,7 @@ pub fn eliminar(state: &mut BookosComp, indice: usize) -> bool {
     if state.escritorios.cuantos <= 1 || indice >= state.escritorios.cuantos {
         return false;
     }
+    crate::teclado::retirar(state);
 
     // Todas las salidas con estado: las enchufadas ahora y las que tengan
     // ventanas guardadas de un monitor que se desenchufó y volverá.
@@ -483,22 +499,33 @@ pub fn eliminar(state: &mut BookosComp, indice: usize) -> bool {
     state.escritorios.nombres.remove(indice);
     state.escritorios.cuantos -= 1;
 
-    // El foco, a la última de la salida donde está el puntero: es la que el
-    // usuario está mirando cuando confirma el borrado.
+    // El foco, a la última ventana enfocable de la salida donde está el puntero:
+    // ni muerta ni pestaña oculta ni override-redirect.
     let aqui = salida_para_vista(state);
     let ultima = state
         .space
         .elements()
-        .filter(|&w| salida_de(state, w).as_deref() == Some(aqui.as_str()))
-        .cloned()
-        .next_back();
+        .rfind(|&w| {
+            salida_de(state, w).as_deref() == Some(aqui.as_str())
+                && ventana_enfocable(state, w)
+        })
+        .cloned();
     if let Some(window) = ultima {
         state.enfocar(&window);
+    } else {
+        crate::keybinds::refocalizar(state);
     }
 
     avisar_al_panel(state);
     state.needs_redraw = true;
     true
+}
+
+fn ventana_enfocable(state: &BookosComp, window: &Window) -> bool {
+    smithay::utils::IsAlive::alive(window)
+        && crate::multitarea::visible(state, window)
+        && !window.x11_surface().is_some_and(|x| x.is_override_redirect())
+        && !state.minimizando.iter().any(|(m, _)| m == window)
 }
 
 /// A qué escritorio lleva moverse `pasos` desde `activo`, con `cuantos` en total.
@@ -595,6 +622,7 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
     // de tres escritorios en pantalla. Las de las demás salidas siguen su
     // camino, que es justo lo que las hace independientes.
     terminar_deslizamiento(state, &nombre);
+    crate::teclado::retirar(state);
 
     let direccion = if n > anterior { 1.0 } else { -1.0 };
     let ancho = state
@@ -631,6 +659,8 @@ pub fn cambiar_a(state: &mut BookosComp, salida: &Output, n: usize) {
             ancho,
             salientes,
             entrantes,
+            fraccion_salientes: 0.0,
+            fraccion_entrantes: 0.0,
         },
     );
 
@@ -656,7 +686,7 @@ fn avisar_osd(state: &mut BookosComp, salida: &str, n: usize) {
         .nombres
         .get(n)
         .cloned()
-        .unwrap_or_else(|| format!("Escritorio {}", n + 1));
+        .unwrap_or_else(|| format!("{} {}", bookos_shell::t("Escritorio", "Desktop"), n + 1));
     // Con más de un monitor, el aviso dice también en cuál ha pasado: el OSD se
     // dibuja siempre en la principal, así que sin esto un cambio en la
     // secundaria parecería haber ocurrido aquí.
@@ -676,6 +706,10 @@ fn resistencia(progreso: f32) -> f32 {
     progreso / (1.0 + progreso.abs() / 0.15)
 }
 
+fn invertir_resistencia(valor: f32) -> f32 {
+    valor / (1.0 - valor.abs().min(0.149) / 0.15)
+}
+
 // añadido en la 0.2.0 -- apoyar la mano detiene la tira en lo que ya se ve, incluso antes de reconocer el eje.
 pub fn agarrar_dedos(state: &mut BookosComp) {
     let Some(nombre) = state.salida_del_puntero().map(|o| o.name()) else {
@@ -686,7 +720,7 @@ pub fn agarrar_dedos(state: &mut BookosComp) {
     };
     let valor = d.muelle.valor();
     let posicion = if d.anterior == d.destino {
-        valor / (1.0 - valor.abs() / 0.15)
+        invertir_resistencia(valor)
     } else {
         valor
     };
@@ -741,6 +775,7 @@ pub fn seguir_dedos(state: &mut BookosComp, progreso: f32) {
             cambiar_a(state, &salida, destino);
         } else {
             terminar_despeje(state);
+            crate::teclado::retirar(state);
             let ancho = state
                 .space
                 .output_geometry(&salida)
@@ -759,6 +794,8 @@ pub fn seguir_dedos(state: &mut BookosComp, progreso: f32) {
                     ancho,
                     salientes,
                     entrantes: Vec::new(),
+                    fraccion_salientes: 0.0,
+                    fraccion_entrantes: 0.0,
                 },
             );
         }
@@ -804,6 +841,22 @@ pub fn soltar_dedos(state: &mut BookosComp, suelta: crate::gestos::Suelta) {
     state.needs_redraw = true;
 }
 
+/// Libera la tira de escritorios si un gesto de cuatro dedos agarró al apoyar
+/// pero acabó decantándose por una acción vertical (vista o despeje).
+pub fn soltar_agarre_cancelado(state: &mut BookosComp) {
+    if state.escritorios.gesto.is_some() {
+        soltar_dedos(
+            state,
+            crate::gestos::Suelta {
+                movimiento: crate::gestos::Movimiento::Escritorio,
+                progreso: 0.0,
+                velocidad: 0.0,
+                cancelada: true,
+            },
+        );
+    }
+}
+
 /// Cuatro dedos en vertical: aparta las ventanas, o las devuelve si ya lo
 /// estaban, siguiendo a la mano. Hasta soltar se puede volver atrás.
 // añadido en la 0.2.0
@@ -833,7 +886,7 @@ pub fn seguir_despeje(state: &mut BookosComp, progreso: f32) {
     ) else {
         return;
     };
-    let avance = g.agarre.seguir(progreso, 0.0, 1.0);
+    let avance = g.agarre.seguir_con_goma(progreso, 0.0, 1.0, 0.0, 0.08);
     d.muelle
         .fijar(if g.devolviendo { 1.0 - avance } else { avance });
     state.needs_redraw = true;
@@ -906,8 +959,12 @@ pub fn avisar_al_panel(state: &mut BookosComp) {
         state.escritorios.activo_en(&salida),
         state.escritorios.cuantos,
     );
+    let nombres = state.escritorios.nombres().to_vec();
     if let Some(shell) = state.shell.as_mut() {
         shell.escritorios(activo, cuantos);
+        if shell.vista_escritorios_abierta() {
+            shell.actualizar_vista_escritorios(activo, nombres);
+        }
     }
 }
 
@@ -918,31 +975,40 @@ pub fn avisar_al_panel(state: &mut BookosComp) {
 /// que impide que el bucle se duerma a mitad de la transición.
 // 0.1.0
 // modified 0.1.1 -- anima el despeje del escritorio
-pub fn animar(state: &mut BookosComp) -> bool {
-    let despejando = animar_despeje(state);
+/// Avanza el deslizamiento de escritorios y el despeje hasta `ahora`
+/// (proyectado al próximo vblank en KMS). Devuelve `true` mientras quede
+/// movimiento para que el compositor no entre en reposo prematuramente.
+pub fn animar_en(state: &mut BookosComp, ahora: std::time::Instant) -> bool {
+    let despejando = animar_despeje_en(state, ahora);
     if state.escritorios.deslizando.is_empty() {
         return despejando;
     }
     // Se recogen los nombres antes de tocar nada: `terminar_deslizamiento`
     // muta el mapa, y hay que poder terminar uno mientras los demás siguen.
     let salidas: Vec<String> = state.escritorios.deslizando.keys().cloned().collect();
-    let mut vivo = false;
+    let mut autonomo = false;
     for salida in salidas {
         let Some(d) = state.escritorios.deslizando.get_mut(&salida) else {
             continue;
         };
         if !d.sujeto {
-            d.muelle.avanzar(std::time::Instant::now());
-        }
-        if !d.sujeto && d.muelle.quieto() {
-            terminar_deslizamiento(state, &salida);
-            continue;
+            d.muelle.avanzar(ahora);
+            if d.muelle.quieto() {
+                terminar_deslizamiento(state, &salida);
+                continue;
+            }
+            autonomo = true;
         }
         let avance = d.muelle.valor() as f64;
         // Lo que se ha recorrido de pantalla en este instante. Las que se van lo
-        // restan y las que entran lo suman: se mueven juntas, como una sola tira.
-        let recorrido = (d.ancho * d.direccion * avance) as i32;
-        let desplazada = (d.ancho * d.direccion) as i32 - recorrido;
+        // restan y las que entran lo suman: se mueven juntas, como una sola tira,
+        // guardando el resto subpíxel para la composición GLES.
+        let desplazamiento = d.ancho * d.direccion * avance;
+        let recorrido = desplazamiento.round() as i32;
+        let desplazada_exacta = d.ancho * d.direccion - desplazamiento;
+        let desplazada = desplazada_exacta.round() as i32;
+        d.fraccion_salientes = -(desplazamiento - recorrido as f64);
+        d.fraccion_entrantes = desplazada_exacta - desplazada as f64;
         for (window, origen) in &d.salientes {
             state
                 .space
@@ -953,10 +1019,36 @@ pub fn animar(state: &mut BookosComp) -> bool {
                 .space
                 .map_element(window.clone(), (destino.x + desplazada, destino.y), false);
         }
-        vivo = true;
     }
-    state.needs_redraw = true;
-    vivo || despejando
+    if autonomo {
+        state.needs_redraw = true;
+    }
+    autonomo || despejando
+}
+
+/// Residuo subpíxel en coordenadas lógicas para ventanas animadas por
+/// deslizamiento de escritorio o despeje, para evitar saltos de 1 px.
+pub fn desfase_subpixel(state: &BookosComp, window: &Window) -> Point<f64, Logical> {
+    if bookos_shell::tema::efectos_reducidos() {
+        return (0.0, 0.0).into();
+    }
+    for d in state.escritorios.deslizando.values() {
+        if d.salientes.iter().any(|(w, _)| w == window) {
+            return (d.fraccion_salientes, 0.0).into();
+        }
+        if d.entrantes.iter().any(|(w, _)| w == window) {
+            return (d.fraccion_entrantes, 0.0).into();
+        }
+    }
+    if let Some(d) = state.escritorios.despeje.as_ref()
+        && let Some((_, sitio, fuera, _)) = d.ventanas.iter().find(|(w, ..)| w == window)
+    {
+        let peso = d.muelle.valor() as f64;
+        let x = sitio.x as f64 + (fuera.x - sitio.x) as f64 * peso;
+        let y = sitio.y as f64 + (fuera.y - sitio.y) as f64 * peso;
+        return (x - x.round(), y - y.round()).into();
+    }
+    (0.0, 0.0).into()
 }
 
 /// Si la ventana está en pantalla solo porque se está yendo con un cambio de
@@ -1068,6 +1160,7 @@ fn mover_ventana_una(state: &mut BookosComp, window: &Window, destino: usize) {
         return;
     }
     terminar_todos(state);
+    crate::teclado::retirar(state);
     let Some(salida) = salida_de(state, window) else {
         return;
     };
@@ -1089,8 +1182,10 @@ fn mover_ventana_una(state: &mut BookosComp, window: &Window, destino: usize) {
         let siguiente = state
             .space
             .elements()
-            .rev()
-            .find(|w| salida_de(state, w).as_deref() == Some(&salida))
+            .rfind(|w| {
+                salida_de(state, w).as_deref() == Some(&salida)
+                    && ventana_enfocable(state, w)
+            })
             .cloned();
         if let Some(w) = siguiente {
             state.enfocar(&w);
@@ -1122,6 +1217,7 @@ fn mover_ventana_una(state: &mut BookosComp, window: &Window, destino: usize) {
 // modified 0.1.1 -- las ventanas salen animadas por el borde, por salida y escritorio, y se quita el foco
 pub fn despejar(state: &mut BookosComp) {
     terminar_despeje(state);
+    crate::teclado::retirar(state);
     let salidas: Vec<(String, Rectangle<i32, Logical>)> = state
         .space
         .outputs()
@@ -1151,6 +1247,13 @@ pub fn despejar(state: &mut BookosComp) {
     // tecleara iría a ciegas a ella.
     state.desenfocar();
     state.needs_redraw = true;
+}
+
+/// Despeja el escritorio de inmediato sin animación lateral (usado cuando la
+/// exposición ya animó la salida hacia arriba hacia el escritorio).
+pub fn despejar_inmediato(state: &mut BookosComp) {
+    despejar(state);
+    terminar_despeje(state);
 }
 
 /// Alterna entre despejado y no. Lo usa el **atajo de teclado**, que es una sola
@@ -1212,6 +1315,11 @@ pub fn recuperar(state: &mut BookosComp) {
     });
     state.revisar_barras();
     state.needs_redraw = true;
+}
+
+pub(crate) fn recuperar_inmediato(state: &mut BookosComp) {
+    recuperar(state);
+    terminar_despeje(state);
 }
 
 /// Devuelve, si la aplicación tiene alguna ventana apartada por «mostrar el
@@ -1337,12 +1445,13 @@ pub fn asomada_en(state: &BookosComp, punto: Point<f64, Logical>) -> bool {
 /// Mueve las ventanas del despeje en marcha. `true` mientras le quede.
 // 0.1.1
 // modified 0.2.0 -- avanza el muelle salvo con los dedos apoyados
-fn animar_despeje(state: &mut BookosComp) -> bool {
+fn animar_despeje_en(state: &mut BookosComp, ahora: std::time::Instant) -> bool {
     let Some(d) = state.escritorios.despeje.as_mut() else {
         return false;
     };
-    if !d.sujeto {
-        d.muelle.avanzar(std::time::Instant::now());
+    let sujeto = d.sujeto;
+    if !sujeto {
+        d.muelle.avanzar(ahora);
         if d.muelle.quieto() {
             terminar_despeje(state);
             return false;
@@ -1359,8 +1468,10 @@ fn animar_despeje(state: &mut BookosComp) -> bool {
         })
         .collect();
     mapear_en_su_orden(state, posiciones);
-    state.needs_redraw = true;
-    true
+    if !sujeto {
+        state.needs_redraw = true;
+    }
+    !sujeto
 }
 
 /// Deja el despeje en su estado final: las que se iban, fuera del `Space`; las
@@ -1592,6 +1703,18 @@ mod tests {
         assert!((resistencia(-0.5) + resistencia(0.5)).abs() < f32::EPSILON);
     }
 
+    #[test]
+    fn invertir_resistencia_no_diverge_ni_invierte_signo_en_limites() {
+        assert_eq!(invertir_resistencia(0.0), 0.0);
+        let r = resistencia(0.3);
+        assert!((invertir_resistencia(r) - 0.3).abs() < 1e-5);
+        for v in [0.15f32, -0.15, 0.20, -0.20] {
+            let inv = invertir_resistencia(v);
+            assert!(inv.is_finite(), "valor {v} produjo {inv}");
+            assert_eq!(inv.signum(), v.signum(), "valor {v} invirtió el signo");
+        }
+    }
+
     /// Al despejar, cada ventana sale por el lado en que tiene su centro, dejando
     /// una tira a la vista,
     /// y la centrada o maximizada también se va de lado, no hacia abajo.
@@ -1666,6 +1789,8 @@ mod tests {
                 ancho: 2000.0,
                 salientes: Vec::new(),
                 entrantes: Vec::new(),
+                fraccion_salientes: 0.0,
+                fraccion_entrantes: 0.0,
             },
         );
         e
@@ -1723,6 +1848,8 @@ mod tests {
                 ancho: 1920.0,
                 salientes: Vec::new(),
                 entrantes: Vec::new(),
+                fraccion_salientes: 0.0,
+                fraccion_entrantes: 0.0,
             },
         );
         e.deslizando.insert(
@@ -1740,6 +1867,8 @@ mod tests {
                 ancho: 1280.0,
                 salientes: Vec::new(),
                 entrantes: Vec::new(),
+                fraccion_salientes: 0.0,
+                fraccion_entrantes: 0.0,
             },
         );
         // Cada tira mide **su** ancho de pantalla, y hacia su lado. Se compara

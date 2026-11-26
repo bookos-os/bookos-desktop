@@ -10,6 +10,7 @@
 //! tema son unos cientos de `stat` (ver [`crate::icono`]), y hacerlo dentro de
 //! `view` significaría pagarlos en cada repintado de la tarjeta.
 
+use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::icono::{self, Icono};
@@ -79,6 +80,8 @@ pub struct Notificacion {
     pub cuerpo: String,
     /// Ya cargado. `None` si la aplicación no dio ninguno o no se encontró.
     pub icono: Option<Icono>,
+    /// Nombre o ruta con que se resolvió `icono`, si proviene del tema (no `image-data`).
+    icono_nombre: Option<String>,
     /// Urgencia crítica (2 en la especificación). Las críticas no se silencian
     /// con «No molestar»: para eso están.
     pub critica: bool,
@@ -91,6 +94,8 @@ pub struct Notificacion {
     pub llegada: Instant,
     // añadido en la 0.2.2
     pub forma: Forma,
+    /// Ruta local asociada (p. ej. captura de pantalla guardada) para abrirla al pulsar.
+    pub ruta: Option<PathBuf>,
 }
 
 impl Notificacion {
@@ -138,6 +143,7 @@ impl Notificacion {
         progreso: Option<u8>,
         progreso_indeterminado: bool,
     ) -> Self {
+        let icono_nombre = Some(icono.to_string());
         let icono = icono::cargar(icono)
             .or_else(|| icono::cargar(&app.to_lowercase()))
             .or_else(|| icono::propio("notificaciones"));
@@ -147,6 +153,7 @@ impl Notificacion {
             resumen,
             cuerpo,
             icono,
+            icono_nombre,
             critica,
             acciones,
             progreso,
@@ -154,7 +161,14 @@ impl Notificacion {
             leida: false,
             llegada: Instant::now(),
             forma: Forma::Normal,
+            ruta: None,
         }
+    }
+
+    /// Asocia una ruta local (por ejemplo una captura guardada) para abrirla al pulsar.
+    pub fn con_ruta(mut self, ruta: PathBuf) -> Self {
+        self.ruta = Some(ruta);
+        self
     }
 
     /// Sustituye el icono resuelto por uno ya decodificado (por ejemplo los
@@ -162,7 +176,18 @@ impl Notificacion {
     // añadido en la 0.2.4
     pub fn con_icono(mut self, icono: Icono) -> Self {
         self.icono = Some(icono);
+        self.icono_nombre = None;
         self
+    }
+
+    /// Vuelve a resolver el icono si proviene del tema (no `image-data`).
+    pub fn recargar_icono(&mut self) {
+        let Some(ref nombre) = self.icono_nombre else {
+            return;
+        };
+        self.icono = icono::cargar(nombre)
+            .or_else(|| icono::cargar(&self.app.to_lowercase()))
+            .or_else(|| icono::propio("notificaciones"));
     }
 
     /// «ahora», «hace 3 min», «hace 2 h». Lo que se lee en la esquina de la
@@ -243,6 +268,14 @@ impl Registro {
     pub fn hay(&self) -> bool {
         !self.lista.is_empty()
     }
+
+    /// Vuelve a resolver los iconos de las notificaciones guardadas tras
+    /// cambiar de tema o de pack de iconos.
+    pub fn recargar_iconos(&mut self) {
+        for n in &mut self.lista {
+            n.recargar_icono();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -275,6 +308,7 @@ mod tests {
             resumen: resumen.into(),
             cuerpo: String::new(),
             icono: None,
+            icono_nombre: None,
             critica: false,
             acciones: Vec::new(),
             progreso: None,
@@ -282,6 +316,7 @@ mod tests {
             leida: false,
             llegada: Instant::now(),
             forma: Forma::Normal,
+            ruta: None,
         }
     }
 

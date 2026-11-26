@@ -18,7 +18,7 @@ use smithay::input::keyboard::{FilterResult, Keycode, Keysym, keysyms, xkb};
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::zwp_text_input_v3::ContentPurpose;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
 use smithay::wayland::text_input::TextInputSeat;
 
 use bookos_shell::teclado::{Accion, Capa, Salida};
@@ -54,7 +54,9 @@ struct Toques {
 impl Toques {
     // 0.1.1
     fn iniciar(&mut self, slot: TouchSlot, origen: Point<f64, Logical>, time: u32) {
-        self.activos.push(slot);
+        if !self.activos.contains(&slot) {
+            self.activos.push(slot);
+        }
         self.candidato = (self.activos.len() == 1).then_some(Toque {
             slot,
             origen,
@@ -178,6 +180,23 @@ pub fn cancelar_toques(state: &mut BookosComp) {
     state.teclado.toques = Toques::default();
     state.teclado.superficie_toque = None;
     state.teclado.tocada = None;
+    soltar_tecla_activa(state, true);
+}
+
+fn soltar_tecla_activa(state: &mut BookosComp, solo_toque: bool) {
+    let coincide = state
+        .teclado
+        .pulsado
+        .is_some_and(|dedo| !solo_toque || matches!(dedo, Dedo::Toque(_)));
+    if !coincide {
+        return;
+    }
+    state.teclado.pulsado = None;
+    let accion = state.shell.as_mut().and_then(|s| s.teclado_soltar());
+    state.needs_redraw = true;
+    if let Some(Accion::Suelta(salida)) = accion {
+        escribir(state, salida, Fase::Sube);
+    }
 }
 
 /// Se dejó de escribir con el dedo —se tocó el teclado físico o se apagó la
@@ -206,11 +225,18 @@ pub fn revisar(state: &mut BookosComp) {
         state.teclado.tocada = None;
     }
     let Some(campo) = state.seat.text_input().campo_activo() else {
-        if state.teclado.campo.take().is_some() {
+        if state.teclado.campo.take().is_some() || state.teclado.subida.is_some() {
             ocultar(state);
         }
         return;
     };
+    let ventana_campo = state.window_for_surface(&campo.surface);
+    if let Some((ref sub_win, _)) = state.teclado.subida
+        && (!sub_win.alive() || ventana_campo.as_ref() != Some(sub_win))
+    {
+        restaurar_subida(state);
+    }
+    let campo_cambio = state.teclado.campo.as_ref() != Some(&campo.surface);
     state.teclado.campo = Some(campo.surface.clone());
     // El toque puede caer en una subsuperficie o en un popup del mismo
     // cliente: lo que cuenta es que sea la aplicación del campo.
@@ -219,8 +245,16 @@ pub fn revisar(state: &mut BookosComp) {
         .tocada
         .as_ref()
         .is_some_and(|(t, _)| t.id().same_client_as(&campo.surface.id()));
+    if !tocada {
+        if state.shell.as_ref().is_some_and(|s| s.teclado_abierto())
+            && let Some(rect) = campo.cursor_rectangle
+        {
+            subir_ventana(state, &campo.surface, rect.loc.y + rect.size.h);
+        }
+        return;
+    }
     // modificado en la 0.2.0 -- respeta el interruptor de Ajustes
-    if !tocada || !state.teclado.tactil || !state.entrada.teclado_pantalla {
+    if !state.teclado.tactil || !state.entrada.teclado_pantalla {
         return;
     }
     state.teclado.tocada = None;
@@ -234,7 +268,7 @@ pub fn revisar(state: &mut BookosComp) {
         _ => Capa::Letras,
     };
     if let Some(shell) = state.shell.as_mut()
-        && !shell.teclado_abierto()
+        && debe_mostrar_teclado(shell.teclado_abierto(), campo_cambio)
     {
         shell.mostrar_teclado(capa);
         state.needs_redraw = true;
@@ -244,15 +278,49 @@ pub fn revisar(state: &mut BookosComp) {
     }
 }
 
+fn debe_mostrar_teclado(abierto: bool, campo_cambio: bool) -> bool {
+    !abierto || campo_cambio
+}
+
+fn restaurar_subida(state: &mut BookosComp) {
+    if let Some((window, donde)) = state.teclado.subida.take()
+        && window.alive()
+        && state.space.element_location(&window).is_some()
+    {
+        state.space.map_element(window, donde, false);
+        state.needs_redraw = true;
+    }
+}
+
 // 0.1.1
 fn ocultar(state: &mut BookosComp) {
+    soltar_tecla_activa(state, false);
     if let Some(shell) = state.shell.as_mut() {
         shell.ocultar_teclado();
     }
-    if let Some((window, donde)) = state.teclado.subida.take() {
-        state.space.map_element(window, donde, false);
-    }
+    restaurar_subida(state);
     state.needs_redraw = true;
+}
+
+fn desplazamiento_subida(
+    donde_orig_y: i32,
+    geom_y: i32,
+    cursor_abajo: i32,
+    alto_pantalla: f64,
+) -> i32 {
+    // Algo de aire sobre el teclado: con el cursor pegado al borde, la línea
+    // que se escribe queda a ras y no se lee la de debajo.
+    let limite = alto_pantalla - f64::from(bookos_shell::teclado::ALTO) - 16.0;
+    if limite <= 0.0 {
+        return 0;
+    }
+    let origen_y = donde_orig_y - geom_y;
+    let sobra = f64::from(origen_y + cursor_abajo) - limite;
+    if sobra <= 0.0 {
+        0
+    } else {
+        sobra.ceil() as i32
+    }
 }
 
 /// Sube la ventana del campo lo justo para que su cursor de texto quede por
@@ -264,21 +332,49 @@ fn subir_ventana(state: &mut BookosComp, surface: &WlSurface, cursor_abajo: i32)
     let Some(window) = state.window_for_surface(surface) else {
         return;
     };
-    let Some(donde) = state.space.element_location(&window) else {
-        return;
+    if state
+        .teclado
+        .subida
+        .as_ref()
+        .is_some_and(|(w, _)| w != &window)
+    {
+        restaurar_subida(state);
+    }
+    let donde_orig = if let Some((_, orig)) = state
+        .teclado
+        .subida
+        .as_ref()
+        .filter(|(w, _)| w == &window)
+    {
+        *orig
+    } else {
+        let Some(donde) = state.space.element_location(&window) else {
+            return;
+        };
+        donde
     };
     let alto = state.shell.as_ref().map_or(0.0, |s| s.area_principal().1);
-    // Algo de aire sobre el teclado: con el cursor pegado al borde, la línea
-    // que se escribe queda a ras y no se lee la de debajo.
-    let limite = alto - f64::from(bookos_shell::teclado::ALTO) - 16.0;
-    let origen = donde - window.geometry().loc;
-    let sobra = f64::from(origen.y + cursor_abajo) - limite;
-    if sobra <= 0.0 {
+    let subir = desplazamiento_subida(
+        donde_orig.y,
+        window.geometry().loc.y,
+        cursor_abajo,
+        alto,
+    );
+    if subir == 0 {
+        if state.teclado.subida.is_some() {
+            restaurar_subida(state);
+        }
         return;
     }
-    let nuevo = Point::from((donde.x, donde.y - sobra.ceil() as i32));
-    state.teclado.subida.get_or_insert((window.clone(), donde));
-    state.space.map_element(window, nuevo, false);
+    let Some(actual) = state.space.element_location(&window) else {
+        return;
+    };
+    let nuevo = Point::from((donde_orig.x, donde_orig.y - subir));
+    state.teclado.subida.get_or_insert((window.clone(), donde_orig));
+    if actual != nuevo {
+        state.space.map_element(window, nuevo, false);
+        state.needs_redraw = true;
+    }
 }
 
 // 0.1.1
@@ -551,5 +647,38 @@ mod tests {
             .filter(|c| pasos(&km, 0, Salida::Caracter(*c)).is_none())
             .collect();
         assert_eq!(faltan, "");
+    }
+
+    #[test]
+    fn slot_repetido_no_bloquea_toque_del_teclado() {
+        let mut toques = Toques::default();
+        toques.iniciar(slot(0), (100.0, 200.0).into(), 100);
+        // Si el kernel/compositor repite un down sobre el mismo slot, no debe
+        // quedarse un slot fantasma impidiendo toques futuros.
+        toques.iniciar(slot(0), (102.0, 201.0).into(), 110);
+        assert!(toques.terminar(slot(0), 150));
+        toques.iniciar(slot(0), (100.0, 200.0).into(), 300);
+        assert!(toques.terminar(slot(0), 350));
+    }
+
+    #[test]
+    fn desplazamiento_subida_respeta_pantalla_cero_y_vuelta_arriba() {
+        assert_eq!(desplazamiento_subida(100, 0, 700, 0.0), 0);
+        let alto = 800.0;
+        let limite = (alto - f64::from(bookos_shell::teclado::ALTO) - 16.0) as i32;
+        assert_eq!(desplazamiento_subida(100, 0, limite - 120, alto), 0);
+        let subir = desplazamiento_subida(100, 0, limite, alto);
+        assert_eq!(subir, 100);
+        // Al volver a enfocar un campo más alto dentro de la misma ventana,
+        // calcular contra `donde_orig` devuelve desplazamiento 0 (restaurar).
+        assert_eq!(desplazamiento_subida(100, 0, 40, alto), 0);
+    }
+
+    #[test]
+    fn debe_mostrar_teclado_no_pisa_capa_en_mismo_campo() {
+        assert!(debe_mostrar_teclado(false, false));
+        assert!(debe_mostrar_teclado(false, true));
+        assert!(!debe_mostrar_teclado(true, false));
+        assert!(debe_mostrar_teclado(true, true));
     }
 }

@@ -314,7 +314,10 @@ impl AvisoDesconexion {
         if v < 0.01 {
             return 0.0;
         }
-        (5.0 + ancho_de(TEXTO_DESCONECTADO, crate::tema::T_CUERPO)) * v
+        (5.0 + ancho_de(
+            crate::emergente::t(TEXTO_DESCONECTADO, "Disconnected"),
+            crate::tema::T_CUERPO,
+        )) * v
     }
 
     /// El icono, y a su derecha el texto mientras dura. Mismo hueco y cuerpo
@@ -333,7 +336,7 @@ impl AvisoDesconexion {
             iced_widget::container(
                 iced_widget::row![
                     iced_widget::Space::new().width(Length::Fixed(5.0)),
-                    iced_widget::text(TEXTO_DESCONECTADO)
+                    iced_widget::text(crate::emergente::t(TEXTO_DESCONECTADO, "Disconnected"))
                         .size(crate::tema::T_CUERPO)
                         .color(color)
                         .wrapping(iced_core::text::Wrapping::None),

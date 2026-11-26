@@ -1,4 +1,4 @@
 #%PAM-1.0
 # Servicio independiente: nunca aceptar una contraseña vacía como huella.
-auth required pam_fprintd.so max-tries=3 timeout=15
+auth required pam_fprintd.so max-tries=3 timeout=-1
 account include system-auth

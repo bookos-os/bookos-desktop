@@ -35,7 +35,9 @@ sudo dnf install cargo gcc-c++ pkgconf-pkg-config clang-devel \
 ```
 
 X11 applications require Xwayland (`xorg-x11-server-Xwayland` on Fedora). Portals
-require `xdg-desktop-portal`. The network, Bluetooth, and audio popovers need
+require `xdg-desktop-portal`, and the `FileChooser` portal delegates to
+`bookos-explorer`. The built-in Polkit authentication agent requires `polkit`
+(`polkit-agent-helper-1`). The network, Bluetooth, and audio popovers need
 `bookos-system`, NetworkManager, BlueZ, and PipeWire with `pactl` and `wpctl`.
 Automatic brightness, fingerprint unlock, and power profiles depend on compatible
 hardware and services such as `iio-sensor-proxy`, `fprintd` with `fprintd-pam`, and
@@ -52,9 +54,10 @@ cargo run -p bookos-comp -- 'konsole --separate'
 
 BookOS opens in a window with a terminal inside it. `--separate` keeps Konsole from
 reusing a window in the host session. Omit the client to open just the desktop,
-or pass `-f` to the compositor for a fullscreen preview. If your host desktop
-already runs a notification server, prefix `cargo run` with `dbus-run-session --`
-to test notifications on a separate bus.
+pass `-f` (`--fullscreen`) to the compositor for a fullscreen preview, or use
+`--kiosko <program>` to host a single client full-screen without desktop chrome. If
+your host desktop already runs a notification server, prefix `cargo run` with
+`dbus-run-session --` to test notifications on a separate bus.
 
 ### Install as a desktop session
 
@@ -69,11 +72,25 @@ sudo ./session/instalar.sh
 Log out and select **BookUI** in your display manager. The installer registers the
 session, user units, lock screen PAM policies, and BookOS portals. To update a
 local installation, run `./actualizar.sh` as a regular user, then log out and
-back in.
+back in; if the greeter is already installed, `./actualizar.sh` also rebuilds and
+installs `bookos-greeter` and `bookos-pam-huella`, verifies that the installed
+binaries match `target/release/`, and restarts `bookos-budsd.service`.
 
-The optional BookOS login screen runs on greetd and Cage. It offers a preview mode,
-account selection, PAM authentication, and keyboard, Wi-Fi, and power controls.
-[Login screen setup](session/greeter/README.md)
+The optional BookOS login screen (`bookos-greeter`) runs on greetd and Cage. It
+offers a preview mode, account selection, PAM authentication (including follow-up
+prompts), a logo and progress-bar handoff into the desktop session, fast user
+switching (`bookos-cambiar-usuario` / `bookos-greetd@.service`), and keyboard,
+Wi-Fi, and power controls. [Login screen setup](session/greeter/README.md)
+
+An optional minimal Plymouth `two-step` boot splash theme with BookOS branding
+(preserving LUKS unlock glyphs from `spinner`) can be installed with
+`sudo bash session/plymouth/instalar.sh`.
+[Plymouth theme installer](session/plymouth/instalar.sh)
+
+The optional `bookos-extras` package (not installed or enabled by default) adds
+Android-style edge touch navigation gestures and an expanded notification shade
+over `bookos-comp`'s passive extension socket.
+[bookos-extras](extras-pkg/README.md)
 
 If the compositor exits with an error, the session supervisor saves
 `compositor-last-crash.log` under `${XDG_STATE_HOME:-$HOME/.local/state}/bookos/`.
@@ -88,21 +105,23 @@ log is at `$XDG_RUNTIME_DIR/bookos-session.log`.
 
 | Area | What you can do |
 | --- | --- |
-| Windows and multitasking | Run Wayland and X11 apps, move and resize windows, snap them to halves or quarters, and group them into split panes or tabs. Minimize and restore windows from the dock with the Magic Lamp animation. Switch windows by icon or thumbnail. Use the desktop overview to create and rename workspaces and move windows between them. |
-| Panel, dock, and Launchpad | Check system status, open control popovers, pin apps, manage multiple windows from the dock, and organize the Launchpad into folders. Start apps automatically with XDG autostart entries. |
+| Windows and multitasking | Run Wayland and X11 apps, move and resize windows, snap them to halves or quarters, and group them into split panes or tabs. Minimize and restore windows from the dock with the Magic Lamp animation. Switch windows by icon or thumbnail. Use the desktop overview to create and rename workspaces and move windows between them. On a touchscreen, swipe up from the bottom edge to reveal the dock and keep pulling to open Recent Apps with live window cards, swipe cards up to close, drag a card's header to a side for split screen or bottom-center for a floating window, resize split dividers or floating edges/corners by touch, swipe horizontally with three fingers to switch workspaces, and navigate Recent Apps by keyboard. |
+| Panel, dock, and Launchpad | Check system status, open control popovers, customize panel size and widgets (including `monitor`, `trafico`, and `consumo`), pin apps, use the dock context menu (open window list, app actions, recent files, Keep in Dock, Open at Login), and organize the Launchpad into folders. Start apps automatically with XDG autostart entries. |
 | Files and search | Create, rename, sort, copy, compress, or trash files on the desktop, create shortcuts, and preview images, PDFs, and text. Search for apps, settings, and actions, find files with `plocate`, and send queries to Zenith when installed. |
-| Notifications and privacy | View grouped notifications, progress bars, and images (`image-data`). Mute individual apps, turn on Do Not Disturb, and reply directly when the sender supports `inline-reply`. Panel indicators show when the camera, microphone, or screen sharing is in use. |
-| Lock screen and power | Lock immediately, after inactivity, or on resume. Unlock with your password through PAM, a PIN set in Settings, or an enrolled fingerprint if enabled. Use the screensaver, turn displays off, suspend, or switch power profiles. The desktop asks for confirmation before powering off or logging out. |
+| Notifications and privacy | View grouped notifications, progress bars, and images (`image-data`). Mute individual apps, turn on Do Not Disturb, and reply directly when the sender supports `inline-reply`. Panel indicators show when the camera, microphone, or screen sharing is in use, and native portal permission dialogs (`Access`) handle sandboxed app prompts. |
+| Lock screen, authentication, and power | Lock immediately, after inactivity, or on resume. Unlock with your password through PAM, a PIN set in Settings, or an enrolled fingerprint if enabled, and control playback from the interactive lock-screen card (with seek bar, plus shuffle/repeat for BookOS Player). Use the screensaver, turn displays off, suspend, or switch power profiles, with shutdown/logout confirmation and smooth KMS startup loading and shutdown fade transitions. Handle privilege prompts through the built-in Polkit authentication agent (`org.freedesktop.PolicyKit1.AuthenticationAgent`, with identity switching and Caps Lock warning; `bookos-session` skips external Polkit agents from XDG autostart) and switch users without closing active sessions via `bookos-cambiar-usuario`. |
 | Displays and screenshots | Configure display layout, primary output, mode, rotation, scaling, and variable refresh rate (VRR). Save a screenshot to disk or the clipboard with region selection, a delay, an optional cursor, and an interactive thumbnail. The screen sharing portal streams entire displays through PipeWire. |
-| Activities and audio | Control playback from Control Center or the lock screen. The activity island shows live tasks from integrated apps, including playback, timers, recording, and Zenith. Use `bookos-budsd` to check battery levels and access supported Galaxy Buds controls. |
-| Network and devices | Join open or secured Wi-Fi networks, enter passwords from the Wi-Fi popover, manage Bluetooth, and select audio inputs and outputs. Confirm Bluetooth pairing in Settings. The system service mounts removable drives through UDisks2 when permitted by system policy. |
-| Accessibility and input | Navigate the panel and dock by keyboard, use Orca with AT-SPI2 on desktop surfaces, adjust contrast, motion, and cursor size, and enable Sticky Keys or Slow Keys. The desktop also supports touchscreens, an on-screen keyboard, and an emoji picker. |
+| Activities and audio | Control playback from Control Center or the lock screen. The activity island shows live tasks from integrated apps, including playback, timers, recording, and Zenith. Use `bookos-budsd` to check battery levels and access supported Galaxy Buds controls. [Dynamic Island API](docs/api-isla.md) |
+| Network, storage, and devices | Join open or secured Wi-Fi networks, enter passwords from the Wi-Fi popover, manage Bluetooth, and select audio inputs and outputs. Confirm Bluetooth pairing in Settings. `bookos-system` mounts removable drives through UDisks2 when permitted by system policy and provides user storage inspection and cleanup. |
+| Accessibility, input, and localization | Navigate the panel and dock by keyboard, use Orca with AT-SPI2 on desktop surfaces, adjust contrast, motion, and cursor size, and enable Sticky Keys or Slow Keys. Toggle the touchscreen and on-screen keyboard, reveal the panel or dock from top/bottom screen edges, use the emoji picker, and run the desktop localized in Spanish or English. |
 
 ### Common shortcuts
 
 Hold **Meta** for one second to see the shortcut and gesture sheet. On a touchpad,
 swipe up with three fingers to show windows, swipe sideways with four to switch
-workspaces, or pinch with five to open the Launchpad on supported hardware.
+workspaces, or pinch with five to open the Launchpad on supported hardware; on a
+touchscreen, swipe from the top or bottom edge to reveal bars or Recent Apps, and
+swipe sideways with three fingers to switch workspaces.
 [Keyboard shortcuts](FUNCIONES.md#atajos-de-teclado) ·
 [Touchpad gestures](FUNCIONES.md#gestos-del-touchpad)
 
@@ -142,16 +161,21 @@ bloqueo_inactividad = 900
 
 | Component | Responsibility |
 | --- | --- |
-| [`bookos-comp`](crates/bookos-comp) | Wayland compositor, Xwayland, input, displays, and portals. `org.bookos.Desktop` provides `GetConfig`, `ApplyConfig`, `GetOutputs`, `ApplyOutputConfig`, and the activity API. It checks the program associated with the D-Bus sender before accepting an external activity. |
-| [`bookos-shell`](crates/bookos-shell) | Desktop surfaces drawn inside the compositor. Widgets isolate failures and redraw when their state changes. |
-| [`bookos-system`](crates/bookos-system) | `org.bookos.System1` exposes network, Bluetooth, audio, and storage state and operations. It connects to NetworkManager and BlueZ through D-Bus. It still runs `pactl` and `wpctl` for audio. |
+| [`bookos-comp`](crates/bookos-comp) | Wayland compositor, Xwayland, input, displays, built-in Polkit authentication agent (`org.freedesktop.PolicyKit1.AuthenticationAgent`), KMS startup/shutdown transitions, passive extension socket for `bookos-extras`, and XDG portals. `org.bookos.Desktop` provides `GetConfig`, `ApplyConfig`, `GetOutputs`, `ApplyOutputConfig`, and the activity API ([Dynamic Island API](docs/api-isla.md)), verifying the calling program before accepting an external activity. |
+| [`bookos-shell`](crates/bookos-shell) | Desktop surfaces drawn inside the compositor (panel, dock, Launchpad, lock screen, session loading screen, and Polkit/portal dialogs). Widgets isolate failures and redraw when their state changes. |
+| [`bookos-system`](crates/bookos-system) | `org.bookos.System1` exposes network, Bluetooth, audio, removable storage mounting (UDisks2), and user storage inspection and cleanup. Connects to NetworkManager and BlueZ through D-Bus and uses `pactl` and `wpctl` for audio. |
 | [`bookos-budsd`](crates/bookos-budsd) | `org.bookos.Buds` provides battery levels, noise control, and other controls depending on the model. |
-| [`bookos-greeter`](crates/bookos-greeter) and [`bookos-pam-huella`](crates/bookos-pam-huella) | Optional login screen and PAM module for password and fingerprint authentication with greetd. |
+| [`bookos-greeter`](crates/bookos-greeter) and [`bookos-pam-huella`](crates/bookos-pam-huella) | Optional login screen (with startup handoff and fast user switching) and PAM module for concurrent password and fingerprint authentication with greetd. |
+| [`bookos-extras`](crates/bookos-extras) | Optional companion daemon and CLI (not installed or enabled by default) providing Android-style edge touch navigation and an expanded notification shade over `bookos-comp`'s extension socket ([`bookos-extras` docs](extras-pkg/README.md)). |
 
-The BookOS XDG backend provides `Settings`, `FileChooser`, `Screenshot`, and
-`ScreenCast`. Apps that query `Settings` receive the theme, accent color, contrast,
-and motion preference. `FileChooser` opens the BookOS file manager as a file picker.
-[XDG portal backend](session/bookos.portal)
+The BookOS XDG backend provides `Settings`, `FileChooser`, `Screenshot`,
+`ScreenCast`, `Access`, and `AppChooser`. Apps that query `Settings` receive the
+theme, accent color, contrast, and motion preference. `FileChooser` opens the
+BookOS file manager (`bookos-explorer`) as a file picker, `Access` presents native
+permission dialogs for sandboxed applications, and `AppChooser` provides a native
+searchable "Open with..." selector.
+[XDG portal backend](session/bookos.portal) ·
+[Portal configuration](session/bookos-portals.conf)
 
 The compositor draws the panel in its first frame using the data already
 available and redraws when something changes. The clock updates on the minute.
@@ -176,14 +200,19 @@ to open a local socket. Add `--offline` if Cargo already has the dependencies
 cached. On Fedora, the formatting and lint checks use the `rustfmt` and `clippy`
 packages.
 
-The following tests export PNGs of the panel, window menu, and power confirmation
-dialog for visual inspection.
+The following tests and example export PNGs of the panel, window menu, power
+confirmation dialog, and native Polkit / portal dialogs (`Access`, `AppChooser`)
+for visual inspection.
 
 ```bash
 BOOKOS_PANEL_PNG=/tmp/bookos-panel.png cargo test -p bookos-shell --test panel -- --test-threads=1
 BOOKOS_MENU_VENTANA_PNG=/tmp/bookos-menu.png cargo test -p bookos-shell --test menu_ventana
 BOOKOS_DUMP_CONFIRMACION=/tmp/bookos-confirmation.png cargo test -p bookos-shell --test desktop_mejoras
+cargo run -p bookos-shell --example dialogos_portal_png -- /tmp/bookos-dialogs
 ```
+
+Optional `.rpm` and `.deb` packages for `bookos-extras` can be built with
+`./extras-pkg/construir-paquetes.sh`.
 
 To test window groups in a nested session, use PySide6 and a temporary directory
 for settings and screenshots. The test opens Qt clients and checks snapping, split
@@ -198,7 +227,8 @@ XDG_CONFIG_HOME="$multitasking_test/config" XDG_PICTURES_DIR="$multitasking_test
 ```
 
 Set `BOOKOS_SELFTEST_MULTITAREA=x11` to repeat the test with Xwayland. Debug builds
-also accept `BOOKOS_SELFTEST_GUION` with the path to an input script.
+also accept `BOOKOS_SELFTEST_GUION` with the path to an input script (including
+multi-finger touch and Recent Apps checks).
 [Compositor self-tests](crates/bookos-comp/src/selftest.rs) ·
 [Motion test script](crates/bookos-comp/tests/movimiento_020.guion)
 
@@ -212,15 +242,15 @@ cursor files in use.
 | --- | --- | --- |
 | High | Review how window groups behave when minimizing a tab or returning focus to a dialog. | The nested self-test fails at group minimization on Wayland and dialog focus on Xwayland. |
 | High | Validate native DRM/KMS at 60, 120, and 144 Hz, including VRR, display power management, hotplug, and suspend and resume. Measure power consumption during active use and check the hardware cursor plane after wake. | Nested mode can test interactions and composition. Refresh rates, power states, and display transitions require physical hardware. |
-| High | Finish testing login, locking, and recovery on a physical TTY, and add a keyboard layout selector to the lock screen. | The greeter tests use a simulated greetd. Graphical recovery depends on KWin and PySide6. |
-| High | Integrate a session polkit agent and start a session keyring. | The greeter has its own rules. The remaining work is covered in the [credential integration assessment](VIABILIDAD-CREDENCIALES.md). |
+| High | Finish testing login, fast user switching, locking, and recovery on a physical TTY, and add a keyboard layout selector to the lock screen. | The greeter tests use a simulated greetd. Graphical recovery depends on KWin and PySide6. |
+| High | Start and integrate a session keyring (`org.freedesktop.secrets`) with portal `Secret` support, and consider fingerprint support in the Polkit agent. | The native session Polkit agent is implemented in `bookos-comp` and `bookos-shell` via `polkit-agent-helper-1`, and `bookos-greetd.pam` includes optional `pam_gnome_keyring.so` hooks, but no Secret Service daemon is wired by default. See the [credential integration assessment](VIABILIDAD-CREDENCIALES.md). |
 | High | Share a single window and export frames through DMA-BUF. | `ScreenCast` shares whole displays, includes the cursor, and copies frames through the CPU. |
 | Medium | Label every popover control for Orca, extend text scaling to the shell, and add an indicator for Sticky Keys. | AT-SPI2 covers the panel, dock, activity island, and notifications. The Wi-Fi popover exposes its controls, while several others mainly announce their titles. Text in the panel, dock, and notifications stays at a fixed size. |
 | Medium | Publish files copied or cut in the BookOS file manager to the system clipboard and add clipboard history with handling for sensitive data. | The desktop can paste files from apps that publish the clipboard selection, such as Dolphin and Nautilus. The BookOS file manager keeps its selection within the app. |
 | Medium | Make panel and dock placement configurable across multiple monitors. Expose more preferences in Settings, including gestures and shortcuts. | Displays can be configured independently. The panel and dock follow the primary display. |
 | Medium | Complete the audio and Bluetooth popovers and use native interfaces for audio and MPRIS. | Pairing confirmation happens in Settings. The service exposes audio profiles and uses `pactl` and `wpctl`. |
 | Medium | Add window rules and remember window geometry across sessions. | The compositor remembers “Always on top” per app and preserves a group's layout while it is open. |
-| Medium | Review the About This PC and Appearance interaction tests and the lock screen entry animation test. | The tests fail when revealing the serial number, selecting the automatic accent color, and checking animation progress on the lock screen. |
+| Medium | Review the About This PC and Appearance interaction tests. | `bookos-shell --test acerca` and `--test apariencia` fail at hit-test coordinates for revealing the serial number and selecting the automatic accent color. |
 | Medium | Expand visual coverage across themes and fractional scales and measure redraw costs for the Launchpad and desktop overview. | Tests can export PNGs and the compositor records frame timing. More combinations and native DRM measurements are still needed. |
 
 RPM packaging and installation images are maintained in a separate repository.

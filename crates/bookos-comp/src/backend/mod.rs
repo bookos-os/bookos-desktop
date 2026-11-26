@@ -57,6 +57,12 @@ pub fn perfil_activo() -> bool {
 // 0.1.0
 // modified 0.1.1 -- anima el teclado en pantalla y suelta la captura del genio al acabar (~20 MB de GPU)
 pub fn avanzar_animaciones(state: &mut BookosComp) {
+    avanzar_animaciones_en(state, std::time::Instant::now());
+}
+
+/// Versión parametrizada por instante objetivo (`ahora`, próximo vblank en KMS)
+/// de [`avanzar_animaciones`].
+pub fn avanzar_animaciones_en(state: &mut BookosComp, ahora: std::time::Instant) {
     // Con el fondo tapado se para aquí y no solo en el temporizador: otra cosa
     // que se mueva —un vídeo a pantalla completa pide redibujo a 60 Hz— pasaría
     // por esta función, y el fondo avanzaría con ella.
@@ -127,7 +133,7 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
             state.needs_redraw = true;
         }
         shell.animar_toast();
-        shell.animar_emergente();
+        shell.animar_emergente_en(ahora);
         shell.animar_panel();
         shell.animar_conmutador();
         shell.animar_osd();
@@ -135,14 +141,16 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
         if shell.animar_bloqueo() {
             state.needs_redraw = true;
         }
+        if shell.hay_grabacion_pill() {
+            shell.repintar_grabacion_pill();
+        }
     }
     // añadido en la 0.2.4 -- muelle del cursor agitado y miniatura de captura.
-    let ahora_anim = std::time::Instant::now();
     if state.agitar_cursor.animando() {
-        state.agitar_cursor.avanzar(ahora_anim);
+        state.agitar_cursor.avanzar(ahora);
     }
     if let Some(mini) = state.miniatura_captura.as_mut()
-        && mini.avanzar(ahora_anim)
+        && mini.avanzar(ahora)
     {
         state.miniatura_captura = None;
         state.needs_redraw = true;
@@ -152,7 +160,7 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
     // añadido en la 0.2.0 -- la salida resuelve su acción al reposar, sin temporizador de duración fija.
     if state.exposicion_gesto.is_none() {
         if let Some(muelle) = state.conmutador_entrada.as_mut() {
-            muelle.avanzar(std::time::Instant::now());
+            muelle.avanzar(ahora);
         }
         if state
             .conmutador_entrada
@@ -162,14 +170,49 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
         {
             state.conmutador_pegado = false;
             state.conmutador_entrada = None;
+            state.exposicion_salida_escritorio = None;
+            state.exposicion_escritorio_sujeto = false;
+            state.arrastre_exposicion = None;
+            state.exposicion_desplazamiento_x.fijar(0.0);
             crate::keybinds::ejecutar(state, accion);
             state.needs_redraw = true;
         }
     }
+    crate::multitarea_tactil::avanzar(state, ahora);
+    state.exposicion_desplazamiento_x.avanzar(ahora);
+    if !state.exposicion_escritorio_sujeto
+        && let Some(muelle) = state.exposicion_salida_escritorio.as_mut()
+    {
+        muelle.avanzar(ahora);
+    }
+    if !state.exposicion_escritorio_sujeto
+        && state
+            .exposicion_salida_escritorio
+            .as_ref()
+            .is_some_and(|m| m.quieto())
+        && let Some(muelle) = state.exposicion_salida_escritorio.take()
+    {
+        if muelle.destino() >= 0.5 {
+            state.conmutador_pegado = false;
+            state.conmutador_salida = None;
+            state.conmutador_entrada = None;
+            state.exposicion_gesto = None;
+            state.arrastre_exposicion = None;
+            state.exposicion_desplazamiento_x.fijar(0.0);
+            state.conmutador_destinos.clear();
+            state.conmutador_modo = None;
+            if let Some(shell) = state.shell.as_mut() {
+                shell.cancelar_conmutador();
+            }
+            crate::escritorios::despejar_inmediato(state);
+        }
+        state.needs_redraw = true;
+    }
     // El deslizamiento entre escritorios mueve ventanas de verdad dentro del
     // `Space`, así que tiene que correr **antes** de recoger los elementos de
     // la escena: hacerlo después dejaría cada frame un paso por detrás.
-    crate::escritorios::animar(state);
+    crate::escritorios::animar_en(state, ahora);
+    crate::ventanas::avanzar_movimientos(state, ahora);
     // Y las que se están yendo al dock: cuando llegan, salen del `Space`.
     let minimizando = crate::ventanas::animar_minimizados(state);
     // El commit del shader tiene que cambiar tanto de ida como de vuelta. Antes
@@ -196,6 +239,21 @@ pub fn avanzar_animaciones(state: &mut BookosComp) {
     if state.fundido.as_ref().is_some_and(|f| f.terminado()) {
         state.fundido = None;
         state.needs_redraw = true;
+    }
+    if state
+        .pantalla_carga
+        .as_ref()
+        .is_some_and(|p| p.terminado_en(ahora))
+    {
+        state.pantalla_carga = None;
+        state.needs_redraw = true;
+    }
+    if let Some(motivo) = state
+        .pantalla_salida
+        .as_mut()
+        .and_then(|s| s.tomar_accion_en(ahora))
+    {
+        crate::arranque::ejecutar_salida(state, motivo);
     }
     // modificado en la 0.2.0 -- terminar un escritorio o una minimización cambia el dock en esta misma vuelta.
     if let Some(shell) = state.shell.as_mut() {
@@ -229,6 +287,94 @@ fn encajada(
             .into(),
         (w, h).into(),
     )
+}
+
+/// Añade una ventana escalada a `destino`, recortando sus esquinas a `radio`
+/// físicos cuando el shader está disponible y `radio > 0.5`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emitir_miniatura(
+    elementos: &mut Vec<OverlayElement>,
+    renderer: &mut GlesRenderer,
+    esquinas: Option<&crate::esquinas::Esquinas>,
+    window: &smithay::desktop::Window,
+    destino: Rectangle<i32, Logical>,
+    recorte_logico: Rectangle<i32, Logical>,
+    alfa: f32,
+    scale: f64,
+    radio: f32,
+) {
+    let ajustadas = constrain_space_element::<GlesRenderer, _, crate::esquinas::Ajustada>(
+        renderer,
+        window,
+        destino.loc,
+        alfa,
+        Scale::from(scale),
+        destino,
+        ConstrainBehavior {
+            reference: ConstrainReference::Geometry,
+            behavior: ConstrainScaleBehavior::Fit,
+            align: ConstrainAlign::CENTER,
+        },
+    );
+    match esquinas.filter(|_| radio > 0.5) {
+        Some(esquinas) => {
+            let recorte = recorte_logico.to_f64().to_physical_precise_round(scale);
+            elementos.extend(ajustadas.into_iter().map(|e| {
+                OverlayElement::Redondeada(crate::esquinas::Redondeada::new(
+                    e, esquinas, recorte, radio,
+                ))
+            }));
+        }
+        None => elementos.extend(ajustadas.into_iter().map(OverlayElement::Miniatura)),
+    }
+}
+
+/// Dibuja la zona translúcida de split-screen (izquierda/derecha) mientras se
+/// arrastra una tarjeta hacia un borde en la exposición.
+pub(crate) fn emitir_previa_split(
+    elementos: &mut Vec<OverlayElement>,
+    area: Rectangle<i32, Logical>,
+    zona: crate::ventanas::Zona,
+    scale: f64,
+) {
+    emitir_previa_zona(elementos, zona.rect(area), scale);
+}
+
+pub(crate) fn emitir_previa_zona(
+    elementos: &mut Vec<OverlayElement>,
+    rect: Rectangle<i32, Logical>,
+    scale: f64,
+) {
+    static IDS_SPLIT: std::sync::OnceLock<[Id; 5]> = std::sync::OnceLock::new();
+    let ids = IDS_SPLIT.get_or_init(|| std::array::from_fn(|_| Id::new()));
+    let acento = bookos_shell::tema::acento();
+    let color = |a: f32| [acento.r * a, acento.g * a, acento.b * a, a];
+    let fisico = |r: Rectangle<i32, Logical>| {
+        Rectangle::new(
+            r.loc.to_f64().to_physical_precise_round(scale),
+            r.size.to_f64().to_physical_precise_round(scale),
+        )
+    };
+    let marco = 3;
+    let (x, y, w, h) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+    let lados = [
+        Rectangle::new((x, y).into(), (w, marco).into()),
+        Rectangle::new((x, y + h - marco).into(), (w, marco).into()),
+        Rectangle::new((x, y).into(), (marco, h).into()),
+        Rectangle::new((x + w - marco, y).into(), (marco, h).into()),
+    ];
+    for ((r, c), id) in std::iter::once((rect, color(0.24)))
+        .chain(lados.into_iter().map(|l| (l, color(0.92))))
+        .zip(ids)
+    {
+        elementos.push(OverlayElement::Color(SolidColorRenderElement::new(
+            id.clone(),
+            fisico(r),
+            0,
+            c,
+            Kind::Unspecified,
+        )));
+    }
 }
 
 pub fn escena(
@@ -286,6 +432,40 @@ pub fn escena(
     {
         elementos.insert(0, OverlayElement::Memory(lupa));
     }
+    if let Some(carga) = state.pantalla_carga.as_mut() {
+        let tamano_fisico = output
+            .current_mode()
+            .map(|m| output.current_transform().transform_size(m.size))
+            .unwrap_or_else(|| (1, 1).into());
+        let splash = carga.elementos(
+            renderer,
+            output.current_location(),
+            (tamano_fisico.w, tamano_fisico.h),
+            output.current_scale().fractional_scale(),
+            std::time::Instant::now(),
+        );
+        if !splash.is_empty() {
+            elementos.splice(0..0, splash);
+        } else if carga.terminado() {
+            state.pantalla_carga = None;
+        }
+    }
+    if let Some(salida) = state.pantalla_salida.as_ref() {
+        let tamano_fisico = output
+            .current_mode()
+            .map(|m| output.current_transform().transform_size(m.size))
+            .unwrap_or_else(|| (1, 1).into());
+        let fundido_salida = salida.elementos(
+            renderer,
+            output.current_location(),
+            (tamano_fisico.w, tamano_fisico.h),
+            output.current_scale().fractional_scale(),
+            std::time::Instant::now(),
+        );
+        if !fundido_salida.is_empty() {
+            elementos.splice(0..0, fundido_salida);
+        }
+    }
     elementos
 }
 
@@ -313,16 +493,21 @@ fn componer(
         .into();
 
     // El cursor va delante: los elementos se apilan de delante hacia atrás, así
-    // que el primero de la lista queda arriba del todo.
+    // que el primero de la lista queda arriba del todo. Cuando se usa la
+    // pantalla táctil, el puntero del ratón se oculta.
     let _t = std::time::Instant::now();
-    let mut elementos = crate::cursor::elements(
-        renderer,
-        &state.cursor_status,
-        state.cursor_theme.as_ref(),
-        cursor_en,
-        scale,
-        state.agitar_cursor.escala(),
-    );
+    let mut elementos = if state.cursor_oculto_por_toque {
+        Vec::new()
+    } else {
+        crate::cursor::elements(
+            renderer,
+            &state.cursor_status,
+            state.cursor_theme.as_ref(),
+            cursor_en,
+            scale,
+            state.agitar_cursor.escala(),
+        )
+    };
     // añadido en la 0.2.4 -- miniatura flotante de la última captura en la
     // esquina inferior derecha de la salida principal, justo debajo del cursor.
     if state
@@ -330,9 +515,15 @@ fn componer(
         .output_geometry(output)
         .is_some_and(|g| g.loc == (0, 0).into())
         && let Some(mini) = state.miniatura_captura.as_ref()
-        && let Some(el) = mini.elemento(renderer, state.pantalla(), scale)
     {
-        elementos.push(el);
+        let pantalla = state.pantalla();
+        let ahora = std::time::Instant::now();
+        if let Some(el) = mini.elemento(state, renderer, pantalla, scale, ahora) {
+            elementos.push(el);
+        }
+        if let Some(destello) = mini.elemento_destello(pantalla, scale, ahora) {
+            elementos.push(destello);
+        }
     }
     // El icono de arrastre, justo debajo del cursor. Su origen es el punto del
     // ratón más lo que el cliente lo haya desplazado.
@@ -381,7 +572,18 @@ fn componer(
     // ventanas no se pintan mientras está puesto. Con un vídeo a pantalla
     // completa no quedaba nada que dibujar y el bloqueo salía en negro.
     let bloqueado = state.shell.as_ref().is_some_and(|s| s.esta_bloqueado());
+    let vista_tactil = !bloqueado
+        && state
+            .vista_tactil
+            .as_ref()
+            .is_some_and(|vista| vista.en_salida(output) && vista.visible());
     let completa = !bloqueado && state.hay_pantalla_completa_en(output);
+    let ocultar_barras = completa
+        || (vista_tactil
+            && state
+                .vista_tactil
+                .as_ref()
+                .is_some_and(|v| v.ocultar_barras()));
     let vista_escritorios = state
         .shell
         .as_ref()
@@ -396,6 +598,10 @@ fn componer(
             output,
             &[Layer::Overlay, Layer::Top],
         ));
+    }
+
+    if vista_tactil {
+        crate::multitarea_tactil::dibujar(state, renderer, output, &mut elementos);
     }
 
     // Meta+Tab reutiliza directamente las superficies de los clientes. No se
@@ -415,6 +621,13 @@ fn componer(
         .conmutador_entrada
         .as_ref()
         .map_or(1.0, |m| m.valor().clamp(0.0, 1.0) as f64);
+    let desplazamiento_x = state.exposicion_desplazamiento_x.valor() as f64;
+    let salida_esc = state
+        .exposicion_salida_escritorio
+        .as_ref()
+        .map_or(0.0, |m| m.valor().clamp(0.0, 1.0) as f64);
+    let alfa_mini = (1.0 - salida_esc as f32).clamp(0.0, 1.0);
+    let alfa_tarjeta = (((entrada as f32 - 0.15) / 0.70).clamp(0.0, 1.0)) * alfa_mini;
     if mostrando_ventanas {
         let huecos = state
             .shell
@@ -426,35 +639,69 @@ fn componer(
             .output_geometry(output)
             .map(|g| g.loc)
             .unwrap_or_default();
-        let mut celdas: Vec<_> = state.conmutador_destinos.iter().zip(huecos).collect();
+        let arrastre_exp = state
+            .arrastre_exposicion
+            .as_ref()
+            .filter(|a| a.moviendo)
+            .cloned();
+        let mut celdas: Vec<_> = state
+            .conmutador_destinos
+            .iter()
+            .zip(huecos)
+            .enumerate()
+            .collect();
         // añadido en la 0.2.0 -- de vuelta, con el apilado real (el primero se
         // pinta delante): así el último fotograma coincide con el escritorio y
         // la ventana elegida llega ya encima.
         if state.conmutador_salida.is_some() {
             let apilado =
                 |w: &smithay::desktop::Window| state.space.elements().position(|e| e == w);
-            celdas.sort_by_key(|(w, _)| std::cmp::Reverse(apilado(w)));
+            celdas.sort_by_key(|(_, (w, _))| std::cmp::Reverse(apilado(w)));
+        } else if let Some(ref arr) = arrastre_exp {
+            celdas.sort_by_key(|(idx, _)| std::cmp::Reverse(*idx == arr.indice));
         }
-        for (window, hueco) in celdas {
-            let hueco = crate::conmutador::hueco_pintado(
+        let mut previa_split_emitida = false;
+        for (idx, (window, hueco)) in celdas {
+            if !previa_split_emitida
+                && let Some(ref arr) = arrastre_exp
+                && idx != arr.indice
+                && let Some(zona) = arr.zona_split
+            {
+                previa_split_emitida = true;
+                emitir_previa_split(&mut elementos, state.work_area(), zona, scale);
+            }
+            let mut hueco = crate::conmutador::hueco_pintado_vivo(
                 state.space.element_geometry(window),
                 hueco,
                 origen_salida,
                 entrada,
+                desplazamiento_x,
+                salida_esc,
             );
-            elementos.extend(constrain_space_element::<GlesRenderer, _, OverlayElement>(
+            if let Some(ref arr) = arrastre_exp
+                && idx == arr.indice
+            {
+                hueco.loc.x += (arr.actual.x - arr.origen.x).round() as i32;
+                hueco.loc.y += (arr.actual.y - arr.origen.y).round() as i32;
+            }
+            let radio = (bookos_shell::tema::R_BOTON as f64 * scale * entrada) as f32;
+            emitir_miniatura(
+                &mut elementos,
                 renderer,
+                state.esquinas.as_ref(),
                 window,
-                hueco.loc,
-                1.0,
-                Scale::from(scale),
                 hueco,
-                ConstrainBehavior {
-                    reference: ConstrainReference::Geometry,
-                    behavior: ConstrainScaleBehavior::Fit,
-                    align: ConstrainAlign::CENTER,
-                },
-            ));
+                encajada(window, hueco),
+                alfa_mini,
+                scale,
+                radio,
+            );
+        }
+        if !previa_split_emitida
+            && let Some(ref arr) = arrastre_exp
+            && let Some(zona) = arr.zona_split
+        {
+            emitir_previa_split(&mut elementos, state.work_area(), zona, scale);
         }
     }
 
@@ -463,7 +710,7 @@ fn componer(
     if let Some(shell) = state.shell.as_ref() {
         elementos.extend(
             shell
-                .conmutador_extras(renderer, entrada as f32)
+                .conmutador_extras(renderer, alfa_tarjeta)
                 .into_iter()
                 .map(OverlayElement::Memory),
         );
@@ -477,7 +724,7 @@ fn componer(
     if let Some(elemento) = state
         .shell
         .as_ref()
-        .and_then(|shell| shell.conmutador_element(renderer, entrada as f32))
+        .and_then(|shell| shell.conmutador_element(renderer, alfa_tarjeta))
     {
         elementos.push(OverlayElement::Memory(elemento));
     }
@@ -493,6 +740,11 @@ fn componer(
         // El anillo de foco del teclado, delante de todo lo del shell: nada
         // puede taparlo (HIG §11, foco).
         elementos.extend(shell.anillo_foco().into_iter().map(OverlayElement::Color));
+        if !state.ocultar_pill_grabacion
+            && let Some(pill) = shell.grabacion_pill_element(renderer)
+        {
+            elementos.push(OverlayElement::Memory(pill));
+        }
         elementos.extend(
             shell
                 .captura_elements(renderer)
@@ -549,19 +801,18 @@ fn componer(
         // de su miniatura mientras tanto: verla en los dos sitios diría que se
         // está copiando, no moviendo.
         if let Some((window, destino)) = arrastrada.as_ref() {
-            elementos.extend(constrain_space_element::<GlesRenderer, _, OverlayElement>(
+            let radio = (bookos_shell::tema::R_CONTROL as f64 * scale) as f32;
+            emitir_miniatura(
+                &mut elementos,
                 renderer,
+                state.esquinas.as_ref(),
                 window,
-                destino.loc,
-                1.0,
-                Scale::from(scale),
                 *destino,
-                ConstrainBehavior {
-                    reference: ConstrainReference::Geometry,
-                    behavior: ConstrainScaleBehavior::Fit,
-                    align: ConstrainAlign::CENTER,
-                },
-            ));
+                encajada(window, *destino),
+                1.0,
+                scale,
+                radio,
+            );
         }
         for (i, hueco) in huecos.into_iter().enumerate() {
             // El orden original se conserva: la última ventana del Space es
@@ -570,37 +821,21 @@ fn componer(
                 if arrastrada.as_ref().is_some_and(|(w, _)| w == window) {
                     continue;
                 }
-                let ajustadas = constrain_space_element::<GlesRenderer, _, crate::esquinas::Ajustada>(
-                    renderer,
-                    window,
-                    destino.loc,
-                    alfa,
-                    Scale::from(scale),
-                    *destino,
-                    ConstrainBehavior {
-                        reference: ConstrainReference::Geometry,
-                        behavior: ConstrainScaleBehavior::Fit,
-                        align: ConstrainAlign::CENTER,
-                    },
-                );
                 // añadido en la 0.2.3 -- con el radio de la miniatura: una
                 // ventana maximizada no trae esquinas propias y asomaba en
                 // pico. Sin shader, como antes.
-                match state.esquinas.as_ref() {
-                    Some(esquinas) => {
-                        let recorte = encajada(window, *destino)
-                            .to_f64()
-                            .to_physical_precise_round(scale);
-                        let radio =
-                            (bookos_shell::RADIO_MINIATURA_ESCRITORIO as f64 * scale) as f32;
-                        elementos.extend(ajustadas.into_iter().map(|e| {
-                            OverlayElement::Redondeada(crate::esquinas::Redondeada::new(
-                                e, esquinas, recorte, radio,
-                            ))
-                        }));
-                    }
-                    None => elementos.extend(ajustadas.into_iter().map(OverlayElement::Miniatura)),
-                }
+                let radio = (bookos_shell::RADIO_MINIATURA_ESCRITORIO as f64 * scale) as f32;
+                emitir_miniatura(
+                    &mut elementos,
+                    renderer,
+                    state.esquinas.as_ref(),
+                    window,
+                    *destino,
+                    encajada(window, *destino),
+                    alfa,
+                    scale,
+                    radio,
+                );
             }
             // Y detrás de sus ventanas, el fondo de pantalla: es lo que hace
             // que un escritorio vacío se vea como un escritorio y no como un
@@ -668,10 +903,20 @@ fn componer(
             elementos.push(OverlayElement::Memory(elemento));
         }
     }
+    let peso_radio = if bookos_shell::tema::efectos_reducidos() {
+        if vista_abierta { 1.0 } else { 0.0 }
+    } else {
+        state
+            .shell
+            .as_ref()
+            .map_or(0.0, |s| s.avance_emergente() as f64)
+    };
+    let radio_expuesta = (bookos_shell::tema::R_CONTROL as f64 * scale * peso_radio) as f32;
     for (window, destino) in expuestas.iter().rev() {
         if arrastrada_vista.as_ref() == Some(window) {
             continue;
         }
+        let mut recorte_logico = encajada(window, *destino);
         // Con su barra de título, a la misma escala: sin ella, una ventana
         // decorada por BookOS se veía sin nombre y no se sabía cuál era.
         if crate::decoracion::decorada(window)
@@ -680,6 +925,8 @@ fn componer(
             let geo = window.geometry().size;
             let factor = destino.size.w as f64 / geo.w.max(1) as f64;
             let alto = (crate::decoracion::ALTO as f64 * factor).round() as i32;
+            recorte_logico.loc.y -= alto;
+            recorte_logico.size.h += alto;
             let esquina = Point::<i32, Logical>::from((destino.loc.x, destino.loc.y - alto))
                 .to_f64()
                 .to_physical_precise_round(scale);
@@ -687,28 +934,38 @@ fn componer(
             if let Some(shell) = state.shell.as_mut()
                 && let Some(barra) = shell.barra_ventana(renderer, id, geo.w, estado, esquina, 1.0)
             {
-                elementos.push(OverlayElement::MemoriaEscalada(
-                    RescaleRenderElement::from_element(
-                        barra,
-                        esquina.to_i32_round(),
-                        Scale::from(factor),
-                    ),
-                ));
+                let escalada = RescaleRenderElement::from_element(
+                    barra,
+                    esquina.to_i32_round(),
+                    Scale::from(factor),
+                );
+                match state.esquinas.as_ref().filter(|_| radio_expuesta > 0.5) {
+                    Some(esquinas) => {
+                        let recorte = recorte_logico.to_f64().to_physical_precise_round(scale);
+                        elementos.push(OverlayElement::Redondeada(
+                            crate::esquinas::Redondeada::barra(
+                                escalada,
+                                esquinas,
+                                recorte,
+                                radio_expuesta,
+                            ),
+                        ));
+                    }
+                    None => elementos.push(OverlayElement::MemoriaEscalada(escalada)),
+                }
             }
         }
-        elementos.extend(constrain_space_element::<GlesRenderer, _, OverlayElement>(
+        emitir_miniatura(
+            &mut elementos,
             renderer,
+            state.esquinas.as_ref(),
             window,
-            destino.loc,
-            1.0,
-            Scale::from(scale),
             *destino,
-            ConstrainBehavior {
-                reference: ConstrainReference::Geometry,
-                behavior: ConstrainScaleBehavior::Fit,
-                align: ConstrainAlign::CENTER,
-            },
-        ));
+            recorte_logico,
+            1.0,
+            scale,
+            radio_expuesta,
+        );
     }
 
     // añadido en la 0.2.0 -- el brillo de Zenith.
@@ -737,7 +994,9 @@ fn componer(
             state
                 .shell
                 .as_ref()
-                .map(|shell| shell.elements(renderer, completa && !vista_escritorios, capa, scale))
+                .map(|shell| {
+                    shell.elements(renderer, ocultar_barras && !vista_escritorios, capa, scale)
+                })
                 .unwrap_or_default()
                 .into_iter()
                 .map(OverlayElement::Memory),
@@ -776,13 +1035,14 @@ fn componer(
             .current_mode()
             .map(|m| (m.size.w, m.size.h))
             .unwrap_or((1, 1));
+        let velo_alfa = 0.32f32 * (entrada as f32) * alfa_mini;
         elementos.push(OverlayElement::Color(SolidColorRenderElement::new(
             VELO_CONMUTADOR.get_or_init(Id::new).clone(),
             Rectangle::new((0, 0).into(), (w, h).into()),
             0,
             // Lo justo para que las ventanas se despeguen del fondo: con 0,56
             // el fondo casi desaparecía y no se sabía dónde estaba uno.
-            [0.0, 0.0, 0.0, 0.3],
+            [0.0, 0.0, 0.0, velo_alfa],
             Kind::Unspecified,
         )));
     }
@@ -830,6 +1090,12 @@ fn componer(
         && let (Some(cristal), Some(shell)) = (state.cristal.clone(), state.shell.as_ref())
     {
         let zonas = shell.zonas_cristal(completa && !vista_escritorios);
+        let alfa_launchpad = shell.cristal_launchpad_alfa();
+        let alfa_zona0 = alfa_launchpad.unwrap_or(1.0);
+        if (alfa_zona0 - state.ultimo_cristal_alfa).abs() > 0.0005 {
+            state.ultimo_cristal_alfa = alfa_zona0;
+            state.cristal_commit.increment();
+        }
         // El commit **no** sube por frame: el cristal desenfoca el fondo,
         // que no cambia. Solo se invalida cuando la barra se mueve, y de eso
         // se encarga el propio rectángulo del elemento.
@@ -839,6 +1105,14 @@ fn componer(
             let pantalla = (ancho_pantalla, alto_pantalla);
             let encuadre = fondo.encuadre(pantalla);
             for (i, (rect, radio, fuerza)) in zonas.into_iter().enumerate() {
+                let alfa = if i == 0 {
+                    alfa_launchpad.unwrap_or(1.0)
+                } else {
+                    1.0
+                };
+                if alfa <= 0.001 {
+                    continue;
+                }
                 if !encuadre.tiene_imagen_detras(crate::fondo::Trozo {
                     x: rect.loc.x as f64 / pantalla.0 as f64,
                     y: rect.loc.y as f64 / pantalla.1 as f64,
@@ -863,6 +1137,7 @@ fn componer(
                     textura,
                     cristal.clone(),
                     fuerza_efectiva,
+                    alfa,
                 )));
             }
         }
@@ -877,7 +1152,11 @@ fn componer(
     // imagen de algo que ya no está, y lo que tapaba se ve a través mientras se
     // desvanece.
     state.cierres.retain(|c| !c.terminado());
-    if let Some(contexto) = state.contexto_gl.clone().filter(|_| !bloqueado) {
+    if let Some(contexto) = state
+        .contexto_gl
+        .clone()
+        .filter(|_| !bloqueado && !vista_tactil)
+    {
         for cierre in &state.cierres {
             if let (Some(barra), Some(ahora), Some(shell)) = (
                 cierre.barra.as_ref(),
@@ -913,7 +1192,7 @@ fn componer(
     // Se generan a mano en vez de con `space_render_elements` para no arrastrar
     // el tipo envuelto `SpaceRenderElements` al enum: aquí solo queremos
     // superficies. `elements()` va de abajo arriba, así que se recorre al revés.
-    let ventanas: Vec<_> = if bloqueado {
+    let ventanas: Vec<_> = if bloqueado || vista_tactil {
         Vec::new()
     } else {
         state
@@ -930,6 +1209,10 @@ fn componer(
     // Crecen un 4 % desde su centro, lo justo para que parezca que el
     // escritorio se acerca en vez de encenderse.
     let desbloqueo = state.shell.as_ref().and_then(|s| s.progreso_desbloqueo());
+    let foco_tactil = state
+        .cursor_oculto_por_toque
+        .then(|| state.ventana_con_foco())
+        .flatten();
     for (window, loc) in ventanas {
         // Las que están en la rejilla de la vista general, o volviendo de
         // ella, ya se han pintado allí. Pintarlas también aquí las duplicaba;
@@ -981,7 +1264,7 @@ fn componer(
             None => {
                 let (alfa, zoom) = crate::ventanas::animacion(&window);
                 let (alfa, zoom) = match desbloqueo {
-                    Some(p) => (alfa * p, zoom * (0.96 + 0.04 * f64::from(p))),
+                    Some(p) => (alfa * p, zoom * (0.94 + 0.06 * f64::from(p))),
                     None => (alfa, zoom),
                 };
                 // Al maximizar o encajar, el buffer nuevo entra escalado desde
@@ -1006,10 +1289,11 @@ fn componer(
         }
         // La posición de dibujo descuenta el marco del cliente: `geometry().loc`
         // es el hueco entre el borde del buffer y la ventana visible (sombras).
-        let animada = match encogido {
+        let mut animada = match encogido {
             Some(e) => crate::ventanas::encogido_ahora(e).0,
             None => crate::ventanas::posicion(&window, loc),
         };
+        animada += crate::escritorios::desfase_subpixel(state, &window);
         let origen = (animada - window.geometry().loc.to_f64()).to_physical_precise_round(scale);
         let superficies = window.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
             renderer,
@@ -1037,9 +1321,61 @@ fn componer(
             centro
         };
 
+        if foco_tactil.as_ref() == Some(&window)
+            && encogido.is_none()
+            && escala_ventana.x == 1.0
+            && escala_ventana.y == 1.0
+            && !crate::ventanas::encajada(&window)
+            && !crate::ventanas::completa(&window)
+            && !crate::multitarea::agrupada(state, &window)
+        {
+            // El tirador señala el blanco táctil de la esquina, sin añadir
+            // otro control a la ventana cuando se usa el ratón.
+            static ASA_TACTIL: std::sync::OnceLock<[Id; 3]> = std::sync::OnceLock::new();
+            let ids = ASA_TACTIL.get_or_init(|| std::array::from_fn(|_| Id::new()));
+            let fondo = bookos_shell::tema::card();
+            let tinta = bookos_shell::tema::texto();
+            let vertice = animada + geo.to_f64();
+            for (id, (x, y, w, h, color)) in ids.iter().zip([
+                (-4.0, -12.0, 2.0, 10.0, tinta),
+                (-12.0, -4.0, 8.0, 2.0, tinta),
+                (-14.0, -14.0, 14.0, 14.0, fondo),
+            ]) {
+                let rect = Rectangle::new(vertice + Point::from((x, y)), (w, h).into());
+                elementos.push(OverlayElement::Color(SolidColorRenderElement::new(
+                    id.clone(),
+                    rect.to_physical_precise_round(scale),
+                    0,
+                    [color.r, color.g, color.b, 1.0],
+                    Kind::Unspecified,
+                )));
+            }
+        }
+
         if encogido.is_none()
             && let Some((id, rect)) = crate::multitarea::separador_de(state, &window)
         {
+            static TIRADOR_SEPARADOR: std::sync::OnceLock<Id> = std::sync::OnceLock::new();
+            let tirador = bookos_shell::tema::texto();
+            let a = 0.55f32;
+            let tirador_rect = Rectangle::new(
+                (
+                    rect.loc.x + (rect.size.w - 4).max(0) / 2,
+                    rect.loc.y + (rect.size.h - 48).max(0) / 2,
+                )
+                    .into(),
+                (4.min(rect.size.w.max(1)), 48.min(rect.size.h.max(1))).into(),
+            );
+            elementos.push(OverlayElement::Color(SolidColorRenderElement::new(
+                TIRADOR_SEPARADOR.get_or_init(Id::new).clone(),
+                Rectangle::new(
+                    tirador_rect.loc.to_f64().to_physical_precise_round(scale),
+                    tirador_rect.size.to_f64().to_physical_precise_round(scale),
+                ),
+                0,
+                [tirador.r * a, tirador.g * a, tirador.b * a, a],
+                Kind::Unspecified,
+            )));
             let color = bookos_shell::tema::card();
             elementos.push(OverlayElement::Color(SolidColorRenderElement::new(
                 id,
@@ -1175,7 +1511,7 @@ fn componer(
     //
     // La banda elástica va delante de ellos: al barrer se ve el filo cruzando
     // por encima de los nombres, no por debajo.
-    if !bloqueado && !completa {
+    if !bloqueado && (!completa || vista_tactil) {
         if let Some(shell) = state.shell.as_ref() {
             match (state.banda.as_mut(), shell.banda()) {
                 (Some(banda), Some((rect, escala))) => {
@@ -1200,6 +1536,39 @@ fn componer(
 
     if !bloqueado {
         elementos.extend(elementos_capas(renderer, output, &[Layer::Background]));
+    }
+
+    // Continuidad de fondo al bloquear y desbloquear: atenúa suavemente el
+    // wallpaper detrás del bloqueo (y debajo de las ventanas que entran) y
+    // resuelve un leve zoom de profundidad al volver al escritorio.
+    let peso_bloqueo = if bloqueado {
+        state
+            .shell
+            .as_ref()
+            .map_or(1.0, |s| s.bloqueo_entradas()[0])
+    } else if let Some(t) = state
+        .shell
+        .as_ref()
+        .and_then(|s| s.progreso_fondo_desbloqueo())
+    {
+        (1.0 - t).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if peso_bloqueo > 0.002 && output.current_location() == (0, 0).into() {
+        static VELO_BLOQUEO: std::sync::OnceLock<Id> = std::sync::OnceLock::new();
+        let (w, h) = output
+            .current_mode()
+            .map(|m| (m.size.w, m.size.h))
+            .unwrap_or((1, 1));
+        let alfa_velo = 0.22 * peso_bloqueo;
+        elementos.push(OverlayElement::Color(SolidColorRenderElement::new(
+            VELO_BLOQUEO.get_or_init(Id::new).clone(),
+            Rectangle::new((0, 0).into(), (w, h).into()),
+            0,
+            [0.0, 0.0, 0.0, alfa_velo],
+            Kind::Unspecified,
+        )));
     }
 
     // El fondo va el último de la lista, o sea el más atrás de todo: detrás de
@@ -1248,7 +1617,23 @@ fn componer(
             // esto es 1,0 y no cuesta nada.
             fundido.unwrap_or(1.0),
         ) {
-            elementos.push(OverlayElement::Memory(elemento));
+            if !bookos_shell::tema::efectos_reducidos()
+                && saliente == 0
+                && entrante.is_none()
+                && peso_bloqueo > 0.001
+            {
+                let centro_fondo: Point<i32, smithay::utils::Physical> = (
+                    geo.loc.x + (lw as f64 * 0.5 * scale).round() as i32,
+                    geo.loc.y + (lh as f64 * 0.5 * scale).round() as i32,
+                )
+                    .into();
+                let zoom = 1.0 + 0.03 * f64::from(peso_bloqueo);
+                elementos.push(OverlayElement::MemoriaEscalada(
+                    RescaleRenderElement::from_element(elemento, centro_fondo, Scale::from(zoom)),
+                ));
+            } else {
+                elementos.push(OverlayElement::Memory(elemento));
+            }
         }
     }
 
@@ -1877,6 +2262,62 @@ pub fn servir_capturas(state: &mut BookosComp, renderer: &mut GlesRenderer, outp
     }
 
     let tamano = crate::captura::tamano_de(output);
+    state.ocultar_pill_grabacion = true;
+    let elementos = escena(state, renderer, output);
+    state.ocultar_pill_grabacion = false;
+
+    // añadido en la 0.2.3 -- las copias por dmabuf se componen directamente en
+    // el buffer del cliente: sin buffer intermedio y sin pasar por la CPU, que
+    // era lo que dejaba el escritorio en 3–5 fps mientras alguien grababa.
+    for i in mias.iter().rev().copied() {
+        let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&state.capturas_pantalla[i].buffer)
+        else {
+            continue;
+        };
+        let mut dmabuf = dmabuf.clone();
+        let pendiente = state.capturas_pantalla.remove(i);
+        let compuesto = match smithay::backend::renderer::Bind::bind(renderer, &mut dmabuf) {
+            // Con `Transform::Normal` y no la de la salida: en anidado la salida
+            // va en `Flipped180` y la copia saldría cabeza abajo, y `YInvert`
+            // con dmabuf lo rechaza wf-recorder («Y_INVERT not supported with
+            // dmabuf»). Normal deja las filas de arriba abajo en los dos backends.
+            Ok(mut fb) => OutputDamageTracker::new(
+                tamano.to_logical(1, smithay::utils::Transform::Normal).to_physical(1),
+                output.current_scale().fractional_scale(),
+                smithay::utils::Transform::Normal,
+            )
+            .render_output(renderer, &mut fb, 0, &elementos, [0.05, 0.05, 0.06, 1.0])
+                .map(|r| r.sync)
+                .map_err(|err| format!("{err:?}")),
+            Err(err) => Err(err.to_string()),
+        };
+        match compuesto {
+            // Hay que esperar a la GPU antes de decir `ready`: el cliente lee el
+            // buffer en cuanto llega el evento.
+            Ok(sync) => match sync.wait() {
+                Ok(()) => crate::captura::contestar(&pendiente, pendiente.region.size),
+                Err(err) => {
+                    tracing::warn!("la copia por dmabuf no terminó: {err:?}");
+                    pendiente.frame.failed();
+                }
+            },
+            Err(err) => {
+                tracing::warn!("no se pudo componer en el dmabuf de la captura: {err}");
+                pendiente.frame.failed();
+            }
+        }
+    }
+    let mias: Vec<usize> = state
+        .capturas_pantalla
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.output == *output)
+        .map(|(i, _)| i)
+        .collect();
+    if mias.is_empty() && emisiones.is_empty() {
+        return;
+    }
+
     let mut destino =
         match Offscreen::<smithay::backend::renderer::gles::GlesRenderbuffer>::create_buffer(
             renderer,
@@ -1894,7 +2335,6 @@ pub fn servir_capturas(state: &mut BookosComp, renderer: &mut GlesRenderer, outp
     // renderizador—; la conversión al que espera el cliente la hace
     // `copy_framebuffer` al leerlo.
 
-    let elementos = escena(state, renderer, output);
     let mut seguimiento = OutputDamageTracker::from_output(output);
     let mut framebuffer = match smithay::backend::renderer::Bind::bind(renderer, &mut destino) {
         Ok(fb) => fb,
@@ -2078,6 +2518,7 @@ pub fn servir_captura_propia(state: &mut BookosComp, renderer: &mut GlesRenderer
         pedida.destino,
         crate::state::DestinoCaptura::Archivo | crate::state::DestinoCaptura::Portapapeles
     ) && state.captura_con_cursor.take() == Some(false));
+    state.ocultar_pill_grabacion = true;
     let elementos = if sin_cursor {
         let cursor = std::mem::replace(
             &mut state.cursor_status,
@@ -2091,6 +2532,7 @@ pub fn servir_captura_propia(state: &mut BookosComp, renderer: &mut GlesRenderer
     } else {
         escena(state, renderer, output)
     };
+    state.ocultar_pill_grabacion = false;
     let mut seguimiento = OutputDamageTracker::from_output(output);
     let mut framebuffer = match smithay::backend::renderer::Bind::bind(renderer, &mut destino) {
         Ok(fb) => fb,
@@ -2153,70 +2595,224 @@ pub fn servir_captura_propia(state: &mut BookosComp, renderer: &mut GlesRenderer
             rgba[d + 3] = 255;
         }
     }
+    let origen_logico = smithay::utils::Rectangle::new(
+        (
+            (region.loc.x as f64 / escala).round() as i32,
+            (region.loc.y as f64 / escala).round() as i32,
+        )
+            .into(),
+        (
+            (region.size.w as f64 / escala).round().max(1.0) as i32,
+            (region.size.h as f64 / escala).round().max(1.0) as i32,
+        )
+            .into(),
+    );
     use crate::state::DestinoCaptura;
     match pedida.destino {
         DestinoCaptura::Color => crate::cuentagotas::entregar(state, [rgba[0], rgba[1], rgba[2]]),
         DestinoCaptura::Lupa => {
             crate::cuentagotas::recibir(state, &rgba, pedida_fisica, region, escala)
         }
-        DestinoCaptura::Archivo => match bookos_shell::captura::guardar_png(&rgba, w, h) {
-            Ok(ruta) => {
-                tracing::info!(?ruta, w, h, "captura guardada");
-                // Si la pidió el portal, la ruta es la respuesta y no hay nada
-                // que notificar: quien la quería es la aplicación, que ya la
-                // está esperando, y el usuario no ha pulsado Impr.
-                match state.captura_portal.take() {
-                    Some(quien) => quien.entregar(ruta),
-                    None => {
-                        let nombre = ruta
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        mostrar_miniatura_captura(state, &rgba, w, h, escala, Some(ruta));
-                        notificar_captura(state, "Captura guardada", &nombre);
+        DestinoCaptura::Archivo if state.captura_portal.is_some() => {
+            match bookos_shell::captura::guardar_png(&rgba, w, h) {
+                Ok(ruta) => {
+                    tracing::info!(?ruta, w, h, "captura guardada");
+                    if let Some(quien) = state.captura_portal.take() {
+                        quien.entregar(ruta);
                     }
                 }
-            }
-            Err(err) => {
-                tracing::error!("no se pudo guardar la captura: {err}");
-                match state.captura_portal.take() {
-                    // Soltarlo sin entregar nada ya es el «no se pudo».
-                    Some(_) => {}
-                    None => {
-                        notificar_captura(state, "No se pudo guardar la captura", &err.to_string())
-                    }
+                Err(err) => {
+                    tracing::error!("no se pudo guardar la captura: {err}");
+                    let _ = state.captura_portal.take();
                 }
             }
-        },
-        DestinoCaptura::Portapapeles => match bookos_shell::captura::png_en_memoria(&rgba, w, h) {
-            Ok(png) => {
-                let bytes = png.len();
-                al_portapapeles(state, png);
-                tracing::info!(w, h, bytes, "captura al portapapeles");
-                mostrar_miniatura_captura(state, &rgba, w, h, escala, None);
-                notificar_captura(state, "Captura copiada", "Ya se puede pegar");
-            }
-            Err(err) => {
-                tracing::error!("no se pudo codificar la captura: {err}");
-                notificar_captura(state, "No se pudo copiar la captura", &err.to_string());
-            }
-        },
+        }
+        DestinoCaptura::Archivo | DestinoCaptura::Portapapeles => {
+            let es_archivo = matches!(pedida.destino, DestinoCaptura::Archivo);
+            state.captura_generacion = state.captura_generacion.wrapping_add(1);
+            let generacion = state.captura_generacion;
+            let recurso = crate::miniatura_captura::RecursoCaptura::pendiente();
+            mostrar_miniatura_captura(
+                state,
+                generacion,
+                &rgba,
+                w,
+                h,
+                escala,
+                recurso.clone(),
+                Some(origen_logico),
+            );
+            let ruta_reservada = if es_archivo {
+                bookos_shell::captura::reservar_ruta_png().ok()
+            } else {
+                None
+            };
+            let claro = bookos_shell::tema::es_claro();
+            let envio = state.captura_envio.clone();
+            let _ = std::thread::Builder::new()
+                .name("captura-png".into())
+                .spawn(move || {
+                    use crate::miniatura_captura::{EstadoRecurso, EventoCaptura};
+                    if es_archivo {
+                        match bookos_shell::captura::guardar_png_en(&rgba, w, h, ruta_reservada) {
+                            Ok(ruta) => {
+                                let nombre = ruta
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                recurso.publicar(EstadoRecurso::Guardado(ruta.clone()));
+                                let _ = envio.send(EventoCaptura::Guardado {
+                                    generacion,
+                                    ruta,
+                                    nombre,
+                                });
+                            }
+                            Err(err) => {
+                                let mensaje = err.to_string();
+                                recurso.publicar(EstadoRecurso::Error(mensaje.clone()));
+                                let _ = envio.send(EventoCaptura::ErrorGuardado {
+                                    generacion,
+                                    mensaje,
+                                });
+                            }
+                        }
+                    } else {
+                        match bookos_shell::captura::png_en_memoria(&rgba, w, h) {
+                            Ok(png) => {
+                                let png = std::sync::Arc::new(png);
+                                recurso.publicar(EstadoRecurso::PngEnMemoria(png.clone()));
+                                let _ = envio.send(EventoCaptura::PngPortapapeles {
+                                    generacion,
+                                    png,
+                                });
+                            }
+                            Err(err) => {
+                                let mensaje = err.to_string();
+                                recurso.publicar(EstadoRecurso::Error(mensaje.clone()));
+                                let _ = envio.send(EventoCaptura::ErrorGuardado {
+                                    generacion,
+                                    mensaje,
+                                });
+                            }
+                        }
+                    }
+                    if let Some(heroe) =
+                        crate::miniatura_captura::preparar_heroe(&rgba, w, h, escala, claro)
+                    {
+                        let _ = envio.send(EventoCaptura::HeroeListo { generacion, heroe });
+                    }
+                });
+        }
     }
     state.needs_redraw = true;
 }
 
+/// Procesa eventos asíncronos de codificación PNG, buffer héroe y lanzamiento del visor.
+pub(crate) fn recibir_evento_captura(
+    state: &mut BookosComp,
+    evento: crate::miniatura_captura::EventoCaptura,
+) {
+    use crate::miniatura_captura::EventoCaptura;
+    match evento {
+        EventoCaptura::PngPortapapeles { generacion, png } => {
+            if generacion == state.captura_generacion {
+                let bytes = png.len();
+                al_portapapeles_arc(state, png);
+                tracing::info!(bytes, "captura al portapapeles");
+                notificar_captura(
+                    state,
+                    bookos_shell::t("Captura copiada", "Screenshot copied"),
+                    bookos_shell::t("Ya se puede pegar", "Ready to paste"),
+                );
+                state.needs_redraw = true;
+            }
+        }
+        EventoCaptura::Guardado {
+            generacion,
+            ruta,
+            nombre,
+        } => {
+            tracing::info!(?ruta, "captura guardada");
+            if generacion == state.captura_generacion {
+                notificar_captura_archivo(
+                    state,
+                    bookos_shell::t("Captura guardada", "Screenshot saved"),
+                    &nombre,
+                    ruta,
+                );
+                state.needs_redraw = true;
+            }
+        }
+        EventoCaptura::ErrorGuardado {
+            generacion,
+            mensaje,
+        } => {
+            tracing::error!(mensaje, "error en la captura");
+            if generacion == state.captura_generacion {
+                notificar_captura(
+                    state,
+                    bookos_shell::t(
+                        "No se pudo guardar la captura",
+                        "Couldn’t save the screenshot",
+                    ),
+                    &mensaje,
+                );
+                state.needs_redraw = true;
+            }
+        }
+        EventoCaptura::HeroeListo { generacion, heroe } => {
+            if let Some(mini) = state.miniatura_captura.as_mut()
+                && mini.generacion() == generacion
+            {
+                mini.poner_heroe(heroe);
+                state.needs_redraw = true;
+            }
+        }
+        EventoCaptura::HijoVisor { generacion, hijo } => {
+            let pid = hijo.id();
+            if let Some(mini) = state.miniatura_captura.as_mut()
+                && mini.generacion() == generacion
+            {
+                mini.registrar_pid_visor(pid);
+            }
+            crate::keybinds::registrar_hijo(state, hijo, None);
+        }
+        EventoCaptura::FalloAbrirVisor { generacion } => {
+            if let Some(mini) = state.miniatura_captura.as_mut()
+                && mini.generacion() == generacion
+                && mini.cancelar_apertura(std::time::Instant::now())
+            {
+                state.needs_redraw = true;
+            }
+        }
+    }
+}
+
 /// Muestra la miniatura flotante de la captura y programa su retirada tras 5 s.
 // añadido en la 0.2.4
+#[allow(clippy::too_many_arguments)]
 fn mostrar_miniatura_captura(
     state: &mut BookosComp,
+    generacion: u64,
     rgba: &[u8],
     w: u32,
     h: u32,
     escala: f64,
-    ruta: Option<std::path::PathBuf>,
+    recurso: crate::miniatura_captura::RecursoCaptura,
+    origen_logico: Option<smithay::utils::Rectangle<i32, Logical>>,
 ) {
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-    state.miniatura_captura = crate::miniatura_captura::Miniatura::nueva(rgba, w, h, escala, ruta);
+    let pantalla = state.pantalla();
+    state.miniatura_captura = crate::miniatura_captura::Miniatura::nueva(
+        generacion,
+        rgba,
+        w,
+        h,
+        escala,
+        pantalla,
+        recurso,
+        origen_logico,
+    );
     if state.miniatura_captura.is_some() {
         let _ = state.loop_handle.insert_source(
             Timer::from_duration(crate::miniatura_captura::DURACION),
@@ -2236,11 +2832,15 @@ fn mostrar_miniatura_captura(
 /// pegándose aunque no haya gestor de portapapeles instalado; a cambio, se
 /// pierde al cerrar la sesión, que es lo que hace cualquier compositor.
 // modified 0.1.1 -- pasa por poner_seleccion, compartida con el texto
-fn al_portapapeles(state: &mut BookosComp, png: Vec<u8>) {
+fn al_portapapeles_arc(state: &mut BookosComp, png: std::sync::Arc<Vec<u8>>) {
     // Los dos nombres del mismo tipo. `image/png` es el que mira todo el mundo;
     // `PNG` a secas lo piden algunas aplicaciones de X11 a través de XWayland, y
     // anunciarlo no cuesta nada.
-    poner_seleccion(state, vec!["image/png".to_string(), "PNG".to_string()], png);
+    poner_seleccion_con(
+        state,
+        vec!["image/png".to_string(), "PNG".to_string()],
+        crate::handlers::Seleccion::Bytes(png),
+    );
 }
 
 /// Texto al portapapeles, con los nombres que piden Wayland y X11.
@@ -2277,6 +2877,7 @@ pub(crate) fn poner_seleccion_con(
     // Smithay tampoco avisa a `new_selection` de esta: los tipos se apuntan
     // a mano para que «Pegar» sepa si hay archivos.
     state.archivos.tipos = tipos.clone();
+    crate::portapapeles::registrar_propia(state, &tipos, &datos);
     use smithay::wayland::selection::data_device::set_data_device_selection;
     // Smithay no avisa a `SelectionHandler::new_selection` cuando la pone el
     // propio compositor, así que a X11 se le dice aquí.
@@ -2293,13 +2894,9 @@ pub(crate) fn poner_seleccion_con(
 
 // 0.1.0
 fn notificar_captura(state: &mut BookosComp, resumen: &str, cuerpo: &str) {
-    let Some(shell) = state.shell.as_mut() else {
-        return;
-    };
-    // Por el mismo camino que las notificaciones de las aplicaciones: el aviso
-    // sale arriba a la derecha y se va solo, como cualquier otro.
+    let id = crate::notificaciones::siguiente_id_interno();
     let notificacion = bookos_shell::notificaciones::Notificacion::nueva(
-        0,
+        id,
         "BookOS".into(),
         resumen.into(),
         cuerpo.into(),
@@ -2308,7 +2905,44 @@ fn notificar_captura(state: &mut BookosComp, resumen: &str, cuerpo: &str) {
         "image-x-generic",
         false,
     );
-    shell.notificar(notificacion, 4000);
+    if let Some(shell) = state.shell.as_mut() {
+        shell.notificar(notificacion, 4000);
+    }
+    crate::extras::notificaciones_cambiaron(state);
+    state.needs_redraw = true;
+}
+
+fn notificar_captura_archivo(
+    state: &mut BookosComp,
+    resumen: &str,
+    cuerpo: &str,
+    ruta: std::path::PathBuf,
+) {
+    let id = crate::notificaciones::siguiente_id_interno();
+    let icono = ruta
+        .to_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("image-x-generic");
+    let acciones = vec![bookos_shell::notificaciones::Accion {
+        clave: "default".into(),
+        etiqueta: bookos_shell::t("Abrir", "Open").into(),
+    }];
+    let notificacion = bookos_shell::notificaciones::Notificacion::nueva_con_datos(
+        id,
+        "BookOS".into(),
+        resumen.into(),
+        cuerpo.into(),
+        icono,
+        false,
+        acciones,
+        None,
+        false,
+    )
+    .con_ruta(ruta);
+    if let Some(shell) = state.shell.as_mut() {
+        shell.notificar(notificacion, 4000);
+    }
+    crate::extras::notificaciones_cambiaron(state);
     state.needs_redraw = true;
 }
 
@@ -2407,7 +3041,7 @@ pub fn actualizar_acento_del_fondo(state: &mut BookosComp) {
             if let Some(shell) = state.shell.as_mut() {
                 shell.aplicar_apariencia(bookos_shell::tema::actual(), acento);
             }
-            crate::portal::apariencia_cambiada(state);
+            crate::portal::apariencia_cambiada(state, false);
         } else if let Some(shell) = state.shell.as_mut() {
             shell.invalidar_apariencia();
         }
@@ -2443,6 +3077,10 @@ fn fondo_visible(state: &BookosComp) -> bool {
     }
     state.space.outputs().any(|output| {
         !state.hay_pantalla_completa_en(output)
+            || state
+                .vista_tactil
+                .as_ref()
+                .is_some_and(|vista| vista.en_salida(output))
             || state.escritorios.tira_fondo(&output.name()).is_some()
     })
 }
@@ -2842,23 +3480,62 @@ pub fn apagar_dpms(state: &mut BookosComp) {
     state.dpms_sordo_hasta = Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
 }
 
-/// Enciende las salidas al volver de la suspensión.
+enum EventoSueno {
+    AntesDeDormir(std::sync::mpsc::SyncSender<Option<crate::autenticar::VigilanciaHuella>>),
+    AlDespertar,
+}
+
+fn tomar_inhibidor_sueno(
+    conexion: &zbus::blocking::Connection,
+) -> Option<zbus::zvariant::OwnedFd> {
+    conexion
+        .call_method(
+            Some("org.freedesktop.login1"),
+            "/org/freedesktop/login1",
+            Some("org.freedesktop.login1.Manager"),
+            "Inhibit",
+            &(
+                "sleep",
+                "BookOS",
+                bookos_shell::t(
+                    "Bloquea la sesión y detiene la huella antes de suspender",
+                    "Locks the session and stops fingerprint polling before sleep",
+                ),
+                "delay",
+            ),
+        )
+        .and_then(|respuesta| respuesta.body().deserialize::<zbus::zvariant::OwnedFd>())
+        .inspect_err(|err| tracing::warn!("sin inhibidor de retardo para el sueño: {err}"))
+        .ok()
+}
+
+/// Enciende las salidas al volver de la suspensión y prepara el compositor
+/// antes de entrar en reposo mediante un inhibidor `delay` de logind.
 ///
 /// Al dormir desde el menú se apaga la pantalla antes de que logind suspenda,
-/// y la primera entrada la vuelve a encender. Pero abrir la tapa despierta el
-/// equipo sin que llegue necesariamente una tecla o un movimiento, y se
-/// quedaría en negro. `PrepareForSleep(false)` es lo que manda logind justo al
-/// reanudar.
+/// y la primera entrada la vuelve a encender. Pero cerrar o abrir la tapa va
+/// directo por logind/ACPI: `PrepareForSleep(true)` nos deja bloquear, apagar
+/// DPMS y cerrar el lector `fprintd` antes de congelar el sistema, y
+/// `PrepareForSleep(false)` vuelve a encender la pantalla y rearmar la huella.
 // 0.1.0
-// modified 0.1.1 -- al despertar reactiva la huella
+// modified 0.2.3 -- inhibidor delay para preparar bloqueo, DPMS y fprintd antes de dormir
 pub fn escuchar_reanudacion(state: &mut BookosComp) {
     let (aviso, fuente) = smithay::reexports::calloop::channel::channel();
     let insertado = state.loop_handle.insert_source(fuente, |evento, _, state| {
-        if let smithay::reexports::calloop::channel::Event::Msg(()) = evento {
-            tracing::info!("reanudado: se enciende la pantalla");
-            state.dpms_sordo_hasta = None;
-            despertar_dpms(state);
-            crate::keybinds::reanudar_huella(state);
+        if let smithay::reexports::calloop::channel::Event::Msg(evento) = evento {
+            match evento {
+                EventoSueno::AntesDeDormir(respuesta) => {
+                    tracing::info!("suspensión inminente: preparando compositor y bloqueo");
+                    let huella = crate::keybinds::preparar_para_dormir(state);
+                    let _ = respuesta.send(huella);
+                }
+                EventoSueno::AlDespertar => {
+                    tracing::info!("reanudado: se enciende la pantalla");
+                    state.dpms_sordo_hasta = None;
+                    despertar_dpms(state);
+                    crate::keybinds::reanudar_huella(state);
+                }
+            }
         }
     });
     if let Err(err) = insertado {
@@ -2868,16 +3545,22 @@ pub fn escuchar_reanudacion(state: &mut BookosComp) {
     let lanzado = std::thread::Builder::new()
         .name("bookos-reanudar".into())
         .spawn(move || {
-            let señales = zbus::blocking::Connection::system()
-                .and_then(|conexion| {
-                    zbus::blocking::Proxy::new(
-                        &conexion,
-                        "org.freedesktop.login1",
-                        "/org/freedesktop/login1",
-                        "org.freedesktop.login1.Manager",
-                    )
-                })
-                .and_then(|proxy| proxy.receive_signal("PrepareForSleep"));
+            let conexion = match zbus::blocking::Connection::system() {
+                Ok(c) => c,
+                Err(err) => {
+                    tracing::warn!(
+                        "sin logind, la pantalla no se encenderá sola al despertar: {err}"
+                    );
+                    return;
+                }
+            };
+            let señales = zbus::blocking::Proxy::new(
+                &conexion,
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+            )
+            .and_then(|proxy| proxy.receive_signal("PrepareForSleep"));
             let señales = match señales {
                 Ok(señales) => señales,
                 Err(err) => {
@@ -2887,9 +3570,30 @@ pub fn escuchar_reanudacion(state: &mut BookosComp) {
                     return;
                 }
             };
+            let mut inhibidor = tomar_inhibidor_sueno(&conexion);
             for mensaje in señales {
-                if mensaje.body().deserialize::<bool>() == Ok(false) && aviso.send(()).is_err() {
-                    return;
+                match mensaje.body().deserialize::<bool>() {
+                    Ok(true) => {
+                        let (tx_huella, rx_huella) = std::sync::mpsc::sync_channel(1);
+                        if aviso.send(EventoSueno::AntesDeDormir(tx_huella)).is_err() {
+                            return;
+                        }
+                        if let Ok(Some(huella)) =
+                            rx_huella.recv_timeout(std::time::Duration::from_millis(800))
+                        {
+                            huella.detener_y_esperar(std::time::Duration::from_millis(450));
+                        }
+                        drop(inhibidor.take());
+                    }
+                    Ok(false) => {
+                        if aviso.send(EventoSueno::AlDespertar).is_err() {
+                            return;
+                        }
+                        if inhibidor.is_none() {
+                            inhibidor = tomar_inhibidor_sueno(&conexion);
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
         });
@@ -2933,6 +3637,11 @@ fn cambiar_dpms(state: &mut BookosComp, encendido: bool) {
         Ok(()) => {
             state.dpms_encendido = encendido;
             tracing::info!(encendido, "estado DPMS");
+            if encendido {
+                crate::keybinds::programar_medios_bloqueo(state);
+            } else {
+                crate::keybinds::cancelar_medios_bloqueo(state);
+            }
         }
         Err(err) => tracing::warn!(encendido, "no se pudo cambiar DPMS: {err}"),
     }

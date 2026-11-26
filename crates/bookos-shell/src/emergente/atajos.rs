@@ -55,6 +55,7 @@ const GENERAL: Grupo = (
         ("Meta+E", "Archivos", "Files"),
         ("Meta+Intro", "Terminal", "Terminal"),
         ("Meta+.", "Emojis", "Emoji"),
+        ("Meta+,", "Portapapeles", "Clipboard"),
         ("Meta+Alt+A", "Asistente", "Assistant"),
     ],
 );
@@ -96,7 +97,7 @@ const SISTEMA: Grupo = (
         ("Meta+Alt+S", "Salvapantallas", "Screen saver"),
         // añadido en la 0.2.2
         ("Meta+Alt+L", "Lector de pantalla", "Screen reader"),
-        ("Meta+Alt+P", "Teclado al panel", "Keyboard to the panel"),
+        ("Meta+Alt+P", "Teclado al panel", "Focus top panel"),
         (
             "Meta+Alt+B",
             "Ocultar la barra superior",
@@ -270,9 +271,10 @@ fn combinacion(teclas: &'static str) -> PanelElement<'static> {
         // El gesto se escribe una vez, en castellano; solo tiene dos palabras
         // que traducir y una tabla aparte para ellas sería repetir la lista.
         let gesto = if t("es", "en") == "en" {
-            teclas
-                .replace("Pellizco", "Pinch")
-                .replace("dedos", "fingers")
+            match teclas {
+                "Pellizco 5 dedos" => "5-finger pinch".to_string(),
+                _ => teclas.replace("dedos", "fingers"),
+            }
         } else {
             teclas.to_string()
         };

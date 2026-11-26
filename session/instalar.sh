@@ -118,10 +118,33 @@ install -Dm644 "$aqui/70-bookos-camara.rules" /etc/udev/rules.d/70-bookos-camara
 udevadm control --reload-rules || true
 udevadm trigger --subsystem-match=input --action=change || true
 
+# Galaxy Book (SCAI-*): habilita Fn+F12 (Fn lock activado/desactivado) en atkbd.
+install -Dm644 "$aqui/70-bookos-galaxybook-fn.hwdb" /etc/udev/hwdb.d/70-bookos-galaxybook-fn.hwdb
+systemd-hwdb update || true
+udevadm trigger --subsystem-match=input --action=change || true
+
 # El número de serie de «Acerca de este PC», legible para `wheel`.
 install -Dm644 "$aqui/71-bookos-serie.rules" /etc/udev/rules.d/71-bookos-serie.rules
 udevadm control --reload-rules || true
 udevadm trigger --subsystem-match=dmi --action=change || true
+
+# Evita despertares espurios en s2idle por PCIe/USB/Thunderbolt conservando tapa y teclado.
+install -Dm644 "$aqui/72-bookos-wakeup.rules" /etc/udev/rules.d/72-bookos-wakeup.rules
+udevadm control --reload-rules || true
+udevadm trigger --subsystem-match=pci --action=change || true
+
+# Evita que Lunar Lake salga de s2idle largo clavado a 400 MHz por RAPL PL1.
+if [ -f "$aqui/../data/system-sleep/bookos-rapl-tau" ]; then
+    install -Dm755 "$aqui/../data/system-sleep/bookos-rapl-tau" /usr/lib/systemd/system-sleep/bookos-rapl-tau
+fi
+
+# Control térmico y de silencio adaptativo (Samsung Galaxy Book / Lunar Lake).
+install -Dm755 "$aqui/bookos-termico.py" /usr/local/libexec/bookos-termico.py
+install -Dm644 "$aqui/org.bookos.Termico.conf" /etc/dbus-1/system.d/org.bookos.Termico.conf
+install -Dm644 "$aqui/bookos-termico.service" /etc/systemd/system/bookos-termico.service
+systemctl reload dbus-broker.service 2>/dev/null || systemctl reload dbus.service 2>/dev/null || true
+systemctl daemon-reload || true
+systemctl enable --now bookos-termico.service || true
 
 echo "Instalado. En la pantalla de login ya sale 'BookOS' en la lista de sesiones."
 echo "El registro de cada arranque queda en \$XDG_RUNTIME_DIR/bookos-session.log"

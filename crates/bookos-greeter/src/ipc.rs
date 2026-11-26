@@ -8,7 +8,11 @@ use greetd_ipc::codec::SyncCodec;
 use greetd_ipc::{Request, Response};
 use iced::futures::channel::oneshot;
 
-type Trabajo = (Request, oneshot::Sender<Result<Response, String>>);
+type Trabajo = (
+    Request,
+    crate::sistema::Idioma,
+    oneshot::Sender<Result<Response, String>>,
+);
 
 pub struct Cliente {
     envio: mpsc::Sender<Trabajo>,
@@ -22,8 +26,8 @@ impl Cliente {
         // El socket pertenece a este hilo para que nunca bloquee la interfaz.
         std::thread::spawn(move || {
             let mut socket = None;
-            for (peticion, respuesta) in recepcion {
-                let resultado = intercambiar(&ruta, &mut socket, &peticion);
+            for (peticion, idioma, respuesta) in recepcion {
+                let resultado = intercambiar(&ruta, &mut socket, &peticion, idioma);
                 if resultado.is_err() {
                     socket = None;
                 }
@@ -37,16 +41,27 @@ impl Cliente {
     pub fn enviar(
         &self,
         peticion: Request,
+        idioma: crate::sistema::Idioma,
     ) -> impl Future<Output = Result<Response, String>> + use<> {
         let (envio, recepcion) = oneshot::channel();
-        let enviado = self.envio.send((peticion, envio)).is_ok();
+        let enviado = self.envio.send((peticion, idioma, envio)).is_ok();
         async move {
             if !enviado {
-                return Err("El hilo de comunicación con greetd ha terminado.".into());
+                return Err(idioma
+                    .t(
+                        "El hilo de comunicación con greetd ha terminado.",
+                        "The greetd communication thread has stopped.",
+                    )
+                    .into());
             }
-            recepcion
-                .await
-                .map_err(|_| "Se ha perdido la comunicación con greetd.".to_string())?
+            recepcion.await.map_err(|_| {
+                idioma
+                    .t(
+                        "Se ha perdido la comunicación con greetd.",
+                        "Lost connection to greetd.",
+                    )
+                    .to_string()
+            })?
         }
     }
 }
@@ -56,9 +71,15 @@ fn intercambiar(
     ruta: &std::path::Path,
     socket: &mut Option<UnixStream>,
     peticion: &Request,
+    idioma: crate::sistema::Idioma,
 ) -> anyhow::Result<Response> {
     if socket.is_none() {
-        let nuevo = UnixStream::connect(ruta).context("No se puede conectar con greetd")?;
+        let nuevo = UnixStream::connect(ruta).with_context(|| {
+            idioma.t(
+                "No se puede conectar con greetd",
+                "Cannot connect to greetd",
+            )
+        })?;
         nuevo.set_read_timeout(Some(Duration::from_secs(120)))?;
         nuevo.set_write_timeout(Some(Duration::from_secs(10)))?;
         *socket = Some(nuevo);
@@ -72,13 +93,25 @@ fn intercambiar(
         Request::CancelSession.write_to(socket)?;
         anyhow::ensure!(
             matches!(Response::read_from(socket)?, Response::Success),
-            "greetd no pudo cancelar la autenticación anterior"
+            "{}",
+            idioma.t(
+                "greetd no pudo cancelar la autenticación anterior",
+                "greetd couldn't cancel the previous authentication",
+            )
         );
     }
-    peticion
-        .write_to(socket)
-        .context("No se pudo enviar la petición a greetd")?;
-    Response::read_from(socket).context("No se pudo recibir la respuesta de greetd")
+    peticion.write_to(socket).with_context(|| {
+        idioma.t(
+            "No se pudo enviar la petición a greetd",
+            "Couldn't send request to greetd",
+        )
+    })?;
+    Response::read_from(socket).with_context(|| {
+        idioma.t(
+            "No se pudo recibir la respuesta de greetd",
+            "Couldn't receive response from greetd",
+        )
+    })
 }
 
 // 0.1.1
@@ -147,7 +180,8 @@ mod tests {
                 &mut socket,
                 &Request::CreateSession {
                     username: "eve".into()
-                }
+                },
+                crate::sistema::Idioma::Es,
             )?,
             Response::AuthMessage {
                 auth_message_type: AuthMessageType::Secret,
@@ -160,7 +194,8 @@ mod tests {
                 &mut socket,
                 &Request::PostAuthMessageResponse {
                     response: Some("prueba".into())
-                }
+                },
+                crate::sistema::Idioma::Es,
             )?,
             Response::Success
         ));
@@ -168,7 +203,8 @@ mod tests {
             intercambiar(
                 ruta,
                 &mut socket,
-                &iniciar_sesion("/usr/local/bin/bookos-session", "es", "es_ES.UTF-8")
+                &iniciar_sesion("/usr/local/bin/bookos-session", "es", "es_ES.UTF-8"),
+                crate::sistema::Idioma::Es,
             )?,
             Response::Success
         ));
@@ -212,11 +248,11 @@ mod tests {
             username: "eve".into(),
         };
         assert!(matches!(
-            intercambiar(ruta, &mut socket, &peticion)?,
+            intercambiar(ruta, &mut socket, &peticion, crate::sistema::Idioma::Es)?,
             Response::Error { .. }
         ));
         assert!(matches!(
-            intercambiar(ruta, &mut socket, &peticion)?,
+            intercambiar(ruta, &mut socket, &peticion, crate::sistema::Idioma::Es)?,
             Response::Success
         ));
         hilo.join().expect("el servidor simulado no falla")?;

@@ -922,6 +922,19 @@ impl Launchpad {
         }
     }
 
+    /// Relee aplicaciones e iconos tras cambiar de tema o de pack de iconos.
+    pub fn recargar_iconos(&mut self) {
+        self.apps = apps::leer();
+        self.iconos.clear();
+        self.tinte_fondo = tinte_del_fondo();
+        self.rehacer_visibles();
+        self.pagina = self.pagina.min(self.paginas().saturating_sub(1));
+        if self.seleccion.is_some_and(|i| i >= self.visibles.len()) {
+            self.seleccion = None;
+        }
+        self.preparar_pagina();
+    }
+
     /// Entra en una carpeta.
     // 0.1.0
     fn abrir_carpeta(&mut self, carpeta: usize) {
@@ -1662,6 +1675,7 @@ impl Launchpad {
         let Some(arrastre) = self.arrastre.take() else {
             return (false, None);
         };
+        self.paso_por_borde = None;
         if !arrastre.movido {
             // No se movió: era un clic de toda la vida.
             return (true, self.activar(arrastre.origen));
@@ -1673,7 +1687,6 @@ impl Launchpad {
         if self.sobre_el_dock(x, y) {
             return (true, self.anclar_en_el_dock(arrastre.origen));
         }
-        self.paso_por_borde = None;
         if let Some(hasta) = self.hueco_en(x, y) {
             return (self.mover_a(arrastre.origen, hasta), None);
         }
@@ -1730,7 +1743,7 @@ impl Launchpad {
         // distribución declara `Utility`— y un nombre equivocado es peor que
         // uno neutro que se cambia en dos segundos.
         self.carpetas.push(Carpeta {
-            nombre: "Carpeta".into(),
+            nombre: t("Carpeta", "Folder").into(),
             color: None,
             apps: vec![primera.to_string(), segunda.to_string()],
         });
@@ -1855,6 +1868,9 @@ impl Launchpad {
     /// su página, como antes.
     // 0.1.0
     pub fn desplazar(&mut self, dx: f32, dy: f32) -> bool {
+        if self.paleta_abierta || self.renombrando.is_some() || self.paginas() <= 1 {
+            return false;
+        }
         const UMBRAL: f32 = 20.0;
         const ESPERA: std::time::Duration = std::time::Duration::from_millis(180);
 
@@ -1980,7 +1996,19 @@ impl Launchpad {
             T::Fin => self.mover(self.visibles.len() as isize),
             T::PaginaArriba => self.pasar_pagina(-1),
             T::PaginaAbajo => self.pasar_pagina(1),
-            T::SeleccionarTodo => Tecla::Ignorada,
+            T::SeleccionarTodo | T::Suprimir => Tecla::Ignorada,
+            T::Pegar(texto) => {
+                self.dentro = None;
+                for c in texto.chars() {
+                    if matches!(c, '\r' | '\n' | '\t') {
+                        self.consulta.push(' ');
+                    } else if !c.is_control() {
+                        self.consulta.push(c);
+                    }
+                }
+                self.filtrar();
+                Tecla::Consumida
+            }
             // El tabulador despliega el selector de color de la carpeta
             // abierta. Es la única tecla libre ahí: las letras buscan, las
             // flechas recorren la rejilla y Esc va deshaciendo.
@@ -2291,12 +2319,15 @@ impl Launchpad {
         // Editando se enseña el cursor con el mismo carácter que la vista de
         // escritorios, para que renombrar se vea igual en los dos sitios.
         let (nombre, pista) = match &self.renombrando {
-            Some(escrito) => (format!("{escrito}│"), "Intro para guardar".to_string()),
+            Some(escrito) => (
+                format!("{escrito}│"),
+                t("Intro para guardar", "Enter to save").to_string(),
+            ),
             None => (
                 self.carpetas[carpeta].nombre.clone(),
                 match self.apps_de(carpeta).len() {
-                    1 => "1 aplicación".to_string(),
-                    n => format!("{n} aplicaciones"),
+                    1 => t("1 aplicación", "1 app").to_string(),
+                    n => format!("{n} {}", t("aplicaciones", "apps")),
                 },
             ),
         };
@@ -2851,6 +2882,7 @@ mod tests {
             .iter()
             .map(|n| crate::apps::App {
                 nombre: n.to_string(),
+                detalle: None,
                 exec: n.to_lowercase(),
                 icono: n.to_lowercase(),
                 normalizado: n.to_lowercase(),
@@ -3406,5 +3438,33 @@ mod tests {
         assert_eq!(l.pagina, 1);
         assert_eq!(l.tomar_transicion(), Some(Transicion::Pagina(1.0)));
         assert_eq!(l.size(), tam_inicial);
+    }
+
+    #[test]
+    fn soltar_limpia_paso_por_borde_y_desplazar_ignora_paleta_o_renombrando() {
+        let nombres: Vec<String> = (0..45).map(|i| format!("App {i:02}")).collect();
+        let refs: Vec<&str> = nombres.iter().map(String::as_str).collect();
+        let mut l = con_apps(&refs);
+        assert!(l.paginas() >= 2);
+
+        l.paleta_abierta = true;
+        assert!(!l.desplazar(40.0, 0.0));
+        assert_eq!(l.pagina, 0);
+        l.paleta_abierta = false;
+
+        l.renombrando = Some("Carpeta".into());
+        assert!(!l.desplazar(40.0, 0.0));
+        assert_eq!(l.pagina, 0);
+        l.renombrando = None;
+
+        l.arrastre = Some(Arrastre {
+            origen: 0,
+            inicio: (100.0, 100.0),
+            actual: (100.0, 100.0),
+            movido: false,
+        });
+        l.paso_por_borde = Some(std::time::Instant::now());
+        l.soltar();
+        assert!(l.paso_por_borde.is_none());
     }
 }

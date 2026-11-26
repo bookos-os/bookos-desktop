@@ -413,26 +413,13 @@ impl Dock {
         cambio
     }
 
-    /// Vuelve a cargar todos los iconos, tras cambiar el tema de iconos.
+    /// Vuelve a cargar todos los iconos, tras cambiar de tema o de pack de iconos.
     // 0.1.0
     pub fn recargar_iconos(&mut self) {
         for item in &mut self.items {
             item.icon = icono::cargar(&item.icono_nombre);
+            item.icono_modificado = icono::modificado_si_dinamico(&item.icono_nombre);
         }
-    }
-
-    /// Refresca solo el icono del launchpad cuando cambia claro/oscuro sin que
-    /// haya cambiado el tema de iconos de las aplicaciones.
-    // added 0.2.3
-    pub fn refrescar_segun_tema(&mut self) -> bool {
-        let mut cambio = false;
-        for item in &mut self.items {
-            if item.icono_nombre == icono::LAUNCHPAD {
-                item.icon = icono::cargar(&item.icono_nombre);
-                cambio = true;
-            }
-        }
-        cambio
     }
 
     /// Marca qué lanzadores tienen ventana abierta, a partir de los `app_id`
@@ -597,11 +584,12 @@ impl Dock {
         // Un fotograma de margen tras el límite: es el que deja el icono
         // apoyado, que si no se quedaría congelado a media altura.
         self.hover.animando()
-            || self.items.iter().any(|i| {
-                i.lanzado.is_some_and(|d| {
-                    d.elapsed() < LIMITE_BOTE + std::time::Duration::from_millis(100)
-                })
-            })
+            || (!tema::efectos_reducidos()
+                && self.items.iter().any(|i| {
+                    i.lanzado.is_some_and(|d| {
+                        d.elapsed() < LIMITE_BOTE + std::time::Duration::from_millis(100)
+                    })
+                }))
     }
 
     /// Avisa de que se acaba de lanzar `exec`. Si es de un icono del dock que
@@ -1057,6 +1045,26 @@ mod tests {
         assert!(d.set_hover(Some(1)));
         assert!(!d.set_hover(Some(1)));
         assert!(d.set_hover(None));
+    }
+
+    #[test]
+    fn lanzar_no_anima_con_efectos_reducidos() {
+        struct Restaurar(bool);
+        impl Drop for Restaurar {
+            fn drop(&mut self) {
+                tema::aplicar_efectos_reducidos(self.0);
+            }
+        }
+        let antes = tema::efectos_reducidos();
+        let _guard = Restaurar(antes);
+        tema::aplicar_efectos_reducidos(true);
+
+        let mut d = dock(2);
+        assert!(d.lanzando("prog1"));
+        assert!(
+            !d.animando(),
+            "con efectos reducidos no debe pedir frames durante 10 s sin salto visual"
+        );
     }
 }
 

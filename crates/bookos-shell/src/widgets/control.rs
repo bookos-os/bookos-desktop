@@ -26,7 +26,7 @@ impl Widget for Control {
 
     fn accesible(&self) -> (&'static str, String) {
         (
-            crate::emergente::t("Centro de control", "Control centre"),
+            crate::emergente::t("Centro de control", "Control Center"),
             String::new(),
         )
     }

@@ -188,7 +188,8 @@ pub struct Estado {
     /// Nivel al que se enciende el teclado. Empieza en 1 y se actualiza con el
     /// que el usuario tenga encendido.
     teclado_encendido: u32,
-    escrito: Option<Instant>,
+    escrito_pantalla: Option<Instant>,
+    escrito_teclado: Option<Instant>,
     /// Último nivel pedido con la tecla. Mientras sysfs no lo refleje, la
     /// siguiente pulsación parte de aquí y no de la lectura atrasada.
     a_mano: Option<u8>,
@@ -270,7 +271,8 @@ impl Estado {
             desvio: 0,
             teclado_oscuro: None,
             teclado_encendido: 1,
-            escrito: None,
+            escrito_pantalla: None,
+            escrito_teclado: None,
             a_mano: None,
             teclado_a_mano: None,
             rampa: None,
@@ -292,6 +294,25 @@ impl Estado {
             Orden::Soltar
         };
         let _ = self.ordenes.send(orden);
+    }
+
+    fn reciente_pantalla(&self) -> bool {
+        self.rampa.is_some()
+            || self
+                .escrito_pantalla
+                .is_some_and(|t| t.elapsed() < MARGEN_ESCRITURA)
+    }
+
+    fn reciente_teclado(&self) -> bool {
+        self.escrito_teclado
+            .is_some_and(|t| t.elapsed() < MARGEN_ESCRITURA)
+    }
+
+    fn a_mano_reciente(&self) -> Option<u8> {
+        match (self.a_mano, self.escrito_pantalla) {
+            (Some(nivel), Some(t)) if t.elapsed() < MARGEN_ESCRITURA => Some(nivel),
+            _ => None,
+        }
     }
 }
 
@@ -391,11 +412,10 @@ pub fn elegir(state: &mut BookosComp, elegido: bookos_shell::BrilloAutomatico) {
 /// después de soltar.
 // 0.1.0
 pub fn partida_tecla(state: &BookosComp) -> Option<u8> {
-    let e = &state.brillo_auto;
-    match (e.a_mano, e.escrito) {
-        (Some(nivel), Some(t)) if t.elapsed() < MARGEN_ESCRITURA => Some(nivel),
-        _ => bookos_shell::brillo_actual(),
-    }
+    state
+        .brillo_auto
+        .a_mano_reciente()
+        .or_else(bookos_shell::brillo_actual)
 }
 
 /// La tecla ha pedido `nivel`. El automático lo aprende como desvío en el acto
@@ -414,7 +434,7 @@ pub fn tecla(state: &mut BookosComp, nivel: u8) {
         e.pantalla_puesta = Some(nivel);
     }
     e.a_mano = Some(nivel);
-    e.escrito = Some(Instant::now());
+    e.escrito_pantalla = Some(Instant::now());
 }
 
 // 0.1.0
@@ -430,7 +450,7 @@ pub fn partida_tecla_teclado(state: &BookosComp, dispositivo: &str, actual: u32)
 // 0.1.0
 pub fn tecla_teclado(state: &mut BookosComp, dispositivo: &str, nivel: u32) {
     state.brillo_auto.teclado_a_mano = Some((dispositivo.to_owned(), nivel, Instant::now()));
-    state.brillo_auto.escrito = Some(Instant::now());
+    state.brillo_auto.escrito_teclado = Some(Instant::now());
 }
 
 // 0.1.0
@@ -457,7 +477,7 @@ pub fn fijar(state: &mut BookosComp, nivel: u8) {
         e.pantalla_puesta = Some(nivel);
     }
     e.a_mano = Some(nivel);
-    e.escrito = Some(Instant::now());
+    e.escrito_pantalla = Some(Instant::now());
 }
 
 /// Ajusta lo que esté en automático a la última lectura.
@@ -490,11 +510,6 @@ pub fn evaluar(state: &mut BookosComp) {
 // 0.1.0
 fn curva(lux: f64) -> i32 {
     (12.0 + 22.0 * (1.0 + lux.max(0.0)).log10()).round() as i32
-}
-
-// 0.1.0
-fn reciente(e: &Estado) -> bool {
-    e.rampa.is_some() || e.escrito.is_some_and(|t| t.elapsed() < MARGEN_ESCRITURA)
 }
 
 fn tarjeta_brillo_abierta(state: &BookosComp) -> bool {
@@ -540,7 +555,7 @@ fn pantalla(state: &mut BookosComp, lux: f64) {
     let actual = actual_exacto.round().clamp(0.0, 100.0) as u8;
     let e = &mut state.brillo_auto;
     if let Some(puesta) = e.pantalla_puesta
-        && !reciente(e)
+        && !e.reciente_pantalla()
         && actual.abs_diff(puesta) > 2
     {
         e.desvio = (e.desvio + i32::from(actual) - i32::from(puesta)).clamp(-60, 60);
@@ -553,14 +568,14 @@ fn pantalla(state: &mut BookosComp, lux: f64) {
         e.pantalla_puesta = Some(objetivo);
         return;
     }
-    let (desde_u8, desde_exacto) = if reciente(e) {
+    let (desde_u8, desde_exacto) = if e.reciente_pantalla() {
         let nivel = e.a_mano.or(e.pantalla_puesta).unwrap_or(actual);
         (nivel, f64::from(nivel))
     } else {
         (actual, actual_exacto)
     };
     if !debe_iniciar_rampa(desde_u8, objetivo) {
-        if !reciente(e) {
+        if !e.reciente_pantalla() {
             e.pantalla_puesta = Some(actual);
         }
         return;
@@ -587,7 +602,7 @@ fn pantalla(state: &mut BookosComp, lux: f64) {
             if cambio {
                 bookos_shell::retroiluminacion::solicitar("backlight", &dispositivo, crudo);
                 ultimo = Some(crudo);
-                e.escrito = Some(ahora);
+                e.escrito_pantalla = Some(ahora);
             }
             if terminada {
                 e.rampa = None;
@@ -611,7 +626,7 @@ fn pantalla(state: &mut BookosComp, lux: f64) {
                 let crudo = (f64::from(maximo) * f64::from(objetivo) / 100.0).round() as u32;
                 bookos_shell::retroiluminacion::solicitar("backlight", &dispositivo, crudo);
             }
-            e.escrito = Some(ahora);
+            e.escrito_pantalla = Some(ahora);
         }
     }
 }
@@ -621,7 +636,7 @@ fn teclado(e: &mut Estado, lux: f64) {
     let Some((dispositivo, actual, maximo)) = bookos_shell::brillo_teclado_actual() else {
         return;
     };
-    if actual > 0 && !reciente(e) {
+    if actual > 0 && !e.reciente_teclado() {
         e.teclado_encendido = actual;
     }
     let oscuro = if lux < TECLADO_ENCENDER {
@@ -647,7 +662,7 @@ fn teclado(e: &mut Estado, lux: f64) {
     };
     if nivel != actual {
         bookos_shell::retroiluminacion::solicitar("leds", &dispositivo, nivel);
-        e.escrito = Some(Instant::now());
+        e.escrito_teclado = Some(Instant::now());
     }
 }
 
@@ -790,5 +805,29 @@ mod tests {
             12,
             "una lectura negativa cuenta como oscuridad"
         );
+    }
+
+    #[test]
+    fn escrito_teclado_no_interfiere_con_reciente_ni_a_mano_pantalla() {
+        let (tx, _rx) = mpsc::channel();
+        let viejo = Instant::now() - MARGEN_ESCRITURA - Duration::from_secs(1);
+        let estado = Estado {
+            elegido: bookos_shell::BrilloAutomatico::default(),
+            ordenes: tx,
+            reclamado: false,
+            lux: None,
+            pantalla_puesta: None,
+            desvio: 0,
+            teclado_oscuro: None,
+            teclado_encendido: 1,
+            escrito_pantalla: Some(viejo),
+            escrito_teclado: Some(Instant::now()),
+            a_mano: Some(77),
+            teclado_a_mano: None,
+            rampa: None,
+        };
+        assert!(!estado.reciente_pantalla());
+        assert!(estado.reciente_teclado());
+        assert_eq!(estado.a_mano_reciente(), None);
     }
 }

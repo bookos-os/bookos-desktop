@@ -517,8 +517,8 @@ fn fallback_arrow(size: u32, nominal: u32) -> Imagen {
 /// Detector de «agitar el ratón para encontrar el cursor» (estilo macOS).
 ///
 /// Cuenta inversiones rápidas y amplias de sentido en cada eje dentro de una
-/// ventana de 650 ms. Hace falta una sacudida sostenida (≥ 7 inversiones en el
-/// mismo eje y ≥ 850 px lógicos de recorrido) para agrandar el cursor hasta
+/// ventana de 650 ms. Hace falta una sacudida sostenida (≥ 5 inversiones en el
+/// mismo eje y ≥ 550 px lógicos de recorrido) para agrandar el cursor hasta
 /// 2,5× y volver suavemente a 1,0× al parar.
 // añadido en la 0.2.4
 pub struct AgitarCursor {
@@ -539,9 +539,9 @@ impl AgitarCursor {
     const MANTENER: std::time::Duration = std::time::Duration::from_millis(400);
     /// Distancia mínima en sentido opuesto (lógicos) para contar una inversión
     /// real y evitar que movimientos cortos o micro-desvíos disparen el zoom.
-    const UMBRAL_GIRO: f64 = 45.0;
-    const MIN_INVERSIONES: usize = 7;
-    const RECORRIDO_MINIMO: f64 = 850.0;
+    const UMBRAL_GIRO: f64 = 36.0;
+    const MIN_INVERSIONES: usize = 5;
+    const RECORRIDO_MINIMO: f64 = 550.0;
 
     // añadido en la 0.2.4
     pub fn nuevo(habilitado: bool) -> Self {
@@ -579,7 +579,7 @@ impl AgitarCursor {
         let invirtio_y = actualizar_eje(dy, &mut self.dir_y, &mut self.contra_y, Self::UMBRAL_GIRO);
 
         self.inversiones
-            .retain(|(t, _, _, _)| ahora.duration_since(*t) <= Self::VENTANA);
+            .retain(|(t, _, _, _)| ahora.saturating_duration_since(*t) <= Self::VENTANA);
         if invirtio_x || invirtio_y {
             self.inversiones
                 .push((ahora, dist, invirtio_x, invirtio_y));
@@ -611,6 +611,13 @@ impl AgitarCursor {
 
     // añadido en la 0.2.4
     pub fn avanzar(&mut self, ahora: std::time::Instant) {
+        if !self.habilitado {
+            self.hasta = None;
+            self.inversiones.clear();
+            self.ultima_pos = None;
+            self.escala.fijar(1.0);
+            return;
+        }
         if let Some(hasta) = self.hasta
             && ahora >= hasta
         {
@@ -620,6 +627,9 @@ impl AgitarCursor {
             self.escala.ir_a(1.0);
         }
         self.escala.avanzar(ahora);
+        if self.hasta.is_none() && self.escala.quieto() && self.escala.valor() != 1.0 {
+            self.escala.fijar(1.0);
+        }
     }
 
     // añadido en la 0.2.4
@@ -629,7 +639,7 @@ impl AgitarCursor {
 
     // añadido en la 0.2.4
     pub fn animando(&self) -> bool {
-        self.hasta.is_some() || !self.escala.quieto() || self.escala.valor() > 1.002
+        self.hasta.is_some() || !self.escala.quieto()
     }
 }
 
@@ -777,23 +787,21 @@ mod tests_agitar {
     fn agitar_agranda_y_vuelve_a_uno_al_parar() {
         let mut ag = AgitarCursor::nuevo(true);
         let t0 = Instant::now();
-        // Sacudida intensa: 9 puntos (8 tramos de ~130 px, 7 inversiones en X).
+        // Sacudida corta pero decidida: 7 puntos (6 tramos de ~110 px, 5 inversiones en X).
         let puntos = [
             (100.0, 100.0),
-            (230.0, 100.0),
+            (210.0, 100.0),
             (100.0, 100.0),
-            (230.0, 100.0),
+            (210.0, 100.0),
             (100.0, 100.0),
-            (230.0, 100.0),
-            (100.0, 100.0),
-            (230.0, 100.0),
+            (210.0, 100.0),
             (100.0, 100.0),
         ];
         for (i, (x, y)) in puntos.into_iter().enumerate() {
             ag.mover(x, y, t0 + Duration::from_millis(i as u64 * 45));
         }
-        assert!(ag.animando(), "agitar mucho debe disparar el agrandamiento");
-        ag.avanzar(t0 + Duration::from_millis(450));
+        assert!(ag.animando(), "agitar debe disparar el agrandamiento con 5 inversiones");
+        ag.avanzar(t0 + Duration::from_millis(360));
         assert!(ag.escala() > 1.5, "escala actual: {}", ag.escala());
         // Pasado el tiempo de espera + asentamiento del muelle vuelve a 1.0.
         ag.avanzar(t0 + Duration::from_secs(2));
@@ -842,6 +850,24 @@ mod tests_agitar {
             );
         }
         assert!(!ag.animando());
+    }
+
+    #[test]
+    fn deshabilitar_agitar_cancela_zoom_y_reposa() {
+        let mut ag = AgitarCursor::nuevo(true);
+        let t0 = Instant::now();
+        for i in 0..7 {
+            let x = if i % 2 == 0 { 100.0 } else { 220.0 };
+            ag.mover(x, 100.0, t0 + Duration::from_millis(i * 40));
+        }
+        assert!(ag.animando());
+        ag.habilitado = false;
+        ag.avanzar(t0 + Duration::from_millis(300));
+        assert!(!ag.animando());
+        assert_eq!(ag.escala(), 1.0);
+        // También tolera marcas de tiempo anteriores sin panic.
+        ag.habilitado = true;
+        ag.mover(150.0, 100.0, t0);
     }
 }
 

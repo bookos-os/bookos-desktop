@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Cambio rápido de usuario, como el de macOS: la sesión actual se queda viva
+# en su terminal y la pantalla pasa a otra.
+#
+#   bookos-cambiar-usuario              → ventana de inicio de sesión
+#   bookos-cambiar-usuario CUENTA       → la sesión de CUENTA si ya tiene una;
+#                                         si no, la ventana de inicio
+#   bookos-cambiar-usuario --solo-sesion CUENTA
+#                                       → solo si ya tiene sesión (sale con 1
+#                                         si no). Lo usa el greeter para no
+#                                         abrir una segunda sesión de la misma
+#                                         cuenta.
+#
+# No bloquea nada por su cuenta: el compositor se bloquea al recuperar su
+# terminal (SessionEvent::ActivateSession en backend/udev.rs), antes del primer
+# fotograma, así que quien vuelva encuentra la contraseña y no el escritorio.
+set -eu
+
+solo_sesion=0
+if [ "${1:-}" = --solo-sesion ]; then
+    solo_sesion=1
+    shift
+fi
+cuenta="${1:-}"
+
+# chvt: logind lo permite sin contraseña a cualquier sesión local (polkit
+# org.freedesktop.login1.chvt, allow_active e allow_inactive = yes).
+ir_a() {
+    busctl call org.freedesktop.login1 /org/freedesktop/login1/seat/seat0 \
+        org.freedesktop.login1.Seat SwitchTo u "$1"
+}
+
+# «id usuario clase estado vt» de cada sesión del asiento. Una sesión en
+# «closing» es la que se cerró y aún tiene procesos rezagados: saltar a ella
+# deja la pantalla en negro.
+sesiones() {
+    loginctl list-sessions --no-legend | while read -r id _ usuario asiento _; do
+        [ "$asiento" = seat0 ] || continue
+        # loginctl las da en su orden, no en el pedido: se ordenan por nombre
+        # (Class, State, VTNr) y se quita la clave.
+        datos="$(loginctl show-session "$id" -p Class -p State -p VTNr | sort | cut -d= -f2- | tr '\n' ' ')"
+        echo "$id $usuario $datos"
+    done
+}
+
+if [ -n "$cuenta" ]; then
+    vt="$(sesiones | awk -v u="$cuenta" '$2 == u && $3 == "user" && $5 > 0 && $4 != "closing" { print $5; exit }')"
+    if [ -n "$vt" ]; then
+        ir_a "$vt"
+        exit 0
+    fi
+    [ "$solo_sesion" = 0 ] || exit 1
+fi
+
+lista="$(sesiones)"
+# Una ventana de inicio que ya está esperando en su terminal (greeter sin
+# nadie que haya entrado) se reutiliza: abrir otra por cada vez dejaría
+# terminales colgados.
+for n in 2 3 4 5 6; do
+    if systemctl is-active -q "bookos-greetd@$n.service" \
+        && ! awk -v n="$n" '$5 == n && $3 == "user" && $4 != "closing" { f = 1 } END { exit !f }' <<<"$lista"; then
+        ir_a "$n"
+        exit 0
+    fi
+done
+for n in 2 3 4 5 6; do
+    if ! systemctl is-active -q "bookos-greetd@$n.service" \
+        && ! awk -v n="$n" '$5 == n { f = 1 } END { exit !f }' <<<"$lista"; then
+        # greetd salta solo a su terminal al arrancar ([terminal] switch, que
+        # viene a true): pedirlo aquí antes enseñaría la consola vacía.
+        systemctl start --no-block "bookos-greetd@$n.service"
+        exit 0
+    fi
+done
+echo "bookos-cambiar-usuario: no queda ningún terminal libre (2–6)" >&2
+exit 1

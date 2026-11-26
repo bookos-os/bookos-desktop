@@ -1,0 +1,7 @@
+# Desactiva el wakeup espurio por USB/Thunderbolt/PCIe en s2idle (Galaxy Book5 Pro
+# / Intel Lunar Lake). Conserva intactos los despertadores de tapa (LID0),
+# botón de encendido (PWRB) y teclado integrado (serio0).
+#
+# Sin esto, una perturbación en xHCI, Thunderbolt/USB4 o en el puerto raíz NVMe
+# puede despertar el equipo con la tapa cerrada.
+SUBSYSTEM=="pci", ACTION=="add|change", ATTR{vendor}=="0x8086", KERNEL=="0000:00:07.0|0000:00:07.1|0000:00:0d.0|0000:00:0d.2|0000:00:14.0|0000:00:1c.0", TEST=="power/wakeup", ATTR{power/wakeup}="disabled"

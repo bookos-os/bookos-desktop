@@ -140,7 +140,12 @@ pub fn actualizar(state: &mut BookosComp) {
         return;
     }
     a.construido = std::time::Instant::now();
-    let Some(arbol) = state.shell.as_mut().and_then(|s| s.arbol_accesible()) else {
+    let arbol = state
+        .vista_tactil
+        .as_ref()
+        .map(crate::multitarea_tactil::Vista::arbol_accesible)
+        .or_else(|| state.shell.as_mut().and_then(|s| s.arbol_accesible()));
+    let Some(arbol) = arbol else {
         return;
     };
     let Some(a) = state.accesibilidad.as_mut() else {
@@ -164,6 +169,10 @@ pub fn actualizar(state: &mut BookosComp) {
 /// camino que el ratón, para que no haya una segunda forma de activar nada.
 fn accion(state: &mut BookosComp, peticion: ActionRequest) {
     if peticion.action != accesskit::Action::Click {
+        return;
+    }
+    if state.vista_tactil.is_some() {
+        crate::multitarea_tactil::activar_nodo(state, peticion.target_node);
         return;
     }
     let Some((x, y)) = state

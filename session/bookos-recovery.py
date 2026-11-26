@@ -17,6 +17,18 @@ import tempfile
 import time
 
 
+def is_spanish():
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        val = os.environ.get(var, "").strip()
+        if val:
+            return val.startswith("es")
+    return False
+
+
+def t(es, en):
+    return es if is_spanish() else en
+
+
 def sessions():
     """Known session launchers, never arbitrary commands from .desktop files."""
     candidates = [
@@ -103,7 +115,7 @@ def window(args):
     app = QApplication([])
     p = palette()
     screen = QWidget()
-    screen.setWindowTitle("Recuperación de BookOS")
+    screen.setWindowTitle(t("Recuperación de BookOS", "BookOS Recovery"))
     screen.setObjectName("screen")
     screen.setStyleSheet(f"""
         QWidget {{ font-family: 'Noto Sans'; color: {p['tx']}; font-size: 13px; }}
@@ -130,16 +142,24 @@ def window(args):
     contents = QVBoxLayout(card)
     contents.setContentsMargins(24, 28, 24, 20)
     contents.setSpacing(10)
-    title = QLabel("BookOS se ha cerrado inesperadamente")
+    title = QLabel(t("BookOS se ha cerrado inesperadamente", "BookOS closed unexpectedly"))
     title.setObjectName("title")
     title.setWordWrap(True)
     title.setAlignment(Qt.AlignCenter)
     title.setMinimumHeight(title.heightForWidth(372))
     contents.addWidget(title)
-    message = "Puedes reintentar o continuar en otro escritorio. Las ventanas de la sesión anterior no se restaurarán."
+    message = t(
+        "Puedes reintentar o continuar en otro escritorio. Las ventanas de la sesión anterior no se restaurarán.",
+        "You can retry or continue in another desktop. Windows from the previous session will not be restored.",
+    )
     if args.locked:
-        message = "La sesión estaba bloqueada. Vuelve al inicio de sesión para identificarte y elegir BookOS u otro escritorio."
-    body = QLabel(message + f"\n\nCódigo de salida: {args.status}\nRegistro: {args.log}")
+        message = t(
+            "La sesión estaba bloqueada. Vuelve al inicio de sesión para identificarte y elegir BookOS u otro escritorio.",
+            "The session was locked. Return to login to sign in and choose BookOS or another desktop.",
+        )
+    exit_label = t("Código de salida", "Exit code")
+    log_label = t("Registro", "Log")
+    body = QLabel(message + f"\n\n{exit_label}: {args.status}\n{log_label}: {args.log}")
     body.setTextFormat(Qt.PlainText)
     body.setObjectName("body")
     body.setWordWrap(True)
@@ -151,10 +171,11 @@ def window(args):
         Path(args.choice).write_text(value)
         app.quit()
 
-    choices = [] if args.locked else [("Reintentar BookOS", "retry")]
+    choices = [] if args.locked else [(t("Reintentar BookOS", "Retry BookOS"), "retry")]
     if not args.locked:
-        choices += [(f"Continuar en {name}", name) for name, _, _ in sessions()]
-    choices += [("Volver al inicio de sesión", "login")]
+        cont_prefix = t("Continuar en", "Continue in")
+        choices += [(f"{cont_prefix} {name}", name) for name, _, _ in sessions()]
+    choices += [(t("Volver al inicio de sesión", "Back to login"), "login")]
     # A locked session must authenticate at the login screen first, like every
     # other way out of this window.
     points = [] if args.locked else restore_points()
@@ -173,19 +194,26 @@ def window(args):
     panel = QVBoxLayout(restore)
     panel.setContentsMargins(24, 28, 24, 20)
     panel.setSpacing(10)
-    restore_title = QLabel("Restaurar el sistema")
+    restore_title = QLabel(t("Restaurar el sistema", "Restore system"))
     restore_title.setObjectName("title")
     restore_title.setAlignment(Qt.AlignCenter)
     panel.addWidget(restore_title)
-    note = QLabel("Programas y ajustes del sistema volverán a ese momento. Tus archivos personales no cambian, "
-                  "y antes se guarda otro punto para poder deshacerlo.")
+    note = QLabel(
+        t(
+            "Programas y ajustes del sistema volverán a ese momento. Tus archivos personales no cambian, "
+            "y antes se guarda otro punto para poder deshacerlo.",
+            "System apps and settings will return to that point. Your personal files will not change, "
+            "and another restore point is saved beforehand so you can undo it.",
+        )
+    )
     note.setObjectName("body")
     note.setWordWrap(True)
     note.setAlignment(Qt.AlignCenter)
     panel.addWidget(note)
     items = QListWidget()
+    default_point = t("Punto de restauración", "Restore point")
     for point in points:
-        item = QListWidgetItem(f"{point.get('description') or 'Punto de restauración'}\n{point.get('date', '')}")
+        item = QListWidgetItem(f"{point.get('description') or default_point}\n{point.get('date', '')}")
         item.setData(Qt.UserRole, point["number"])
         items.addItem(item)
     items.setCurrentRow(0)
@@ -194,7 +222,7 @@ def window(args):
     panel.addWidget(items)
     password = QLineEdit()
     password.setEchoMode(QLineEdit.Password)
-    password.setPlaceholderText("Contraseña de administrador")
+    password.setPlaceholderText(t("Contraseña de administrador", "Administrator password"))
     panel.addWidget(password)
     error = QLabel()
     error.setObjectName("body")
@@ -202,10 +230,10 @@ def window(args):
     error.setAlignment(Qt.AlignCenter)
     error.hide()
     panel.addWidget(error)
-    run = QPushButton("Restaurar")
+    run = QPushButton(t("Restaurar", "Restore"))
     run.setObjectName("primary")
     panel.addWidget(run)
-    back = QPushButton("Volver")
+    back = QPushButton(t("Volver", "Back"))
     panel.addWidget(back)
 
     def show_restore(visible):
@@ -219,21 +247,21 @@ def window(args):
     def finished(code, _status):
         password.clear()
         if code == 0:
-            restore_title.setText("Reinicia para terminar")
-            note.setText("El sistema está restaurado.")
+            restore_title.setText(t("Reinicia para terminar", "Restart to finish"))
+            note.setText(t("El sistema está restaurado.", "The system has been restored."))
             for widget in (items, password, error, back):
                 widget.hide()
-            run.setText("Reiniciar ahora")
+            run.setText(t("Reiniciar ahora", "Restart now"))
             run.setEnabled(True)
             run.clicked.disconnect()
             run.clicked.connect(lambda: choose("reboot"))
             return
         lines = bytes(process.readAllStandardError()).decode(errors="replace").strip().splitlines()
-        error.setText(lines[-1] if lines else "No se pudo restaurar")
+        error.setText(lines[-1] if lines else t("No se pudo restaurar", "Couldn't restore"))
         error.show()
         run.setEnabled(True)
         back.setEnabled(True)
-        run.setText("Restaurar")
+        run.setText(t("Restaurar", "Restore"))
 
     def start_restore():
         if not password.text() or not items.currentItem():
@@ -241,7 +269,7 @@ def window(args):
         error.hide()
         run.setEnabled(False)
         back.setEnabled(False)
-        run.setText("Restaurando…")
+        run.setText(t("Restaurando…", "Restoring…"))
         # The password goes through stdin, never through a visible argv.
         process.start("sudo", ["-k", "-S", "-p", "", str(restore_helper()), "restaurar",
                                items.currentItem().data(Qt.UserRole)])
@@ -255,7 +283,7 @@ def window(args):
     layout.addWidget(restore, 0, Qt.AlignCenter)
     if points:
         # Before "back to login", the last and least committal way out.
-        open_restore = QPushButton("Restaurar un punto anterior")
+        open_restore = QPushButton(t("Restaurar un punto anterior", "Restore a previous point"))
         open_restore.clicked.connect(lambda: show_restore(True))
         contents.insertWidget(contents.count() - 1, open_restore)
         if args.preview_restore:
@@ -300,14 +328,19 @@ def prompt(args):
     # No usable graphics: still report the failure on the controlling TTY.
     try:
         with open("/dev/tty", "r+") as tty:
-            tty.write(f"\nBookOS se ha cerrado (código {args.status}). Registro: {args.log}\n")
-            choices = [] if args.locked else [("Reintentar BookOS", "retry")]
+            tty.write(
+                t(
+                    f"\nBookOS se ha cerrado (código {args.status}). Registro: {args.log}\n",
+                    f"\nBookOS exited (code {args.status}). Log: {args.log}\n",
+                )
+            )
+            choices = [] if args.locked else [(t("Reintentar BookOS", "Retry BookOS"), "retry")]
             if not args.locked:
                 choices += [(name, name) for name, _, _ in sessions()]
-            choices.append(("Volver al inicio de sesión", "login"))
+            choices.append((t("Volver al inicio de sesión", "Back to login"), "login"))
             for i, (label, _) in enumerate(choices, 1):
                 tty.write(f"{i}. {label}\n")
-            tty.write("Elige una opción: ")
+            tty.write(t("Elige una opción: ", "Choose an option: "))
             tty.flush()
             index = int(tty.readline().strip()) - 1
             return choices[index][1] if 0 <= index < len(choices) else "login"
@@ -331,7 +364,13 @@ def recover(args):
             # The selected session imports its new display into D-Bus/systemd.
             result = subprocess.call(cmd, env=env)
             if result:
-                print(f"No se pudo continuar en {name} (código {result}); se vuelve al inicio de sesión.", file=sys.stderr)
+                print(
+                    t(
+                        f"No se pudo continuar en {name} (código {result}); se vuelve al inicio de sesión.",
+                        f"Couldn't continue in {name} (code {result}); returning to login.",
+                    ),
+                    file=sys.stderr,
+                )
             return 0
     return 0
 

@@ -55,6 +55,9 @@ fn dedos_apoyados(ids: &[i32]) -> usize {
 /// La distancia media al centro: a diferencia de la de dos dedos que usa
 /// libinput, no depende de qué dedos quedan en los extremos.
 fn radio(puntos: &[(f64, f64)]) -> f64 {
+    if puntos.is_empty() {
+        return 0.0;
+    }
     let n = puntos.len() as f64;
     let (cx, cy) = puntos
         .iter()
@@ -173,10 +176,12 @@ fn eje(fd: RawFd, codigo: u32) -> Option<[i32; 6]> {
 }
 
 fn actualizar(state: &mut BookosComp, radio: Option<f64>, cancelar: bool, ahora: u64) {
-    let bloqueado = state.shell.as_ref().is_none_or(|s| s.esta_bloqueado());
-    let permitido = !cancelar && !state.modo.kiosko() && !bloqueado;
-    match (state.cinco_dedos.radio_inicial, radio.filter(|_| permitido)) {
-        (None, Some(radio)) if radio > 0.0 => {
+    let permitido = !cancelar && crate::input::gestos_touchpad_permitidos(state);
+    match (
+        state.cinco_dedos.radio_inicial,
+        radio.filter(|r| permitido && r.is_finite() && *r > 0.0),
+    ) {
+        (None, Some(radio)) if radio > 4.0 => {
             state.cinco_dedos.radio_inicial = Some(radio);
             state
                 .cinco_dedos
@@ -201,8 +206,7 @@ fn actualizar(state: &mut BookosComp, radio: Option<f64>, cancelar: bool, ahora:
             state.cinco_dedos.radio_inicial = None;
             // Levantar la mano es soltar; perder el permiso o el dispositivo no
             // es una decisión del usuario y no debe abrir nada.
-            let cancelada = !state.modo.kiosko() && !bloqueado && !cancelar;
-            if let Some(suelta) = state.cinco_dedos.gestos.pellizco_fin(!cancelada, ahora)
+            if let Some(suelta) = state.cinco_dedos.gestos.pellizco_fin(!permitido, ahora)
                 && let Some(shell) = state.shell.as_mut()
             {
                 shell.soltar_launchpad(suelta);
@@ -211,6 +215,10 @@ fn actualizar(state: &mut BookosComp, radio: Option<f64>, cancelar: bool, ahora:
         }
         (None, _) => {}
     }
+}
+
+fn cancelar(state: &mut BookosComp) {
+    actualizar(state, None, true, 0);
 }
 
 /// Envuelve la interfaz de la sesión porque es el único sitio donde libinput
@@ -283,6 +291,7 @@ impl LibinputInterface for Interfaz {
     fn close_restricted(&mut self, fd: OwnedFd) {
         if let Some(token) = self.fuentes.remove(&fd.as_raw_fd()) {
             self.bucle.remove(token);
+            self.bucle.insert_idle(cancelar);
         }
         self.sesion.close_restricted(fd);
     }
@@ -321,5 +330,10 @@ mod tests {
         // EVIOCGABS(ABS_MT_SLOT), ya usado contra el touchpad real.
         assert_eq!(lectura_evdev(0x40 + ABS_MT_SLOT, 24), 0x8018_456f);
         assert_eq!(lectura_evdev(0x0a, 44), 0x802c_450a);
+    }
+
+    #[test]
+    fn radio_vacio_devuelve_cero_sin_nan() {
+        assert_eq!(radio(&[]), 0.0);
     }
 }

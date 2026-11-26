@@ -1656,10 +1656,15 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
         bookos_shell::tema::aplicar_modo(config.modo_tema);
         bookos_shell::tema::aplicar_alto_contraste(config.alto_contraste);
         // `config.tema` ya viene resuelto contra el reloj por `Config::cargar`.
+        let cambia_tema = bookos_shell::tema::actual() != config.tema;
         if let Some(shell) = state.shell.as_mut() {
             shell.aplicar_apariencia(config.tema, config.acento);
-            // Ajustes avisa con esta misma sección al cambiar el estilo de iconos.
-            shell.recargar_iconos();
+            // Ajustes avisa con esta misma sección al cambiar el estilo de iconos
+            // sin cambiar el tema claro/oscuro; si ya cambió el tema,
+            // `aplicar_apariencia` recargó sin leer el gsettings viejo.
+            if !cambia_tema {
+                shell.recargar_iconos();
+            }
         }
         // Antes de avisar al portal: este lee los efectos reducidos (para
         // `reduced-motion` y `enable-animations`) y con el orden al revés
@@ -1668,7 +1673,7 @@ fn recargar(state: &mut crate::state::BookosComp, seccion: &str) {
         if let Some(shell) = state.shell.as_mut() {
             shell.aplicar_efectos_config(config.efectos);
         }
-        crate::portal::apariencia_cambiada(state);
+        crate::portal::apariencia_cambiada(state, cambia_tema);
         // Y el despertar del próximo cambio, que pudo cambiar de hora o dejar
         // de existir si el modo pasó a fijo.
         crate::apariencia::programar_cambio(state);
@@ -2037,8 +2042,8 @@ pub fn arrancar(
     match conexion {
         Ok(conexion) => {
             tracing::info!("interfaz de ajustes de BookOS en el bus");
-            crate::inhibir::arrancar(&conexion, canal.clone());
-            vigilar_remitentes(&conexion, canal_vigia);
+            let inhibiciones = crate::inhibir::arrancar(&conexion, canal.clone());
+            vigilar_remitentes(&conexion, canal_vigia, inhibiciones);
             Some(conexion)
         }
         Err(err) => {
@@ -2061,7 +2066,11 @@ pub fn arrancar(
 /// La regla filtra en el propio bus por `new_owner` vacío: solo llegan las
 /// desapariciones, no cada nombre que se pide o se cede.
 // 0.1.0
-fn vigilar_remitentes(conexion: &zbus::blocking::Connection, canal: Sender<Aviso>) {
+fn vigilar_remitentes(
+    conexion: &zbus::blocking::Connection,
+    canal: Sender<Aviso>,
+    inhibiciones: crate::inhibir::GestorCookies,
+) {
     let conexion = conexion.clone();
     let hilo = std::thread::Builder::new()
         .name("vigia-actividades".into())
@@ -2080,12 +2089,14 @@ fn vigilar_remitentes(conexion: &zbus::blocking::Connection, canal: Sender<Aviso
                 // Solo los nombres únicos (`:1.42`): son los que se anotan al
                 // publicar, y un nombre conocido que cambia de dueño no
                 // significa que el proceso haya muerto.
-                if let zbus::names::BusName::Unique(nombre) = args.name()
-                    && canal
+                if let zbus::names::BusName::Unique(nombre) = args.name() {
+                    inhibiciones.retirar_remitente(nombre.as_str());
+                    if canal
                         .send(Aviso::RemitenteCaido(nombre.to_string()))
                         .is_err()
-                {
-                    return;
+                    {
+                        return;
+                    }
                 }
             }
         });

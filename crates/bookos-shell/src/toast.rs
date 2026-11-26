@@ -212,6 +212,11 @@ impl Toast {
         &self.notificacion
     }
 
+    /// Vuelve a resolver el icono del aviso si procede del tema de iconos.
+    pub fn recargar_icono(&mut self) {
+        self.notificacion.recargar_icono();
+    }
+
     /// `caducidad` es el `expire_timeout` de D-Bus: negativo «lo que decida el
     /// servidor», cero «que no se vaya sola» y positivo, milisegundos.
     // modified 0.1.1 -- parte el cuerpo una vez para el alto
@@ -476,19 +481,23 @@ impl Toast {
             .find(|a| a.clave == clave)
             .map_or_else(|| clave.to_string(), |a| a.etiqueta.clone());
         // «Desconectar» como confirmación no dice qué pasó; el diseño pone lo ocurrido.
-        let texto =
-            if clave == "desconectar" && matches!(self.notificacion.forma, Forma::Auriculares(_)) {
-                "Auriculares desconectados".to_string()
-            } else {
-                etiqueta
-            };
+        let texto = if clave == "desconectar"
+            && matches!(self.notificacion.forma, Forma::Auriculares(_))
+        {
+            crate::emergente::t("Auriculares desconectados", "Headphones disconnected").to_string()
+        } else {
+            etiqueta
+        };
         self.confirmar(texto, None);
     }
 
     /// Pasa a la confirmación de una respuesta, con lo que se mandó debajo.
     // añadido en la 0.2.2
     pub fn confirmar_respuesta(&mut self, texto: &str) {
-        self.confirmar("Respuesta enviada".into(), Some(texto.to_string()));
+        self.confirmar(
+            crate::emergente::t("Respuesta enviada", "Reply sent").into(),
+            Some(texto.to_string()),
+        );
     }
 
     /// El aviso se queda lo justo para leer la confirmación y se va con su
@@ -527,6 +536,15 @@ impl Toast {
             T::Escape => self.respuesta = None,
             T::BorrarTodo => texto.clear(),
             T::Caracter(c) if !c.is_control() => texto.push(c),
+            T::Pegar(s) => {
+                for c in s.chars() {
+                    if matches!(c, '\r' | '\n' | '\t') {
+                        texto.push(' ');
+                    } else if !c.is_control() {
+                        texto.push(c);
+                    }
+                }
+            }
             T::Retroceso => {
                 texto.pop();
             }
@@ -1630,5 +1648,17 @@ mod tests {
                 "nivel {nivel}: {base} ≠ {esperada}"
             );
         }
+    }
+
+    #[test]
+    fn respuesta_en_toast_admite_pegar_limpio() {
+        use crate::TeclaPulsada as T;
+        let mut t = Toast::new(notif(false), -1);
+        t.empezar_respuesta();
+        assert_eq!(
+            t.tecla(T::Pegar("hola\n\x07mundo".into())),
+            Some(TeclaAviso::Consumida)
+        );
+        assert_eq!(t.tecla(T::Intro), Some(TeclaAviso::Enviar("hola mundo".into())));
     }
 }

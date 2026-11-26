@@ -1,0 +1,72 @@
+[Plymouth Theme]
+Name=BookOS
+Description=Pantalla de arranque y apagado minimalista de BookOS
+ModuleName=two-step
+
+[two-step]
+Font=Sans 12
+TitleFont=Sans Light 24
+ImageDir=/usr/share/plymouth/themes/bookos
+DialogHorizontalAlignment=.5
+DialogVerticalAlignment=.382
+TitleHorizontalAlignment=.5
+TitleVerticalAlignment=.382
+HorizontalAlignment=.5
+VerticalAlignment=.62
+WatermarkHorizontalAlignment=.5
+WatermarkVerticalAlignment=.44
+Transition=fade-over
+TransitionDuration=0.35
+BackgroundStartColor=0x000000
+BackgroundEndColor=0x000000
+ProgressBarBackgroundColor=0x282b33
+ProgressBarForegroundColor=0xf4f7ff
+DialogClearsFirmwareBackground=true
+MessageBelowAnimation=true
+
+[boot-up]
+SuppressMessages=true
+UseEndAnimation=false
+UseFirmwareBackground=false
+
+[shutdown]
+SuppressMessages=true
+UseEndAnimation=false
+UseFirmwareBackground=false
+
+[reboot]
+SuppressMessages=true
+UseEndAnimation=false
+UseFirmwareBackground=false
+
+[updates]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+UseFirmwareBackground=false
+Title=Instalando actualizaciones…
+SubTitle=No apagues el equipo
+
+[system-upgrade]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+UseFirmwareBackground=false
+Title=Actualizando el sistema…
+SubTitle=No apagues el equipo
+
+[firmware-upgrade]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+UseFirmwareBackground=false
+Title=Actualizando firmware…
+SubTitle=No apagues el equipo
+
+[system-reset]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+UseFirmwareBackground=false
+Title=Restableciendo el sistema…
+SubTitle=No apagues el equipo

@@ -13,8 +13,9 @@
 //! `Aviso::RemitenteCaido`), y no deja la pantalla encendida para siempre.
 
 use smithay::reexports::calloop::channel::Sender;
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::ajustes::Aviso;
 
@@ -33,10 +34,10 @@ const GNOME_INHIBIR_SUSPENSION: u32 = 4;
 const GNOME_INHIBIR_INACTIVO: u32 = 8;
 
 #[derive(Clone)]
-struct GestorCookies {
+pub(crate) struct GestorCookies {
     canal: Sender<Aviso>,
     siguiente: Arc<AtomicU32>,
-    activas: Arc<AtomicU32>,
+    activas: Arc<Mutex<HashMap<u32, String>>>,
 }
 
 impl GestorCookies {
@@ -45,19 +46,25 @@ impl GestorCookies {
             canal,
             // Empieza en 1: algunas apps toman la cookie 0 como «falló».
             siguiente: Arc::new(AtomicU32::new(1)),
-            activas: Arc::new(AtomicU32::new(0)),
+            activas: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    fn registrar(
-        &self,
-        cabecera: &zbus::message::Header<'_>,
-        app: String,
-        motivo: String,
-    ) -> u32 {
-        let cookie = self.siguiente.fetch_add(1, Ordering::Relaxed);
-        let remitente = cabecera.sender().map(|u| u.to_string()).unwrap_or_default();
-        self.activas.fetch_add(1, Ordering::Relaxed);
+    fn siguiente_cookie(&self) -> u32 {
+        loop {
+            let cookie = self.siguiente.fetch_add(1, Ordering::Relaxed);
+            if cookie != 0 {
+                return cookie;
+            }
+        }
+    }
+
+    fn registrar_con_remitente(&self, remitente: String, app: &str, motivo: &str) -> u32 {
+        let cookie = self.siguiente_cookie();
+        self.activas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(cookie, remitente.clone());
         tracing::info!(
             app,
             motivo,
@@ -68,16 +75,36 @@ impl GestorCookies {
         cookie
     }
 
+    fn registrar(
+        &self,
+        cabecera: &zbus::message::Header<'_>,
+        app: String,
+        motivo: String,
+    ) -> u32 {
+        let remitente = cabecera.sender().map(|u| u.to_string()).unwrap_or_default();
+        self.registrar_con_remitente(remitente, &app, &motivo)
+    }
+
     fn soltar(&self, cookie: u32) {
         if cookie == 0 {
             return;
         }
-        let _ = self
+        let estaba = self
             .activas
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                Some(n.saturating_sub(1))
-            });
-        let _ = self.canal.send(Aviso::Desinhibir(cookie));
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&cookie)
+            .is_some();
+        if estaba {
+            let _ = self.canal.send(Aviso::Desinhibir(cookie));
+        }
+    }
+
+    pub(crate) fn retirar_remitente(&self, remitente: &str) {
+        self.activas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, owner| owner != remitente);
     }
 }
 
@@ -131,7 +158,12 @@ impl PowerManagementInhibit {
     }
 
     fn has_inhibit(&self) -> bool {
-        self.gestor.activas.load(Ordering::Relaxed) > 0
+        !self
+            .gestor
+            .activas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     }
 }
 
@@ -166,7 +198,7 @@ impl GnomeSessionManager {
 /// ya tiene el nombre (desarrollando anidado sobre Plasma), se avisa y se sigue:
 /// `vigilar_nombres` lo volverá a pedir.
 // añadido en la 0.2.2
-pub fn arrancar(conexion: &zbus::blocking::Connection, canal: Sender<Aviso>) {
+pub(crate) fn arrancar(conexion: &zbus::blocking::Connection, canal: Sender<Aviso>) -> GestorCookies {
     let gestor = GestorCookies::nueva(canal);
     for ruta in RUTAS_SCREENSAVER {
         if let Err(err) = conexion.object_server().at(
@@ -198,5 +230,39 @@ pub fn arrancar(conexion: &zbus::blocking::Connection, canal: Sender<Aviso>) {
         if let Err(err) = conexion.request_name(nombre) {
             tracing::warn!("sin {nombre}: {err}");
         }
+    }
+    gestor
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cookies_evitan_cero_y_soltar_ajeno_o_caida_mantienen_has_inhibit() {
+        let (tx, rx) = smithay::reexports::calloop::channel::channel();
+        let gestor = GestorCookies::nueva(tx);
+        gestor.siguiente.store(u32::MAX, Ordering::Relaxed);
+        assert_eq!(gestor.siguiente_cookie(), u32::MAX);
+        assert_eq!(gestor.siguiente_cookie(), 1);
+
+        let power = PowerManagementInhibit {
+            gestor: gestor.clone(),
+        };
+        let c1 = gestor.registrar_con_remitente(":1.10".into(), "mpv", "video");
+        let _ = rx.try_recv();
+        assert!(power.has_inhibit());
+
+        // Soltar una cookie inexistente o repetida no baja la inhibición activa.
+        gestor.soltar(999_999);
+        assert!(rx.try_recv().is_err());
+        assert!(power.has_inhibit());
+
+        // Si el cliente dueño muere sin UnInhibit, retirar_remitente limpia el estado.
+        gestor.retirar_remitente(":1.20");
+        assert!(power.has_inhibit());
+        gestor.retirar_remitente(":1.10");
+        assert!(!power.has_inhibit());
+        gestor.soltar(c1);
     }
 }

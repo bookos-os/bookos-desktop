@@ -31,7 +31,7 @@ use super::brillo::{
 };
 use super::control::{self, ENTRE_BARRA, FILA_BARRA, ICONO_BARRA, PISTA};
 use super::lista::{ANCHO, BAJO_CABECERA, CABECERA, MARGEN};
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 
 /// Alto de la tarjeta de un canal: título y valor, y la barra.
 const ALTO_CANAL: f32 = PAD_ARRIBA + TITULO + ENTRE + FILA_BARRA + PAD_ABAJO;
@@ -81,9 +81,10 @@ struct Canal {
 impl Canal {
     // 0.1.0
     fn nuevo(destino: &'static str, micro: bool) -> Self {
-        let (nivel, silenciado) = crate::widgets::volumen::consultar(destino).unwrap_or((0, false));
+        let estado = crate::widgets::volumen::consultar(destino);
+        let (nivel, silenciado) = estado.unwrap_or((0, false));
         let mut canal = Self {
-            disponible: crate::widgets::volumen::consultar(destino).is_some(),
+            disponible: estado.is_some(),
             nivel,
             silenciado,
             destino,
@@ -159,9 +160,9 @@ impl Canal {
     // 0.1.0
     fn etiqueta(&self) -> String {
         if !self.disponible {
-            "No disponible".into()
+            t("No disponible", "Unavailable").into()
         } else if self.silenciado {
-            "Silenciado".into()
+            t("Silenciado", "Muted").into()
         } else {
             format!("{} %", self.nivel)
         }
@@ -289,6 +290,13 @@ impl Sonido {
         }
     }
 
+    fn disponible(&self, fila: Fila) -> bool {
+        match fila {
+            Fila::Salida => self.salida.disponible,
+            Fila::Entrada => self.entrada.disponible,
+        }
+    }
+
     /// De una `x` dentro de la píldora al nivel que le toca.
     // 0.1.0
     fn nivel_en(&self, fila: Fila, x: f32) -> u8 {
@@ -339,6 +347,7 @@ impl Sonido {
     pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
         [Fila::Salida, Fila::Entrada]
             .into_iter()
+            .filter(|fila| self.disponible(*fila))
             .any(|fila| self.zona_barra(fila).contains(Point::new(x, y)))
     }
 
@@ -355,7 +364,7 @@ impl Sonido {
             }
             // La zona agarrable es la fila entera: apuntar a 10 px de alto con
             // el ratón en movimiento falla más de lo que parece.
-            if self.zona_barra(fila).contains(punto) {
+            if self.disponible(fila) && self.zona_barra(fila).contains(punto) {
                 let canal = self.canal(fila);
                 self.agarrada = Some((fila, canal.nivel, canal.silenciado));
                 self.grosor.ir_a(1.0);
@@ -384,7 +393,7 @@ impl Sonido {
     /// La rueda sobre una fila sube y baja su nivel, como en el plasmoide.
     // 0.1.0
     pub fn desplazar(&mut self, _dx: f32, dy: f32) -> bool {
-        if dy == 0.0 {
+        if dy == 0.0 || !self.salida.disponible {
             return false;
         }
         let paso = if dy > 0.0 { PASO_RUEDA } else { -PASO_RUEDA };
@@ -444,7 +453,7 @@ impl Sonido {
         };
         let cabecera = container(
             row![
-                control::titulo("Sonido"),
+                control::titulo(t("Sonido", "Sound")),
                 Space::new().width(Length::Fill),
                 ajustes
             ]
@@ -457,9 +466,14 @@ impl Sonido {
         let contenido = column![
             cabecera,
             Space::new().height(Length::Fixed(BAJO_CABECERA)),
-            self.tarjeta("Altavoces", Fila::Salida, &self.salida, 0),
+            self.tarjeta(t("Altavoces", "Speakers"), Fila::Salida, &self.salida, 0),
             Space::new().height(Length::Fixed(ENTRE_TARJETAS)),
-            self.tarjeta("Micrófono", Fila::Entrada, &self.entrada, 1),
+            self.tarjeta(
+                t("Micrófono", "Microphone"),
+                Fila::Entrada,
+                &self.entrada,
+                1
+            ),
         ];
         control::tarjeta(contenido.into(), ANCHO, MARGEN)
     }
@@ -553,8 +567,16 @@ impl Sonido {
             .into()
         } else {
             let mensaje = bookos_system::unavailable("audio")
-                .map(|_| "Servicio de audio no disponible")
-                .unwrap_or("Esperando dispositivo de audio…");
+                .map(|_| {
+                    t(
+                        "Servicio de audio no disponible",
+                        "Audio service unavailable",
+                    )
+                })
+                .unwrap_or(t(
+                    "Esperando dispositivo de audio…",
+                    "Waiting for an audio device…",
+                ));
             container(text(mensaje).size(12.0).color(tema::texto2()))
                 .height(Length::Fixed(FILA_BARRA))
                 .center_y(Length::Fixed(FILA_BARRA))
@@ -630,5 +652,20 @@ mod tests {
         let mut s = Sonido::new();
         assert!(!s.soltar());
         assert!(!s.agarrado());
+    }
+
+    #[test]
+    fn canal_no_disponible_no_agarra_ni_desplaza() {
+        let mut s = Sonido::new();
+        s.salida.disponible = false;
+        s.salida.nivel = 40;
+        let r = s.zona_barra(Fila::Salida);
+        let (x, y) = (r.x + r.width / 2.0, r.y + r.height / 2.0);
+        assert!(!s.arrastre_en(x, y));
+        s.pulsar(x, y);
+        assert!(!s.agarrado());
+        assert!(!s.grosor.animando());
+        assert!(!s.desplazar(0.0, 5.0));
+        assert_eq!(s.salida.nivel, 40);
     }
 }

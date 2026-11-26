@@ -25,7 +25,7 @@ use crate::view::PanelElement;
 
 use super::control;
 use super::lista::{self, Entrada};
-use super::{Ancla, Tecla};
+use super::{Ancla, Tecla, t};
 
 /// Cuánto dura el «buscando…» junto a «Otras redes»: lo que tarda NetworkManager
 /// en devolver el primer escaneo.
@@ -118,7 +118,11 @@ fn nivel_señal(señal: u8) -> usize {
 }
 
 fn calidad(señal: u8) -> &'static str {
-    ["Débil", "Buena", "Excelente"][nivel_señal(señal)]
+    [
+        t("Débil", "Weak"),
+        t("Buena", "Good"),
+        t("Excelente", "Excellent"),
+    ][nivel_señal(señal)]
 }
 
 impl Red {
@@ -134,7 +138,7 @@ impl Red {
             pie: tema::Realce::nuevo(),
             ultimo: Value::Null,
             desplazamiento: 0.0,
-            estado_carga: Some("Cargando…".into()),
+            estado_carga: Some(t("Cargando…", "Loading…").into()),
             abierta: Instant::now(),
             escaneada: false,
             buscando_visto: false,
@@ -147,7 +151,7 @@ impl Red {
 
     // 0.1.0
     fn aplicar(&mut self, data: Value, error: Option<String>) -> bool {
-        let status = error.or_else(|| data.is_null().then(|| "Cargando…".into()));
+        let status = error.or_else(|| data.is_null().then(|| t("Cargando…", "Loading…").into()));
         if self.ultimo == data && self.estado_carga == status {
             return false;
         }
@@ -183,6 +187,9 @@ impl Red {
         self.pedir_escaneo();
         self.avanzar_pendiente();
         self.reconstruir();
+        if !self.encendida || self.señalada.actual().is_some_and(|i| i >= self.aps.len()) {
+            self.señalada.señalar(None);
+        }
         self.desplazamiento = self.desplazamiento.min(self.maximo());
         self.interruptor.ir_a(self.encendida as u8 as f32);
         self.ultimo = data;
@@ -229,9 +236,15 @@ impl Red {
             .map(|a| {
                 let nivel = nivel_señal(a.señal);
                 let estado = match pendiente {
-                    Some((s, Orden::Conectar)) if s == a.ssid => "Conectando…".to_string(),
-                    Some((s, Orden::Desconectar)) if s == a.ssid => "Desconectando…".to_string(),
-                    _ if a.activa => format!("Conectado · {}", calidad(a.señal)),
+                    Some((s, Orden::Conectar)) if s == a.ssid => {
+                        t("Conectando…", "Connecting…").to_string()
+                    }
+                    Some((s, Orden::Desconectar)) if s == a.ssid => {
+                        t("Desconectando…", "Disconnecting…").to_string()
+                    }
+                    _ if a.activa => {
+                        format!("{} · {}", t("Conectado", "Connected"), calidad(a.señal))
+                    }
                     _ => String::new(),
                 };
                 Entrada {
@@ -440,6 +453,10 @@ impl Red {
         if lista::interruptor_en(x, y) {
             self.encendida = !self.encendida;
             self.interruptor.ir_a(self.encendida as u8 as f32);
+            if !self.encendida {
+                self.clave = None;
+                self.señalada.señalar(None);
+            }
             bookos_system::request(Operation::WifiPower {
                 enabled: self.encendida,
             });
@@ -600,18 +617,20 @@ impl Red {
         };
         let n = c.texto.chars().count();
         let escrito = if n == 0 {
-            text("Contraseña").size(14.0).color(tema::texto2())
+            text(t("Contraseña", "Password"))
+                .size(14.0)
+                .color(tema::texto2())
         } else {
             text(format!("{}▏", "•".repeat(n)))
                 .size(14.0)
                 .color(tema::texto())
         };
         let aviso = if n >= CLAVE_MINIMA {
-            "Intro para conectar"
+            t("Intro para conectar", "Enter to connect")
         } else if n > 0 {
-            "Mínimo 8 caracteres"
+            t("Mínimo 8 caracteres", "At least 8 characters")
         } else {
-            "Esc para cancelar"
+            t("Esc para cancelar", "Esc to cancel")
         };
         let acento = tema::acento();
         container(
@@ -692,14 +711,15 @@ impl Red {
                     F {
                         id: "clave".into(),
                         rol: Role::PasswordInput,
-                        nombre: format!("Contraseña de {}", k.ssid),
+                        nombre: format!("{} {}", t("Contraseña de", "Password for"), k.ssid),
                         valor: format!(
-                            "{} caracteres{}",
+                            "{} {}{}",
                             k.texto.chars().count(),
+                            t("caracteres", "characters"),
                             if k.texto.chars().count() >= CLAVE_MINIMA {
-                                ", Intro para conectar"
+                                t(", Intro para conectar", ", Enter to connect")
                             } else {
-                                ", mínimo 8"
+                                t(", mínimo 8", ", at least 8")
                             }
                         ),
                         rect,
@@ -713,7 +733,7 @@ impl Red {
         v.push(F {
             id: "pie".into(),
             rol: Role::Button,
-            nombre: "Ajustes de Wi-Fi".into(),
+            nombre: t("Ajustes de Wi-Fi", "Wi-Fi settings").into(),
             valor: String::new(),
             rect: (
                 x0,
@@ -742,9 +762,9 @@ impl Red {
         let cuerpo: PanelElement<'_> = if let Some(status) = &self.estado_carga {
             lista::vacia(status)
         } else if !self.encendida {
-            lista::vacia("Wi-Fi apagado")
+            lista::vacia(t("Wi-Fi apagado", "Wi-Fi off"))
         } else if colocadas.is_empty() {
-            lista::vacia("No hay redes a la vista")
+            lista::vacia(t("No hay redes a la vista", "No networks in range"))
         } else {
             let mut todas = column![];
             let mut fin = 0.0;
@@ -755,8 +775,8 @@ impl Red {
                 let pieza: PanelElement<'_> = match c.fila {
                     Fila::Seccion(s) => lista::seccion(
                         match s {
-                            Seccion::Conocidas => "Redes conocidas",
-                            Seccion::Otras => "Otras redes",
+                            Seccion::Conocidas => t("Redes conocidas", "Known networks"),
+                            Seccion::Otras => t("Otras redes", "Other networks"),
                         },
                         s == Seccion::Otras && self.buscando(),
                     ),
@@ -776,7 +796,13 @@ impl Red {
         column![
             cabecera,
             Space::new().height(Length::Fixed(lista::BAJO_CABECERA)),
-            lista::grupo(column![cuerpo, lista::pie("Ajustes de Wi-Fi", &self.pie)].into()),
+            lista::grupo(
+                column![
+                    cuerpo,
+                    lista::pie(t("Ajustes de Wi-Fi", "Wi-Fi settings"), &self.pie)
+                ]
+                .into()
+            ),
         ]
         .into()
     }
@@ -829,7 +855,14 @@ mod tests {
             ]
         );
         assert_eq!(r.aps[0].ssid, "Oficina");
-        assert_eq!(r.entradas[0].estado, "Conectado · Excelente");
+        assert_eq!(
+            r.entradas[0].estado,
+            format!(
+                "{} · {}",
+                t("Conectado", "Connected"),
+                t("Excelente", "Excellent")
+            )
+        );
         assert!(r.entradas[2].candado, "las protegidas llevan candado");
     }
 
@@ -838,7 +871,7 @@ mod tests {
     fn conectar_pone_conectando_y_no_pasa_clave() {
         let mut r = con(vec![red("Casa", 55, false, true, "WPA2")]);
         assert!(r.activar(0).is_none(), "con perfil no hace falta Ajustes");
-        assert_eq!(r.entradas[0].estado, "Conectando…");
+        assert_eq!(r.entradas[0].estado, t("Conectando…", "Connecting…"));
         let abierta = con(vec![red("Bar", 60, false, false, "")]);
         assert!(!abierta.entradas[0].candado);
     }
@@ -874,7 +907,7 @@ mod tests {
         }
         r.tecla(T::Intro);
         assert!(r.clave.is_none());
-        assert_eq!(r.entradas[0].estado, "Conectando…");
+        assert_eq!(r.entradas[0].estado, t("Conectando…", "Connecting…"));
         assert!(
             matches!(r.tecla(T::Escape), Tecla::Cerrar),
             "sin campo, Esc cierra la tarjeta"
@@ -932,11 +965,36 @@ mod tests {
     /// para la palabra.
     #[test]
     fn tres_intensidades() {
-        assert_eq!(calidad(90), "Excelente");
-        assert_eq!(calidad(50), "Buena");
-        assert_eq!(calidad(10), "Débil");
+        assert_eq!(calidad(90), t("Excelente", "Excellent"));
+        assert_eq!(calidad(50), t("Buena", "Good"));
+        assert_eq!(calidad(10), t("Débil", "Weak"));
         assert_eq!(nivel_señal(67), 2);
         assert_eq!(nivel_señal(66), 1);
+    }
+
+    #[test]
+    fn apagar_limpia_clave_y_seleccion_y_aplicar_poda_fuera_de_rango() {
+        let mut r = con(vec![
+            red("Casa", 80, false, false, "WPA2"),
+            red("Vecina", 50, false, false, "WPA2"),
+        ]);
+        r.señalada.señalar(Some(1));
+        assert!(r
+            .aplicar(
+                json!({"enabled": true, "networks": [red("Casa", 80, false, false, "WPA2")]}),
+                None,
+            ));
+        assert_eq!(r.señalada.actual(), None);
+
+        r.activar(0);
+        assert!(r.clave.is_some());
+        r.señalada.señalar(Some(0));
+        let x = lista::ANCHO - lista::MARGEN - 4.0 - 10.0;
+        let y = lista::MARGEN + lista::CABECERA / 2.0;
+        assert!(r.pulsar(x, y).is_none());
+        assert!(!r.encendida);
+        assert!(r.clave.is_none());
+        assert_eq!(r.señalada.actual(), None);
     }
 
     /// Vuelca la tarjeta a PNG para mirarla, en oscuro y en claro.

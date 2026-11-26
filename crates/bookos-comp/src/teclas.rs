@@ -398,8 +398,12 @@ impl Traductor {
 
     // 0.1.0
     pub fn traducir(&mut self, mapa: &Remapeos, evdev: u32, pulsada: bool) -> Vec<Evento> {
-        if pulsada {
-            self.fisicas.push(evdev);
+        let repetida = if pulsada {
+            let r = self.fisicas.contains(&evdev);
+            if !r {
+                self.fisicas.push(evdev);
+            }
+            r
         } else {
             self.fisicas.retain(|&c| c != evdev);
             if let Some(i) = self.tragar.iter().position(|&c| c == evdev) {
@@ -414,7 +418,7 @@ impl Traductor {
                     .collect();
             }
             return vec![Evento::Tecla(evdev, false)];
-        }
+        };
 
         let copilot = self.es_copilot(evdev);
         let origen = if copilot {
@@ -427,10 +431,14 @@ impl Traductor {
         };
 
         let mut eventos = Vec::new();
-        if copilot {
+        if copilot && !repetida {
             eventos.push(Evento::Tecla(KEY_LEFTMETA, false));
             eventos.push(Evento::Tecla(KEY_LEFTSHIFT, false));
-            self.tragar.extend([KEY_LEFTMETA, KEY_LEFTSHIFT]);
+            for mod_key in [KEY_LEFTMETA, KEY_LEFTSHIFT] {
+                if !self.tragar.contains(&mod_key) {
+                    self.tragar.push(mod_key);
+                }
+            }
         }
         let salida = match destino {
             Destino::Tecla(d) => {
@@ -447,7 +455,9 @@ impl Traductor {
             }
             Destino::Nada => None,
         };
-        self.pulsadas.push((evdev, salida));
+        if !self.pulsadas.iter().any(|&(o, _)| o == evdev) {
+            self.pulsadas.push((evdev, salida));
+        }
         eventos
     }
 }
@@ -587,5 +597,30 @@ mod tests {
         let vacio = Remapeos::default();
         t.tragar_suelta(190);
         assert!(t.traducir(&vacio, 190, false).is_empty());
+    }
+
+    #[test]
+    fn repeticion_de_copilot_no_duplica_tragar_ni_pulsadas() {
+        let m = mapa("copilot = ctrl");
+        let mut t = Traductor::default();
+        t.traducir(&m, 125, true);
+        t.traducir(&m, 42, true);
+        assert_eq!(
+            t.traducir(&m, 193, true),
+            vec![
+                Evento::Tecla(125, false),
+                Evento::Tecla(42, false),
+                Evento::Tecla(29, true),
+            ]
+        );
+        // Autorepetición de F23 manteniendo el acorde: no reemite sueltas ni duplica tragar/pulsadas.
+        assert_eq!(t.traducir(&m, 193, true), vec![Evento::Tecla(29, true)]);
+        assert_eq!(t.traducir(&m, 193, false), vec![Evento::Tecla(29, false)]);
+        assert!(t.traducir(&m, 42, false).is_empty());
+        assert!(t.traducir(&m, 125, false).is_empty());
+
+        // La siguiente pulsación/suelta normal de Meta ya no queda tragada.
+        assert_eq!(t.traducir(&m, 125, true), vec![Evento::Tecla(125, true)]);
+        assert_eq!(t.traducir(&m, 125, false), vec![Evento::Tecla(125, false)]);
     }
 }

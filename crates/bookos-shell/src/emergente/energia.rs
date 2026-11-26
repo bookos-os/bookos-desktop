@@ -246,7 +246,14 @@ pub(super) fn perfil_activo() -> Option<String> {
         .filter(|s| s.status.success())?;
     let texto = String::from_utf8_lossy(&salida.stdout);
     // `s "power-saver"`
-    texto.split('"').nth(1).map(str::to_string)
+    let perfil = texto.split('"').nth(1).map(str::to_string);
+    if perfil.as_deref() == Some("power-saver")
+        && std::fs::read_to_string("/run/bookos-termico/estado")
+            .is_ok_and(|s| s.trim() == "balanced-quiet")
+    {
+        return Some("balanced".to_string());
+    }
+    perfil
 }
 
 /// En qué está la batería, que es lo que decide la pastilla, el color de la

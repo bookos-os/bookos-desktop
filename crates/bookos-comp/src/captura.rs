@@ -24,9 +24,11 @@
 //!
 //! ## Qué no hace todavía
 //!
-//! - **Solo `wl_shm`.** El evento `linux_dmabuf` no se anuncia, así que el
-//!   cliente pide memoria compartida. Para una captura da igual; para compartir
-//!   pantalla a 60 fps sería una copia GPU→CPU→GPU que se puede quitar después.
+//! - **`linux_dmabuf` solo para la salida entera.** Con dmabuf la escena se
+//!   compone directamente en el buffer del cliente y no pasa por la CPU: medido
+//!   el 24-nov, grabar con `wl_shm` a 2560×1600 dejaba el escritorio en 3–5
+//!   fotogramas por segundo. Una región parcial sigue yendo por `wl_shm`, porque
+//!   recortar al componer pediría otra transformación de la escena.
 //! - **`copy_with_damage` se sirve como `copy`**: se contesta con el daño de la
 //!   salida entera. Es correcto —el daño anunciado puede ser de más, nunca de
 //!   menos— y evita llevar la cuenta por cliente.
@@ -147,7 +149,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for BookosComp {
                 frame,
                 overlay_cursor,
                 output,
-                Some(Rectangle::new((x, y).into(), (width, height).into())),
+                Some((x, y, width, height)),
             ),
             Request::Destroy => return,
             _ => return,
@@ -164,8 +166,15 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for BookosComp {
         let completa = Rectangle::from_size(tamano);
         // Recortada contra la salida: una región que se sale devolvería filas
         // de fuera del framebuffer, y eso es leer memoria que no es nuestra.
+        // El protocolo da la región en coordenadas lógicas de la salida, y aquí
+        // todo va en píxeles del buffer: a escala 2, wf-recorder pedía «0,0
+        // 1440x900» para la pantalla entera y se le servía el cuarto de arriba
+        // a la izquierda (y sin dmabuf, que solo va con la salida completa, se
+        // quedaba esperando). Se escala hacia fuera para no perder el borde con
+        // escalas fraccionarias.
+        let escala = output.current_scale().fractional_scale();
         let region = region
-            .map(|r| Rectangle::new(r.loc, r.size).intersection(completa))
+            .map(|(x, y, w, h)| escalar_region(x, y, w, h, escala, completa))
             .unwrap_or(Some(completa));
         let Some(region) = region.filter(|r| r.size.w > 0 && r.size.h > 0) else {
             let frame = init.init(frame, DatosFrame::muerto());
@@ -186,10 +195,51 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for BookosComp {
         let stride = region.size.w as u32 * 4;
         frame.buffer(FORMATO, region.size.w as u32, region.size.h as u32, stride);
         if frame.version() >= 3 {
+            // añadido en la 0.2.3 -- dmabuf para la salida entera (ver la cabecera)
+            if region == completa {
+                frame.linux_dmabuf(
+                    smithay::backend::allocator::Fourcc::Xrgb8888 as u32,
+                    region.size.w as u32,
+                    region.size.h as u32,
+                );
+            }
             frame.buffer_done();
         }
         let _ = state;
     }
+}
+
+fn escalar_region(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    escala: f64,
+    completa: Rectangle<i32, BufferCoord>,
+) -> Option<Rectangle<i32, BufferCoord>> {
+    if w <= 0 || h <= 0 || !escala.is_finite() || escala <= 0.0 {
+        return None;
+    }
+    let acotar = |v: f64| -> i32 { v.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32 };
+    let x0 = acotar((f64::from(x) * escala).floor());
+    let y0 = acotar((f64::from(y) * escala).floor());
+    let x1 = acotar(((i64::from(x) + i64::from(w)) as f64 * escala).ceil());
+    let y1 = acotar(((i64::from(y) + i64::from(h)) as f64 * escala).ceil());
+    let ancho = i64::from(x1) - i64::from(x0);
+    let alto = i64::from(y1) - i64::from(y0);
+    if ancho <= 0 || alto <= 0 {
+        return None;
+    }
+    Rectangle::<i32, BufferCoord>::new(
+        (x0, y0).into(),
+        (
+            ancho.min(i64::from(i32::MAX)) as i32,
+            alto.min(i64::from(i32::MAX)) as i32,
+        )
+            .into(),
+    )
+    .intersection(completa)
+    .filter(|recorte| recorte.size.w > 0 && recorte.size.h > 0)
 }
 
 impl DatosFrame {
@@ -249,12 +299,20 @@ impl Dispatch<ZwlrScreencopyFrameV1, DatosFrame> for BookosComp {
             *servido = true;
         }
 
-        // El buffer tiene que ser de memoria compartida y del tamaño y formato
-        // que se anunciaron: es lo único que se sabe rellenar.
+        // El buffer tiene que ser del tamaño y formato que se anunciaron: de
+        // memoria compartida, o dmabuf si se pidió la salida entera.
         let esperado = (datos.region.size.w, datos.region.size.h);
+        let es_dmabuf = smithay::wayland::dmabuf::get_dmabuf(&buffer).is_ok_and(|d| {
+            use smithay::backend::allocator::Buffer;
+            let tamano = d.size();
+            (tamano.w, tamano.h) == esperado
+                && d.format().code == smithay::backend::allocator::Fourcc::Xrgb8888
+                && datos.region == Rectangle::from_size(tamano_de(&datos.output))
+        });
         match smithay::wayland::shm::with_buffer_contents(&buffer, |_, _, datos_shm| {
             (datos_shm.width, datos_shm.height, datos_shm.format)
         }) {
+            _ if es_dmabuf => {}
             Ok((w, h, formato)) if (w, h) == esperado && formato == FORMATO => {}
             Ok(_) => {
                 recurso.post_error(
@@ -455,8 +513,8 @@ pub fn volcar(pendiente: &Pendiente, pixeles: &[u8], invertida: bool) -> bool {
 // 0.1.0
 pub fn contestar(pendiente: &Pendiente, tamano: Size<i32, BufferCoord>) {
     use zwlr_screencopy_frame_v1::Flags;
-    // Sin `YInvert`: la vuelta se la damos nosotros en `volcar`, así que lo que
-    // el cliente tiene en el buffer ya está de arriba abajo.
+    // Sin `YInvert`: por `wl_shm` la vuelta se la damos nosotros en `volcar`, y
+    // por dmabuf se compone ya derecho (ver `backend::servir_capturas`).
     pendiente.frame.flags(Flags::empty());
     if pendiente.frame.version() >= 2 {
         pendiente
@@ -687,5 +745,20 @@ mod tests {
         // Una pantalla girada no está espejada: no lleva vuelta.
         assert!(!hay_que_voltear(&salida(Transform::_90)));
         assert!(!hay_que_voltear(&salida(Transform::_180)));
+    }
+
+    #[test]
+    fn escalar_region_rechaza_desbordamiento_y_tamano_no_positivo() {
+        let completa = Rectangle::<i32, BufferCoord>::from_size((2880, 1800).into());
+        assert_eq!(escalar_region(10, 10, 0, 50, 2.0, completa), None);
+        assert_eq!(escalar_region(10, 10, 100, -5, 2.0, completa), None);
+        assert_eq!(
+            escalar_region(i32::MAX - 5, 0, 100, 100, 2.0, completa),
+            None
+        );
+        assert_eq!(
+            escalar_region(0, 0, 1440, 900, 2.0, completa),
+            Some(completa)
+        );
     }
 }

@@ -512,6 +512,9 @@ pub struct Desenfoque {
     /// pantalla entera y ahí el fondo tiene que desaparecer de verdad, no
     /// quedarse a medio reconocer detrás de los iconos.
     fuerza: f32,
+    /// Opacidad del desenfoque (0..=1). 1,0 en reposo para aprovechar
+    /// [`opaque_regions`]; menor durante el fundido del launchpad.
+    alfa: f32,
 }
 
 impl Desenfoque {
@@ -531,6 +534,7 @@ impl Desenfoque {
         textura: GlesTexture,
         cristal: Rc<RefCell<Cristal>>,
         fuerza: f32,
+        alfa: f32,
     ) -> Self {
         Self {
             id,
@@ -543,6 +547,7 @@ impl Desenfoque {
             textura,
             cristal,
             fuerza,
+            alfa,
         }
     }
 }
@@ -581,6 +586,9 @@ impl Element for Desenfoque {
     // añadido en la 0.2.4 -- permite occlusion culling en Smithay (evita pintar
     // ventanas y fondo tapados detrás del launchpad, panel o interior del dock)
     fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        if self.alfa < 1.0 - 0.001 {
+            return OpaqueRegions::default();
+        }
         regiones_opacas_rect(self.rect.size, self.radio)
     }
 
@@ -666,7 +674,7 @@ impl RenderElement<GlesRenderer> for Desenfoque {
             damage,
             &[],
             Transform::Normal,
-            1.0,
+            self.alfa.clamp(0.0, 1.0),
             Some(cristal.programa()),
             &[
                 // De texels de la textura reducida (1/8 o 1/16) a coordenadas

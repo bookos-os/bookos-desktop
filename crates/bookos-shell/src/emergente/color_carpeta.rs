@@ -331,6 +331,9 @@ impl ColorCarpeta {
     }
 
     fn arrastrar(&mut self, agarre: Agarre, x: f32, y: f32) {
+        if !x.is_finite() || !y.is_finite() {
+            return;
+        }
         let Some(libre) = self.libre.as_mut() else {
             return;
         };
@@ -730,8 +733,8 @@ impl ColorCarpeta {
         }
         col = col.push(Space::new().height(AIRE_BOTONES)).push(
             row![
-                self.boton("Cancelar", Boton::Cancelar),
-                self.boton("Aceptar", Boton::Aceptar)
+                self.boton(super::t("Cancelar", "Cancel"), Boton::Cancelar),
+                self.boton(super::t("Aceptar", "OK"), Boton::Aceptar)
             ]
             .spacing(HUECO_BOTON),
         );
@@ -851,5 +854,14 @@ mod tests {
             let (h, s, v) = hex_a_hsv(hex).expect("muestra válida");
             assert_eq!(hsv_a_hex(h, s, v), hex);
         }
+    }
+
+    #[test]
+    fn arrastrar_no_finito_no_corrompe_el_color() {
+        let mut d = dialogo(Some("#34C759"));
+        d.abrir_libre();
+        d.arrastrar(Agarre::Superficie, f32::NAN, 20.0);
+        d.arrastrar(Agarre::Tono, 20.0, f32::INFINITY);
+        assert_eq!(d.color.as_deref(), Some("#34C759"));
     }
 }

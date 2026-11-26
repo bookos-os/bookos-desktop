@@ -29,6 +29,7 @@ pub mod accesible;
 pub mod actividad;
 mod apps;
 pub mod bloqueo;
+pub mod carga_sesion;
 pub mod captura;
 mod config;
 pub mod confirmacion;
@@ -92,6 +93,7 @@ pub use emergente::Tecla;
 pub enum PiezaCaptura {
     Barra,
     Pastilla,
+    Opciones,
 }
 pub use emergente::RADIO_MINIATURA_ESCRITORIO;
 /// Un cambio de vista del launchpad que anima el compositor. Público porque es
@@ -106,8 +108,13 @@ pub use emergente::mantener_despierto;
 pub use emergente::recortar_texto;
 pub use emergente::t;
 mod menus;
-pub use apps::poner_al_iniciar;
-pub use emergente::{Ancla, Emergente, EntradaMenu, FilaMenu, MarcaMenu, ModoProyeccion, PantallaCompartible, RapidaMenu};
+pub use apps::{LanzadorMime, poner_al_iniciar, visor_imagenes};
+pub use emergente::{
+    Ancla, ContenidoPortapapeles, ElementoPortapapeles, Emergente, EntradaMenu, FilaMenu,
+    IdentidadPolkit, MarcaMenu, MiniaturaPortapapeles, ModoProyeccion, OpcionAcceso,
+    PantallaCompartible, PeticionAcceso, PeticionElegirApp, PeticionPolkit, RapidaMenu,
+    miniatura_de_imagen,
+};
 /// El icono ya cargado de una aplicación. Sale al exterior porque el conmutador
 /// lo arma el compositor, que conoce las ventanas pero no el tema de iconos.
 pub use icono::Icono;
@@ -193,6 +200,10 @@ pub enum Accion {
     EnergiaConfirmada(confirmacion::Energia),
     CerrarEmergente,
     InsertarEmoji(String),
+    PortapapelesPegar(u64),
+    PortapapelesFijar(u64),
+    PortapapelesEliminar(u64),
+    PortapapelesVaciar,
     /// Texto al portapapeles: la ficha de «Acerca de este equipo».
     // añadido en la 0.2.2
     CopiarTexto(String),
@@ -287,6 +298,24 @@ pub enum Accion {
         cursor: bool,
         retardo: u8,
     },
+    /// Cerrar la capa de captura desde el botón «×» de la barra.
+    CapturaCerrar,
+    /// Empezar una grabación de pantalla en ese rectángulo lógico.
+    GrabarIniciar {
+        x: i32,
+        y: i32,
+        ancho: i32,
+        alto: i32,
+        cursor: bool,
+        retardo: u8,
+        audio: captura::AudioGrabacion,
+    },
+    /// Detener la grabación activa desde el pill flotante.
+    GrabarDetener,
+    /// Pausar o reanudar la grabación activa desde el pill flotante.
+    GrabarPausar(bool),
+    /// Silenciar o reactivar el micrófono desde el pill flotante.
+    GrabarSilenciar(bool),
     /// Poner una familia de fondos: la imagen clara y la oscura de golpe.
     ///
     /// Las **dos** y no la que toca ahora, que es lo que permite que el cambio
@@ -430,6 +459,20 @@ pub enum Accion {
     VentanaDeApp { app_id: String, n: usize },
     /// Que la app se abra al iniciar sesión (`~/.config/autostart`).
     AbrirAlIniciar { app_id: String, abrir: bool },
+    /// Envía la contraseña o respuesta escrita en el diálogo de Polkit.
+    PolkitEnviar { id: u64 },
+    /// Cancela la petición de Polkit en curso.
+    PolkitCancelar { id: u64 },
+    /// Cambia la cuenta activa en el diálogo de Polkit.
+    PolkitCambiarIdentidad { id: u64, indice: usize },
+    /// Respuesta del diálogo de permisos `org.freedesktop.impl.portal.Access`.
+    PortalAcceso {
+        id: u32,
+        permitido: bool,
+        opciones: Vec<(String, String)>,
+    },
+    /// Respuesta del diálogo «Abrir con…» (`org.freedesktop.impl.portal.AppChooser`).
+    PortalElegirApp { id: u32, eleccion: Option<String> },
 }
 
 impl Accion {
@@ -477,6 +520,14 @@ impl Accion {
                 // reabrirlo por cada icono.
                 | Self::Anclar { .. }
                 | Self::GuardarDock(_)
+                // El diálogo de Polkit se queda abierto mientras PAM autentica,
+                // enseña un error o cambia de usuario; solo se cierra al cancelar
+                // o cuando el compositor recibe `SUCCESS`.
+                | Self::PolkitEnviar { .. }
+                | Self::PolkitCambiarIdentidad { .. }
+                | Self::PortapapelesFijar(_)
+                | Self::PortapapelesEliminar(_)
+                | Self::PortapapelesVaciar
         )
     }
 
@@ -507,6 +558,7 @@ fn emergente_de(nombre: &str) -> Option<fn() -> Emergente> {
         "bateria" => Some(Emergente::energia),
         "red" => Some(Emergente::red),
         "bluetooth" => Some(Emergente::bluetooth),
+        "usuarios" => Some(Emergente::usuarios),
         "notificaciones" => Some(Emergente::notificaciones),
         "control" => Some(Emergente::centro),
         // No es un widget del panel: es la tarjeta que abre el menú de BookOS.
@@ -535,6 +587,7 @@ fn nombre_emergente_de(nombre: &str) -> Option<&'static str> {
         "bateria" => Some("energia"),
         "red" => Some("red"),
         "bluetooth" => Some("bluetooth"),
+        "usuarios" => Some("usuarios"),
         "notificaciones" => Some("notificaciones"),
         "control" => Some("centro"),
         "apariencia" => Some("apariencia"),
@@ -581,6 +634,7 @@ pub fn precalentar() {
         "control",
         "apariencia",
         "bateria-100",
+        "usuarios",
     ] {
         let _ = icono::propio(nombre);
     }
@@ -806,11 +860,15 @@ pub enum TeclaPulsada {
     /// las flechas recorren la rejilla.
     Tabulador,
     Retroceso,
+    /// Supr (`Delete`): borra el carácter que sigue al cursor.
+    Suprimir,
     /// Ctrl+Retroceso. El launchpad vacía con ella el campo entero; el
     /// buscador borra la última palabra.
     BorrarTodo,
     /// Ctrl+A. Solo la entiende el buscador; el resto la ignora.
     SeleccionarTodo,
+    /// Ctrl+V. Pega texto plano en el buscador o respuesta.
+    Pegar(String),
     Caracter(char),
 }
 
@@ -1071,10 +1129,11 @@ pub struct Shell {
     // añadido en la 0.2.0 -- las previsualizaciones pueden seguir pidiendo un dock de una sola pieza.
     dock_en_capas: bool,
     dock_revision: u64,
-    /// La capa de captura de pantalla, mientras está abierta: la barra de modos
-    /// y la pastilla de las medidas, cada una en su lienzo. El velo lo compone
-    /// el compositor; ver [`captura`].
-    captura: Option<(captura::Captura, Canvas, Canvas)>,
+    /// La capa de captura de pantalla, mientras está abierta: la barra de modos,
+    /// la pastilla de las medidas y el popover de opciones.
+    captura: Option<(captura::Captura, Canvas, Canvas, Canvas)>,
+    /// Pill flotante durante una grabación de pantalla (excluido del vídeo).
+    grabacion_pill: Option<(captura::GrabacionPill, Canvas, u64)>,
 
     /// El aviso de volumen, brillo y demás, mientras dura.
     osd: Option<(osd::Osd, Canvas)>,
@@ -1233,6 +1292,7 @@ impl Shell {
             dock_en_capas: false,
             dock_revision: 0,
             captura: None,
+            grabacion_pill: None,
             osd: None,
             teclado: None,
             diagnostico: None,
@@ -1502,6 +1562,10 @@ impl Shell {
     /// Relee solo la tarjeta abierta; no consulta batería ni carpetas.
     // 0.1.0
     pub fn refresh_emergente(&mut self) -> bool {
+        if matches!(&self.emergente, Some((Emergente::Buscador(b), _)) if b.confirmacion_vencida()) {
+            self.cerrar_emergente();
+            return true;
+        }
         let mut cambio_emergente = false;
         // La emergente abierta también relee lo suyo: la lista de redes cambia
         // mientras la tienes delante, y sin esto se quedaría con la foto del
@@ -2540,9 +2604,13 @@ impl Shell {
         self.theme = view::theme();
         if cambia_tema {
             icono::refrescar_segun_tema();
-            if self.dock_items.refrescar_segun_tema() {
-                self.dock_revision = self.dock_revision.wrapping_add(1);
-            }
+            self.recargar_iconos_internos();
+        }
+        self.escritorio_canvas.painted_once = false;
+        self.escritorio_canvas.cache = None;
+        for (_, canvas) in &mut self.toasts {
+            canvas.painted_once = false;
+            canvas.cache = None;
         }
         for canvas in [
             Some(&mut self.panel),
@@ -2563,16 +2631,35 @@ impl Shell {
         }
     }
 
+    fn recargar_iconos_internos(&mut self) {
+        self.dock_items.recargar_iconos();
+        self.dock_revision = self.dock_revision.wrapping_add(1);
+        self.escritorio.recargar_iconos();
+        self.escritorio_canvas.painted_once = false;
+        self.escritorio_canvas.cache = None;
+        self.notificaciones.recargar_iconos();
+        for (toast, canvas) in &mut self.toasts {
+            toast.recargar_icono();
+            canvas.painted_once = false;
+            canvas.cache = None;
+        }
+        if let Some((emergente, canvas)) = self.emergente.as_mut() {
+            emergente.recargar_iconos(self.notificaciones.lista());
+            canvas.painted_once = false;
+            canvas.cache = None;
+        }
+    }
+
     /// Recarga el tema de iconos del sistema y los lanzadores del dock cuando
     /// Ajustes cambia el estilo de iconos.
     // added 0.2.3
     pub fn recargar_iconos(&mut self) {
         icono::recargar_tema();
-        self.dock_items.recargar_iconos();
-        self.dock_revision = self.dock_revision.wrapping_add(1);
+        self.recargar_iconos_internos();
         self.dock.painted_once = false;
         self.dock.cache = None;
         self.panel.painted_once = false;
+        self.panel.cache = None;
     }
 
     /// Marca sucia únicamente la tarjeta de Apariencia cuando cambia la paleta
@@ -2603,7 +2690,20 @@ impl Shell {
     /// ahora un widget nuevo con su propia cadencia entra sin tocar nada.
     // 0.1.0
     pub fn next_tick(&self) -> Option<std::time::Duration> {
-        self.widgets.proxima_alarma()
+        let widget = self.widgets.proxima_alarma();
+        let emergente = self.emergente.as_ref().and_then(|(e, _)| e.proxima_alarma());
+        match (widget, emergente) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }
+    }
+
+    /// Si la emergente abierta ha pedido un despertar programado.
+    pub fn emergente_tiene_alarma(&self) -> bool {
+        self.emergente
+            .as_ref()
+            .is_some_and(|(e, _)| e.proxima_alarma().is_some())
     }
 
     /// Subsistemas de udev que hay que vigilar para este panel.
@@ -2727,6 +2827,113 @@ impl Shell {
             self.limpiar_cache_modal();
         }
         cerrada
+    }
+
+    /// Extrae la contraseña actual del diálogo de Polkit si coincide su `id`.
+    pub fn tomar_polkit_clave(&mut self, id: u64) -> Option<Vec<u8>> {
+        let (Emergente::Polkit(p), canvas) = self.emergente.as_mut()? else {
+            return None;
+        };
+        if p.id() != id {
+            return None;
+        }
+        let bytes = p.tomar_clave();
+        canvas.painted_once = false;
+        Some(bytes)
+    }
+
+    /// Muestra o retira un mensaje informativo en el diálogo de Polkit (por ejemplo, huella).
+    pub fn polkit_info(&mut self, id: u64, texto: Option<String>) -> bool {
+        let Some((Emergente::Polkit(p), canvas)) = self.emergente.as_mut() else {
+            return false;
+        };
+        if p.id() != id || !p.poner_info(texto) {
+            return false;
+        }
+        canvas.painted_once = false;
+        true
+    }
+
+    /// Muestra un error de autenticación en Polkit y devuelve el control para reintentar.
+    pub fn polkit_error(&mut self, id: u64, texto: String) -> bool {
+        let Some((Emergente::Polkit(p), canvas)) = self.emergente.as_mut() else {
+            return false;
+        };
+        if p.id() != id || !p.poner_error(texto) {
+            return false;
+        }
+        canvas.painted_once = false;
+        true
+    }
+
+    /// Actualiza la etiqueta y el modo de eco del campo en Polkit según pida PAM.
+    pub fn polkit_prompt(&mut self, id: u64, prompt: Option<String>, oculto: bool) -> bool {
+        let Some((Emergente::Polkit(p), canvas)) = self.emergente.as_mut() else {
+            return false;
+        };
+        if p.id() != id || !p.poner_prompt(prompt, oculto) {
+            return false;
+        }
+        canvas.painted_once = false;
+        true
+    }
+
+    /// Actualiza el aviso de Bloq Mayús si el diálogo de Polkit está abierto.
+    pub fn polkit_caps_lock(&mut self, activo: bool) -> bool {
+        let Some((Emergente::Polkit(p), canvas)) = self.emergente.as_mut() else {
+            return false;
+        };
+        if !p.poner_caps_lock(activo) {
+            return false;
+        }
+        canvas.painted_once = false;
+        true
+    }
+
+    /// Cierra el diálogo de Polkit solo si el abierto corresponde a `id`.
+    pub fn cerrar_polkit_si(&mut self, id: u64) -> bool {
+        if let Some((Emergente::Polkit(p), _)) = self.emergente.as_ref()
+            && p.id() == id
+        {
+            return self.cerrar_emergente();
+        }
+        false
+    }
+
+    /// Identificador del diálogo de Polkit abierto, si hay uno en pantalla.
+    pub fn polkit_id(&self) -> Option<u64> {
+        match self.emergente.as_ref() {
+            Some((Emergente::Polkit(p), _)) => Some(p.id()),
+            _ => None,
+        }
+    }
+
+    /// Identificador del diálogo de permisos `Access` abierto, si corresponde.
+    pub fn acceso_id(&self) -> Option<u32> {
+        match self.emergente.as_ref() {
+            Some((Emergente::Acceso(a), _)) => Some(a.id()),
+            _ => None,
+        }
+    }
+
+    /// Identificador del diálogo «Abrir con…» abierto, si corresponde.
+    pub fn elegir_app_id(&self) -> Option<u32> {
+        match self.emergente.as_ref() {
+            Some((Emergente::ElegirApp(e), _)) => Some(e.id()),
+            _ => None,
+        }
+    }
+
+    /// Actualiza la lista de aplicaciones sugeridas del diálogo «Abrir con…».
+    pub fn elegir_app_actualizar(&mut self, id: u32, opciones: Vec<String>) -> bool {
+        let Some((Emergente::ElegirApp(e), canvas)) = self.emergente.as_mut() else {
+            return false;
+        };
+        if e.id() != id || !e.actualizar_opciones(opciones) {
+            return false;
+        }
+        canvas.painted_once = false;
+        true
     }
 
     /// El nombre de la emergente abierta, para las trazas y las pruebas.
@@ -2966,11 +3173,31 @@ impl Shell {
     /// `true` si la emergente se lo apuntó: solo la que se arrastra lo hace.
     // 0.1.1
     pub fn emergente_recortada(&mut self, x: f32, y: f32) -> bool {
-        let Some((emergente::Emergente::Emojis(e), _)) = self.emergente.as_mut() else {
+        let Some((emergente, _)) = self.emergente.as_mut() else {
             return false;
         };
-        e.recortar_ancla(x, y);
-        true
+        match emergente {
+            emergente::Emergente::Emojis(e) => {
+                e.recortar_ancla(x, y);
+                true
+            }
+            emergente::Emergente::Portapapeles(p) => {
+                p.recortar_ancla(x, y);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn actualizar_portapapeles(&mut self, elementos: Vec<ElementoPortapapeles>) -> bool {
+        let Some((e, canvas)) = self.emergente.as_mut() else {
+            return false;
+        };
+        let cambio = e.actualizar_portapapeles(elementos);
+        if cambio {
+            canvas.painted_once = false;
+        }
+        cambio
     }
 
     // 0.1.0
@@ -3391,36 +3618,68 @@ impl Shell {
     /// del día en que uno menos sabe qué día es.
     // 0.1.0
     pub fn fecha_bloqueo() -> String {
-        const DIAS: [&str; 7] = [
-            "lunes",
-            "martes",
-            "miércoles",
-            "jueves",
-            "viernes",
-            "sábado",
-            "domingo",
-        ];
-        const MESES: [&str; 12] = [
-            "enero",
-            "febrero",
-            "marzo",
-            "abril",
-            "mayo",
-            "junio",
-            "julio",
-            "agosto",
-            "septiembre",
-            "octubre",
-            "noviembre",
-            "diciembre",
-        ];
         let hoy = state::Fecha::hoy();
-        format!(
-            "{}, {} de {}",
-            DIAS[hoy.dia_semana() as usize],
-            hoy.dia,
-            MESES[(hoy.mes - 1) as usize]
-        )
+        if emergente::t("es", "en") == "es" {
+            const DIAS: [&str; 7] = [
+                "lunes",
+                "martes",
+                "miércoles",
+                "jueves",
+                "viernes",
+                "sábado",
+                "domingo",
+            ];
+            const MESES: [&str; 12] = [
+                "enero",
+                "febrero",
+                "marzo",
+                "abril",
+                "mayo",
+                "junio",
+                "julio",
+                "agosto",
+                "septiembre",
+                "octubre",
+                "noviembre",
+                "diciembre",
+            ];
+            format!(
+                "{}, {} de {}",
+                DIAS[hoy.dia_semana() as usize],
+                hoy.dia,
+                MESES[(hoy.mes - 1) as usize]
+            )
+        } else {
+            const DAYS: [&str; 7] = [
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+                "Sunday",
+            ];
+            const MONTHS: [&str; 12] = [
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            ];
+            format!(
+                "{}, {} {}",
+                DAYS[hoy.dia_semana() as usize],
+                MONTHS[(hoy.mes - 1) as usize],
+                hoy.dia
+            )
+        }
     }
 
     /// Enseña un aviso: el icono, su nivel y, si no lo tiene, un texto.
@@ -3437,9 +3696,12 @@ impl Shell {
             // pedir otro tamaño de buffer; si cambia, se hace uno nuevo.
             if o.actualizar(icono, nivel, texto.clone()) {
                 let (w, h) = o.size();
-                let objetivo = Size::new(w, h);
+                let objetivo = Size::new(
+                    a_pixel_entero(w, canvas.scale),
+                    a_pixel_entero(h, canvas.scale),
+                );
                 if canvas.size != objetivo {
-                    *canvas = Canvas::new(objetivo, canvas.scale);
+                    *canvas = Canvas::new(Size::new(w, h), canvas.scale);
                 } else {
                     canvas.painted_once = false;
                 }
@@ -3500,7 +3762,9 @@ impl Shell {
 
     // 0.1.0
     pub fn osd_logical_size(&self) -> Option<(f32, f32)> {
-        self.osd.as_ref().map(|(o, _)| o.size())
+        self.osd
+            .as_ref()
+            .map(|(_, c)| (c.size.width, c.size.height))
     }
 
     // 0.1.0
@@ -3524,10 +3788,12 @@ impl Shell {
     /// la pantalla en lógicos: va de lado a lado.
     // 0.1.1
     pub fn mostrar_teclado(&mut self, ancho: f32, capa: teclado::Capa) {
-        if let Some((t, _)) = self.teclado.as_mut()
+        if let Some((t, c)) = self.teclado.as_mut()
             && t.size().0 == ancho
         {
-            t.mostrar(capa);
+            if t.mostrar(capa) {
+                c.painted_once = false;
+            }
             return;
         }
         let t = teclado::Teclado::new(ancho, capa);
@@ -3930,6 +4196,25 @@ impl Shell {
         );
     }
 
+    pub fn dibujar_etiqueta_tactil(
+        &mut self,
+        buf: &mut [u8],
+        tam: (f32, f32),
+        entradas: &[conmutador::Entrada],
+        foco: bool,
+        escala: f32,
+    ) -> Vec<Damage> {
+        let mut canvas = Canvas::new(Size::new(tam.0, tam.1), escala);
+        Self::paint(
+            &mut canvas,
+            &mut self.renderer,
+            &mut self.mask,
+            &self.theme,
+            conmutador::etiqueta_tactil(entradas, tam.0, foco),
+            buf,
+        )
+    }
+
     /// Pinta el rótulo de la elegida en `buf`, de `ancho` × `alto` lógicos. Es
     /// lo único que se repinta al cambiar de celda, y mide un renglón.
     // 0.1.0
@@ -3991,7 +4276,9 @@ impl Shell {
             Size::new(captura::PASTILLA_ANCHO, captura::PASTILLA_ALTO),
             self.escala,
         );
-        self.captura = Some((c, barra, pastilla));
+        let (ow, oh) = c.tamano_opciones();
+        let popover = Canvas::new(Size::new(ow, oh), self.escala);
+        self.captura = Some((c, barra, pastilla, popover));
     }
 
     // 0.1.0
@@ -4004,13 +4291,20 @@ impl Shell {
         self.captura.is_some()
     }
 
+    pub fn captura_establecer_ventana(&mut self, rect: Option<captura::Recuadro>) {
+        if let Some((c, _, _, _)) = self.captura.as_mut() {
+            c.establecer_ventana(rect);
+        }
+    }
+
     // 0.1.0
     fn lienzo_captura(&self, pieza: PiezaCaptura) -> Option<&Canvas> {
-        let (_, barra, pastilla) = self.captura.as_ref()?;
-        Some(match pieza {
-            PiezaCaptura::Barra => barra,
-            PiezaCaptura::Pastilla => pastilla,
-        })
+        let (c, barra, pastilla, popover) = self.captura.as_ref()?;
+        match pieza {
+            PiezaCaptura::Barra => Some(barra),
+            PiezaCaptura::Pastilla => Some(pastilla),
+            PiezaCaptura::Opciones => c.popover_abierto().then_some(popover),
+        }
     }
 
     // 0.1.0
@@ -4018,63 +4312,53 @@ impl Shell {
         self.lienzo_captura(pieza).map(Canvas::buffer_size)
     }
 
-    /// Dónde va la pieza, en lógicos de la pantalla. La pastilla no va en
-    /// ningún sitio mientras no haya recuadro.
+    /// Dónde va la pieza, en lógicos de la pantalla.
     // 0.1.0
     pub fn captura_origen(&self, pieza: PiezaCaptura) -> Option<(f32, f32)> {
-        let (c, _, _) = self.captura.as_ref()?;
+        let (c, _, _, _) = self.captura.as_ref()?;
         match pieza {
             PiezaCaptura::Barra => Some(c.origen_barra()),
             PiezaCaptura::Pastilla => c.origen_pastilla(),
+            PiezaCaptura::Opciones => c.origen_opciones(),
         }
     }
 
-    /// El recuadro marcado, que es donde el velo tiene el agujero.
-    /// La forma que pide el cursor sobre la capa en ese punto.
     // 0.1.0
     pub fn captura_forma(&self, x: f32, y: f32) -> Option<captura::Forma> {
-        self.captura.as_ref().map(|(c, _, _)| c.forma(x, y))
+        self.captura.as_ref().map(|(c, _, _, _)| c.forma(x, y))
     }
 
     // 0.1.0
     pub fn captura_marcado(&self) -> Option<captura::Recuadro> {
-        self.captura.as_ref().and_then(|(c, _, _)| c.marcado())
+        self.captura.as_ref().and_then(|(c, _, _, _)| c.marcado())
     }
 
-    /// ¿Se está moviendo el recuadro? Es lo que impide que el compositor se
-    /// duerma mientras se arrastra.
     // 0.1.0
     pub fn captura_animando(&self) -> bool {
-        self.captura.as_ref().is_some_and(|(c, _, _)| c.animando())
+        self.captura.as_ref().is_some_and(|(c, _, _, _)| c.animando())
     }
 
-    /// Mueve el puntero sobre la capa.
-    ///
-    /// Solo marca para repintar lo que cambió de verdad: la barra cuando cambia
-    /// la celda señalada y la pastilla cuando cambian las medidas enteras.
-    /// Moverse sin que cambie ninguna de las dos no rasteriza nada, porque lo
-    /// que se mueve —el velo y la posición de la pastilla— lo pone la GPU.
     // 0.1.0
     pub fn captura_puntero(&mut self, x: f32, y: f32) {
-        let Some((c, barra, pastilla)) = self.captura.as_mut() else {
+        let Some((c, barra, pastilla, popover)) = self.captura.as_mut() else {
             return;
         };
         let medidas = c.medidas();
         if c.puntero(x, y) {
             barra.painted_once = false;
+            popover.painted_once = false;
         }
         if c.medidas() != medidas {
             pastilla.painted_once = false;
         }
     }
 
-    /// Las pulsaciones y las teclas cambian el modo o el destino, que se ven en
-    /// la barra, y pueden dejar o quitar el recuadro: se repintan las dos.
     // 0.1.0
     fn captura_repintar_todo(&mut self) {
-        if let Some((_, barra, pastilla)) = self.captura.as_mut() {
+        if let Some((_, barra, pastilla, popover)) = self.captura.as_mut() {
             barra.painted_once = false;
             pastilla.painted_once = false;
+            popover.painted_once = false;
         }
     }
 
@@ -4085,21 +4369,18 @@ impl Shell {
         accion
     }
 
-    /// Suelta el arrastre. No devuelve nada porque soltar no captura: lo
-    /// marcado espera a «Copiar» o «Guardar».
     // 0.1.0
     pub fn captura_soltar(&mut self) {
-        let Some((c, _, _)) = self.captura.as_mut() else {
+        let Some((c, _, _, _)) = self.captura.as_mut() else {
             return;
         };
         c.soltar();
         self.captura_repintar_todo();
     }
 
-    /// Una tecla para la capa de captura.
     // 0.1.0
     pub fn captura_tecla(&mut self, tecla: TeclaPulsada) -> Tecla {
-        let Some((c, _, _)) = self.captura.as_mut() else {
+        let Some((c, _, _, _)) = self.captura.as_mut() else {
             return Tecla::Ignorada;
         };
         let resultado = c.tecla(tecla);
@@ -4107,22 +4388,20 @@ impl Shell {
         resultado
     }
 
-    /// ¿Hay que repintar el buffer de esa pieza?
     // 0.1.0
     pub fn captura_needs_paint(&self, pieza: PiezaCaptura) -> bool {
         self.lienzo_captura(pieza).is_some_and(|c| !c.painted_once)
     }
 
-    /// Pinta una pieza de la capa de captura.
     // 0.1.0
-    // modified 0.1.1 -- reutiliza la máscara de recorte
     pub fn draw_captura(&mut self, pieza: PiezaCaptura, buf: &mut [u8]) -> Vec<Damage> {
-        let Some((c, barra, pastilla)) = self.captura.as_mut() else {
+        let Some((c, barra, pastilla, popover)) = self.captura.as_mut() else {
             return Vec::new();
         };
         let (vista, canvas) = match pieza {
             PiezaCaptura::Barra => (c.vista_barra(), barra),
             PiezaCaptura::Pastilla => (c.vista_pastilla(), pastilla),
+            PiezaCaptura::Opciones => (c.vista_opciones(), popover),
         };
         Self::paint(
             canvas,
@@ -4132,6 +4411,90 @@ impl Shell {
             vista,
             buf,
         )
+    }
+
+    pub fn abrir_grabacion_pill(&mut self, pantalla: (f32, f32), tiene_mic: bool) {
+        let pill = captura::GrabacionPill::new(pantalla, tiene_mic);
+        let (pw, ph) = pill.tamano();
+        let canvas = Canvas::new(Size::new(pw, ph), self.escala);
+        let segs = pill.segundos();
+        self.grabacion_pill = Some((pill, canvas, segs));
+    }
+
+    pub fn cerrar_grabacion_pill(&mut self) -> bool {
+        self.grabacion_pill.take().is_some()
+    }
+
+    pub fn hay_grabacion_pill(&self) -> bool {
+        self.grabacion_pill.is_some()
+    }
+
+    pub fn grabacion_pill_origen(&self) -> Option<(f32, f32)> {
+        self.grabacion_pill.as_ref().map(|(p, _, _)| p.origen())
+    }
+
+    pub fn grabacion_pill_buffer_size(&self) -> Option<(u32, u32)> {
+        self.grabacion_pill
+            .as_ref()
+            .map(|(_, c, _)| c.buffer_size())
+    }
+
+    pub fn grabacion_pill_needs_paint(&mut self) -> bool {
+        let Some((p, c, ult_seg)) = self.grabacion_pill.as_mut() else {
+            return false;
+        };
+        let segs = p.segundos();
+        if segs != *ult_seg {
+            *ult_seg = segs;
+            c.painted_once = false;
+        }
+        !c.painted_once
+    }
+
+    pub fn draw_grabacion_pill(&mut self, buf: &mut [u8]) -> Vec<Damage> {
+        let Some((p, canvas, _)) = self.grabacion_pill.as_mut() else {
+            return Vec::new();
+        };
+        let vista = p.vista();
+        Self::paint(
+            canvas,
+            &mut self.renderer,
+            &mut self.mask,
+            &self.theme,
+            vista,
+            buf,
+        )
+    }
+
+    pub fn grabacion_pill_contiene(&self, x: f32, y: f32) -> bool {
+        self.grabacion_pill
+            .as_ref()
+            .is_some_and(|(p, _, _)| p.contiene(x, y))
+    }
+
+    pub fn grabacion_pill_puntero(&mut self, x: f32, y: f32) -> bool {
+        let Some((p, c, _)) = self.grabacion_pill.as_mut() else {
+            return false;
+        };
+        if p.puntero(x, y) {
+            c.painted_once = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn grabacion_pill_pulsar(&mut self, x: f32, y: f32) -> Option<Accion> {
+        let (p, c, _) = self.grabacion_pill.as_mut()?;
+        let acc = p.pulsar(x, y);
+        c.painted_once = false;
+        acc
+    }
+
+    pub fn grabacion_pill_soltar(&mut self) {
+        if let Some((p, _, _)) = self.grabacion_pill.as_mut() {
+            p.soltar();
+        }
     }
 
     // 0.1.0
@@ -4204,6 +4567,14 @@ impl Shell {
     // añadido en la 0.2.3
     pub fn bloqueo_soltar(&mut self) -> bool {
         self.bloqueo.as_mut().is_some_and(|(b, _)| b.soltar())
+    }
+
+    /// Cancela el toque o arrastre en curso sobre la tarjeta de medios del
+    /// bloqueo sin disparar la acción ni buscar posición.
+    pub fn bloqueo_cancelar(&mut self) -> bool {
+        self.bloqueo
+            .as_mut()
+            .is_some_and(|(b, _)| b.cancelar_interaccion())
     }
 
     // 0.1.0

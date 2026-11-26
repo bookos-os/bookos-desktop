@@ -47,6 +47,9 @@ pub fn hueco_pintado(
     origen_salida: Point<i32, Logical>,
     entrada: f64,
 ) -> Rectangle<i32, Logical> {
+    if !entrada.is_finite() {
+        return hueco;
+    }
     let Some(sitio) = sitio.filter(|_| entrada < 1.0) else {
         return hueco;
     };
@@ -55,10 +58,52 @@ pub fn hueco_pintado(
     Rectangle::new(
         (mezclar(desde.x, hueco.loc.x), mezclar(desde.y, hueco.loc.y)).into(),
         (
-            mezclar(sitio.size.w, hueco.size.w),
-            mezclar(sitio.size.h, hueco.size.h),
+            mezclar(sitio.size.w, hueco.size.w).max(1),
+            mezclar(sitio.size.h, hueco.size.h).max(1),
         )
             .into(),
+    )
+}
+
+/// Posición y tamaño de una ventana durante el gesto estilo iOS:
+/// 1) Sube con ligera elevación curva siguiendo el dedo en X e Y hasta el centro.
+/// 2) Al volver a deslizar hacia arriba desde la exposición, despega y se encoge
+///    hacia arriba antes de despejar al escritorio.
+pub fn hueco_pintado_vivo(
+    sitio: Option<Rectangle<i32, Logical>>,
+    hueco: Rectangle<i32, Logical>,
+    origen_salida: Point<i32, Logical>,
+    entrada: f64,
+    desplazamiento_x: f64,
+    salida_escritorio: f64,
+) -> Rectangle<i32, Logical> {
+    let entrada = if entrada.is_finite() { entrada } else { 1.0 };
+    let desplazamiento_x = if desplazamiento_x.is_finite() {
+        desplazamiento_x
+    } else {
+        0.0
+    };
+    let salida_escritorio = if salida_escritorio.is_finite() {
+        salida_escritorio.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let r = hueco_pintado(sitio, hueco, origen_salida, entrada);
+    let arco_y = -(entrada * std::f64::consts::PI).sin() * 26.0 * (1.0 - salida_escritorio);
+    let offset_x = desplazamiento_x * 140.0 * entrada;
+    let offset_y = arco_y - salida_escritorio * 320.0;
+    let escala = (1.0 - salida_escritorio * 0.32).max(0.25);
+    let cx = r.loc.x as f64 + r.size.w as f64 / 2.0 + offset_x;
+    let cy = r.loc.y as f64 + r.size.h as f64 / 2.0 + offset_y;
+    let w = (r.size.w as f64 * escala).round().max(1.0) as i32;
+    let h = (r.size.h as f64 * escala).round().max(1.0) as i32;
+    Rectangle::new(
+        (
+            (cx - w as f64 / 2.0).round() as i32,
+            (cy - h as f64 / 2.0).round() as i32,
+        )
+            .into(),
+        (w, h).into(),
     )
 }
 
@@ -128,5 +173,46 @@ mod tests {
             hueco_pintado(Some(sitio), hueco, origen, 0.5),
             Rectangle::new((50, 50).into(), (750, 450).into())
         );
+    }
+
+    #[test]
+    fn el_hueco_vivo_sigue_desplazamiento_y_despega_al_escritorio() {
+        let sitio = Rectangle::new((0, 0).into(), (1000, 600).into());
+        let hueco = Rectangle::new((200, 150).into(), (500, 300).into());
+        let origen = Point::from((0, 0));
+
+        let quieto = hueco_pintado_vivo(Some(sitio), hueco, origen, 1.0, 0.0, 0.0);
+        assert_eq!(quieto, hueco);
+
+        let movido_x = hueco_pintado_vivo(Some(sitio), hueco, origen, 1.0, 0.5, 0.0);
+        assert!(movido_x.loc.x > hueco.loc.x);
+
+        let subiendo = hueco_pintado_vivo(Some(sitio), hueco, origen, 1.0, 0.0, 1.0);
+        assert!(subiendo.loc.y < hueco.loc.y);
+        assert!(subiendo.size.w < hueco.size.w);
+    }
+
+    #[test]
+    fn hueco_pintado_soporta_sobrepaso_negativo_y_parametros_no_finitos() {
+        let sitio = Rectangle::new((100, 100).into(), (1000, 600).into());
+        let hueco = Rectangle::new((200, 150).into(), (200, 100).into());
+        let origen = Point::from((0, 0));
+
+        let sobrepaso = hueco_pintado(Some(sitio), hueco, origen, -3.0);
+        assert!(sobrepaso.size.w >= 1 && sobrepaso.size.h >= 1);
+
+        let extremo_negativo = hueco_pintado(Some(sitio), hueco, origen, 2.0);
+        assert_eq!(extremo_negativo, hueco);
+
+        assert_eq!(hueco_pintado(Some(sitio), hueco, origen, f64::NAN), hueco);
+        let vivo_nan = hueco_pintado_vivo(
+            Some(sitio),
+            hueco,
+            origen,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
+        assert_eq!(vivo_nan, hueco);
     }
 }

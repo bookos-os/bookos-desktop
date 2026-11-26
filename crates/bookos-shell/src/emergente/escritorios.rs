@@ -99,7 +99,7 @@ impl Escritorios {
 
     // 0.1.0
     fn ancho_previa(&self) -> f32 {
-        let n = self.nombres.len() as f32;
+        let n = self.nombres.len().max(1) as f32;
         // Los lados se reservan **simétricos** aunque el botón solo esté a la
         // derecha: las miniaturas van centradas en la pantalla, y descontar el
         // botón de un solo lado las dejaría torcidas respecto al escritorio.
@@ -248,7 +248,7 @@ impl Escritorios {
                 let ahora = std::time::Instant::now();
                 let doble = self
                     .ultimo_nombre
-                    .is_some_and(|(j, t)| j == i && ahora.duration_since(t) <= DOBLE_CLIC);
+                    .is_some_and(|(j, t)| j == i && ahora.saturating_duration_since(t) <= DOBLE_CLIC);
                 self.ultimo_nombre = Some((i, ahora));
                 if doble {
                     self.editando = Some((i, self.nombres[i].clone()));
@@ -285,6 +285,18 @@ impl Escritorios {
             }
             TeclaPulsada::Retroceso => {
                 nombre.pop();
+                Tecla::Consumida
+            }
+            TeclaPulsada::BorrarTodo => {
+                nombre.clear();
+                Tecla::Consumida
+            }
+            TeclaPulsada::Pegar(s) => {
+                for c in s.chars() {
+                    if !c.is_control() && c != ',' && nombre.chars().count() < 32 {
+                        nombre.push(c);
+                    }
+                }
                 Tecla::Consumida
             }
             TeclaPulsada::Caracter(c)
@@ -532,6 +544,30 @@ mod tests {
         assert!(matches!(
             e.tecla(TeclaPulsada::Intro),
             Tecla::Hacer(Accion::RenombrarEscritorio { indice: 0, nombre }) if nombre == "Uno!"
+        ));
+    }
+
+    #[test]
+    fn lista_vacia_es_finita_y_edicion_soporta_pegar_y_borrar_todo() {
+        let vacia = Escritorios::new((1200.0, 800.0), 0, Vec::new());
+        let (w, h) = vacia.size();
+        assert!(w.is_finite() && h.is_finite());
+        assert!(vacia.ancho_previa().is_finite());
+
+        let mut e = Escritorios::new((1200.0, 800.0), 0, vec!["Uno".into()]);
+        e.editando = Some((0, "Uno".into()));
+        assert!(matches!(
+            e.tecla(TeclaPulsada::BorrarTodo),
+            Tecla::Consumida
+        ));
+        assert!(matches!(
+            e.tecla(TeclaPulsada::Pegar("Trabajo,\x07 2026_1234567890123456789012345".into())),
+            Tecla::Consumida
+        ));
+        assert!(matches!(
+            e.tecla(TeclaPulsada::Intro),
+            Tecla::Hacer(Accion::RenombrarEscritorio { indice: 0, nombre })
+                if !nombre.contains(',') && nombre.chars().count() == 32
         ));
     }
 

@@ -169,8 +169,8 @@ impl Encuadre {
         // Un trozo vacío dejaría a cero `uv_tam`, por el que divide el shader.
         const MINIMO: f64 = 0.001;
         let eje = |inicio: f64, largo: f64, imagen: (f64, f64), pantalla: (f64, f64)| {
-            let aqui =
-                |p: f64| (imagen.0 + (p - pantalla.0) / pantalla.1 * imagen.1).clamp(0.0, 1.0);
+            let denom = pantalla.1.max(f64::EPSILON);
+            let aqui = |p: f64| (imagen.0 + (p - pantalla.0) / denom * imagen.1).clamp(0.0, 1.0);
             let a = aqui(inicio).min(1.0 - MINIMO);
             (a, (aqui(inicio + largo) - a).max(MINIMO))
         };
@@ -193,6 +193,8 @@ impl Encuadre {
 /// El rectángulo en píxeles de un trozo de una imagen: origen y tamaño.
 // añadido en la 0.2.0
 fn en_pixeles(trozo: Trozo, (w, h): (i32, i32)) -> ((i32, i32), (i32, i32)) {
+    let w = w.max(1);
+    let h = h.max(1);
     let x = ((trozo.x * w as f64).round() as i32).clamp(0, w - 1);
     let y = ((trozo.y * h as f64).round() as i32).clamp(0, h - 1);
     let cw = ((trozo.w * w as f64).round() as i32).clamp(1, w - x);
@@ -1710,5 +1712,26 @@ mod tests {
             w: 0.2,
             h: 1.0,
         }));
+    }
+
+    #[test]
+    fn en_pixeles_y_detras_de_resisten_dimensiones_degeneradas() {
+        assert_eq!(en_pixeles(Trozo::ENTERO, (0, -4)), ((0, 0), (1, 1)));
+        let e = Encuadre {
+            imagen: Trozo::ENTERO,
+            pantalla: Trozo {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+            },
+        };
+        let t = e.detras_de(Trozo {
+            x: 0.1,
+            y: 0.1,
+            w: 0.2,
+            h: 0.2,
+        });
+        assert!(t.x.is_finite() && t.y.is_finite() && t.w >= 0.001 && t.h >= 0.001);
     }
 }

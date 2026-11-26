@@ -1,10 +1,12 @@
 [Desktop Entry]
 Name=Share
 Name[es]=Compartir
-Comment=Envía y recibe archivos con otros dispositivos
+Comment=Send and receive files with other devices
+Comment[es]=Envía y recibe archivos con otros dispositivos
 Exec=bookos-share
 TryExec=bookos-share
 Icon=preferences-desktop-remote-desktop
 Type=Application
 Categories=Network;FileTransfer;
-Keywords=compartir;enviar;dispositivos;share;
+Keywords=share;send;devices;
+Keywords[es]=compartir;enviar;dispositivos;share;

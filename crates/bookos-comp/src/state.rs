@@ -42,6 +42,12 @@ use smithay::wayland::shm::ShmState;
 use smithay::wayland::text_input::TextInputManagerState;
 use smithay::wayland::viewporter::ViewporterState;
 
+/// Grabación de pantalla en curso (`wf-recorder`).
+pub struct GrabacionActiva {
+    pub proceso: std::process::Child,
+    pub ruta: std::path::PathBuf,
+}
+
 /// Lo que se está escribiendo en la pantalla de bloqueo.
 ///
 /// Vive en el compositor y **no** en el shell: el shell corre dentro de un
@@ -52,16 +58,11 @@ use smithay::wayland::viewporter::ViewporterState;
 pub struct Bloqueo {
     pub escrito: String,
     pub comprobando: Option<crate::autenticar::Comprobacion>,
-    pub huella: Option<crate::autenticar::Comprobacion>,
-    pub huella_reintentar: Option<Instant>,
-    /// PAM ya dijo que no hay con qué leer una huella en esta máquina. No se
-    /// vuelve a intentar mientras dure el bloqueo: cada intento son varios
-    /// segundos de espera y un mensaje de error por algo que no va a cambiar.
+    pub huella: Option<crate::autenticar::VigilanciaHuella>,
+    /// `fprintd` ya dijo que no hay lector o que el usuario no tiene huellas
+    /// registradas. No se reintenta solo mientras dure este bloqueo salvo al
+    /// despertar de suspender o si el usuario pulsa F9.
     pub huella_sin_lector: bool,
-    /// Cuántas veces ha vuelto el equipo de dormir con este bloqueo echado.
-    /// La conversación con el lector compara el valor con el que tenía al
-    /// lanzarse: si cambió, su «no disponible» lo provocó la suspensión.
-    pub huella_reanudaciones: u32,
     /// El último intento falló y aún no se ha vuelto a escribir.
     pub fallo: bool,
     /// Fallos consecutivos y barrera local adicional a la que aplique PAM.
@@ -202,6 +203,17 @@ pub enum ArrastreEscritorio {
     },
 }
 
+/// Tarjeta de ventana agarrada dentro de la exposición para llevarla a un lado
+/// (split-screen) o lanzarla arriba al escritorio.
+#[derive(Debug, Clone)]
+pub struct ArrastreExposicion {
+    pub indice: usize,
+    pub origen: smithay::utils::Point<f64, smithay::utils::Logical>,
+    pub actual: smithay::utils::Point<f64, smithay::utils::Logical>,
+    pub moviendo: bool,
+    pub zona_split: Option<crate::ventanas::Zona>,
+}
+
 /// El permiso de compartir pantalla que la tarjeta tiene abierto.
 ///
 /// Los dos emisarios van al hilo del portal, que está esperándolos: primero la
@@ -274,14 +286,20 @@ pub struct BookosComp {
     /// No se usa un tick periódico: cuando no hay entrada, el proceso duerme
     /// hasta la fecha exacta del bloqueo.
     pub tick_bloqueo: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Segundero de medios MPRIS en la pantalla de bloqueo.
+    pub tick_medios_bloqueo: Option<smithay::reexports::calloop::RegistrationToken>,
     /// El despertar del panel. Se guarda para reprogramarlo cuando un widget
     /// pide uno más cercano —el «Desconectado» de la red—, no solo al vencer.
     pub tick_panel: Option<smithay::reexports::calloop::RegistrationToken>,
     pub tick_suspension: Option<smithay::reexports::calloop::RegistrationToken>,
     /// El segundero del centro de control abierto. Ver `multimedia::vigilar_centro`.
     pub tick_centro: Option<smithay::reexports::calloop::RegistrationToken>,
-    /// Repetición de Retroceso sobre una capa del shell: ver `input::repetir_retroceso`.
+    /// Repetición de tecla sobre una capa del shell: ver `input::repetir_tecla`.
     pub repeticion_retroceso: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Tecla muerta pendiente para escribir tildes en campos del shell.
+    pub tecla_muerta: Option<u32>,
+    /// Canal para recibir texto pegado desde el portapapeles de un cliente.
+    pub pegado_canal: Option<smithay::reexports::calloop::channel::Sender<String>>,
     /// Qué conexión del bus publicó cada actividad viva, por `app_id`. Ver
     /// `ajustes::vigilar_remitentes`.
     pub remitentes_actividad: std::collections::HashMap<String, String>,
@@ -317,6 +335,8 @@ pub struct BookosComp {
     pub pointer: PointerHandle<Self>,
     /// Qué cursor toca pintar: el del tema, o una superficie del cliente.
     pub cursor_status: smithay::input::pointer::CursorImageStatus,
+    /// Oculta el puntero del ratón mientras se usa la pantalla táctil.
+    pub cursor_oculto_por_toque: bool,
     pub cursor_theme: Option<crate::cursor::CursorTheme>,
     /// La imagen que el cliente pone bajo el cursor mientras arrastra algo
     /// (`wl_data_device.start_drag`), y cuánto se ha desplazado del punto del
@@ -335,6 +355,8 @@ pub struct BookosComp {
     /// El contador de cambios del cristal. Sube en cada frame porque lo que
     /// desenfoca —el escritorio de debajo— puede haber cambiado.
     pub cristal_commit: smithay::backend::renderer::utils::CommitCounter,
+    /// Última opacidad pintada del cristal de pantalla completa para invalidar el damage solo al cambiar.
+    pub ultimo_cristal_alfa: f32,
     /// Posición del cursor en coordenadas lógicas del compositor.
     pub pointer_location: smithay::utils::Point<f64, smithay::utils::Logical>,
     /// El shell in-process. `None` hasta que el backend sabe el tamaño de la
@@ -342,6 +364,9 @@ pub struct BookosComp {
     pub shell: Option<crate::shell::ShellHost>,
     /// Los gestos de touchpad en curso. Ver [`crate::gestos`].
     pub gestos: crate::gestos::Gestos,
+    /// Si se ha enviado `gesture_pinch_begin` o `gesture_hold_begin` al cliente actual.
+    pub pinch_cliente_activo: bool,
+    pub hold_cliente_activo: bool,
     #[cfg(feature = "udev")]
     pub cinco_dedos: crate::cinco_dedos::Cinco,
     /// Los escritorios virtuales. Ver [`crate::escritorios`].
@@ -395,10 +420,12 @@ pub struct BookosComp {
     /// El dedo que está haciendo de ratón sobre el shell, si hay uno. Ver
     /// `input::toque_abajo`.
     // modificado en la 0.2.0 -- conserva si el contacto aún puede confirmar o ya se canceló.
+    pub(crate) contactos: crate::tactil::Contactos,
     pub toque_emulado: Option<crate::input::ToqueEmulado>,
     /// El teclado en pantalla: cuándo sale y qué tecla tiene apretada.
     pub teclado: crate::teclado::Estado,
     pub emojis: crate::emojis::Estado,
+    pub portapapeles: crate::portapapeles::Estado,
     /// Hay un launchpad pendiente de abrir por la suelta de Meta.
     pub abrir_launchpad: bool,
     /// Los remapeos de `teclas.conf`. Se releen con `ReloadConfig("teclas")`.
@@ -410,6 +437,10 @@ pub struct BookosComp {
     pub captura_tecla: Option<String>,
     /// Meta+Alt+C: el siguiente clic coge el color de debajo del puntero.
     pub cuentagotas: bool,
+    /// Grabación de pantalla en curso (`wf-recorder` + ruta del MP4).
+    pub grabacion_activa: Option<GrabacionActiva>,
+    /// Oculta el pill de grabación al componer fotogramas para vídeo/captura.
+    pub ocultar_pill_grabacion: bool,
     /// La lupa que sigue al puntero mientras el cuentagotas está puesto.
     pub cuentagotas_lupa: Option<crate::cuentagotas::Lupa>,
     /// El brillo de borde de Zenith, pintado para la salida y la paleta de ahora.
@@ -435,6 +466,7 @@ pub struct BookosComp {
     /// Las ventanas que se están cerrando, pintadas desde las texturas que
     /// dejaron. Ver [`crate::cierre`].
     pub cierres: Vec<crate::cierre::Cierre>,
+    pub(crate) toast_timers: Vec<smithay::reexports::calloop::RegistrationToken>,
     /// Una ventana cogida de una miniatura de la vista de escritorios.
     pub arrastre_vista: Option<crate::escritorios::ArrastreVista>,
     /// La pulsación cayó en el ✕ de una ventana de la vista: el soltar
@@ -449,6 +481,10 @@ pub struct BookosComp {
     )>,
     /// La foto del tema anterior mientras se desvanece. Ver [`crate::fundido`].
     pub fundido: Option<crate::fundido::Fundido>,
+    /// Pantalla de carga al iniciar la sesión sobre KMS. Ver [`crate::arranque`].
+    pub pantalla_carga: Option<crate::arranque::PantallaCarga>,
+    /// Transición a negro al cerrar sesión, reiniciar o apagar. Ver [`crate::arranque`].
+    pub pantalla_salida: Option<crate::arranque::PantallaSalida>,
     pub transicion_vista: crate::escritorios::TransicionVista,
     /// Con qué contexto GL se subieron las texturas de las superficies. Hace
     /// falta para pedírselas a Smithay fuera del bucle de pintado.
@@ -482,6 +518,21 @@ pub struct BookosComp {
     pub conmutador_entrada: Option<bookos_shell::tema::Muelle>,
     /// Punto del recorrido en el que se apoyaron los dedos, para invertir sin saltar.
     pub exposicion_gesto: Option<crate::gestos::Agarre>,
+    /// Seguimiento horizontal en vivo durante la subida estilo iOS de la exposición.
+    pub exposicion_desplazamiento_x: bookos_shell::tema::Muelle,
+    /// Animación de salida de la exposición hacia el escritorio (2º gesto abajo→arriba).
+    pub exposicion_salida_escritorio: Option<bookos_shell::tema::Muelle>,
+    /// `true` mientras el dedo sigue arrastrando la salida hacia el escritorio.
+    pub exposicion_escritorio_sujeto: bool,
+    /// Tarjeta arrastrada desde la exposición (split-screen izquierda/derecha o salida).
+    pub arrastre_exposicion: Option<ArrastreExposicion>,
+    pub vista_tactil: Option<crate::multitarea_tactil::Vista>,
+    /// Toque en la franja superior de una ventana esperando umbral para moverla.
+    pub toque_titulo_pendiente: Option<(
+        smithay::backend::input::TouchSlot,
+        smithay::desktop::Window,
+        smithay::utils::Point<f64, smithay::utils::Logical>,
+    )>,
     /// La selección o cancelación se resuelve cuando las ventanas terminan de volver.
     pub conmutador_salida: Option<crate::keybinds::Accion>,
     /// La configuración del escritorio, leída una vez al arrancar.
@@ -525,6 +576,9 @@ pub struct BookosComp {
     /// Miniatura flotante de la última captura en la esquina inferior derecha.
     // añadido en la 0.2.4
     pub miniatura_captura: Option<crate::miniatura_captura::Miniatura>,
+    pub captura_generacion: u64,
+    pub captura_envio:
+        smithay::reexports::calloop::channel::Sender<crate::miniatura_captura::EventoCaptura>,
     /// Modo de concentración activo (`""` = ninguno, `"trabajo"`, `"juego"`…).
     // añadido en la 0.2.4
     pub modo_concentracion: String,
@@ -575,6 +629,8 @@ pub struct BookosComp {
     /// Las últimas luces que pidió el teclado, para un teclado que se conecte
     /// después con Bloq Mayús ya puesto.
     pub leds: smithay::input::keyboard::LedState,
+    /// Punto de extensión pasivo para `bookos-extras` (inactivo si no se conecta).
+    pub extras: crate::extras::Estado,
     /// Rutas del fondo que pide la configuración: la de siempre y, si las hay,
     /// una por tema. Copiadas por lo mismo que la escala: la `Config` se la
     /// lleva el shell al construirse.
@@ -644,6 +700,9 @@ pub struct BookosComp {
     /// reconocer el doble clic. Se guarda el punto además del instante porque
     /// dos clics seguidos en sitios distintos son dos clics, no uno doble.
     pub ultimo_clic: Option<(Instant, smithay::utils::Point<f64, smithay::utils::Logical>)>,
+    /// Último clic sobre la barra de título de una ventana (incluye el id de
+    /// ventana para que clicar dos ventanas distintas no dispare maximizar).
+    pub ultimo_clic_barra: Option<(Instant, smithay::utils::Point<f64, smithay::utils::Logical>, u64)>,
     /// La ventana que el usuario está moviendo o redimensionando ahora mismo.
     /// Mientras dura, los eventos del puntero son del compositor y no llegan al
     /// cliente: si no, la terminal que arrastras cree que estás seleccionando
@@ -720,6 +779,11 @@ pub struct BookosComp {
     /// no aparezca en el siguiente.
     pub medios_bloqueo:
         smithay::reexports::calloop::channel::Sender<(u64, crate::shell::MediosBloqueo)>,
+    /// Eventos de la vigilancia continua de huella (D-Bus fprintd → calloop).
+    pub huella_canal: smithay::reexports::calloop::channel::Sender<(
+        u64,
+        crate::autenticar::EventoHuella,
+    )>,
     pub bloqueo_generacion: u64,
     /// `wp_fractional_scale` + `wp_viewporter`: la pareja que permite a un
     /// cliente dibujar a 1,75× y decirle al compositor "recórtame a este
@@ -762,6 +826,11 @@ pub struct BookosComp {
     /// [`crate::portal`].
     #[allow(dead_code)]
     pub bus_portal: Option<zbus::blocking::Connection>,
+    /// Conexión D-Bus del agente Polkit registrado en el sistema.
+    #[allow(dead_code)]
+    pub bus_polkit: Option<crate::polkit::Registro>,
+    /// Petición de Polkit activa, cola pendiente e hilo auxiliar.
+    pub polkit: crate::polkit::Estado,
     /// Las pantallas que se están compartiendo ahora mismo, y el hilo de
     /// PipeWire que las sirve. Ver [`crate::emision`].
     pub emisiones: crate::emision::Emisiones,
@@ -775,6 +844,12 @@ pub struct BookosComp {
     /// Quién espera la ruta del PNG de la captura en curso, si la pidió el
     /// portal en vez de la tecla Impr.
     pub captura_portal: Option<crate::portal::Emisario<std::path::PathBuf>>,
+    /// Quién espera el color elegido con el cuentagotas desde `Screenshot.PickColor`.
+    pub color_portal: Option<(u32, crate::portal::Emisario<[u8; 3]>)>,
+    /// Diálogo `org.freedesktop.impl.portal.Access` en espera de respuesta.
+    pub acceso_portal: Option<(u32, crate::portal::Emisario<Vec<(String, String)>>)>,
+    /// Selector `org.freedesktop.impl.portal.AppChooser` en espera de respuesta.
+    pub elegir_app_portal: Option<(u32, crate::portal::Emisario<String>)>,
     pub dmabuf_state: DmabufState,
     /// El global vivo. Al soltarlo desaparece y los clientes vuelven a SHM, así
     /// que hay que guardarlo aunque nadie lo lea. `None` hasta que el backend
@@ -963,9 +1038,6 @@ impl BookosComp {
             // cuando el fondo es fijo o mientras llega del hilo de carga.
             // added 0.2.3
             || self.fundido.as_ref().is_some_and(|f| !f.terminado())
-            // El recuadro de la captura se mueve con el ratón: sin esto el
-            // bucle se dormiría a mitad del arrastre.
-            || self.shell.as_ref().is_some_and(|s| s.captura_animando())
             || self
                 .shell
                 .as_ref()
@@ -980,13 +1052,29 @@ impl BookosComp {
             || self
                 .conmutador_entrada
                 .is_some_and(|muelle| self.exposicion_gesto.is_none() && !muelle.quieto())
-            || self.conmutador_salida.is_some()
+            || self.vista_tactil.as_ref().is_some_and(crate::multitarea_tactil::Vista::animando)
+            || !self.exposicion_desplazamiento_x.quieto()
+            || self
+                .exposicion_salida_escritorio
+                .as_ref()
+                .is_some_and(|m| !self.exposicion_escritorio_sujeto && !m.quieto())
+            || (self.exposicion_gesto.is_none() && self.conmutador_salida.is_some())
+            || !self.cierres.is_empty()
+            || self.transicion_vista.animando()
             // añadido en la 0.2.0 -- el brillo de Zenith respira y se funde al irse.
             || (!self.brillo.is_empty() && !bookos_shell::tema::efectos_reducidos())
             // añadido en la 0.2.4 -- agrandamiento al agitar cursor, miniatura de captura y luz nocturna.
             || self.agitar_cursor.animando()
             || self.miniatura_captura.as_ref().is_some_and(|m| m.animando())
             || self.luz_nocturna.animando()
+            || self
+                .pantalla_carga
+                .as_ref()
+                .is_some_and(|p| !p.terminado())
+            || self
+                .pantalla_salida
+                .as_ref()
+                .is_some_and(|s| s.animando())
     }
 
     /// ¿Está activo el modo de bajo consumo unificado (manual, por perfil
@@ -1174,12 +1262,32 @@ impl BookosComp {
             Modo::Escritorio => crate::portal::arrancar(portal, &socket_name),
             Modo::Kiosko { .. } => None,
         };
+        let (polkit_tx, fuente_polkit) = smithay::reexports::calloop::channel::channel();
+        loop_handle
+            .insert_source(fuente_polkit, |evento, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                if let Event::Msg(aviso) = evento {
+                    crate::polkit::recibir(state, aviso);
+                }
+            })
+            .map_err(|err| anyhow::anyhow!("insert_source(polkit): {err}"))?;
+        let bus_polkit = match modo {
+            Modo::Escritorio => crate::polkit::arrancar(polkit_tx.clone()),
+            Modo::Kiosko { .. } => None,
+        };
+        let polkit = crate::polkit::Estado::new(polkit_tx);
         if modo.kiosko() {
             crate::locale1::escuchar(&loop_handle);
         }
         let accesibilidad = match modo {
             Modo::Escritorio => crate::accesibilidad::arrancar(&loop_handle),
             Modo::Kiosko { .. } => None,
+        };
+        let extras = match modo {
+            Modo::Escritorio => {
+                crate::extras::arrancar(&loop_handle, &socket_name.to_string_lossy())
+            }
+            Modo::Kiosko { .. } => crate::extras::Estado::inactivo(),
         };
         crate::ajustes::vigilar_nombres(
             [
@@ -1211,6 +1319,16 @@ impl BookosComp {
                 }
             })
             .map_err(|err| anyhow::anyhow!("insert_source(medios bloqueo): {err}"))?;
+
+        let (huella_canal, fuente_huella) = smithay::reexports::calloop::channel::channel();
+        loop_handle
+            .insert_source(fuente_huella, |evento, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                if let Event::Msg((generacion, aviso)) = evento {
+                    crate::keybinds::procesar_evento_huella(state, generacion, aviso);
+                }
+            })
+            .map_err(|err| anyhow::anyhow!("insert_source(huella bloqueo): {err}"))?;
 
         let (priv_tx, priv_rx) = smithay::reexports::calloop::channel::channel();
         loop_handle
@@ -1257,6 +1375,18 @@ impl BookosComp {
             })
             .map_err(|err| anyhow::anyhow!("insert_source(fondo): {err}"))?;
 
+        let (captura_envio, fuente_captura) = smithay::reexports::calloop::channel::channel::<
+            crate::miniatura_captura::EventoCaptura,
+        >();
+        loop_handle
+            .insert_source(fuente_captura, |evento, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                if let Event::Msg(msg) = evento {
+                    crate::backend::recibir_evento_captura(state, msg);
+                }
+            })
+            .map_err(|err| anyhow::anyhow!("insert_source(captura): {err}"))?;
+
         let brillo_auto =
             crate::brillo_auto::Estado::arrancar(&loop_handle, config.brillo_automatico)?;
 
@@ -1294,6 +1424,7 @@ impl BookosComp {
             bloqueo_inactividad,
             suspension_inactividad,
             tick_bloqueo: None,
+            tick_medios_bloqueo: None,
             tick_panel: None,
             atenuacion: crate::atenuacion::Estado::nuevo(config.atenuacion_inactividad),
             salvapantallas: crate::salvapantallas::Estado::nuevo(
@@ -1304,6 +1435,8 @@ impl BookosComp {
             tick_suspension: None,
             tick_centro: None,
             repeticion_retroceso: None,
+            tecla_muerta: None,
+            pegado_canal: None,
             remitentes_actividad: Default::default(),
             tick_dpms: None,
             dpms_encendido: true,
@@ -1319,14 +1452,18 @@ impl BookosComp {
             seat,
             pointer,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
+            cursor_oculto_por_toque: false,
             icono_arrastre: None,
             cursor_theme: None,
             fondo: None,
             cristal: None,
             cristal_commit: Default::default(),
+            ultimo_cristal_alfa: 1.0,
             pointer_location: (0.0, 0.0).into(),
             shell: None,
             gestos: crate::gestos::Gestos::default(),
+            pinch_cliente_activo: false,
+            hold_cliente_activo: false,
             #[cfg(feature = "udev")]
             cinco_dedos: Default::default(),
             escritorios: crate::escritorios::Escritorios::new(
@@ -1347,9 +1484,11 @@ impl BookosComp {
             hoja_por_meta: false,
             asistente_armado: false,
             asistente_tecla: None,
+            contactos: crate::tactil::Contactos::default(),
             toque_emulado: None,
             teclado: Default::default(),
             emojis: Default::default(),
+            portapapeles: Default::default(),
             abrir_launchpad: false,
             // Los remapeos de `teclas.conf` pueden lanzar órdenes: en el
             // kiosko serían órdenes de root.
@@ -1360,12 +1499,23 @@ impl BookosComp {
             traductor: Default::default(),
             captura_tecla: None,
             cuentagotas: false,
+            grabacion_activa: None,
+            ocultar_pill_grabacion: false,
             cuentagotas_lupa: None,
             brillo: Default::default(),
             cuentagotas_clic: false,
             conmutador_pegado: false,
             conmutador_entrada: None,
             exposicion_gesto: None,
+            exposicion_desplazamiento_x: bookos_shell::tema::Muelle::nuevo(
+                0.0,
+                bookos_shell::tema::M_SUAVE,
+            ),
+            exposicion_salida_escritorio: None,
+            exposicion_escritorio_sujeto: false,
+            arrastre_exposicion: None,
+            vista_tactil: None,
+            toque_titulo_pendiente: None,
             conmutador_salida: None,
             genio: None,
             esquinas: None,
@@ -1373,10 +1523,13 @@ impl BookosComp {
             banda: None,
             capturas: Vec::new(),
             cierres: Vec::new(),
+            toast_timers: Vec::new(),
             arrastre_vista: None,
             cierre_en_vista: false,
             boton_cerrar_vista: None,
             fundido: None,
+            pantalla_carga: None,
+            pantalla_salida: None,
             transicion_vista: Default::default(),
             contexto_gl: None,
             genio_commit: Default::default(),
@@ -1391,6 +1544,8 @@ impl BookosComp {
             bajo_consumo: config.bajo_consumo,
             agitar_cursor: crate::cursor::AgitarCursor::nuevo(config.agitar_cursor),
             miniatura_captura: None,
+            captura_generacion: 0,
+            captura_envio,
             modo_concentracion: config.modo_concentracion.clone(),
             concentracion_auto_juego: config.concentracion_auto_juego,
             concentracion_permitidas: config.concentracion_permitidas.clone(),
@@ -1414,6 +1569,7 @@ impl BookosComp {
             volumen_visto: None,
             aplicar_leds: None,
             leds: Default::default(),
+            extras,
             cursor_nominal,
             texto_tamano,
             teclas_accesibles,
@@ -1432,6 +1588,7 @@ impl BookosComp {
             arrastre: None,
             arrastre_escritorio: None,
             ultimo_clic: None,
+            ultimo_clic_barra: None,
             cambiar_vt: None,
             hijos: Vec::new(),
             modo,
@@ -1453,6 +1610,7 @@ impl BookosComp {
             aplicar_pantallas: None,
             censar_pantallas: None,
             medios_bloqueo,
+            huella_canal,
             bloqueo_generacion: 0,
             fractional_scale_state,
             _presentation_state: presentation_state,
@@ -1461,9 +1619,14 @@ impl BookosComp {
             captura_pedida: None,
             captura_con_cursor: None,
             bus_portal,
+            bus_polkit,
+            polkit,
             emisiones: crate::emision::Emisiones::new(),
             consentimiento: None,
             captura_portal: None,
+            color_portal: None,
+            acceso_portal: None,
+            elegir_app_portal: None,
             dmabuf_state,
             dmabuf_global: None,
             egl_display: None,
@@ -1694,6 +1857,7 @@ impl BookosComp {
         // Si la tarjeta del permiso se cerró sin contestar —un clic fuera—, el
         // hilo del portal sigue bloqueado. Se le manda la negativa.
         crate::portal::denegar_si_se_cerro(self);
+        crate::polkit::cancelar_si_se_cerro(self);
         crate::teclado::revisar(self);
 
         // Una emergente entrando pide fotogramas aunque no pase nada más. Es la
@@ -1726,6 +1890,10 @@ impl BookosComp {
         // punteros sobre una lista de tres elementos.
         if self.space.elements().any(crate::ventanas::animando)
             || self.arrastre.as_ref().is_some_and(|a| a.animando())
+            || self
+                .miniatura_captura
+                .as_ref()
+                .is_some_and(|m| m.animando())
         {
             self.needs_redraw = true;
         }

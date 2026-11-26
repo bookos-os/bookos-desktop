@@ -73,5 +73,35 @@ export MALLOC_ARENA_MAX=1 MALLOC_MMAP_THRESHOLD_=131072
 # Sin dbus-run-session: nada de esto usa el bus de sesión (lo del sistema va
 # por `busctl --system`, nmcli y systemctl), y su dbus-daemon se quedaba
 # residente toda la pantalla de acceso sin que nadie le hablara.
-exec "$cage" -s -- /usr/local/libexec/bookos-greeter \
-    --session /usr/local/bin/bookos-session
+#
+# Silencia tty1 antes de lanzar cage, desvía sus logs a un fichero privado y
+# vuelve a dejar tty1 negro y sin cursor justo al salir: mientras cage está en
+# KD_GRAPHICS todo lo que escriba en stdout/stderr se acumula en el framebuffer
+# de consola y saldría de golpe en azul/verde antes de bookos-comp.
+limpiar_tty() {
+    printf '\033[?25l\033[30;40m\033[3J\033[2J\033[H' >&3 2>/dev/null || true
+}
+if [ -t 1 ]; then
+    exec 3>&1
+    limpiar_tty
+else
+    exec 3>/dev/null
+fi
+registro_greeter="${XDG_RUNTIME_DIR:-${HOME:-/tmp}}/bookos-greeter.log"
+if : >"$registro_greeter" 2>/dev/null && chmod 600 "$registro_greeter" 2>/dev/null; then
+    exec >>"$registro_greeter" 2>&1
+else
+    exec >/dev/null 2>&1
+fi
+cage_pid=""
+trap '[ -n "$cage_pid" ] && kill "$cage_pid" 2>/dev/null || true' TERM INT HUP
+"$cage" -s -- /usr/local/libexec/bookos-greeter \
+    --session /usr/local/bin/bookos-session 3>&- &
+cage_pid=$!
+set +e
+wait "$cage_pid"
+estado=$?
+set -e
+limpiar_tty
+exec 3>&-
+exit "$estado"

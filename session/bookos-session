@@ -17,6 +17,17 @@ set -u
 # sesión— se protege abajo por su cuenta, que es donde toca.
 umask 022
 
+# Deja el VT negro y sin cursor desde el instante cero y desvía toda salida
+# de la sesión al registro privado para que nada pinte texto sobre tty1 antes
+# de que el compositor tome DRM/KMS.
+[ -t 1 ] && printf '\033[?25l\033[30;40m\033[3J\033[2J\033[H' 2>/dev/null || true
+registro="${XDG_RUNTIME_DIR:-/tmp}/bookos-session.log"
+if : >"$registro" 2>/dev/null && chmod 600 "$registro" 2>/dev/null; then
+    exec >>"$registro" 2>&1
+else
+    exec >/dev/null 2>&1
+fi
+
 # Lo que anuncia la sesión al resto del sistema. `XDG_CURRENT_DESKTOP` es lo
 # que miran los portales y las bibliotecas de toolkit para decidir cómo
 # comportarse; sin él, GTK y Qt caen a sus valores genéricos.
@@ -91,28 +102,22 @@ if [ ! -x "$binario" ]; then
     exit 1
 fi
 
-# El servicio compartido se activa por D-Bus cuando hace falta, pero el gestor
-# de usuario puede no haber recargado todavía la unidad recién instalada.
-# Recargarla y arrancarla aquí evita que el primer widget vea un estado vacío y
-# también permite que systemd la reinicie si NetworkManager, BlueZ o PipeWire
-# aparecen después de la sesión.
-systemctl --user daemon-reload >/dev/null 2>&1 || true
-systemctl --user start bookos-system.service >/dev/null 2>&1 || true
+# El servicio compartido se arranca en paralelo con el compositor para no
+# retener la pantalla antes de abrir KMS, y se espera antes de declarar
+# `bookos-session.target`.
+{
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    systemctl --user start bookos-system.service >/dev/null 2>&1 || true
+} &
+sys_pid=$!
 
-# El registro va a un fichero y no a la salida estándar porque SDDM se la come:
-# cuando la sesión no arranca, esto es lo único que queda para saber por qué.
-registro="${XDG_RUNTIME_DIR:-/tmp}/bookos-session.log"
-# El registro lleva la salida de todo lo que corre en la sesión y puede acabar
-# con cualquier cosa dentro, así que es del usuario y de nadie más. Se crea
-# vacío y se le quitan los permisos **antes** de escribir nada, que si no hay
-# una ventana en la que existe abierto de par en par.
-: >"$registro" && chmod 600 "$registro"
 # Qué binario y de cuándo, lo primero de todo: es la línea que contesta a "¿por
-# qué no veo el cambio que acabo de hacer?".
+# qué no veo el cambio que acabo de hacer?". El registro se abrió y protegió al
+# inicio de este guion para no dejar escapar nada al TTY.
 {
     echo "bookos-session: $binario"
     echo "compilado: $(date -r "$binario" '+%d/%m %H:%M' 2>/dev/null || echo '?')"
-} >"$registro"
+} >>"$registro" 2>/dev/null || true
 
 # ── Autoarranque XDG ───────────────────────────────────────────────────────
 # Lanzar lo de /etc/xdg/autostart y ~/.config/autostart es cosa del escritorio.
@@ -133,6 +138,13 @@ lanzar_autostart() {
             # El del usuario gana sobre el del sistema con el mismo nombre.
             case "$vistos" in *" $nombre "*) continue ;; esac
             vistos="$vistos$nombre "
+            # BookOS integra su propio agente Polkit en bookos-comp; evitar que
+            # agentes externos (KDE/GNOME/LXQt/MATE/XFCE) compitan por la sesión.
+            case "$nombre" in
+                *polkit*agent*.desktop|*policykit*agent*.desktop|*polkit-gnome*.desktop|xfce-polkit.desktop)
+                    continue
+                    ;;
+            esac
             [ "$(sed -n 's/^Hidden=//p' "$entrada" | head -n1)" = true ] && continue
             # Así es como se desactiva una entrada del sistema sin tocarla:
             # sealertauto trae `false` y, sin esto, seapplet arrancaba igual.
@@ -187,7 +199,7 @@ trap finalizar TERM INT HUP
 # cuelgan de `graphical-session.target`. Sin esto quedarían corriendo contra un
 # compositor que ya no está, y la siguiente sesión encontraría un portal con el
 # entorno de la anterior.
-trap 'systemctl --user stop bookos-session.target >/dev/null 2>&1 || true; rm -f "$BOOKOS_SESSION_SOCKET_FILE" "$BOOKOS_SESSION_LOCK_FILE"; rmdir "$sesion_tmp" 2>/dev/null || true' EXIT
+trap 'systemctl --user stop bookos-session.target >/dev/null 2>&1 || true; rm -f "$BOOKOS_SESSION_SOCKET_FILE" "$BOOKOS_SESSION_LOCK_FILE"; rmdir "$sesion_tmp" 2>/dev/null || true; [ -w /dev/tty1 ] && printf '\''\033[?25l\033[30;40m\033[3J\033[2J\033[H'\'' > /dev/tty1 2>/dev/null || true' EXIT
 while true; do
     # Un reinicio desde la recuperación ha sido solicitado explícitamente.
     printf unlocked >"$BOOKOS_SESSION_LOCK_FILE"
@@ -238,6 +250,7 @@ while true; do
         # trabajo falla nada más pedirlo, así que hasta ahora ninguna aplicación
         # recibía el `color-scheme` oscuro, no había diálogo de abrir fichero y
         # compartir pantalla no funcionaba. Ver `bookos-session.target`.
+        [ -n "${sys_pid:-}" ] && { wait "$sys_pid" 2>/dev/null || true; sys_pid=""; }
         systemctl --user start bookos-session.target >/dev/null 2>&1 || true
         # Si el portal venía vivo de otra sesión, que relea el escritorio y
         # la selección de backend. `try-restart` no arranca nada si aún no se

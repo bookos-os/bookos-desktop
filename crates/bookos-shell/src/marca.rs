@@ -77,7 +77,7 @@ impl Canal {
     /// El círculo y la onda. Sacados de los dibujos del diseño
     /// (`bookos-{stable,beta,dev}.png`); los de estable son los del SVG.
     // 0.1.0
-    fn colores(self) -> (&'static str, &'static str) {
+    pub fn colores(self) -> (&'static str, &'static str) {
         match self {
             Canal::Estable => ("#A4BBFE", "#7E9FFF"),
             Canal::Beta => ("#CA6F2A", "#A64A03"),

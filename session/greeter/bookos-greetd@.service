@@ -1,0 +1,19 @@
+# Segunda ventana de inicio de sesión, en tty%i, para el cambio rápido de
+# usuario: la de tty1 está ocupada por la sesión de quien entró primero.
+# La arranca bookos-cambiar-usuario (regla 51-bookos-cambiar-usuario.rules).
+# Mismo greetd y misma configuración que greetd.service; solo cambia el
+# terminal, que `--vt` antepone a `[terminal] vt`.
+[Unit]
+Description=Ventana de inicio de sesión de BookOS en tty%i
+After=systemd-user-sessions.service plymouth-quit-wait.service
+Conflicts=getty@tty%i.service autovt@tty%i.service
+
+[Service]
+TTYPath=/dev/tty%i
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardOutput=null
+StandardError=journal
+ExecStartPre=-/bin/sh -c 'printf "\033[?25l\033[30;40m\033[3J\033[2J\033[H" > /dev/tty%i 2>/dev/null || true'
+ExecStart=@GREETD@ --config /etc/greetd/bookos.toml --vt %i

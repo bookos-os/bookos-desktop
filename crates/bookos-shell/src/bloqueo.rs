@@ -26,6 +26,7 @@ use iced_core::{Border, Color, Length};
 use iced_widget::{Space, column, container, row, text};
 
 use crate::config::FuenteReloj;
+use crate::emergente::t;
 use crate::tema;
 use crate::view::PanelElement;
 
@@ -84,14 +85,18 @@ pub const BOTON: f32 = 36.0;
 /// lo que tarde PAM a propósito, para no repintar la pantalla entera todo ese
 /// rato; si tarda más, los puntos se quedan quietos y el texto dice
 /// «Comprobando…».
-const D_OLA: Duration = Duration::from_millis(1040);
+pub const D_OLA: Duration = Duration::from_millis(1040);
 /// Alto del campo y lado del botón redondo que lleva al lado.
 pub const ALTO_CAMPO: f32 = 44.0;
 /// Cuerpo de la fecha, bajo el reloj.
 const FECHA: f32 = 22.0;
 /// Diámetro de los puntos de la contraseña.
 pub const PUNTO: f32 = 10.0;
-const ESTADO_TOTAL: Duration = Duration::from_millis(520);
+pub const ESTADO_TOTAL: Duration = Duration::from_millis(520);
+/// Pulso del icono de huella al activarse o pedir reintento.
+pub const PULSO_HUELLA: Duration = Duration::from_millis(620);
+/// Duración del destello verde de confirmación al reconocer la huella.
+pub const D_RECONOCIDA: Duration = Duration::from_millis(320);
 // modificado en la 0.2.3 -- la tarjeta del Player: carátula grande, barra a
 // todo el ancho con los tiempos a los lados y mandos sin placa. En vertical,
 // como el Player, no cabe: a 1280×800 lógicos el bloque de acceso acaba hacia
@@ -121,12 +126,12 @@ const MEDIOS_ALTO: f32 = MEDIOS_CONTROLES_Y + MEDIOS_CONTROL + MEDIOS_PAD;
 const ALTO_NOMBRE: f32 = 24.0;
 /// Alto del renglón de estado bajo el campo: la píldora de [`aviso`].
 // añadido en la 0.2.3
-const ALTO_MENSAJE: f32 = 26.0;
+pub const ALTO_MENSAJE: f32 = 26.0;
 /// Alto del aviso de la huella: otra píldora y 4 de aire sobre ella. Está
 /// vacío la mayor parte del tiempo, pero reserva su hueco igual —la tarjeta de
 /// medios no puede depender de si hoy hay algo que decir sobre la huella.
 // modificado en la 0.2.3 -- píldora en vez de texto suelto
-const ALTO_HUELLA: f32 = 4.0 + ALTO_MENSAJE;
+pub const ALTO_HUELLA: f32 = 4.0 + 30.0;
 /// Aire mínimo entre el bloque de acceso y la tarjeta de medios.
 ///
 /// Sin este mínimo, la tarjeta se posicionaba a una fracción fija de la
@@ -148,10 +153,10 @@ pub const FONDO_CAMPO: Color = tema::hexa(0x16191e, 0.82);
 
 /// El cristal del campo, el menú y la tarjeta según el tema. En claro es la
 /// tarjeta del tema con el mismo alfa que el oscuro, para que el fondo se
-/// siga intuyendo igual en los dos. El greeter no tiene tema y sigue con
-/// [`FONDO_CAMPO`].
+/// siga intuyendo igual en los dos.
 // añadido en la 0.2.3
-fn fondo_campo() -> Color {
+// modificado en la 0.2.4 -- compartido también con el greeter
+pub fn fondo_campo() -> Color {
     if tema::es_claro() {
         tema::alfa(tema::card(), FONDO_CAMPO.a)
     } else {
@@ -162,7 +167,8 @@ fn fondo_campo() -> Color {
 /// La tinta que va sobre [`fondo_campo`]: el blanco de siempre en oscuro y el
 /// texto del tema en claro.
 // añadido en la 0.2.3
-fn tinta_campo() -> Color {
+// modificado en la 0.2.4 -- compartido también con el greeter
+pub fn tinta_campo() -> Color {
     if tema::es_claro() {
         tema::texto()
     } else {
@@ -222,27 +228,32 @@ const HUECO_MENU: f32 = 10.0;
 const ICONO_ENTRADA: f32 = 20.0;
 
 /// Lo que ofrece el menú de apagado, en el orden del diseño. Hibernar solo si
-/// el equipo puede: ver [`crate::confirmacion::hibernar_disponible`].
+/// el equipo puede: ver [`crate::confirmacion::hibernar_disponible`]. Cambiar
+/// de usuario solo si hay otra cuenta de persona: con una sola, la ventana de
+/// inicio enseñaría a la misma que ya está delante.
 // 0.1.0
+// modified 0.2.0 -- «Cambiar usuario», como el botón del bloqueo de macOS
 pub fn entradas() -> &'static [(&'static str, &'static str, Peticion)] {
-    const SIN: &[(&str, &str, Peticion)] = &[
-        ("Apagar", "apagar", Peticion::Apagar),
-        ("Reiniciar", "reiniciar", Peticion::Reiniciar),
-        ("Cerrar sesión", "salir", Peticion::CerrarSesion),
-        ("Suspender", "dormir", Peticion::Suspender),
-    ];
-    const CON: &[(&str, &str, Peticion)] = &[
-        ("Apagar", "apagar", Peticion::Apagar),
-        ("Reiniciar", "reiniciar", Peticion::Reiniciar),
-        ("Cerrar sesión", "salir", Peticion::CerrarSesion),
-        ("Suspender", "dormir", Peticion::Suspender),
-        ("Hibernar", "hibernar", Peticion::Hibernar),
-    ];
-    if crate::confirmacion::hibernar_disponible() {
-        CON
-    } else {
-        SIN
-    }
+    static ENTRADAS: std::sync::OnceLock<Vec<(&str, &str, Peticion)>> = std::sync::OnceLock::new();
+    ENTRADAS.get_or_init(|| {
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+        let varias = listables(&passwd).len() > 1;
+        [
+            Some(("Apagar", "apagar", Peticion::Apagar)),
+            Some(("Reiniciar", "reiniciar", Peticion::Reiniciar)),
+            varias.then_some(("Cambiar usuario", "usuarios", Peticion::CambiarUsuario)),
+            Some(("Cerrar sesión", "salir", Peticion::CerrarSesion)),
+            Some(("Suspender", "dormir", Peticion::Suspender)),
+            crate::confirmacion::hibernar_disponible().then_some((
+                "Hibernar",
+                "hibernar",
+                Peticion::Hibernar,
+            )),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    })
 }
 
 /// Lo que el bloqueo puede pedirle al compositor.
@@ -253,19 +264,23 @@ pub enum Peticion {
     CerrarSesion,
     Suspender,
     Hibernar,
+    /// Lleva a la ventana de inicio sin cerrar nada: no pide confirmación.
+    CambiarUsuario,
 }
 
 impl Peticion {
     // 0.1.0
-    fn energia(self) -> crate::confirmacion::Energia {
+    // modified 0.2.0 -- `None` para lo que no se confirma (cambiar usuario)
+    pub fn energia(self) -> Option<crate::confirmacion::Energia> {
         use crate::confirmacion::Energia;
-        match self {
+        Some(match self {
             Self::Apagar => Energia::Apagar,
             Self::Reiniciar => Energia::Reiniciar,
             Self::CerrarSesion => Energia::CerrarSesion,
             Self::Suspender => Energia::Suspender,
             Self::Hibernar => Energia::Hibernar,
-        }
+            Self::CambiarUsuario => return None,
+        })
     }
 }
 
@@ -398,7 +413,12 @@ pub fn foto_circular(ruta: &str) -> Option<iced_widget::image::Handle> {
     // La configuración admite hasta 220 lógicos. Se guarda al doble para que
     // incluso a escala 2 la GPU reduzca una imagen nítida en vez de ampliar una
     // miniatura; sigue siendo menos de 1 MiB y se genera una sola vez.
-    let lado = 440_u32;
+    foto_circular_de(ruta, 440)
+}
+
+/// Recorta y escala una imagen de perfil a un círculo de `lado × lado` píxeles.
+pub(crate) fn foto_circular_de(ruta: &str, lado: u32) -> Option<iced_widget::image::Handle> {
+    let lado = lado.max(1);
     // `image::open` deduce el formato de la extensión, y `~/.face` y los iconos
     // de AccountsService no la tienen: fallaba con «format could not be
     // determined» (visto en bookos-session.log). Se mira el contenido.
@@ -457,6 +477,29 @@ pub fn nombre_completo(login: &str) -> Option<String> {
         return (!nombre.is_empty()).then(|| nombre.to_string());
     }
     None
+}
+
+/// Las cuentas de persona: el rango de `UID_MIN`…`UID_MAX` de `login.defs` y un
+/// shell con el que se pueda entrar. La comparten el greeter y el menú del
+/// logo (cambio rápido de usuario).
+// 0.1.1
+pub fn listables(passwd: &str) -> Vec<(String, u32, String)> {
+    passwd
+        .lines()
+        .filter_map(|linea| {
+            let campos: Vec<&str> = linea.split(':').collect();
+            let [cuenta, _, uid, _, gecos, _, shell] = campos[..] else {
+                return None;
+            };
+            let uid: u32 = uid.parse().ok()?;
+            let entra = !(shell.ends_with("/nologin") || shell.ends_with("/false"));
+            let nombre = gecos.split(',').next().unwrap_or_default().trim();
+            ((1000..60000).contains(&uid) && entra).then(|| {
+                let nombre = if nombre.is_empty() { cuenta } else { nombre };
+                (cuenta.to_string(), uid, nombre.to_string())
+            })
+        })
+        .collect()
 }
 
 /// Lo que dice la huella debajo del campo.
@@ -561,6 +604,7 @@ pub struct Bloqueo {
     /// obligaría a iced a volver a rasterizar el SVG en cada repintado.
     candado: crate::icono::Icono,
     flecha: crate::icono::Icono,
+    icono_huella: crate::icono::Icono,
     wifi: crate::icono::Icono,
     encendido: crate::icono::Icono,
     /// Lo que enseña la fila de arriba. Solo informa: abrir la lista de redes
@@ -576,6 +620,8 @@ pub const ENCENDIDO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox=
 /// Candado y flecha.
 pub const CANDADO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 1.5a5.25 5.25 0 0 0-5.25 5.25v3a3 3 0 0 0-3 3v6.75a3 3 0 0 0 3 3h10.5a3 3 0 0 0 3-3v-6.75a3 3 0 0 0-3-3v-3c0-2.9-2.35-5.25-5.25-5.25Zm3.75 8.25v-3a3.75 3.75 0 1 0-7.5 0v3h7.5Z"/></svg>"##;
 pub const FLECHA: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" clip-rule="evenodd" d="M12.97 3.97a.75.75 0 0 1 1.06 0l7.5 7.5a.75.75 0 0 1 0 1.06l-7.5 7.5a.75.75 0 1 1-1.06-1.06l6.22-6.22H3a.75.75 0 0 1 0-1.5h16.19l-6.22-6.22a.75.75 0 0 1 0-1.06Z"/></svg>"##;
+/// Huella digital para el aviso biométrico bajo el campo.
+pub const HUELLA: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2.25a9.75 9.75 0 0 0-7.79 3.88.75.75 0 0 0 1.2.9 8.25 8.25 0 0 1 13.18 0 .75.75 0 1 0 1.2-.9A9.75 9.75 0 0 0 12 2.25Zm-5.4 6.2a6.75 6.75 0 0 1 10.8 0 .75.75 0 0 0 1.2-.9 8.25 8.25 0 0 0-13.2 0 .75.75 0 0 0 1.2.9Zm1.9 2.38a3.75 3.75 0 0 1 7 0 .75.75 0 1 0 1.38-.6 5.25 5.25 0 0 0-9.76 0 .75.75 0 0 0 1.38.6ZM12 9.75a2.25 2.25 0 0 0-2.25 2.25c0 2.5-.62 4.65-1.93 6.37a.75.75 0 1 0 1.2.9c1.49-1.96 2.23-4.4 2.23-7.27a.75.75 0 0 1 1.5 0c0 3.33-.86 6.26-2.55 8.53a.75.75 0 1 0 1.2.9c1.89-2.52 2.85-5.76 2.85-9.43A2.25 2.25 0 0 0 12 9.75Zm-4.5 2.25a4.5 4.5 0 0 1 9 0c0 2.94-.67 5.65-1.96 7.98a.75.75 0 1 0 1.32.72C17.27 18.14 18 15.17 18 12a6 6 0 0 0-12 0c0 1.98-.46 3.7-1.45 5.14a.75.75 0 1 0 1.24.84C6.95 16.27 7.5 14.27 7.5 12Z"/></svg>"##;
 
 impl Bloqueo {
     // 0.1.0
@@ -620,6 +666,7 @@ impl Bloqueo {
             medio_desde: None,
             candado: crate::icono::desde_svg(CANDADO),
             flecha: crate::icono::desde_svg(FLECHA),
+            icono_huella: crate::icono::desde_svg(HUELLA),
             wifi: crate::icono::desde_svg(WIFI),
             encendido: crate::icono::desde_svg(ENCENDIDO),
             bateria: crate::Battery::read(false).map(|b| crate::bateria_sobre_fondo(&b)),
@@ -1043,13 +1090,36 @@ impl Bloqueo {
     /// Cambia lo que dice la huella. `true` si hay que repintar.
     // 0.1.0
     pub fn actualizar_huella(&mut self, huella: Huella) -> bool {
-        // Un segundo «no coincide» seguido también sacude: es otro dedo.
-        if self.huella == huella && huella != Huella::NoCoincide {
+        // Un segundo «no coincide» o reintento de lectura vuelve a pulsar: es otro toque.
+        if self.huella == huella && !matches!(huella, Huella::NoCoincide | Huella::Aviso(_)) {
             return false;
         }
         self.huella = huella;
         self.huella_desde = Instant::now();
         true
+    }
+
+    /// Pulso breve (0.0 en reposo, 1.0 en pico) tras una lectura del sensor.
+    fn pulso_huella(&self) -> f32 {
+        if !self.config.animaciones || self.huella == Huella::Callada {
+            return 0.0;
+        }
+        let duracion = match self.huella {
+            Huella::NoCoincide => ESTADO_TOTAL,
+            Huella::Reconocida => D_RECONOCIDA,
+            Huella::Aviso(_) => PULSO_HUELLA,
+            Huella::Callada => return 0.0,
+        };
+        let elapsed = self.huella_desde.elapsed();
+        if elapsed >= duracion {
+            return 0.0;
+        }
+        let t = tema::fraccion(elapsed, duracion);
+        match self.huella {
+            // En reconocimiento sube rápido hasta 1.0 y se mantiene lleno antes de salir.
+            Huella::Reconocida => tema::C_ENTRADA.eval((t / 0.55).min(1.0)),
+            _ => (t * std::f32::consts::PI).sin().clamp(0.0, 1.0),
+        }
     }
 
     // 0.1.0
@@ -1061,12 +1131,93 @@ impl Bloqueo {
             // escuchando: no hace falta hacer nada más que volver a poner el
             // dedo.
             Huella::NoCoincide => (
-                "Huella no reconocida. Vuelve a intentarlo.",
+                t(
+                    "Huella no reconocida. Vuelve a intentarlo.",
+                    "Fingerprint not recognized. Try again.",
+                ),
                 Some(tema::rojo()),
             ),
-            Huella::Reconocida => ("Huella reconocida", Some(tema::verde())),
+            Huella::Reconocida => (
+                t("Huella reconocida", "Fingerprint recognized"),
+                Some(tema::verde()),
+            ),
         };
-        container(aviso(texto.to_string(), senal, alfa))
+        if texto.is_empty() {
+            return container(Space::new().height(Length::Fixed(ALTO_MENSAJE)))
+                .height(Length::Fixed(ALTO_HUELLA))
+                .align_y(Vertical::Bottom)
+                .into();
+        }
+        let pulso = self.pulso_huella();
+        let reconocida = self.huella == Huella::Reconocida;
+        let color_acento = senal.unwrap_or_else(tema::acento);
+        let icono_px = 18.0 + if reconocida { 5.0 * pulso } else { 4.0 * pulso };
+        let color_icono = match senal {
+            Some(c) => con_alfa(c, alfa),
+            None => con_alfa(
+                tema::mezclar(tinta_campo(), tema::acento(), 0.75 * pulso),
+                (0.85 + 0.15 * pulso) * alfa,
+            ),
+        };
+        let insignia_fondo = if senal.is_some() {
+            con_alfa(color_acento, (0.20 + 0.22 * pulso) * alfa)
+        } else {
+            con_alfa(tema::acento(), 0.24 * pulso * alfa)
+        };
+        let insignia_borde = if senal.is_some() {
+            con_alfa(color_acento, (0.55 + 0.45 * pulso) * alfa)
+        } else {
+            con_alfa(tema::acento(), 0.65 * pulso * alfa)
+        };
+        let insignia = container(crate::icono::ver_teñido_propio(
+            &self.icono_huella,
+            icono_px,
+            color_icono,
+        ))
+        .width(Length::Fixed(28.0))
+        .height(Length::Fixed(28.0))
+        .center_x(Length::Fixed(28.0))
+        .center_y(Length::Fixed(28.0))
+        .style(move |_| container::Style {
+            background: Some(insignia_fondo.into()),
+            border: Border {
+                radius: 14.0.into(),
+                width: if senal.is_some() || pulso > 0.04 {
+                    1.5
+                } else {
+                    0.0
+                },
+                color: insignia_borde,
+            },
+            ..Default::default()
+        });
+        let fila = row![
+            insignia,
+            text(texto).size(13).color(con_alfa(tinta_campo(), alfa)),
+        ]
+        .spacing(8.0)
+        .align_y(Vertical::Center);
+        let pildora = container(fila)
+            .height(Length::Fixed(30.0))
+            .center_y(Length::Fixed(30.0))
+            .padding(iced_core::Padding::ZERO.left(4.0).right(12.0))
+            .style(move |_| container::Style {
+                background: Some(con_alfa(fondo_campo(), alfa).into()),
+                border: Border {
+                    radius: 15.0.into(),
+                    width: if senal.is_some() || pulso > 0.04 {
+                        1.2
+                    } else {
+                        0.0
+                    },
+                    color: match senal {
+                        Some(c) => con_alfa(c, (0.50 + 0.45 * pulso) * alfa),
+                        None => con_alfa(tema::acento(), 0.55 * pulso * alfa),
+                    },
+                },
+                ..Default::default()
+            });
+        container(pildora)
             .height(Length::Fixed(ALTO_HUELLA))
             .align_y(Vertical::Bottom)
             .into()
@@ -1149,18 +1300,27 @@ impl Bloqueo {
     // modificado en la 0.2.3 -- sobre píldora, con el color en una señal aparte
     fn mensaje<'a>(&self, alfa: f32) -> PanelElement<'a> {
         let (texto_estado, senal) = match self.estado {
-            Estado::Comprobando => ("Comprobando…".to_string(), None),
-            Estado::Fallo => ("Contraseña incorrecta".to_string(), Some(tema::rojo())),
+            Estado::Comprobando => (t("Comprobando…", "Checking…").to_string(), None),
+            Estado::Fallo => (
+                t("Contraseña incorrecta", "Incorrect password").to_string(),
+                Some(tema::rojo()),
+            ),
             Estado::Espera(segundos) => (
                 if segundos == 1 {
-                    "Espera un segundo para volver a intentarlo".to_string()
-                } else {
+                    t(
+                        "Espera un segundo para volver a intentarlo",
+                        "Wait a second to try again",
+                    )
+                    .to_string()
+                } else if t("es", "en") == "es" {
                     format!("Espera {segundos} segundos para volver a intentarlo")
+                } else {
+                    format!("Wait {segundos} seconds to try again")
                 },
                 Some(tema::rojo()),
             ),
             Estado::Escribiendo if self.caps_lock => (
-                "Bloq Mayús está activado".to_string(),
+                t("Bloq Mayús está activado", "Caps Lock is on").to_string(),
                 Some(tema::amarillo()),
             ),
             // El aviso de la huella ya dice «o introduce tu contraseña»; con los
@@ -1168,7 +1328,14 @@ impl Bloqueo {
             Estado::Escribiendo
                 if self.escritos == 0 && !matches!(self.huella, Huella::Aviso(_)) =>
             {
-                ("Introduce tu contraseña para desbloquear".to_string(), None)
+                (
+                    t(
+                        "Introduce tu contraseña para desbloquear",
+                        "Enter your password to unlock",
+                    )
+                    .to_string(),
+                    None,
+                )
             }
             Estado::Escribiendo => (String::new(), None),
         };
@@ -1227,10 +1394,11 @@ impl Bloqueo {
             for (i, (_, _, peticion)) in entradas().iter().enumerate() {
                 if dentro(self.entrada_energia(i, pantalla)) {
                     self.cerrar_menu();
-                    self.confirmacion = Some((
-                        *peticion,
-                        crate::confirmacion::Confirmacion::new(peticion.energia()),
-                    ));
+                    let Some(energia) = peticion.energia() else {
+                        return (Some(*peticion), true);
+                    };
+                    self.confirmacion =
+                        Some((*peticion, crate::confirmacion::Confirmacion::new(energia)));
                     return (None, true);
                 }
             }
@@ -1475,6 +1643,24 @@ impl Bloqueo {
         true
     }
 
+    /// Cancela un toque sobre los mandos o la barra de medios sin disparar
+    /// `accionar` ni `saltar_en`.
+    pub fn cancelar_interaccion(&mut self) -> bool {
+        let tenia_apretado = self.apretado.take().is_some();
+        let tenia_arrastre = self.arrastre.take().is_some();
+        if !tenia_apretado && !tenia_arrastre && !self.vuelta_pendiente {
+            return false;
+        }
+        self.vuelta_pendiente = false;
+        if tenia_apretado {
+            self.hundido.ir_a(0.0);
+        }
+        if tenia_arrastre {
+            self.engordar_barra();
+        }
+        true
+    }
+
     // 0.1.0
     pub fn confirmar_tecla(&mut self, tecla: crate::TeclaPulsada) -> (bool, Option<Peticion>) {
         let Some((p, c)) = self.confirmacion.as_mut() else {
@@ -1510,15 +1696,24 @@ impl Bloqueo {
 
     // añadido en la 0.2.0 -- las animaciones de contenido necesitan píxeles nuevos; la entrada no.
     pub fn contenido_animando(&self) -> bool {
+        if tema::efectos_reducidos() {
+            return false;
+        }
         let estado = self.config.animaciones
             && match self.estado {
                 Estado::Fallo => self.estado_desde.elapsed() < ESTADO_TOTAL,
                 Estado::Comprobando => self.estado_desde.elapsed() < D_OLA,
                 _ => false,
             };
+        let duracion_huella = match self.huella {
+            Huella::NoCoincide => ESTADO_TOTAL,
+            Huella::Reconocida => D_RECONOCIDA,
+            Huella::Aviso(_) => PULSO_HUELLA,
+            Huella::Callada => Duration::ZERO,
+        };
         let huella = self.config.animaciones
-            && self.huella == Huella::NoCoincide
-            && self.huella_desde.elapsed() < ESTADO_TOTAL;
+            && self.huella != Huella::Callada
+            && self.huella_desde.elapsed() < duracion_huella;
         estado
             || huella
             || self
@@ -1632,7 +1827,16 @@ impl Bloqueo {
         if avance > 0.001 {
             let alfa = avance.clamp(0.0, 1.0);
             let mut filas = column![];
-            for (i, (etiqueta, icono, _)) in entradas().iter().enumerate() {
+            for (i, (_, icono, peticion)) in entradas().iter().enumerate() {
+                // modificado en la 0.2.3 -- la etiqueta en el idioma de la sesión, como el greeter
+                let etiqueta = match peticion {
+                    Peticion::Apagar => t("Apagar", "Shut Down"),
+                    Peticion::Reiniciar => t("Reiniciar", "Restart"),
+                    Peticion::CerrarSesion => t("Cerrar sesión", "Log Out"),
+                    Peticion::Suspender => t("Suspender", "Sleep"),
+                    Peticion::Hibernar => t("Hibernar", "Hibernate"),
+                    Peticion::CambiarUsuario => t("Cambiar usuario", "Switch User"),
+                };
                 let tinta = Color {
                     a: alfa,
                     ..tinta_campo()
@@ -1656,7 +1860,7 @@ impl Bloqueo {
                     // Medium y no Bold: los glifos son de trazo fino (1,5
                     // sobre 24) y al lado de una negrita parecían de otro
                     // juego; así pesa lo mismo la palabra que su icono.
-                    text(*etiqueta)
+                    text(etiqueta)
                         .size(15.0)
                         .color(tinta)
                         .font(iced_core::Font {
@@ -1908,9 +2112,13 @@ impl Bloqueo {
         // El borde de la píldora es el foco: en el bloqueo no se puede ir a
         // ninguna otra parte, y sin él no hay nada que diga dónde va lo que se
         // escribe. En rojo cuando la contraseña no era.
+        let fallo_huella =
+            self.huella == Huella::NoCoincide && self.huella_desde.elapsed() < ESTADO_TOTAL;
         let borde = con_alfa(
             match self.estado {
                 Estado::Fallo | Estado::Espera(_) => tema::rojo(),
+                _ if fallo_huella => tema::rojo(),
+                _ if self.huella == Huella::Reconocida => tema::verde(),
                 Estado::Comprobando => Color {
                     a: 0.35,
                     ..tinta_campo()
@@ -2489,7 +2697,9 @@ mod tests {
         );
         b.confirmacion = Some((
             Peticion::Apagar,
-            crate::confirmacion::Confirmacion::new(Peticion::Apagar.energia()),
+            crate::confirmacion::Confirmacion::new(
+                Peticion::Apagar.energia().expect("apagar se confirma"),
+            ),
         ));
         assert_eq!(
             b.confirmar_tecla(crate::TeclaPulsada::Caracter('x')),
@@ -2781,5 +2991,54 @@ mod tests {
         let b = Bloqueo::new("23:50".into(), "jueves".into(), None, config);
         let alto = 1029.0;
         assert_eq!(b.medios_y_asentada(alto), alto * config.medios_y);
+    }
+
+    #[test]
+    fn huella_pulsa_al_fallar_y_al_reconocer_y_luego_reposa() {
+        let config = crate::config::Bloqueo::default();
+        let mut b = Bloqueo::new("23:50".into(), "jueves".into(), None, config);
+        assert_eq!(b.pulso_huella(), 0.0);
+
+        assert!(b.actualizar_huella(Huella::NoCoincide));
+        assert!(b.contenido_animando());
+        assert!(b.sacudida().abs() >= 0.0);
+
+        assert!(b.actualizar_huella(Huella::Reconocida));
+        assert!(b.contenido_animando());
+        assert!(!b.actualizar_huella(Huella::Reconocida));
+
+        // Al envejecer más allá de ESTADO_TOTAL, deja de animar (cero CPU en reposo).
+        b.huella_desde = Instant::now() - ESTADO_TOTAL - Duration::from_millis(10);
+        assert_eq!(b.pulso_huella(), 0.0);
+        assert!(!b.contenido_animando());
+    }
+
+    #[test]
+    fn cancelar_interaccion_suelta_mando_y_arrastre_sin_accionar() {
+        let mut config = crate::config::Bloqueo::default();
+        config.medios = true;
+        let mut b = Bloqueo::new("12:30".into(), "lunes".into(), None, config);
+        b.poner_medio(Some(crate::medios::Sonando {
+            bus: "org.mpris.MediaPlayer2.prueba".into(),
+            titulo: "Canción".into(),
+            artista: "Artista".into(),
+            aplicacion: "Prueba".into(),
+            caratula: None,
+            posicion: Some(15),
+            duracion: Some(60),
+            posicion_ms: Some(15_000),
+            duracion_ms: Some(60_000),
+            calidad: None,
+            reproduciendo: false,
+        }));
+        b.apretado = Some((Mando::Orden(crate::medios::Orden::Alternar), (100.0, 200.0)));
+        b.arrastre = Some(0.9);
+        assert!(b.cancelar_interaccion());
+        assert!(b.apretado.is_none());
+        assert!(b.arrastre.is_none());
+        assert!(!b.vuelta_pendiente);
+        assert!(!b.medios[0].reproduciendo, "cancelar no debe disparar play/pause");
+        assert_eq!(b.medios[0].posicion, Some(15), "cancelar no debe hacer seek");
+        assert!(!b.cancelar_interaccion());
     }
 }

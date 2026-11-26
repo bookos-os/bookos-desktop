@@ -142,27 +142,7 @@ pub fn leer() -> Vec<Persona> {
         .collect()
 }
 
-/// Las cuentas de persona: el rango de `UID_MIN`…`UID_MAX` de `login.defs` y un
-/// shell con el que se pueda entrar.
-// 0.1.1
-pub fn listables(passwd: &str) -> Vec<(String, u32, String)> {
-    passwd
-        .lines()
-        .filter_map(|linea| {
-            let campos: Vec<&str> = linea.split(':').collect();
-            let [cuenta, _, uid, _, gecos, _, shell] = campos[..] else {
-                return None;
-            };
-            let uid: u32 = uid.parse().ok()?;
-            let entra = !(shell.ends_with("/nologin") || shell.ends_with("/false"));
-            let nombre = gecos.split(',').next().unwrap_or_default().trim();
-            ((1000..60000).contains(&uid) && entra).then(|| {
-                let nombre = if nombre.is_empty() { cuenta } else { nombre };
-                (cuenta.to_string(), uid, nombre.to_string())
-            })
-        })
-        .collect()
-}
+pub use bookos_shell::bloqueo::listables;
 
 /// La carpeta publicada solo vale si es de quien dice ser. La raíz admite
 /// escritura de cualquiera, así que el nombre de la carpeta no prueba nada.

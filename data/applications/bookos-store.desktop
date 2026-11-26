@@ -1,10 +1,12 @@
 [Desktop Entry]
 Name=Store
 Name[es]=Tienda
-Comment=Instala y actualiza aplicaciones
+Comment=Install and update applications
+Comment[es]=Instala y actualiza aplicaciones
 Exec=bookos-store
 TryExec=bookos-store
 Icon=bookos-store
 Type=Application
 Categories=System;PackageManager;
-Keywords=tienda;aplicaciones;instalar;store;
+Keywords=store;apps;applications;install;
+Keywords[es]=tienda;aplicaciones;instalar;store;

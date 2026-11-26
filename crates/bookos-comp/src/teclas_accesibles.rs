@@ -122,6 +122,14 @@ pub fn tecla(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
     }
 }
 
+fn marcar_con_otra(pegadas: &mut HashMap<u32, Pegada>) {
+    for p in pegadas.values_mut() {
+        if let Pegada::Abajo { con_otra } = p {
+            *con_otra = true;
+        }
+    }
+}
+
 /// Teclas especiales: qué teclas salen hacia el teclado por una pulsación o
 /// una suelta, en orden. Separado de la entrega para poder probarlo sin un
 /// compositor entero.
@@ -129,11 +137,7 @@ fn decidir(pegadas: &mut HashMap<u32, Pegada>, raw: u32, estado: KeyState) -> Ve
     let pulsada = estado == KeyState::Pressed;
     if !es_pegajosa(raw) {
         if pulsada {
-            for p in pegadas.values_mut() {
-                if let Pegada::Abajo { con_otra } = p {
-                    *con_otra = true;
-                }
-            }
+            marcar_con_otra(pegadas);
         }
         let mut salida = vec![(raw, estado)];
         // Lo puesto vale para **una** tecla: se suelta después de entregarla,
@@ -209,13 +213,18 @@ fn pegajosas(state: &mut BookosComp, codigo: Keycode, estado: KeyState, time: u3
     }
 }
 
+fn decidir_tras_clic(pegadas: &mut HashMap<u32, Pegada>) -> Vec<u32> {
+    marcar_con_otra(pegadas);
+    gastar(pegadas)
+}
+
 /// Un clic con un modificador puesto lo gasta, como una tecla.
 // añadido en la 0.2.3
 pub fn tras_clic(state: &mut BookosComp, time: u32) {
     if !state.teclas_accesibles.especiales {
         return;
     }
-    for raw in gastar(&mut state.teclas_accesibles.pegadas) {
+    for raw in decidir_tras_clic(&mut state.teclas_accesibles.pegadas) {
         crate::input::entregar_tecla(state, Keycode::new(raw), KeyState::Released, time);
     }
 }
@@ -238,6 +247,11 @@ pub fn configurar(state: &mut BookosComp, especiales: bool, lentas: u32) {
             .collect();
         for raw in pegadas {
             crate::input::entregar_tecla(state, Keycode::new(raw), KeyState::Released, tiempo);
+        }
+    }
+    if lentas == 0 && !state.teclas_accesibles.esperando.is_empty() {
+        for (_, token) in state.teclas_accesibles.esperando.drain() {
+            state.loop_handle.remove(token);
         }
     }
     state.teclas_accesibles.especiales = especiales;
@@ -316,5 +330,16 @@ mod pruebas {
         assert!(!es_pegajosa(125 + 8));
         // Una letra (A, evdev 30).
         assert!(!es_pegajosa(30 + 8));
+    }
+
+    #[test]
+    fn ctrl_mantenido_con_clic_no_queda_pegado_al_soltar() {
+        let mut m = HashMap::new();
+        assert_eq!(pasa(&mut m, CTRL_IZQ, P), [(CTRL_IZQ, P)]);
+        assert!(decidir_tras_clic(&mut m).is_empty());
+        // Como ya se usó en Ctrl+clic, al soltar Ctrl debe salir el Released normal
+        // y no quedarse pegado para la siguiente letra.
+        assert_eq!(pasa(&mut m, CTRL_IZQ, R), [(CTRL_IZQ, R)]);
+        assert!(m.is_empty());
     }
 }

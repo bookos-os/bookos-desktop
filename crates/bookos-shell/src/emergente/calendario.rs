@@ -51,20 +51,28 @@ enum Boton {
     Siguiente,
 }
 
-const NOMBRES_DIA: [&str; 7] = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"];
-const NOMBRES_MES: [&str; 12] = [
-    "enero",
-    "febrero",
-    "marzo",
-    "abril",
-    "mayo",
-    "junio",
-    "julio",
-    "agosto",
-    "septiembre",
-    "octubre",
-    "noviembre",
-    "diciembre",
+const NOMBRES_DIA: [(&str, &str); 7] = [
+    ("Lun", "Mon"),
+    ("Mar", "Tue"),
+    ("Mié", "Wed"),
+    ("Jue", "Thu"),
+    ("Vie", "Fri"),
+    ("Sáb", "Sat"),
+    ("Dom", "Sun"),
+];
+const NOMBRES_MES: [(&str, &str); 12] = [
+    ("enero", "January"),
+    ("febrero", "February"),
+    ("marzo", "March"),
+    ("abril", "April"),
+    ("mayo", "May"),
+    ("junio", "June"),
+    ("julio", "July"),
+    ("agosto", "August"),
+    ("septiembre", "September"),
+    ("octubre", "October"),
+    ("noviembre", "November"),
+    ("diciembre", "December"),
 ];
 
 pub struct Calendario {
@@ -181,7 +189,7 @@ impl Calendario {
             return None;
         }
         let siguiente = ANCHO - MARGEN - SANGRIA - FLECHA;
-        let hoy = siguiente - ENTRE_BOTONES - control::ancho_chip("Hoy");
+        let hoy = siguiente - ENTRE_BOTONES - control::ancho_chip(super::t("Hoy", "Today"));
         let anterior = hoy - ENTRE_BOTONES - FLECHA;
         match x {
             x if x >= siguiente && x <= siguiente + FLECHA => Some(Boton::Siguiente),
@@ -259,14 +267,14 @@ impl Calendario {
 
     // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
-        let mes = NOMBRES_MES[(self.vista_mes - 1) as usize];
+        let (es, en) = NOMBRES_MES[(self.vista_mes - 1) as usize];
+        let mes = super::t(es, en);
         // El mes con mayúscula: en la cabecera es un título, no media frase.
-        let titulo = format!(
-            "{}{} {}",
-            mes[..1].to_uppercase(),
-            &mes[1..],
-            self.vista_anio
-        );
+        let mut chars = mes.chars();
+        let titulo = match chars.next() {
+            Some(c) => format!("{}{} {}", c.to_uppercase(), chars.as_str(), self.vista_anio),
+            None => format!("{mes} {}", self.vista_anio),
+        };
         let flecha = |nombre: &str| -> PanelElement<'static> {
             container(match icono::propio(nombre) {
                 Some(ic) => icono::ver_teñido_propio(&ic, 16.0, tema::texto2()),
@@ -284,7 +292,7 @@ impl Calendario {
                 Space::new().width(Length::Fill),
                 flecha("chevron-izquierda"),
                 Space::new().width(Length::Fixed(ENTRE_BOTONES)),
-                control::chip("Hoy", tema::superficie(), tema::texto()),
+                control::chip(super::t("Hoy", "Today"), tema::superficie(), tema::texto()),
                 Space::new().width(Length::Fixed(ENTRE_BOTONES)),
                 flecha("chevron-derecha"),
             ]
@@ -296,10 +304,10 @@ impl Calendario {
         .center_y(Length::Fixed(CABECERA));
 
         let mut semana = row![];
-        for nombre in NOMBRES_DIA {
+        for (es, en) in NOMBRES_DIA {
             semana = semana.push(
                 container(
-                    text(nombre)
+                    text(super::t(es, en))
                         .size(12)
                         .font(control::peso(Weight::Medium))
                         .color(tema::texto2()),
@@ -434,10 +442,17 @@ mod tests {
         let siguiente = ANCHO - MARGEN - SANGRIA - FLECHA / 2.0;
         c.pulsar(siguiente, y);
         assert_eq!((c.vista_anio, c.vista_mes), (2026, 2));
-        let hoy =
-            ANCHO - MARGEN - SANGRIA - FLECHA - ENTRE_BOTONES - control::ancho_chip("Hoy") / 2.0;
+        let hoy = ANCHO
+            - MARGEN
+            - SANGRIA
+            - FLECHA
+            - ENTRE_BOTONES
+            - control::ancho_chip(crate::emergente::t("Hoy", "Today")) / 2.0;
         assert_eq!(c.boton_en(hoy, y), Some(Boton::Hoy));
-        let anterior = hoy - control::ancho_chip("Hoy") / 2.0 - ENTRE_BOTONES - FLECHA / 2.0;
+        let anterior = hoy
+            - control::ancho_chip(crate::emergente::t("Hoy", "Today")) / 2.0
+            - ENTRE_BOTONES
+            - FLECHA / 2.0;
         c.pulsar(anterior, y);
         c.pulsar(anterior, y);
         assert_eq!((c.vista_anio, c.vista_mes), (2025, 12));

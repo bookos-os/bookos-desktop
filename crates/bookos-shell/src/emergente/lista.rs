@@ -429,7 +429,11 @@ pub fn seccion<'a>(titulo: &'a str, buscando: bool) -> PanelElement<'a> {
     .spacing(8)
     .align_y(Vertical::Center);
     if buscando {
-        fila = fila.push(text("buscando…").size(11.0).color(tema::texto2()));
+        fila = fila.push(
+            text(super::t("buscando…", "scanning…"))
+                .size(11.0)
+                .color(tema::texto2()),
+        );
     }
     container(fila)
         .width(Length::Fixed(BALDOSA))

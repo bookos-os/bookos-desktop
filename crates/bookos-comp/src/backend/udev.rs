@@ -204,7 +204,7 @@ pub fn run(
         render_formats,
     );
 
-    let salidas = crear_salidas(&mut manager, &mut renderer, state)?;
+    let mut salidas = crear_salidas(&mut manager, &mut renderer, state)?;
     let guardadas = pantallas::cargar();
     let principal = guardadas
         .iter()
@@ -217,21 +217,57 @@ pub fn run(
         })
         .unwrap_or(&salidas[0]);
     let principal_id = principal.id.clone();
-
     let escala = principal.output.current_scale().fractional_scale();
-    // La escala puede venir de `pantallas.conf` y no de `panel.conf`, así que
-    // hay que reponerla aquí: el resto del compositor la lee de este campo
-    // cuando la pantalla cambia de tamaño, y si no, volvería a la de la
-    // configuración vieja.
-    state.escala_forzada = Some(escala);
     let modo = principal
         .output
         .current_mode()
         .map(|m| m.size)
         .unwrap_or_default();
+    // Nada más abrir KMS, muestra la pantalla de carga de BookOS mientras se
+    // inicializa el shell, los shaders y el fondo del escritorio.
+    let kiosko = state.modo.kiosko();
+    if !kiosko && let Some(mut carga) = crate::arranque::PantallaCarga::nuevo(escala) {
+        let ahora = std::time::Instant::now();
+        for salida in &mut salidas {
+            let tam = salida
+                .output
+                .current_mode()
+                .map(|m| salida.output.current_transform().transform_size(m.size))
+                .unwrap_or_else(|| (1, 1).into());
+            let esc_s = salida.output.current_scale().fractional_scale();
+            let orig_s = salida.output.current_location();
+            let orig_px: Point<i32, Physical> = orig_s.to_f64().to_physical_precise_round(esc_s);
+            let elementos = carga
+                .elementos(&mut renderer, orig_s, (tam.w, tam.h), esc_s, ahora)
+                .into_iter()
+                .map(|e| RelocateRenderElement::from_element(e, (-orig_px.x, -orig_px.y), Relocate::Relative))
+                .collect::<Vec<_>>();
+            if let Ok(res) = salida.surface.render_frame(
+                &mut renderer,
+                &elementos,
+                [0.0, 0.0, 0.0, 1.0],
+                FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY,
+            ) && !res.is_empty
+            {
+                let feedback = OutputPresentationFeedback::new(&salida.output);
+                if salida.surface.queue_frame(feedback).is_ok() {
+                    salida.en_vuelo = true;
+                    salida.pendiente = false;
+                    salida.ultimo_envio = Some(ahora);
+                } else {
+                    salida.pendiente = true;
+                }
+            }
+        }
+        state.pantalla_carga = Some(carga);
+    }
+    // La escala puede venir de `pantallas.conf` y no de `panel.conf`, así que
+    // hay que reponerla aquí: el resto del compositor la lee de este campo
+    // cuando la pantalla cambia de tamaño, y si no, volvería a la de la
+    // configuración vieja.
+    state.escala_forzada = Some(escala);
     // En el kiosko no hay escritorio: sin shell no hay panel, dock, launchpad
     // ni bloqueo, y el resto del compositor ya trata `None` como «no hay».
-    let kiosko = state.modo.kiosko();
     if !kiosko {
         state.shell = Some(crate::shell::ShellHost::new(
             modo.w.max(1) as u32,
@@ -280,6 +316,9 @@ pub fn run(
     if let (Some(fondo), Some(cristal)) = (state.fondo.as_ref(), state.cristal.as_ref()) {
         let (rgba, tam) = fondo.rgba();
         cristal.borrow_mut().preparar(&mut renderer, rgba, tam);
+    }
+    if let Some(carga) = state.pantalla_carga.as_mut() {
+        carga.marcar_listo();
     }
     for salida in &salidas {
         state
@@ -413,6 +452,7 @@ pub fn run(
     crate::multimedia::vigilar_luz_teclado(state);
     crate::multimedia::vigilar_perfil_energia(state);
     crate::multimedia::vigilar_tapa_camara(state);
+    crate::multimedia::vigilar_acpi_galaxybook(state);
 
     // Los teclados, por lo mismo: sus luces las tiene que mandar el
     // compositor, y hay que poder hacerlo cuando cambie Bloq Mayús.
@@ -610,7 +650,7 @@ pub fn run(
     // El botón de encendido se inhibe para que lo atienda el diálogo del
     // shell; sin shell quedaría muerto, así que en el kiosko lo lleva logind.
     if !kiosko {
-        crate::portal::tema_gtk();
+        crate::portal::tema_gtk(true);
         crate::keybinds::inhibir_boton_de_encendido();
     }
     crate::backend::escuchar_reanudacion(state);
@@ -1479,9 +1519,10 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
             return;
         }
     }
-    // Antes de mirar nada: lo que se mueve solo avanza **una vez** por vuelta,
-    // no una por salida. Ver `backend::avanzar_animaciones`.
-    crate::backend::avanzar_animaciones(state);
+    // Antes de mirar nada: lo que se mueve solo avanza **una vez** por vuelta
+    // (proyectado al próximo vblank estimado para reducir 1 frame de error de fase).
+    let objetivo = proximo_vblank(&u.salidas, std::time::Instant::now());
+    crate::backend::avanzar_animaciones_en(state, objetivo);
     aplicar_gamma_pendiente(state, u);
     let animando = state.hay_animacion();
     let Udev {
@@ -1517,6 +1558,31 @@ fn dibujar_todas(state: &mut BookosComp, u: &mut Udev) {
 }
 
 // 0.1.0
+/// Estima el instante del próximo vblank entre las salidas activas que ya tienen
+/// un envío reciente; si no hay histórico válido, devuelve `ahora`.
+fn proximo_vblank(salidas: &[SalidaKms], ahora: std::time::Instant) -> std::time::Instant {
+    let mut mejor: Option<std::time::Instant> = None;
+    for salida in salidas {
+        let Some(ultimo) = salida.ultimo_envio else {
+            continue;
+        };
+        let periodo = salida
+            .output
+            .current_mode()
+            .filter(|m| m.refresh > 0)
+            .map(|m| Duration::from_nanos(1_000_000_000_000u64 / m.refresh as u64))
+            .unwrap_or_else(|| Duration::from_millis(16));
+        let candidato = ultimo + periodo;
+        if candidato > ahora && candidato <= ahora + periodo {
+            mejor = Some(match mejor {
+                Some(actual) => actual.min(candidato),
+                None => candidato,
+            });
+        }
+    }
+    mejor.unwrap_or(ahora)
+}
+
 fn dibujar_salida(
     state: &mut BookosComp,
     device: &DrmDevice,

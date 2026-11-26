@@ -21,7 +21,8 @@
 
 use std::time::{Duration, Instant};
 
-use iced_core::alignment::Vertical;
+use iced_core::alignment::{Horizontal, Vertical};
+use iced_core::text::Wrapping;
 use iced_core::{Border, Color, Length};
 use iced_widget::{Space, container, row, stack, text};
 
@@ -41,6 +42,14 @@ const ENTRADA: Duration = tema::D_POPOVER;
 /// radio completo, no una tarjeta con esquinas.
 const ANCHO: f32 = 263.0;
 pub const ALTO: f32 = 80.0;
+/// Ancho mínimo y máximo de una cápsula de solo texto (p. ej. escritorios virtuales).
+///
+/// Con 120 de mínimo, nombres cortos como «Work» o «Desktop 1» no dejan aire de
+/// más y una letra suelta («1») sigue leyendo como cápsula y no como círculo.
+/// Con 480 de máximo, un nombre largo o «nombre · monitor» recorta con «…» en
+/// vez de cruzar media pantalla.
+const ANCHO_MIN_TEXTO: f32 = ALTO * 1.5;
+const ANCHO_MAX_TEXTO: f32 = 480.0;
 /// Margen izquierdo hasta el icono, y del icono hasta la barra.
 ///
 /// En el diseño el icono empieza a 32 del borde y la barra a 61; el icono mide
@@ -127,9 +136,10 @@ pub struct Osd {
 impl Osd {
     // 0.1.0
     pub fn new(icono: &str, nivel: Option<u8>, texto: Option<String>) -> Self {
+        let (icono, tachado) = cargar_icono(icono);
         Self {
-            icono: cargar_icono(icono).0,
-            tachado: cargar_icono(icono).1,
+            icono,
+            tachado,
             nivel,
             // Recién creado, la barra ya está en su sitio: el primer aviso
             // enseña el volumen que hay, no lo dibuja creciendo desde cero.
@@ -161,7 +171,12 @@ impl Osd {
         (self.icono, self.tachado) = cargar_icono(icono);
         self.nivel = nivel;
         self.texto = texto;
-        self.barra.ir_a(fraccion_nivel(nivel));
+        let objetivo = fraccion_nivel(nivel);
+        if tema::efectos_reducidos() {
+            self.barra.fijar(objetivo);
+        } else {
+            self.barra.ir_a(objetivo);
+        }
         // Mantener la tecla llama aquí cada pocos milisegundos. Reiniciar
         // también la entrada devolvía el alfa a 0 y la escala a 0,92 en cada
         // repetición, y la cápsula parpadeaba mientras la barra subía. Solo se
@@ -225,27 +240,40 @@ impl Osd {
         )
     }
 
+    /// El ancho que ocupan el icono y el hueco hasta el texto, si hay icono.
+    fn ancho_icono(&self) -> f32 {
+        if self.icono.is_some() {
+            LADO_ICONO + HUECO_ICONO
+        } else {
+            0.0
+        }
+    }
+
+    /// El texto que cabe en una línea dentro del ancho máximo de la cápsula.
+    fn texto_visible(&self) -> Option<String> {
+        if self.nivel.is_some() {
+            return None;
+        }
+        let texto = self.texto.as_deref()?;
+        let max_ancho = (ANCHO_MAX_TEXTO - MARGEN_IZQ * 2.0 - self.ancho_icono()).max(0.0);
+        Some(recortar_texto(texto, max_ancho))
+    }
+
     /// El ancho de la cápsula.
     ///
     /// Con barra es fijo, el del diseño. Con texto se ajusta a lo que hay que
-    /// escribir —«Touchpad desactivado» y «Fn lock» no ocupan lo mismo—, que es
-    /// lo que hacen las cápsulas del diseño: 221 una y 199 otra.
+    /// escribir —«Desktop 1», «Touchpad desactivado» y «Fn lock» no ocupan lo
+    /// mismo—, redondeado al entero superior para que el párrafo nunca parta ni
+    /// recorte en escalas fraccionarias.
     // 0.1.0
     fn ancho(&self) -> f32 {
-        match (&self.texto, self.nivel) {
-            (Some(t), None) => {
-                // `ancho_de` y no `ancho_texto`: esa es la estimación por
-                // carácter que su propio comentario dice que no vale para
-                // esto —"desalineaba los clics"— y aquí desalineaba el
-                // relleno. Medido: "Touchpad desactivado" estimaba 146 y mide
-                // 136 de verdad; "Escritorio 2" estimaba 88 y mide 68, casi un
-                // 30 % de más. La cápsula salía siempre más ancha que su
-                // texto, con el icono y la frase pegados a la izquierda y un
-                // hueco vacío a la derecha que no pertenecía a ningún margen.
-                let texto = crate::widget::ancho_de(t, tema::T_CUERPO);
-                (MARGEN_IZQ + LADO_ICONO + HUECO_ICONO + texto + MARGEN_IZQ).max(ALTO * 2.0)
-            }
-            _ => ANCHO,
+        if let Some(t) = self.texto_visible() {
+            let texto = crate::widget::ancho_de(&t, tema::T_CUERPO).ceil();
+            (MARGEN_IZQ + self.ancho_icono() + texto + MARGEN_IZQ)
+                .ceil()
+                .clamp(ANCHO_MIN_TEXTO, ANCHO_MAX_TEXTO)
+        } else {
+            ANCHO
         }
     }
 
@@ -266,26 +294,44 @@ impl Osd {
         // El nivel manda sobre el texto: si hay barra, el número sobra — la
         // barra ya dice cuánto, y a un OSD que se va en un segundo no le sobra
         // sitio para decir lo mismo dos veces.
-        let derecha: PanelElement<'_> = match (self.nivel, &self.texto) {
-            (Some(_), _) => self.barra(),
-            (None, Some(t)) => text(t.clone())
-                .size(tema::T_CUERPO)
-                .color(tema::texto())
-                .into(),
-            (None, None) => Space::new().into(),
-        };
-        let capsula = container(
-            row![
+        let capsula = if self.nivel.is_some() {
+            let contenido = row![
                 Space::new().width(Length::Fixed(MARGEN_IZQ)),
                 dibujo,
                 Space::new().width(Length::Fixed(HUECO_ICONO)),
-                derecha,
+                self.barra(),
             ]
-            .align_y(Vertical::Center),
-        )
-        .width(Length::Fixed(self.ancho()))
-        .height(Length::Fixed(ALTO))
-        .center_y(Length::Fixed(ALTO))
+            .align_y(Vertical::Center);
+            container(contenido)
+                .width(Length::Fixed(self.ancho()))
+                .height(Length::Fixed(ALTO))
+                .align_y(Vertical::Center)
+        } else {
+            let contenido: PanelElement<'_> = match (self.icono.is_some(), self.texto_visible()) {
+                (true, Some(t)) => row![
+                    dibujo,
+                    Space::new().width(Length::Fixed(HUECO_ICONO)),
+                    text(t)
+                        .size(tema::T_CUERPO)
+                        .color(tema::texto())
+                        .wrapping(Wrapping::None),
+                ]
+                .align_y(Vertical::Center)
+                .into(),
+                (false, Some(t)) => text(t)
+                    .size(tema::T_CUERPO)
+                    .color(tema::texto())
+                    .wrapping(Wrapping::None)
+                    .into(),
+                (true, None) => dibujo,
+                (false, None) => Space::new().into(),
+            };
+            container(contenido)
+                .width(Length::Fixed(self.ancho()))
+                .height(Length::Fixed(ALTO))
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+        }
         .style(|_theme: &iced_widget::Theme| container::Style {
             background: Some(fondo().into()),
             border: Border {
@@ -304,9 +350,15 @@ impl Osd {
             shadow: tema::sombra_toast(),
             ..Default::default()
         });
-        // El margen de la sombra: el buffer es más grande que la cápsula y esto
-        // la coloca en medio. Sin fondo, o sea transparente.
-        container(capsula).padding(MARGEN_SOMBRA).into()
+        // El buffer puede crecer algún píxel lógico en escalas fraccionarias por
+        // `a_pixel_entero`; centrando dentro de todo el lienzo ese ajuste se
+        // reparte por igual a los lados en vez de empujar la cápsula.
+        container(capsula)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Center)
+            .into()
     }
 
     // 0.1.0
@@ -353,6 +405,31 @@ fn cargar_icono(nombre: &str) -> (Option<Icono>, bool) {
         None => (nombre, false),
     };
     (icono::propio(base).or_else(|| icono::cargar(base)), tachado)
+}
+
+/// Recorta el texto del OSD a una línea con puntos suspensivos cuando excede `max_ancho`.
+fn recortar_texto(texto: &str, max_ancho: f32) -> String {
+    if max_ancho <= 0.0 {
+        return String::new();
+    }
+    if crate::widget::ancho_de(texto, tema::T_CUERPO) <= max_ancho {
+        return texto.to_string();
+    }
+    let letras: Vec<char> = texto.chars().collect();
+    let (mut bajo, mut alto) = (0usize, letras.len());
+    while bajo < alto {
+        let medio = (bajo + alto).div_ceil(2);
+        let prueba: String = letras[..medio].iter().collect::<String>() + "…";
+        if crate::widget::ancho_de(&prueba, tema::T_CUERPO) <= max_ancho {
+            bajo = medio;
+        } else {
+            alto = medio - 1;
+        }
+    }
+    if bajo == 0 {
+        return "…".to_string();
+    }
+    letras[..bajo].iter().collect::<String>() + "…"
 }
 
 /// El nivel como fracción del ancho de la barra. Sin nivel, vacía.
@@ -487,22 +564,63 @@ mod pruebas_ancho_texto {
     /// hueco vacío a la derecha.
     #[test]
     fn la_capsula_de_texto_se_ciñe_al_texto_de_verdad() {
-        for t in [
-            "Touchpad desactivado",
-            "Touchpad activado",
-            "Escritorio 2",
-            "Escritorio 10",
-            "Fn lock",
+        for (icono, t) in [
+            ("escritorio-1", "1"),
+            ("escritorio-1", "Work"),
+            ("escritorio-1", "Desktop 1"),
+            ("escritorio-2", "Escritorio 2"),
+            ("escritorio-2", "Escritorio 2 · eDP-1"),
+            ("touchpad", "Touchpad desactivado"),
+            ("teclado", "Fn lock"),
         ] {
-            let o = Osd::new("touchpad", None, Some(t.to_string()));
+            let o = Osd::new(icono, None, Some(t.to_string()));
             let ancho_capsula = o.ancho();
-            let real = crate::widget::ancho_de(t, tema::T_CUERPO);
-            let esperado =
-                (MARGEN_IZQ + LADO_ICONO + HUECO_ICONO + real + MARGEN_IZQ).max(ALTO * 2.0);
+            let real = crate::widget::ancho_de(t, tema::T_CUERPO).ceil();
+            let esperado = (MARGEN_IZQ + o.ancho_icono() + real + MARGEN_IZQ)
+                .ceil()
+                .clamp(ANCHO_MIN_TEXTO, ANCHO_MAX_TEXTO);
             assert!(
                 (ancho_capsula - esperado).abs() < 0.5,
                 "{t:?}: cápsula={ancho_capsula:.1} esperado={esperado:.1}"
             );
         }
+
+        let ancho_work = Osd::new("escritorio-1", None, Some("Work".into())).ancho();
+        let ancho_desktop = Osd::new("escritorio-1", None, Some("Desktop 1".into())).ancho();
+        let ancho_largo_medio =
+            Osd::new("escritorio-2", None, Some("Escritorio 2 · eDP-1".into())).ancho();
+        assert!(
+            ancho_work < 160.0 && ancho_desktop < 160.0,
+            "los nombres cortos deben ceñirse en vez de quedarse en 160 px: work={ancho_work}, desktop={ancho_desktop}"
+        );
+        assert!(ancho_work < ancho_desktop && ancho_desktop < ancho_largo_medio);
+
+        let muy_largo = "Escritorio con un nombre larguísimo pensado para desbordar cualquier pantalla normal del portátil · eDP-1";
+        let o_largo = Osd::new("escritorio-2", None, Some(muy_largo.into()));
+        assert!(
+            o_largo.ancho() <= ANCHO_MAX_TEXTO && o_largo.ancho() >= ANCHO_MAX_TEXTO - 20.0,
+            "ancho={}",
+            o_largo.ancho()
+        );
+        let visible = o_largo.texto_visible().expect("tiene texto recortado");
+        assert!(visible.ends_with('…'), "{visible:?}");
+        assert!(visible.chars().count() < muy_largo.chars().count());
+    }
+
+    #[test]
+    fn actualizar_con_efectos_reducidos_fija_barra_sin_animar() {
+        struct GuardiaReducidos(bool);
+        impl Drop for GuardiaReducidos {
+            fn drop(&mut self) {
+                tema::aplicar_efectos_reducidos(self.0);
+            }
+        }
+        let _g = GuardiaReducidos(tema::efectos_reducidos());
+        tema::aplicar_efectos_reducidos(true);
+
+        let mut o = Osd::new("volumen", Some(20), None);
+        assert!(o.actualizar("volumen", Some(80), None));
+        assert!(!o.barra.animando());
+        assert!((o.barra.valor() - 0.8).abs() < 0.001);
     }
 }

@@ -1,0 +1,15 @@
+[Unit]
+Description=Control térmico y de silencio adaptativo de BookOS
+After=power-profiles-daemon.service thermald.service
+Wants=power-profiles-daemon.service
+
+[Service]
+Type=simple
+RuntimeDirectory=bookos-termico
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/libexec/bookos-termico.py
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -100,6 +100,9 @@ impl Notificaciones {
     /// quieta.
     // 0.1.0
     fn chapa_en_curso(&self) -> Option<(Chapa, f32)> {
+        if tema::efectos_reducidos() {
+            return None;
+        }
         let (chapa, desde) = self.chapa?;
         let pasado = desde.elapsed();
         (pasado < chapa.duracion()).then(|| (chapa, tema::fraccion(pasado, chapa.duracion())))
@@ -274,5 +277,26 @@ mod tests {
         assert!(!n.no_molestar(true), "el mismo dato no repinta");
         assert!(n.no_molestar(false));
         assert_eq!(n.icono_nombre, "notificaciones");
+    }
+
+    #[test]
+    fn efectos_reducidos_detiene_la_chapa_en_curso() {
+        struct Guardia(bool);
+        impl Drop for Guardia {
+            fn drop(&mut self) {
+                tema::aplicar_efectos_reducidos(self.0);
+            }
+        }
+        let _guardia = Guardia(tema::efectos_reducidos());
+        tema::aplicar_efectos_reducidos(false);
+
+        let mut n = Notificaciones::new();
+        assert!(n.notificaciones(2));
+        assert!(n.chapa_en_curso().is_some());
+        assert!(n.animando());
+
+        tema::aplicar_efectos_reducidos(true);
+        assert!(n.chapa_en_curso().is_none());
+        assert!(!n.animando());
     }
 }

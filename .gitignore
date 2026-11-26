@@ -48,3 +48,6 @@ launchpad*.png
 # --- Escritorio --------------------------------------------------------------
 # `.directory` lo deja Dolphin en cuanto cambias la vista de una carpeta.
 .directory
+
+# --- Paquetes generados de bookos-extras -------------------------------------
+/extras-pkg/dist/

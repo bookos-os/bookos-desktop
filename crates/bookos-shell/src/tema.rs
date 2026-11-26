@@ -1479,6 +1479,7 @@ impl Muelle {
 
     // añadido en la 0.2.0 -- solo cede al llegar si el impulso ya alcanzaría el destino por sí mismo.
     pub fn soltar_gesto(&mut self, destino: f32, velocidad: f32) {
+        let velocidad = velocidad.clamp(-4.5, 4.5);
         let distancia = destino - self.valor;
         let impulso = proyectar_impulso(0.0, velocidad);
         let rebota = impulso * distancia > 0.0 && impulso.abs() >= distancia.abs();

@@ -2348,8 +2348,13 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
     let t = 100_000 + i as u32 * 50;
     let espera = match partes.as_slice() {
         // añadido en la 0.2.0 -- separar apoyo y liberación permite verificar que el botón aún no se ha confirmado.
-        ["dedo", fase, ..] => {
-            let slot = smithay::backend::input::TouchSlot::from(Some(0));
+        [dedo @ ("dedo" | "dedo2" | "dedo3"), fase, ..] => {
+            let indice = match *dedo {
+                "dedo2" => 1,
+                "dedo3" => 2,
+                _ => 0,
+            };
+            let slot = smithay::backend::input::TouchSlot::from(Some(indice));
             match *fase {
                 "apoyar" | "mover" => {
                     let (Some(x), Some(y)) = (numero(2), numero(3)) else {
@@ -2391,6 +2396,52 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
                 state.shell.as_ref().and_then(|s| s.emergente_nombre()),
                 esperada,
                 "la tarjeta visible debe coincidir con el resultado del gesto"
+            );
+            despues(3)
+        }
+        ["comprobar", "barra", nombre, esperada, ..] => {
+            use crate::shell::Barra;
+            let barra = match *nombre {
+                "dock" => Barra::Dock,
+                "panel" => Barra::Panel,
+                _ => panic!("barra desconocida: {nombre}"),
+            };
+            let completa = state.hay_pantalla_completa();
+            assert_eq!(
+                state
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.barra_visible_tactil(barra, completa)),
+                *esperada == "visible",
+                "visibilidad de la barra {nombre}"
+            );
+            despues(4)
+        }
+        ["comprobar", "recientes", esperada, ..] => {
+            assert_eq!(
+                state
+                    .vista_tactil
+                    .as_ref()
+                    .is_some_and(crate::multitarea_tactil::Vista::visible),
+                *esperada == "visible",
+                "visibilidad de Aplicaciones recientes"
+            );
+            despues(3)
+        }
+        ["nuevo-escritorio"] => {
+            assert!(
+                crate::escritorios::crear(state),
+                "se crea un escritorio de prueba"
+            );
+            RESPIRO
+        }
+        ["comprobar", "escritorio", numero, ..] => {
+            let nombre = crate::input::salida_tactil(state)
+                .expect("hay salida táctil")
+                .name();
+            assert_eq!(
+                state.escritorios.activo_en(&nombre),
+                numero.parse::<usize>().expect("índice")
             );
             despues(3)
         }
@@ -2474,6 +2525,7 @@ fn paso_de_guion(state: &mut BookosComp, pasos: std::rc::Rc<Vec<String>>, i: usi
             crate::atenuacion::actividad(state);
             let tapado = crate::salvapantallas::actividad(state);
             if !tapado {
+                crate::input::mostrar_cursor_raton(state);
                 crate::input::set_pointer(state, (x, y).into(), t);
             }
             let espera = despues(3);

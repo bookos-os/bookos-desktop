@@ -91,7 +91,7 @@ impl Fundido {
 
     // 0.1.0
     pub fn terminado(&self) -> bool {
-        self.inicio.elapsed() >= tema::D_TEMA
+        crate::cierre::terminado_en(self.inicio, tema::D_TEMA)
     }
 
     /// La foto de este fotograma, encima de todo y cada vez más transparente.

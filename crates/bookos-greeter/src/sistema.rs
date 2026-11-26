@@ -1,5 +1,5 @@
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use bookos_shell::Battery;
@@ -15,8 +15,9 @@ impl Idioma {
 
     // 0.1.1
     pub fn detectar() -> Self {
-        let lang = std::env::var("LANG")
-            .ok()
+        let lang = ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .into_iter()
+            .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
             .or_else(|| leer_clave_conf("/etc/default/bookos-greeter", "LANG"))
             .or_else(|| leer_clave_conf("/etc/locale.conf", "LANG"))
             .unwrap_or_else(|| "es_ES.UTF-8".into());
@@ -153,14 +154,56 @@ fn leer_clave_conf(ruta: &str, clave: &str) -> Option<String> {
 }
 
 // 0.1.1
-pub fn guardar_preferencias_greeter(layout: &str, lang: &str) -> Option<()> {
+pub fn leer_ultimo_usuario() -> Option<String> {
+    if let Ok(valor) = std::env::var("BOOKOS_LAST_USER") {
+        let limpio = valor.trim();
+        return (!limpio.is_empty() && cuenta_valida(limpio)).then(|| limpio.to_string());
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let ruta = home.join("greeter.env");
+    leer_ultimo_usuario_en(&home.join("greeter.env"))
+}
+
+pub(crate) fn leer_ultimo_usuario_en(ruta: &Path) -> Option<String> {
+    let valor = leer_clave_conf(ruta.to_str()?, "BOOKOS_LAST_USER")?;
+    let limpio = valor.trim();
+    (!limpio.is_empty() && cuenta_valida(limpio)).then(|| limpio.to_string())
+}
+
+fn cuenta_valida(cuenta: &str) -> bool {
+    cuenta
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+// 0.1.1
+pub fn guardar_preferencias_greeter(
+    layout: &str,
+    lang: &str,
+    ultimo_usuario: Option<&str>,
+) -> Option<()> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    guardar_preferencias_en(&home.join("greeter.env"), layout, lang, ultimo_usuario)
+}
+
+pub(crate) fn guardar_preferencias_en(
+    ruta: &Path,
+    layout: &str,
+    lang: &str,
+    ultimo_usuario: Option<&str>,
+) -> Option<()> {
     let temporal = ruta.with_extension("parcial");
-    let contenido = format!("XKB_DEFAULT_LAYOUT={layout}\nLANG={lang}\n");
+    let ultimo = ultimo_usuario
+        .map(str::trim)
+        .filter(|u| !u.is_empty() && cuenta_valida(u))
+        .map(str::to_string)
+        .or_else(|| leer_clave_conf(ruta.to_str()?, "BOOKOS_LAST_USER").filter(|u| cuenta_valida(u)));
+    let mut contenido = format!("XKB_DEFAULT_LAYOUT={layout}\nLANG={lang}\n");
+    if let Some(u) = ultimo {
+        contenido.push_str(&format!("BOOKOS_LAST_USER={u}\n"));
+    }
     std::fs::write(&temporal, contenido).ok()?;
     let _ = std::fs::set_permissions(&temporal, std::fs::Permissions::from_mode(0o644));
-    std::fs::rename(&temporal, &ruta).ok()
+    std::fs::rename(&temporal, ruta).ok()
 }
 
 // 0.1.1
@@ -530,7 +573,13 @@ pub fn parsear_lista_wifi(
             guardada,
         });
     }
-    redes.sort_by_key(|r| (std::cmp::Reverse(r.activa), std::cmp::Reverse(r.senal)));
+    redes.sort_by_key(|r| {
+        (
+            std::cmp::Reverse(r.activa),
+            std::cmp::Reverse(r.guardada),
+            std::cmp::Reverse(r.senal),
+        )
+    });
     let mut vistos = std::collections::HashSet::new();
     redes.retain(|r| vistos.insert(r.ssid.clone()));
     redes.truncate(6);
@@ -578,7 +627,11 @@ pub fn alternar_wifi(encender: bool) -> Result<EstadoWifi, String> {
 }
 
 // 0.1.1
-pub fn conectar_wifi(ssid: &str, password: Option<&str>) -> Result<EstadoWifi, String> {
+pub fn conectar_wifi(
+    ssid: &str,
+    password: Option<&str>,
+    idioma: Idioma,
+) -> Result<EstadoWifi, String> {
     let mut cmd = Command::new("nmcli");
     cmd.env("LC_ALL", "C")
         .args(["-w", "25", "device", "wifi", "connect", ssid]);
@@ -594,7 +647,9 @@ pub fn conectar_wifi(ssid: &str, password: Option<&str>) -> Result<EstadoWifi, S
         } else if !out.is_empty() {
             out
         } else {
-            "No se pudo conectar a la red".into()
+            idioma
+                .t("No se pudo conectar a la red", "Couldn't connect to the network")
+                .into()
         });
     }
     Ok(leer_wifi(false))
@@ -633,49 +688,64 @@ pub struct EstadoBateria {
     pub perfiles_disponibles: Vec<String>,
 }
 
+fn leer_primera_ruta(rutas: &[&str]) -> Option<String> {
+    rutas
+        .iter()
+        .find_map(|ruta| std::fs::read_to_string(ruta).ok())
+}
+
 // 0.1.1
 pub fn leer_bateria(con_minutos: bool) -> EstadoBateria {
     let dato = Battery::read(con_minutos);
     let tope = leer_tope_carga();
-    let perfil = std::fs::read_to_string("/sys/firmware/acpi/platform_profile")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .map(|s| {
-            if s == "low-power" || s == "quiet" {
-                "power-saver".to_string()
-            } else if s == "balanced-performance" {
+    let silencio_adaptativo = std::fs::read_to_string("/run/bookos-termico/estado")
+        .is_ok_and(|s| s.trim() == "balanced-quiet");
+    let perfil = leer_primera_ruta(&[
+        "/sys/firmware/acpi/platform_profile",
+        "/sys/class/platform-profile/platform-profile-0/profile",
+    ])
+    .map(|s| s.trim().to_string())
+    .map(|s| {
+        if s == "low-power" || s == "quiet" {
+            if silencio_adaptativo {
                 "balanced".to_string()
             } else {
-                s
+                "power-saver".to_string()
             }
-        })
-        .unwrap_or_else(|| "balanced".into());
-    let perfiles_disponibles =
-        std::fs::read_to_string("/sys/firmware/acpi/platform_profile_choices")
-            .ok()
-            .map(|s| {
-                let mut v = Vec::new();
-                for token in s.split_whitespace() {
-                    let norm = match token {
-                        "low-power" | "quiet" | "power-saver" => "power-saver",
-                        "balanced" | "balanced-performance" => "balanced",
-                        "performance" => "performance",
-                        _ => continue,
-                    };
-                    if !v.contains(&norm.to_string()) {
-                        v.push(norm.to_string());
-                    }
-                }
-                v
-            })
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| {
-                vec![
-                    "power-saver".into(),
-                    "balanced".into(),
-                    "performance".into(),
-                ]
-            });
+        } else if s == "balanced-performance" {
+            "balanced".to_string()
+        } else {
+            s
+        }
+    })
+    .unwrap_or_else(|| "balanced".into());
+    let perfiles_disponibles = leer_primera_ruta(&[
+        "/sys/firmware/acpi/platform_profile_choices",
+        "/sys/class/platform-profile/platform-profile-0/choices",
+    ])
+    .map(|s| {
+        let mut v = Vec::new();
+        for token in s.split_whitespace() {
+            let norm = match token {
+                "low-power" | "quiet" | "power-saver" => "power-saver",
+                "balanced" | "balanced-performance" => "balanced",
+                "performance" => "performance",
+                _ => continue,
+            };
+            if !v.contains(&norm.to_string()) {
+                v.push(norm.to_string());
+            }
+        }
+        v
+    })
+    .filter(|v| !v.is_empty())
+    .unwrap_or_else(|| {
+        vec![
+            "power-saver".into(),
+            "balanced".into(),
+            "performance".into(),
+        ]
+    });
     EstadoBateria {
         dato,
         tope,

@@ -57,15 +57,6 @@ use crate::state::BookosComp;
 const ENTRADA_ALFA: Duration = tema::D_TARJETA;
 const ENTRADA_ZOOM: Duration = tema::D_MODAL;
 
-/// Lo que tarda una ventana en llegar a su sitio cuando el compositor la mueve
-/// o la cambia de tamaño: maximizar, restaurar, recolocar al cambiar la
-/// pantalla. Es la "transición de página completa" del sistema, que es
-/// exactamente lo que pasa en pantalla.
-///
-/// No cubre el arrastre con el ratón: ahí la ventana tiene que ir pegada al
-/// cursor, y suavizarla se siente como arrastrar algo con retardo.
-const MOVIMIENTO: Duration = tema::D_VENTANA;
-
 /// De qué tamaño arranca una ventana al aparecer.
 ///
 /// 0,92 y no algo más pequeño porque a partir de ahí el texto del cliente se ve
@@ -82,14 +73,84 @@ const CASCADA: i32 = 32;
 /// Todo son `Cell` porque se consulta desde `&Window` —el `UserDataMap` solo
 /// presta referencias compartidas— y el compositor es de un solo hilo, así que
 /// no hace falta nada más caro.
+const UMBRAL_MUELLE_PX: f32 = 0.25;
+const UMBRAL_MUELLE_VEL: f32 = 2.0;
+
+#[derive(Debug, Clone, Copy)]
+struct RectMuelle {
+    x: tema::Muelle,
+    y: tema::Muelle,
+    w: tema::Muelle,
+    h: tema::Muelle,
+    destino: Rectangle<i32, Logical>,
+}
+
+impl RectMuelle {
+    fn nuevo(origen: Rectangle<i32, Logical>, destino: Rectangle<i32, Logical>) -> Self {
+        Self::nuevo_con_velocidad(origen, (0.0, 0.0, 0.0, 0.0), destino)
+    }
+
+    fn nuevo_con_velocidad(
+        origen: Rectangle<i32, Logical>,
+        velocidad: (f32, f32, f32, f32),
+        destino: Rectangle<i32, Logical>,
+    ) -> Self {
+        let mut x = tema::Muelle::nuevo(origen.loc.x as f32, tema::M_SUAVE);
+        let mut y = tema::Muelle::nuevo(origen.loc.y as f32, tema::M_SUAVE);
+        let mut w = tema::Muelle::nuevo(origen.size.w.max(1) as f32, tema::M_SUAVE);
+        let mut h = tema::Muelle::nuevo(origen.size.h.max(1) as f32, tema::M_SUAVE);
+        x.soltar(destino.loc.x as f32, velocidad.0);
+        y.soltar(destino.loc.y as f32, velocidad.1);
+        w.soltar(destino.size.w.max(1) as f32, velocidad.2);
+        h.soltar(destino.size.h.max(1) as f32, velocidad.3);
+        Self {
+            x,
+            y,
+            w,
+            h,
+            destino,
+        }
+    }
+
+    fn ir_a(&mut self, destino: Rectangle<i32, Logical>, ahora: Instant) {
+        self.avanzar(ahora);
+        self.x.ir_a(destino.loc.x as f32);
+        self.y.ir_a(destino.loc.y as f32);
+        self.w.ir_a(destino.size.w.max(1) as f32);
+        self.h.ir_a(destino.size.h.max(1) as f32);
+        self.destino = destino;
+    }
+
+    fn avanzar(&mut self, ahora: Instant) {
+        self.x.avanzar(ahora);
+        self.y.avanzar(ahora);
+        self.w.avanzar(ahora);
+        self.h.avanzar(ahora);
+    }
+
+    fn quieto(&self) -> bool {
+        eje_quieto(&self.x)
+            && eje_quieto(&self.y)
+            && eje_quieto(&self.w)
+            && eje_quieto(&self.h)
+    }
+}
+
+fn eje_quieto(m: &tema::Muelle) -> bool {
+    (m.valor() - m.destino()).abs() < UMBRAL_MUELLE_PX && m.velocidad().abs() < UMBRAL_MUELLE_VEL
+}
+
 #[derive(Debug, Default)]
 pub struct Estado {
     encima: Cell<bool>,
     /// Cuándo apareció. `None` mientras no se ha colocado todavía: una ventana
     /// sin tamaño aún no puede centrarse ni empezar a animarse.
     nacida: Cell<Option<Instant>>,
-    /// De dónde viene un movimiento en curso, y cuándo empezó.
-    desde: Cell<Option<(Rectangle<i32, Logical>, Instant)>>,
+    /// Nació acoplada desde una vista previa héroe (p. ej. la miniatura de captura),
+    /// así que entra opaca desde su rectángulo en vuelo en vez de hacer pop/lámpara.
+    acoplada: Cell<bool>,
+    /// Muelle crítico por arista de un movimiento/cambio de tamaño en curso.
+    desde: Cell<Option<RectMuelle>>,
     /// Dónde estaba antes de encajarse, para poder volver.
     restaurar: Cell<Option<Rectangle<i32, Logical>>>,
     /// En qué zona está encajada, si lo está.
@@ -408,28 +469,114 @@ pub fn colocada(window: &Window) -> bool {
 /// Marca la ventana como colocada y arranca su animación de entrada.
 // 0.1.0
 pub fn nace(window: &Window) {
-    estado(window).nacida.set(Some(Instant::now()));
+    let est = estado(window);
+    est.acoplada.set(false);
+    est.nacida.set(Some(Instant::now()));
+}
+
+/// Coloca la ventana acoplada al rectángulo y velocidad actuales de una vista previa héroe.
+pub fn nace_acoplada(
+    window: &Window,
+    origen: Rectangle<i32, Logical>,
+    velocidad: (f32, f32, f32, f32),
+    destino: Rectangle<i32, Logical>,
+) {
+    let est = estado(window);
+    est.acoplada.set(true);
+    est.nacida.set(Some(Instant::now()));
+    est.encogido.set(None);
+    if tema::efectos_reducidos() || origen == destino {
+        est.desde.set(None);
+    } else {
+        est.desde
+            .set(Some(RectMuelle::nuevo_con_velocidad(origen, velocidad, destino)));
+    }
+}
+
+/// Rectángulo lógico visual actual de `window`, contando movimiento/resize en curso.
+pub fn rect_animado(state: &BookosComp, window: &Window) -> Option<Rectangle<f64, Logical>> {
+    let loc = state.space.element_location(window)?;
+    let geo = window.geometry().size;
+    if geo.w <= 0 || geo.h <= 0 {
+        return None;
+    }
+    if let Some(e) = encogido(window) {
+        let (pos, esc, _) = encogido_ahora(e);
+        return Some(Rectangle::new(
+            pos,
+            (geo.w as f64 * esc, geo.h as f64 * esc).into(),
+        ));
+    }
+    let pos = posicion(window, loc);
+    let resize = escala_resize(window, geo);
+    let (_, zoom) = animacion(window);
+    let w = geo.w as f64 * resize.x * zoom;
+    let h = geo.h as f64 * resize.y * zoom;
+    let (dx, dy) = if (resize.x - 1.0).abs() < 0.001 && (resize.y - 1.0).abs() < 0.001 {
+        ((geo.w as f64 - w) * 0.5, (geo.h as f64 - h) * 0.5)
+    } else {
+        (0.0, 0.0)
+    };
+    Some(Rectangle::new(
+        (pos.x + dx, pos.y + dy).into(),
+        (w.max(1.0), h.max(1.0)).into(),
+    ))
 }
 
 /// Apunta que la ventana viene de `origen` y tiene que llegar animada a su
 /// posición actual.
 // 0.1.0
-pub fn mover_desde(window: &Window, origen: Rectangle<i32, Logical>) {
-    estado(window).desde.set(Some((origen, Instant::now())));
+/// Arranca o redirige el muelle crítico de una ventana entre `origen` y `destino`,
+/// conservando posición subpíxel y velocidad si ya había un movimiento en curso.
+// 0.1.0
+pub fn mover_desde(
+    window: &Window,
+    origen: Rectangle<i32, Logical>,
+    destino: Rectangle<i32, Logical>,
+) {
+    if tema::efectos_reducidos() {
+        estado(window).desde.set(None);
+        return;
+    }
+    let estado = estado(window);
+    if let Some(mut muelle) = estado.desde.get()
+        && !muelle.quieto()
+    {
+        muelle.ir_a(destino, Instant::now());
+        estado.desde.set(Some(muelle));
+        return;
+    }
+    if origen == destino {
+        estado.desde.set(None);
+        return;
+    }
+    estado.desde.set(Some(RectMuelle::nuevo(origen, destino)));
 }
 
-/// Progreso único para posición y tamaño durante un cambio de geometría.
-///
-/// Mantenerlo en una función evita que maximizar use una curva para la esquina
-/// y otra para los bordes. Es una cubic-bezier sin rebote: el contenido del
-/// cliente ya está rasterizado y cualquier sobrepaso se leería como borrosidad.
-// 0.1.0
-fn avance_movimiento(pasado: Duration) -> f64 {
-    tema::C_VENTANA.eval(tema::avance(pasado, MOVIMIENTO)) as f64
+/// Avanza una sola vez por fotograma los muelles de geometría de las ventanas
+/// visibles hasta `ahora` (idealmente el instante del próximo vblank).
+pub fn avanzar_movimientos(state: &BookosComp, ahora: Instant) {
+    for window in state.space.elements() {
+        let estado = estado(window);
+        let Some(mut muelle) = estado.desde.get() else {
+            continue;
+        };
+        if tema::efectos_reducidos() {
+            estado.desde.set(None);
+            continue;
+        }
+        muelle.avanzar(ahora);
+        if muelle.quieto() {
+            estado.desde.set(None);
+        } else {
+            estado.desde.set(Some(muelle));
+        }
+    }
 }
 
 /// Interpola las cuatro aristas de un rectángulo con una sola fracción.
 // 0.1.0
+#[cfg(test)]
 fn interpolar_rect(
     origen: Rectangle<i32, Logical>,
     destino: Rectangle<i32, Logical>,
@@ -448,19 +595,6 @@ fn interpolar_rect(
         )
             .into(),
     )
-}
-
-/// Geometría que se está viendo ahora, aunque el `Space` ya guarde el destino.
-/// Sirve para redirigir maximizar/restaurar sin saltar al extremo anterior.
-// 0.1.0
-fn geometria_visual(window: &Window, destino: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
-    let Some((origen, t0)) = estado(window).desde.get() else {
-        return destino;
-    };
-    if t0.elapsed() >= MOVIMIENTO {
-        return destino;
-    }
-    interpolar_rect(origen, destino, avance_movimiento(t0.elapsed()))
 }
 
 /// Guarda —o consume— la geometría a la que hay que volver al desmaximizar.
@@ -489,14 +623,12 @@ pub fn animando(window: &Window) -> bool {
         .encogido
         .get()
         .is_some_and(|e| e.desde.elapsed() < ENCOGIDO)
-        || estado
-            .nacida
-            .get()
-            .is_some_and(|t| t.elapsed() < ENTRADA_ZOOM)
-        || estado
-            .desde
-            .get()
-            .is_some_and(|(_, t)| t.elapsed() < MOVIMIENTO)
+        || (!estado.acoplada.get()
+            && estado
+                .nacida
+                .get()
+                .is_some_and(|t| t.elapsed() < ENTRADA_ZOOM))
+        || estado.desde.get().is_some_and(|m| !m.quieto())
 }
 
 /// Alfa y factor de tamaño con los que toca componer la ventana ahora mismo.
@@ -505,11 +637,15 @@ pub fn animando(window: &Window) -> bool {
 /// cómo lo compone la GPU.
 // 0.1.0
 pub fn animacion(window: &Window) -> (f32, f64) {
-    let Some(nacida) = estado(window).nacida.get() else {
+    let est = estado(window);
+    let Some(nacida) = est.nacida.get() else {
         // Sin colocar todavía: invisible. Devolver 1.0 la enseñaría un
         // fotograma en la esquina antes de saltar a su sitio.
         return (0.0, 1.0);
     };
+    if est.acoplada.get() {
+        return (1.0, 1.0);
+    }
     let t = nacida.elapsed();
     let alfa = tema::C_ENTRADA.eval(tema::avance(t, ENTRADA_ALFA));
     let zoom = tema::C_MUELLE.eval(tema::avance(t, ENTRADA_ZOOM));
@@ -522,24 +658,19 @@ pub fn animacion(window: &Window) -> (f32, f64) {
 /// en el camino entre el origen guardado y ese destino.
 // 0.1.0
 pub fn posicion(window: &Window, destino: Point<i32, Logical>) -> Point<f64, Logical> {
+    if tema::efectos_reducidos() {
+        estado(window).desde.set(None);
+        return destino.to_f64();
+    }
     let estado = estado(window);
-    let Some((origen, t0)) = estado.desde.get() else {
+    let Some(muelle) = estado.desde.get() else {
         return destino.to_f64();
     };
-    if t0.elapsed() >= MOVIMIENTO {
-        // El recorrido acabado se borra en vez de dejarlo puesto: si no, cada
-        // fotograma del resto de la vida de la ventana vuelve a interpolar algo
-        // que ya terminó, y una segunda animación tendría que competir con la
-        // vieja en vez de sustituirla.
+    if muelle.quieto() {
         estado.desde.set(None);
         return destino.to_f64();
     }
-    let s = avance_movimiento(t0.elapsed());
-    (
-        origen.loc.x as f64 + (destino.x - origen.loc.x) as f64 * s,
-        origen.loc.y as f64 + (destino.y - origen.loc.y) as f64 * s,
-    )
-        .into()
+    (muelle.x.valor() as f64, muelle.y.valor() as f64).into()
 }
 
 /// Cuánto hay que escalar el buffer para que el cambio de tamaño se vea como
@@ -555,24 +686,18 @@ pub fn posicion(window: &Window, destino: Point<i32, Logical>) -> Point<f64, Log
 /// mientras el alto aún no, y la barra se despegaba visualmente del contenido.
 // 0.1.0
 pub fn escala_resize(window: &Window, actual: Size<i32, Logical>) -> Scale<f64> {
-    let Some((origen, t0)) = estado(window).desde.get() else {
+    if tema::efectos_reducidos() || actual.w <= 0 || actual.h <= 0 {
+        return Scale::from(1.0);
+    }
+    let Some(muelle) = estado(window).desde.get() else {
         return Scale::from(1.0);
     };
-    let t = t0.elapsed();
-    if t >= MOVIMIENTO || actual.w <= 0 || actual.h <= 0 {
+    if muelle.quieto() {
         return Scale::from(1.0);
     }
-    if origen.size.w <= 0 || origen.size.h <= 0 || origen.size == actual {
-        return Scale::from(1.0);
-    }
-    let intermedio = interpolar_rect(
-        origen,
-        Rectangle::new(origen.loc, actual),
-        avance_movimiento(t),
-    );
     Scale::from((
-        intermedio.size.w as f64 / actual.w as f64,
-        intermedio.size.h as f64 / actual.h as f64,
+        (muelle.w.valor() as f64).max(1.0) / actual.w as f64,
+        (muelle.h.valor() as f64).max(1.0) / actual.h as f64,
     ))
 }
 
@@ -673,6 +798,11 @@ pub enum Modo {
         izquierda: bool,
         arriba: bool,
     },
+    /// Un borde táctil puede cambiar solo un eje, mientras que una esquina cambia los dos.
+    RedimensionarBorde {
+        horizontal: Option<bool>,
+        vertical: Option<bool>,
+    },
 }
 
 impl Modo {
@@ -715,53 +845,51 @@ fn geometria_de(
 ) -> Rectangle<i32, Logical> {
     let dx = (puntero.x - inicio.x).round() as i32;
     let dy = (puntero.y - inicio.y).round() as i32;
-    match modo {
+    let (horizontal, vertical) = match modo {
         Modo::Mover => {
             let destino = (geo.loc.x + dx, geo.loc.y + dy).into();
-            Rectangle::new(confinar(destino, geo.size, area), geo.size)
+            return Rectangle::new(confinar(destino, geo.size, area), geo.size);
         }
-        Modo::Redimensionar { izquierda, arriba } => {
-            // Al tirar del borde izquierdo la anchura crece hacia atrás, así
-            // que el desplazamiento entra con signo cambiado y además hay
-            // que mover el origen.
-            let w = if izquierda {
-                (geo.size.w - dx).max(MINIMO)
-            } else {
-                (geo.size.w + dx).max(MINIMO)
-            };
-            let h = if arriba {
-                (geo.size.h - dy).max(MINIMO)
-            } else {
-                (geo.size.h + dy).max(MINIMO)
-            };
-            // El origen se recalcula desde el borde **opuesto**, que es el
-            // que no se mueve. Sumar `dx` sin más deja la ventana temblando
-            // cuando el tamaño topa con el mínimo: el borde fijo se movía.
-            let x = if izquierda {
-                geo.loc.x + geo.size.w - w
-            } else {
-                geo.loc.x
-            };
-            let y = if arriba {
-                geo.loc.y + geo.size.h - h
-            } else {
-                geo.loc.y
-            };
-            // Tirando del borde de arriba, el techo es el mismo que al
-            // mover: el área útil. Sin esto la ventana seguía subiendo y se
-            // metía **debajo del panel**, que se dibuja siempre encima —
-            // arrastrando de un borde se conseguía justo lo que `confinar`
-            // impide al mover. Se recorta el alto en vez de la posición
-            // para que el borde de abajo, que es el que no se toca, no se
-            // mueva.
-            let (y, h) = if y < area.loc.y {
-                (area.loc.y, (h - (area.loc.y - y)).max(MINIMO))
-            } else {
-                (y, h)
-            };
-            Rectangle::new((x, y).into(), (w, h).into())
-        }
-    }
+        Modo::Redimensionar { izquierda, arriba } => (Some(izquierda), Some(arriba)),
+        Modo::RedimensionarBorde {
+            horizontal,
+            vertical,
+        } => (horizontal, vertical),
+    };
+    // Una arista deja intacto el otro eje, incluso si mide menos de MINIMO.
+    let redimensionar = |tamano: i32, delta: i32, comienzo| {
+        (tamano + if comienzo { -delta } else { delta }).max(MINIMO)
+    };
+    let w = horizontal.map_or(geo.size.w, |izquierda| {
+        redimensionar(geo.size.w, dx, izquierda)
+    });
+    let h = vertical.map_or(geo.size.h, |arriba| redimensionar(geo.size.h, dy, arriba));
+    // El origen se recalcula desde el borde **opuesto**, que es el
+    // que no se mueve. Sumar `dx` sin más deja la ventana temblando
+    // cuando el tamaño topa con el mínimo: el borde fijo se movía.
+    let x = if horizontal == Some(true) {
+        geo.loc.x + geo.size.w - w
+    } else {
+        geo.loc.x
+    };
+    let y = if vertical == Some(true) {
+        geo.loc.y + geo.size.h - h
+    } else {
+        geo.loc.y
+    };
+    // Tirando del borde de arriba, el techo es el mismo que al
+    // mover: el área útil. Sin esto la ventana seguía subiendo y se
+    // metía **debajo del panel**, que se dibuja siempre encima —
+    // arrastrando de un borde se conseguía justo lo que `confinar`
+    // impide al mover. Se recorta el alto en vez de la posición
+    // para que el borde de abajo, que es el que no se toca, no se
+    // mueva.
+    let (y, h) = if vertical.is_some() && y < area.loc.y {
+        (area.loc.y, (h - (area.loc.y - y)).max(MINIMO))
+    } else {
+        (y, h)
+    };
+    Rectangle::new((x, y).into(), (w, h).into())
 }
 
 /// Ancho de la franja de borde que dispara el encaje.
@@ -1168,7 +1296,7 @@ fn padre(state: &BookosComp, window: &Window) -> Option<Window> {
 /// todas las ventanas X11 llegan por la misma conexión, la de Xwayland, y con su
 /// pid todos los programas X11 serían uno.
 // 0.1.1
-fn pid_de(state: &BookosComp, window: &Window) -> Option<u32> {
+pub(crate) fn pid_de(state: &BookosComp, window: &Window) -> Option<u32> {
     use smithay::reexports::wayland_server::Resource as _;
     if let Some(x11) = window.x11_surface() {
         return x11.pid();
@@ -1209,15 +1337,21 @@ impl BookosComp {
             .as_deref()
             .and_then(bookos_shell::nombre_de_app)
             .or_else(|| crate::handlers::titulo(&raiz))
-            .unwrap_or_else(|| "La ventana".into());
+            .unwrap_or_else(|| bookos_shell::t("La ventana", "Window").into());
         if let Some(shell) = self.shell.as_mut() {
             shell.mostrar_osd(
                 "fijar",
                 None,
                 Some(if encima {
-                    format!("{nombre} siempre encima")
+                    format!(
+                        "{nombre} {}",
+                        bookos_shell::t("siempre encima", "always on top")
+                    )
                 } else {
-                    format!("{nombre} ya no está encima")
+                    format!(
+                        "{nombre} {}",
+                        bookos_shell::t("ya no está encima", "no longer on top")
+                    )
                 }),
             );
         }
@@ -1404,7 +1538,9 @@ impl BookosComp {
                         let _ = x11.configure(pantalla);
                     }
                     self.space.map_element(window.clone(), pantalla.loc, true);
-                    nace(window);
+                    if !crate::miniatura_captura::intentar_acoplar_nueva(self, window, pantalla) {
+                        nace(window);
+                    }
                     self.enfocar(window);
                     self.revisar_barras();
                     return;
@@ -1431,7 +1567,9 @@ impl BookosComp {
                         let _ = x11.configure(area);
                     }
                     self.space.map_element(window.clone(), area.loc, true);
-                    nace(window);
+                    if !crate::miniatura_captura::intentar_acoplar_nueva(self, window, area) {
+                        nace(window);
+                    }
                     self.enfocar(window);
                     self.revisar_barras();
                     return;
@@ -1460,7 +1598,15 @@ impl BookosComp {
             let _ = x11.configure(Rectangle::new(sitio, tam));
         }
         self.space.map_element(window.clone(), sitio, true);
-        nace(window);
+        let acoplada = duena.is_none()
+            && crate::miniatura_captura::intentar_acoplar_nueva(
+                self,
+                window,
+                Rectangle::new(sitio, tam),
+            );
+        if !acoplada {
+            nace(window);
+        }
         // Un diálogo de una ventana que está encima va con ella: debajo quedaría
         // tapado por su propia dueña. Y una aplicación marcada como siempre
         // encima lo está desde su primera ventana.
@@ -1481,7 +1627,7 @@ impl BookosComp {
         // Las secundarias no: el programa ya está abierto, y un diálogo que sale
         // disparado del dock parece otra aplicación. Les basta el zoom de
         // entrada de `nace`.
-        if duena.is_none() {
+        if duena.is_none() && !acoplada {
             let origen = self
                 .space
                 .element_geometry(window)
@@ -1547,6 +1693,13 @@ impl BookosComp {
             // abriría sus menús desplazados: ver `colocar_si_es_nueva`.
             if let Some(x11) = window.x11_surface() {
                 let _ = x11.configure(Rectangle::new(sitio, tam));
+            }
+            if estado(window).desde.get().is_some() {
+                mover_desde(
+                    window,
+                    Rectangle::new(loc, tam),
+                    Rectangle::new(sitio, tam),
+                );
             }
             self.space.map_element(window.clone(), sitio, false);
         }
@@ -1810,7 +1963,7 @@ impl BookosComp {
         // movimiento, cruzar la mitad de la ventana cambiaría el borde del que
         // se tira a mitad del arrastre.
         let modo = match modo {
-            Modo::Mover => Modo::Mover,
+            Modo::Mover | Modo::RedimensionarBorde { .. } => modo,
             Modo::Redimensionar { .. } => Modo::por_cuadrante(punto, geo),
         };
         self.enfocar(&window);
@@ -1979,7 +2132,7 @@ impl BookosComp {
             if estado(window).restaurar.get().is_none() {
                 guardar_restaurar(window, actual);
             }
-            mover_desde(window, geometria_visual(window, actual));
+            mover_desde(window, actual, destino);
         }
         estado(window).zona.set(Some(zona));
 
@@ -2037,7 +2190,7 @@ impl BookosComp {
         estado(window).zona.set(None);
         if let Some(actual) = self.space.element_location(window) {
             let actual = Rectangle::new(actual, window.geometry().size);
-            mover_desde(window, geometria_visual(window, actual));
+            mover_desde(window, actual, previa);
         }
         if let Some(toplevel) = window.toplevel() {
             toplevel.with_pending_state(|state| {
@@ -2192,6 +2345,7 @@ impl BookosComp {
         let encajadas: Vec<(Window, Zona)> = self
             .space
             .elements()
+            .filter(|w| !completa(w) && !self.minimizando.iter().any(|(m, _)| m == *w))
             .filter_map(|w| zona_de(w).map(|z| (w.clone(), z)))
             .collect();
         for (window, zona) in encajadas {
@@ -2218,7 +2372,8 @@ impl BookosComp {
         if destino == loc {
             return;
         }
-        mover_desde(window, Rectangle::new(loc, window.geometry().size));
+        let tam = window.geometry().size;
+        mover_desde(window, Rectangle::new(loc, tam), Rectangle::new(destino, tam));
         if let Some(x11) = window.x11_surface() {
             let _ = x11.configure(Rectangle::new(destino, window.geometry().size));
         }
@@ -2378,6 +2533,24 @@ fn salir_de_pantalla_completa(window: &Window) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn un_borde_tactil_solo_redimensiona_su_eje() {
+        let original = Rectangle::new((150, 150).into(), (300, 100).into());
+        let area = Rectangle::from_size((800, 600).into());
+        let modo = Modo::RedimensionarBorde {
+            horizontal: Some(false),
+            vertical: None,
+        };
+        let destino = geometria_de(
+            modo,
+            (450.0, 185.0).into(),
+            original,
+            (510.0, 230.0).into(),
+            area,
+        );
+        assert_eq!(destino, Rectangle::new(original.loc, (360, 100).into()));
+    }
+
     use super::*;
 
     /// Un área útil como la de esta máquina: pantalla menos el panel de 32.
@@ -2664,5 +2837,31 @@ mod tests {
             .fold(0.0f32, f32::max);
         let maximo = ZOOM_INICIAL + (1.0 - ZOOM_INICIAL) * pico as f64;
         assert!(maximo > 1.0 && maximo < 1.05, "pico del muelle: {maximo}");
+    }
+
+    #[test]
+    fn redirigir_muelle_conserva_posicion_y_velocidad_sin_rebote() {
+        let origen = Rectangle::new((0, 0).into(), (800, 600).into());
+        let maxima = Rectangle::new((0, 32).into(), (1920, 1048).into());
+        let mut rect = RectMuelle::nuevo(origen, maxima);
+        let t0 = Instant::now();
+        // A los 120 ms está en pleno vuelo hacia `maxima`, con velocidad positiva y sin rebote.
+        let mitad = t0 + Duration::from_millis(120);
+        rect.avanzar(mitad);
+        let w_mitad = rect.w.valor();
+        let vel_mitad = rect.w.velocidad();
+        assert!(w_mitad > 800.0 && w_mitad < 1920.0, "w={w_mitad}");
+        assert!(vel_mitad > 0.0, "debe seguir creciendo: vel={vel_mitad}");
+        assert!(!rect.quieto());
+
+        // Redirigir al instante a restaurar conserva exactamente w y velocidad en `mitad`.
+        rect.ir_a(origen, mitad);
+        assert!((rect.w.valor() - w_mitad).abs() < 1e-4);
+        assert!((rect.w.velocidad() - vel_mitad).abs() < 1e-3);
+
+        // Con amortiguación crítica (`M_SUAVE`), avanzar 2 segundos asienta sin pasar de destino.
+        rect.avanzar(mitad + Duration::from_secs(2));
+        assert!(rect.quieto(), "debe quedar en reposo tras estabilizarse");
+        assert!((rect.w.valor() - origen.size.w as f32).abs() < UMBRAL_MUELLE_PX);
     }
 }

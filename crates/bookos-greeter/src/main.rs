@@ -78,7 +78,11 @@ fn main() -> anyhow::Result<()> {
         Acceso::actualizar,
         Acceso::vista,
     )
-    .title("BookOS · Iniciar sesión")
+    .title(|a: &Acceso| {
+        a.idioma
+            .t("BookOS · Iniciar sesión", "BookOS · Sign in")
+            .to_string()
+    })
     .theme(tema_iced)
     .subscription(Acceso::suscripcion)
     .window_size((1280.0, 800.0))
@@ -140,6 +144,8 @@ fn entrada(
                 }
                 Key::Named(Named::Tab) if libre => Some(Mensaje::FocoSiguiente),
                 Key::Named(Named::Enter) if libre => Some(Mensaje::Continuar),
+                Key::Named(Named::ArrowLeft) if libre => Some(Mensaje::ConfirmarFoco(false)),
+                Key::Named(Named::ArrowRight) if libre => Some(Mensaje::ConfirmarFoco(true)),
                 Key::Named(Named::ArrowUp) if libre => Some(Mensaje::Mover(-1)),
                 Key::Named(Named::ArrowDown) if libre => Some(Mensaje::Mover(1)),
                 _ => text.map(|t| Mensaje::TeclaTexto(t.to_string(), modifiers.shift())),
@@ -215,6 +221,18 @@ enum Estado {
     Ocupado(Operacion),
 }
 
+#[derive(PartialEq, Eq)]
+enum FaseCarga {
+    EsperandoDibujo,
+    Dibujada,
+    ArranquePendiente,
+}
+
+struct CargaSesion {
+    desde: Instant,
+    fase: FaseCarga,
+}
+
 #[derive(Clone, Copy)]
 enum TipoEntrada {
     Visible,
@@ -226,7 +244,7 @@ enum Respuesta {
     Confirmado,
     Pregunta { texto: String, tipo: TipoEntrada },
     Aviso(String),
-    Rechazo(String),
+    Rechazo { auth: bool, detalle: String },
 }
 
 impl From<Response> for Respuesta {
@@ -251,12 +269,10 @@ impl From<Response> for Respuesta {
             Response::Error {
                 error_type,
                 description,
-            } => Self::Rechazo(match error_type {
-                ErrorType::AuthError => {
-                    "No se ha podido autenticar. Comprueba tus datos e inténtalo de nuevo.".into()
-                }
-                ErrorType::Error => format!("No se pudo iniciar la sesión: {description}"),
-            }),
+            } => Self::Rechazo {
+                auth: matches!(error_type, ErrorType::AuthError),
+                detalle: description,
+            },
         }
     }
 }
@@ -306,10 +322,13 @@ enum Mensaje {
     WifiCancelarClave,
     WifiDesconectar,
     Energia(Peticion),
+    ConfirmarFoco(bool),
+    ConfirmarEnergia(bool),
     /// El error de systemctl, si lo hubo.
     EnergiaHecha(Option<String>),
     Tic,
     Fotograma,
+    FotogramaCarga(Instant),
 }
 
 #[cfg(test)]
@@ -367,8 +386,16 @@ struct Acceso {
     foco: Foco,
     fuerza: Transicion,
     menu: Transicion,
+    pulgar: Transicion,
+    wifi_switch: Transicion,
+    idioma_pulgar: Transicion,
+    menu_desde: Option<(Instant, bool)>,
     panel_abierto: Option<Panel>,
     panel_visible: Option<Panel>,
+    confirmacion: Option<(Peticion, bool)>,
+    ultimo_escritos: usize,
+    comprobando_desde: Option<Instant>,
+    carga_sesion: Option<CargaSesion>,
     hora: String,
     fecha: String,
     bateria: Option<(Icono, (f32, f32), String, iced::Color)>,
@@ -398,6 +425,7 @@ struct Acceso {
     densidad: f32,
     fondo: Option<usuarios::Fondo>,
     fondo_pedido: Option<(usize, (u32, u32))>,
+    entrada_desde: Instant,
     cambio_desde: Instant,
     fallo_desde: Option<Instant>,
     candado: Icono,
@@ -418,6 +446,7 @@ impl Acceso {
         personas: Vec<Persona>,
     ) -> (Self, Task<Mensaje>) {
         let ahora = Instant::now();
+        bookos_shell::marca::aplicar_canal(bookos_shell::marca::Canal::leer());
         let previa = socket.is_none();
         let idioma = Idioma::detectar();
         let teclado_base = sistema::teclado_inicial();
@@ -438,8 +467,19 @@ impl Acceso {
             foco: Foco::Ninguno,
             fuerza: Transicion::nueva(0.0, tema::M_RAPIDO),
             menu: Transicion::nueva(0.0, tema::M_SUAVE),
+            pulgar: Transicion::nueva(1.0, tema::M_SEGMENTADO),
+            wifi_switch: Transicion::nueva(1.0, tema::M_RAPIDO),
+            idioma_pulgar: Transicion::nueva(
+                if matches!(idioma, Idioma::En) { 1.0 } else { 0.0 },
+                tema::M_SEGMENTADO,
+            ),
+            menu_desde: None,
             panel_abierto: None,
             panel_visible: None,
+            confirmacion: None,
+            ultimo_escritos: 0,
+            comprobando_desde: None,
+            carga_sesion: None,
             hora: Shell::hora_bloqueo(),
             fecha: idioma.fecha_hoy(),
             bateria: None,
@@ -502,6 +542,7 @@ impl Acceso {
             densidad: 1.0,
             fondo: None,
             fondo_pedido: None,
+            entrada_desde: ahora,
             cambio_desde: ahora,
             fallo_desde: None,
             candado: bookos_shell::icono::desde_svg(bookos_shell::bloqueo::CANDADO),
@@ -524,8 +565,14 @@ impl Acceso {
                 iced::window::scale_factor(id).map(Mensaje::Densidad),
             ])
         });
-        let inicio = if acceso.personas.len() == 1 && !previa {
-            acceso.elegir(0)
+        let inicio = if !previa {
+            let indice = sistema::leer_ultimo_usuario()
+                .and_then(|u| acceso.personas.iter().position(|p| p.cuenta == u))
+                .or_else(|| (acceso.personas.len() == 1).then_some(0));
+            match indice {
+                Some(i) => acceso.elegir(i),
+                None => iced::widget::operation::focus("usuario"),
+            }
         } else {
             iced::widget::operation::focus("usuario")
         };
@@ -545,7 +592,11 @@ impl Acceso {
         {
             todas.push(Subscription::run(huella));
         }
-        if self.animando() {
+        if let Some(carga) = &self.carga_sesion {
+            if carga.fase != FaseCarga::Dibujada || !tema::efectos_reducidos() {
+                todas.push(iced::window::frames().map(Mensaje::FotogramaCarga));
+            }
+        } else if self.animando() {
             todas.push(iced::window::frames().map(|_| Mensaje::Fotograma));
         }
         Subscription::batch(todas)
@@ -553,10 +604,23 @@ impl Acceso {
 
     // 0.1.1
     fn animando(&self) -> bool {
+        let reducidos = tema::efectos_reducidos();
         self.fuerza.animando()
             || self.menu.animando()
-            || self.cambio_desde.elapsed() < tema::D_PAGINA
-            || self.fallo_desde.is_some_and(|d| d.elapsed() < SACUDIDA)
+            || self.pulgar.animando()
+            || self.wifi_switch.animando()
+            || self.idioma_pulgar.animando()
+            || (!reducidos
+                && (self
+                    .menu_desde
+                    .is_some_and(|(t, _)| t.elapsed() < tema::D_POPOVER)
+                    || self.entrada_desde.elapsed()
+                        < Duration::from_millis(180) + tema::D_PAGINA
+                    || self.cambio_desde.elapsed() < tema::D_PAGINA
+                    || self
+                        .comprobando_desde
+                        .is_some_and(|t| t.elapsed() < bookos_shell::bloqueo::D_OLA)
+                    || self.fallo_desde.is_some_and(|d| d.elapsed() < SACUDIDA)))
     }
 
     // 0.1.1
@@ -646,6 +710,19 @@ impl Acceso {
             self.usuario.clear();
             return iced::widget::operation::focus("usuario");
         };
+        // Cambio rápido de usuario: si esa cuenta ya tiene sesión en otro
+        // terminal, se va a ella (su bloqueo pide la contraseña) en vez de
+        // abrirle una segunda sesión que se pelearía con la primera por el
+        // bus, el audio y los ajustes. Síncrono: son dos llamadas a loginctl,
+        // y mientras tanto no hay nada que pintar.
+        if self.cliente.is_some()
+            && std::process::Command::new("/usr/local/bin/bookos-cambiar-usuario")
+                .args(["--solo-sesion", &persona.cuenta])
+                .status()
+                .is_ok_and(|estado| estado.success())
+        {
+            return Task::none();
+        }
         self.usuario = persona.cuenta.clone();
         self.señalada = i;
         self.vestir(i);
@@ -670,6 +747,7 @@ impl Acceso {
 
     // 0.1.1
     fn autenticar(&mut self) -> Task<Mensaje> {
+        self.carga_sesion = None;
         self.respondido = false;
         self.enviar(
             Operacion::Autenticar,
@@ -677,6 +755,26 @@ impl Acceso {
                 username: self.usuario.trim().into(),
             },
         )
+    }
+
+    fn mostrar_carga_sesion(&mut self) -> &mut CargaSesion {
+        self.carga_sesion.get_or_insert_with(|| CargaSesion {
+            desde: Instant::now(),
+            fase: FaseCarga::EsperandoDibujo,
+        })
+    }
+
+    fn iniciar_sesion(&mut self) -> Task<Mensaje> {
+        if !self.usuario.trim().is_empty() {
+            let _ = sistema::guardar_preferencias_greeter(
+                &self.teclado_codigo,
+                self.idioma.locale(),
+                Some(self.usuario.trim()),
+            );
+        }
+        let peticion =
+            ipc::iniciar_sesion(&self.sesion, &self.teclado_codigo, self.idioma.locale());
+        self.enviar(Operacion::Iniciar, peticion)
     }
 
     // 0.1.1
@@ -703,7 +801,7 @@ impl Acceso {
         };
         self.estado = Estado::Ocupado(operacion);
         self.error = None;
-        Task::perform(cliente.enviar(peticion), move |resultado| {
+        Task::perform(cliente.enviar(peticion, self.idioma), move |resultado| {
             Mensaje::Recibido(operacion, resultado.map(Respuesta::from))
         })
     }
@@ -711,7 +809,10 @@ impl Acceso {
     // 0.1.1
     fn volver(&mut self) {
         self.estado = Estado::Usuario;
+        self.carga_sesion = None;
         self.mostrar_respuesta = false;
+        self.ultimo_escritos = 0;
+        self.comprobando_desde = None;
         self.cambio_desde = Instant::now();
     }
 
@@ -742,10 +843,14 @@ impl Acceso {
         } else {
             panel
         };
+        let antes = self.panel_abierto;
         self.panel_abierto = destino;
         if let Some(p) = destino {
             self.panel_visible = Some(p);
             self.menu.ir_a(1.0);
+            if antes.is_none() {
+                self.menu_desde = Some((Instant::now(), true));
+            }
             match p {
                 Panel::Bateria => {
                     return Task::perform(
@@ -767,6 +872,9 @@ impl Acceso {
             self.wifi_clave.clear();
             self.wifi_error = None;
             self.menu.ir_a(0.0);
+            if antes.is_some() {
+                self.menu_desde = Some((Instant::now(), false));
+            }
         }
         Task::none()
     }
@@ -774,8 +882,23 @@ impl Acceso {
     // 0.1.1
     fn actualizar(&mut self, mensaje: Mensaje) -> Task<Mensaje> {
         match mensaje {
-            Mensaje::FocoAnterior => return iced::widget::operation::focus_previous(),
-            Mensaje::FocoSiguiente => return iced::widget::operation::focus_next(),
+            Mensaje::FotogramaCarga(ahora) => {
+                if let Some(carga) = self.carga_sesion.as_mut()
+                    && ahora >= carga.desde
+                {
+                    let arranque_pendiente = carga.fase == FaseCarga::ArranquePendiente;
+                    carga.fase = FaseCarga::Dibujada;
+                    if arranque_pendiente {
+                        return self.iniciar_sesion();
+                    }
+                }
+            }
+            Mensaje::FocoAnterior if self.confirmacion.is_none() => {
+                return iced::widget::operation::focus_previous();
+            }
+            Mensaje::FocoSiguiente if self.confirmacion.is_none() => {
+                return iced::widget::operation::focus_next();
+            }
             Mensaje::TeclaTexto(texto, shift) => {
                 self.ultima_tecla = Some((texto, shift, Instant::now()));
             }
@@ -783,8 +906,11 @@ impl Acceso {
             // Lo que abre la sesión es lo que vio el módulo en fprintd, no
             // esta respuesta.
             Mensaje::Huella(estado)
-                if estado == "coincide" && matches!(self.estado, Estado::Pregunta { .. }) =>
+                if estado == "coincide"
+                    && self.cliente.is_some()
+                    && matches!(self.estado, Estado::Pregunta { .. }) =>
             {
+                self.mostrar_carga_sesion();
                 self.respondido = true;
                 self.respuesta.clear();
                 self.mostrar_respuesta = false;
@@ -819,20 +945,48 @@ impl Acceso {
                 self.aplicar_traduccion_teclado(&mut valor);
                 self.respuesta = valor;
             }
-            Mensaje::Continuar => match &self.estado {
-                Estado::Usuario if !self.manual => return self.elegir(self.señalada),
-                Estado::Usuario if !self.usuario.trim().is_empty() => return self.autenticar(),
-                Estado::Pregunta { .. } => {
-                    self.respondido = true;
-                    self.mostrar_respuesta = false;
-                    let response = Some(std::mem::take(&mut self.respuesta));
-                    return self.enviar(
-                        Operacion::Autenticar,
-                        Request::PostAuthMessageResponse { response },
-                    );
+            Mensaje::Continuar => {
+                if let Some((_, aceptar)) = self.confirmacion {
+                    return self.actualizar(Mensaje::ConfirmarEnergia(aceptar));
                 }
-                Estado::Usuario | Estado::Aviso(_) | Estado::Ocupado(_) => {}
-            },
+                match &self.estado {
+                    Estado::Usuario if !self.manual => return self.elegir(self.señalada),
+                    Estado::Usuario if !self.usuario.trim().is_empty() => {
+                        self.ultimo_escritos = 0;
+                        self.comprobando_desde = Some(Instant::now());
+                        return self.autenticar();
+                    }
+                    Estado::Pregunta { .. } => {
+                        if self.cliente.is_some() {
+                            self.mostrar_carga_sesion();
+                        }
+                        self.respondido = true;
+                        self.mostrar_respuesta = false;
+                        self.ultimo_escritos = self.respuesta.chars().count();
+                        self.comprobando_desde = Some(Instant::now());
+                        let response = Some(std::mem::take(&mut self.respuesta));
+                        return self.enviar(
+                            Operacion::Autenticar,
+                            Request::PostAuthMessageResponse { response },
+                        );
+                    }
+                    Estado::Usuario | Estado::Aviso(_) | Estado::Ocupado(_) => {}
+                }
+            }
+            Mensaje::ConfirmarFoco(aceptar) if self.confirmacion.is_some() => {
+                if let Some((_, actual)) = self.confirmacion.as_mut() {
+                    *actual = aceptar;
+                }
+            }
+            Mensaje::FocoAnterior | Mensaje::FocoSiguiente if self.confirmacion.is_some() => {
+                if let Some((_, actual)) = self.confirmacion.as_mut() {
+                    *actual = !*actual;
+                }
+            }
+            Mensaje::Cancelar if self.carga_sesion.is_some() => {}
+            Mensaje::Cancelar if self.confirmacion.is_some() => {
+                self.confirmacion = None;
+            }
             Mensaje::Cancelar if self.menu.destino() > 0.0 => {
                 return self.abrir_o_cerrar_panel(None);
             }
@@ -855,20 +1009,24 @@ impl Acceso {
             Mensaje::Recibido(operacion, resultado) => {
                 self.respuesta.clear();
                 self.mostrar_respuesta = false;
+                self.comprobando_desde = None;
                 match resultado {
                     Ok(Respuesta::Confirmado) => match operacion {
                         Operacion::Autenticar => {
-                            let peticion = ipc::iniciar_sesion(
-                                &self.sesion,
-                                &self.teclado_codigo,
-                                self.idioma.locale(),
-                            );
-                            return self.enviar(Operacion::Iniciar, peticion);
+                            let carga = self.mostrar_carga_sesion();
+                            if carga.fase == FaseCarga::Dibujada {
+                                return self.iniciar_sesion();
+                            }
+                            // Greetd puede responder antes del siguiente vblank. Al
+                            // ceder el VT, el fotograma con el logo ya debe haberse enviado.
+                            carga.fase = FaseCarga::ArranquePendiente;
+                            return Task::none();
                         }
                         Operacion::Iniciar => return iced::exit(),
                         Operacion::Cancelar => self.volver(),
                     },
                     Ok(Respuesta::Pregunta { texto, tipo }) => {
+                        self.carga_sesion = None;
                         self.estado = Estado::Pregunta { texto, tipo };
                         return iced::widget::operation::focus("respuesta");
                     }
@@ -884,13 +1042,47 @@ impl Acceso {
                         self.estado = Estado::Aviso(aviso);
                         return tarea;
                     }
-                    Ok(Respuesta::Rechazo(error)) if self.respondido => {
+                    Ok(Respuesta::Rechazo { auth, detalle })
+                        if self.respondido && matches!(operacion, Operacion::Autenticar) =>
+                    {
+                        let error = if auth {
+                            self.idioma
+                                .t(
+                                    "No se ha podido autenticar. Comprueba tus datos e inténtalo de nuevo.",
+                                    "Authentication failed. Check your credentials and try again.",
+                                )
+                                .into()
+                        } else {
+                            format!(
+                                "{}: {detalle}",
+                                self.idioma
+                                    .t("No se pudo iniciar la sesión", "Couldn't start session")
+                            )
+                        };
                         let tarea = self.autenticar();
                         self.error = Some(error);
                         self.fallo_desde = Some(Instant::now());
                         return tarea;
                     }
-                    Ok(Respuesta::Rechazo(error)) | Err(error) => {
+                    Ok(Respuesta::Rechazo { auth, detalle }) => {
+                        let error = if auth {
+                            self.idioma
+                                .t(
+                                    "No se ha podido autenticar. Comprueba tus datos e inténtalo de nuevo.",
+                                    "Authentication failed. Check your credentials and try again.",
+                                )
+                                .into()
+                        } else {
+                            format!(
+                                "{}: {detalle}",
+                                self.idioma
+                                    .t("No se pudo iniciar la sesión", "Couldn't start session")
+                            )
+                        };
+                        self.volver();
+                        self.error = Some(error);
+                    }
+                    Err(error) => {
                         self.volver();
                         self.error = Some(error);
                     }
@@ -968,7 +1160,7 @@ impl Acceso {
                 let aplicar_sistema = self.cliente.is_some();
                 return Task::perform(
                     async move {
-                        let _ = sistema::guardar_preferencias_greeter(&codigo, locale);
+                        let _ = sistema::guardar_preferencias_greeter(&codigo, locale, None);
                         if aplicar_sistema {
                             sistema::aplicar_teclado_sistema(&codigo);
                         }
@@ -988,12 +1180,16 @@ impl Acceso {
             Mensaje::ElegirIdioma(idioma) => {
                 self.idioma = idioma;
                 self.fecha = idioma.fecha_hoy();
+                self.idioma_pulgar.ir_a(match idioma {
+                    Idioma::Es => 0.0,
+                    Idioma::En => 1.0,
+                });
                 let codigo_teclado = self.teclado_codigo.clone();
                 let locale = idioma.locale();
                 let aplicar_sistema = self.cliente.is_some();
                 return Task::perform(
                     async move {
-                        let _ = sistema::guardar_preferencias_greeter(&codigo_teclado, locale);
+                        let _ = sistema::guardar_preferencias_greeter(&codigo_teclado, locale, None);
                         if aplicar_sistema {
                             sistema::aplicar_idioma_sistema(locale);
                         }
@@ -1006,9 +1202,11 @@ impl Acceso {
                     self.bateria = Some(bookos_shell::bateria_sobre_fondo(bat));
                 }
                 self.bateria_detalle = detalle;
+                self.pulgar.ir_a(self.indice_perfil());
             }
             Mensaje::PerfilEnergia(perfil) => {
                 self.bateria_detalle.perfil = perfil.clone();
+                self.pulgar.ir_a(self.indice_perfil());
                 if self.cliente.is_none() {
                     return Task::none();
                 }
@@ -1033,10 +1231,12 @@ impl Acceso {
                         up: estado.encendida && estado.ssid_actual.is_some(),
                     });
                 }
+                self.wifi_switch.ir_a(estado.encendida as u8 as f32);
                 self.wifi_estado = estado;
             }
             Mensaje::WifiAlternar(encender) => {
                 self.wifi_estado.encendida = encender;
+                self.wifi_switch.ir_a(encender as u8 as f32);
                 self.wifi_conectar_a = None;
                 self.wifi_clave.clear();
                 self.wifi_error = None;
@@ -1107,9 +1307,10 @@ impl Acceso {
                 }
                 self.wifi_cargando = true;
                 let ssid = red.ssid;
+                let idioma = self.idioma;
                 return Task::perform(
                     async move {
-                        match sistema::conectar_wifi(&ssid, None) {
+                        match sistema::conectar_wifi(&ssid, None, idioma) {
                             Ok(estado) => estado,
                             Err(err) => EstadoWifi {
                                 error: Some(err),
@@ -1151,9 +1352,10 @@ impl Acceso {
                     return Task::none();
                 }
                 self.wifi_cargando = true;
+                let idioma = self.idioma;
                 return Task::perform(
                     async move {
-                        match sistema::conectar_wifi(&ssid, Some(&clave)) {
+                        match sistema::conectar_wifi(&ssid, Some(&clave), idioma) {
                             Ok(estado) => estado,
                             Err(err) => EstadoWifi {
                                 error: Some(err),
@@ -1187,42 +1389,20 @@ impl Acceso {
             Mensaje::Energia(peticion) => {
                 self.panel_abierto = None;
                 self.menu.ir_a(0.0);
-                let orden = match peticion {
-                    Peticion::Apagar => "poweroff",
-                    Peticion::Reiniciar => "reboot",
-                    Peticion::Suspender => "suspend",
-                    Peticion::Hibernar => "hibernate",
-                    Peticion::CerrarSesion => return Task::none(),
-                };
-                if self.cliente.is_none() {
-                    self.error = Some(format!(
-                        "{}: «systemctl {orden}».",
-                        self.idioma
-                            .t("Vista previa: no se ejecuta", "Preview mode: skipped")
-                    ));
+                self.menu_desde = Some((Instant::now(), false));
+                if peticion.energia().is_some_and(|e| e.pide_confirmacion()) {
+                    self.confirmacion = Some((peticion, false));
                     return Task::none();
                 }
-                // Se espera a systemctl para enseñar su error: con spawn() a secas
-                // un rechazo de polkit acababa en el stderr de cage y el botón
-                // parecía no hacer nada.
-                return Task::perform(
-                    async move {
-                        match std::process::Command::new("systemctl")
-                            .args(["--no-ask-password", orden])
-                            .output()
-                        {
-                            Ok(salida) if salida.status.success() => None,
-                            Ok(salida) => Some(format!(
-                                "systemctl {orden}: {}",
-                                String::from_utf8_lossy(&salida.stderr).trim()
-                            )),
-                            Err(error) => {
-                                Some(format!("No se pudo ejecutar systemctl {orden}: {error}"))
-                            }
-                        }
-                    },
-                    Mensaje::EnergiaHecha,
-                );
+                return self.ejecutar_energia(peticion);
+            }
+            Mensaje::ConfirmarEnergia(aceptar) => {
+                let Some((peticion, _)) = self.confirmacion.take() else {
+                    return Task::none();
+                };
+                if aceptar {
+                    return self.ejecutar_energia(peticion);
+                }
             }
             Mensaje::EnergiaHecha(fallo) => {
                 self.error = fallo;
@@ -1235,5 +1415,111 @@ impl Acceso {
             _ => {}
         }
         Task::none()
+    }
+
+    fn ejecutar_energia(&mut self, peticion: Peticion) -> Task<Mensaje> {
+        let orden = match peticion {
+            Peticion::Apagar => "poweroff",
+            Peticion::Reiniciar => "reboot",
+            Peticion::Suspender => "suspend",
+            Peticion::Hibernar => "hibernate",
+            Peticion::CerrarSesion | Peticion::CambiarUsuario => return Task::none(),
+        };
+        if self.cliente.is_none() {
+            self.error = Some(format!(
+                "{}: «systemctl {orden}».",
+                self.idioma
+                    .t("Vista previa: no se ejecuta", "Preview mode: skipped")
+            ));
+            return Task::none();
+        }
+        // Se espera a systemctl para enseñar su error: con spawn() a secas
+        // un rechazo de polkit acababa en el stderr de cage y el botón
+        // parecía no hacer nada.
+        Task::perform(
+            async move {
+                match std::process::Command::new("systemctl")
+                    .args(["--no-ask-password", orden])
+                    .output()
+                {
+                    Ok(salida) if salida.status.success() => None,
+                    Ok(salida) => Some(format!(
+                        "systemctl {orden}: {}",
+                        String::from_utf8_lossy(&salida.stderr).trim()
+                    )),
+                    Err(error) => Some(format!("No se pudo ejecutar systemctl {orden}: {error}")),
+                }
+            },
+            Mensaje::EnergiaHecha,
+        )
+    }
+
+    /// Índice visible del perfil de energía activo dentro de la cápsula.
+    fn indice_perfil(&self) -> f32 {
+        let claves: Vec<&str> = ["power-saver", "balanced", "performance"]
+            .into_iter()
+            .filter(|c| {
+                self.bateria_detalle.perfiles_disponibles.is_empty()
+                    || self
+                        .bateria_detalle
+                        .perfiles_disponibles
+                        .iter()
+                        .any(|p| p == c)
+            })
+            .collect();
+        claves
+            .iter()
+            .position(|c| *c == self.bateria_detalle.perfil)
+            .unwrap_or(0) as f32
+    }
+
+    /// Velo negro de entrada al abrir el greeter: enlaza sin corte con
+    /// Plymouth o con `tty1` en negro.
+    fn velo_entrada(&self) -> f32 {
+        self.velo_entrada_para(self.entrada_desde.elapsed(), tema::efectos_reducidos())
+    }
+
+    fn velo_entrada_para(&self, transcurrido: Duration, reducidos: bool) -> f32 {
+        if reducidos {
+            return 0.0;
+        }
+        let t = tema::fraccion(transcurrido, tema::D_PAGINA);
+        (1.0 - tema::C_ENTRADA.eval(t)).clamp(0.0, 1.0)
+    }
+
+    /// Avance escalonado de entrada [reloj, centro, estado] igual que `bloqueo.rs`.
+    fn entradas(&self) -> [f32; 3] {
+        if tema::efectos_reducidos() {
+            return [1.0; 3];
+        }
+        let eval = |desde: Instant, retraso_ms: u64| {
+            let pasado = desde
+                .elapsed()
+                .saturating_sub(Duration::from_millis(retraso_ms));
+            tema::C_ENTRADA.eval(tema::avance(pasado, tema::D_PAGINA))
+        };
+        [
+            eval(self.entrada_desde, 0),
+            eval(self.cambio_desde, 0).min(eval(self.entrada_desde, 90)),
+            eval(self.entrada_desde, 180),
+        ]
+    }
+
+    /// Avance del menú desplegable de arriba a la derecha con la misma curva
+    /// `D_POPOVER` + `C_MUELLE_POPOVER` que `bloqueo.rs`.
+    fn menu_avance(&self) -> f32 {
+        match self.menu_desde {
+            Some((desde, abriendo)) if !tema::efectos_reducidos() => {
+                let t = tema::fraccion(desde.elapsed(), tema::D_POPOVER);
+                if t >= 1.0 {
+                    if abriendo { 1.0 } else { 0.0 }
+                } else if abriendo {
+                    tema::C_MUELLE_POPOVER.eval(t)
+                } else {
+                    1.0 - tema::C_ENTRADA.eval(t)
+                }
+            }
+            _ => self.menu.valor(),
+        }
     }
 }

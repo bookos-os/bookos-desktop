@@ -261,7 +261,7 @@ impl Emojis {
 
     // añadido en la 0.2.0 -- el cierre ocupa parte de la cabecera y no debe empezar un arrastre.
     pub fn arrastre_en(&self, x: f32, y: f32) -> bool {
-        (MARGEN..MARGEN + 24.0).contains(&y) && x < ANCHO - MARGEN - 24.0
+        (MARGEN..ANCHO - MARGEN - 24.0).contains(&x) && (MARGEN..MARGEN + 24.0).contains(&y)
     }
 
     // 0.1.1
@@ -274,7 +274,9 @@ impl Emojis {
             return Some(Accion::CerrarEmergente);
         } else if let Some(indice) = self.celda_en(x, y) {
             return self.elegir(indice);
-        } else if (MARGEN..MARGEN + 24.0).contains(&y) {
+        } else if (MARGEN..ANCHO - MARGEN - 24.0).contains(&x)
+            && (MARGEN..MARGEN + 24.0).contains(&y)
+        {
             self.agarre = Some((x, y));
         }
         None
@@ -319,17 +321,20 @@ impl Emojis {
         }
         // La elegida con el teclado no puede quedarse fuera de la vista: Intro
         // insertaría un emoji que no estás viendo.
-        let y = self.desplazamiento.destino();
-        let primera = (y / CELDA).ceil() as usize;
-        let ultima =
-            ((y / CELDA).floor() as usize + FILAS).min(self.resultados.len().div_ceil(COLUMNAS));
-        self.elegido = self.elegido.clamp(
-            primera * COLUMNAS,
-            (ultima * COLUMNAS)
+        if self.resultados.is_empty() {
+            self.elegido = 0;
+        } else {
+            let y = self.desplazamiento.destino();
+            let primera = (y / CELDA).ceil() as usize;
+            let ultima =
+                ((y / CELDA).floor() as usize + FILAS).min(self.resultados.len().div_ceil(COLUMNAS));
+            let lo = (primera * COLUMNAS).min(self.resultados.len() - 1);
+            let hi = (ultima * COLUMNAS)
                 .min(self.resultados.len())
-                .max(primera * COLUMNAS + 1)
-                - 1,
-        );
+                .saturating_sub(1)
+                .max(lo);
+            self.elegido = self.elegido.clamp(lo, hi);
+        }
         self.señalado.señalar(None);
         true
     }
@@ -754,5 +759,20 @@ mod tests {
                 .iter()
                 .all(|&i| CATALOGO[i].categoria == 3)
         );
+    }
+
+    #[test]
+    fn desplazar_mantiene_elegido_en_rango_con_lista_corta_o_vacia() {
+        let mut selector = Emojis::new(0.0, 0.0, &[]);
+        selector.resultados = vec![0, 1];
+        selector.desplazar(10.0);
+        assert!(selector.elegido < selector.resultados.len());
+
+        selector.resultados.clear();
+        selector.desplazar(10.0);
+        assert_eq!(selector.elegido, 0);
+
+        assert!(!selector.arrastre_en(2.0, MARGEN + 10.0));
+        assert!(selector.arrastre_en(MARGEN + 10.0, MARGEN + 10.0));
     }
 }

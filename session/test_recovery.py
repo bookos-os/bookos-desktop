@@ -100,6 +100,12 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(recovery.recover(SimpleNamespace(locked=False)), 0)
             call.assert_called_once_with(["systemctl", "reboot"])
 
+    def test_localization_follows_locale_env(self):
+        with patch.dict(os.environ, {"LC_ALL": "", "LC_MESSAGES": "", "LANG": "en_US.UTF-8"}):
+            self.assertEqual(recovery.t("Volver", "Back"), "Back")
+        with patch.dict(os.environ, {"LC_ALL": "", "LC_MESSAGES": "", "LANG": "es_ES.UTF-8"}):
+            self.assertEqual(recovery.t("Volver", "Back"), "Volver")
+
 
 class RestoreScriptTests(unittest.TestCase):
     """The real script against stubbed system commands; the "disk" is a directory."""

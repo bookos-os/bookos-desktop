@@ -462,12 +462,40 @@ pub fn acompanar(state: &mut BookosComp, window: &Window, delta: Point<i32, Logi
 
 // 0.1.1
 pub fn separador_en(state: &BookosComp, punto: Point<f64, Logical>) -> Option<Window> {
+    separador_en_con_holgura(state, punto, 0.0)
+}
+
+/// Igual que [`separador_en`], ampliando la zona de agarre horizontal en `holgura`
+/// píxeles por cada lado (útil para dedos en pantalla táctil).
+pub fn separador_en_con_holgura(
+    state: &BookosComp,
+    punto: Point<f64, Logical>,
+    holgura: f64,
+) -> Option<Window> {
     if state.multitarea.grupos.is_empty() {
         return None;
     }
+    let h = holgura.max(0.0).round() as i32;
     // Una ventana flotante o un diálogo por encima del grupo tapa también su
     // separador: no se puede redimensionar lo que no se está viendo.
     for w in state.space.elements().rev().filter(|w| visible(state, w)) {
+        if let Some(i) = indice(state, w) {
+            let g = &state.multitarea.grupos[i];
+            if let Disposicion::Lados(p) = g.disposicion {
+                let [izq, _] = reparto(
+                    g.area,
+                    p,
+                    [min_ancho(&g.ventanas[0].0), min_ancho(&g.ventanas[1].0)],
+                );
+                let rect = Rectangle::new(
+                    (izq.loc.x + izq.size.w - h, izq.loc.y).into(),
+                    (SEPARADOR + h * 2, izq.size.h).into(),
+                );
+                if rect.to_f64().contains(punto) {
+                    return Some(g.ventanas[0].0.clone());
+                }
+            }
+        }
         if state
             .space
             .element_geometry(w)
@@ -476,22 +504,6 @@ pub fn separador_en(state: &BookosComp, punto: Point<f64, Logical>) -> Option<Wi
             .any(|r| r.to_f64().contains(punto))
         {
             return None;
-        }
-        let Some(i) = indice(state, w) else { continue };
-        let g = &state.multitarea.grupos[i];
-        if let Disposicion::Lados(p) = g.disposicion {
-            let [izq, _] = reparto(
-                g.area,
-                p,
-                [min_ancho(&g.ventanas[0].0), min_ancho(&g.ventanas[1].0)],
-            );
-            let rect = Rectangle::new(
-                (izq.loc.x + izq.size.w, izq.loc.y).into(),
-                (SEPARADOR, izq.size.h).into(),
-            );
-            if rect.to_f64().contains(punto) {
-                return Some(g.ventanas[0].0.clone());
-            }
         }
     }
     None
@@ -505,12 +517,21 @@ pub fn empezar_separador(state: &mut BookosComp) -> bool {
     empezar_redimension(state, &w, false)
 }
 
+/// Inicia el redimensionado del separador de split-screen con holgura táctil.
+pub fn empezar_separador_tactil(state: &mut BookosComp, punto: Point<f64, Logical>) -> bool {
+    let Some(w) = separador_en_con_holgura(state, punto, 24.0) else {
+        return false;
+    };
+    empezar_redimension_en(state, &w, punto.x, false)
+}
+
 // 0.1.1
 pub fn seguir_separador(state: &mut BookosComp) -> bool {
     let Some((w, desfase, _)) = state.multitarea.separador.clone() else {
         return false;
     };
     let Some(i) = indice(state, &w) else {
+        state.multitarea.separador = None;
         return false;
     };
     let grupo = &mut state.multitarea.grupos[i];
@@ -577,6 +598,13 @@ pub fn purgar(state: &mut BookosComp) {
         }
         false
     });
+    if let Some((ref w, _, _)) = state.multitarea.separador
+        && (!w.alive()
+            || indice(state, w)
+                .is_none_or(|i| !matches!(state.multitarea.grupos[i].disposicion, Disposicion::Lados(_))))
+    {
+        state.multitarea.separador = None;
+    }
     state.needs_redraw |= cambio;
 }
 
@@ -604,6 +632,15 @@ pub fn ajustar_monitor(state: &mut BookosComp, window: &Window, nombre: &str) {
 
 // 0.1.1
 pub fn empezar_redimension(state: &mut BookosComp, window: &Window, del_cliente: bool) -> bool {
+    empezar_redimension_en(state, window, state.pointer_location.x, del_cliente)
+}
+
+fn empezar_redimension_en(
+    state: &mut BookosComp,
+    window: &Window,
+    x: f64,
+    del_cliente: bool,
+) -> bool {
     if raiz(state, window) != *window {
         return false;
     }
@@ -619,7 +656,7 @@ pub fn empezar_redimension(state: &mut BookosComp, window: &Window, del_cliente:
         p,
         [min_ancho(&g.ventanas[0].0), min_ancho(&g.ventanas[1].0)],
     );
-    let desfase = state.pointer_location.x - (izq.loc.x + izq.size.w) as f64;
+    let desfase = x - (izq.loc.x + izq.size.w) as f64;
     state.multitarea.separador = Some((window.clone(), desfase, del_cliente));
     true
 }
@@ -632,15 +669,24 @@ pub fn encajada(state: &mut BookosComp, window: &Window, zona: ventanas::Zona) {
         Zona::Derecha => Zona::Izquierda,
         _ => return,
     };
+    // El cliente Wayland puede conservar el búfer de cuando estaba maximizado.
+    // A la derecha, su centro antiguo quedaría fuera justo hasta el configure.
+    let salida_encajada = |w: &Window| {
+        let sitio = state.space.element_location(w)?;
+        state.space.outputs().find(|o| {
+            state
+                .space
+                .output_geometry(o)
+                .is_some_and(|area| area.contains(sitio))
+        })
+    };
+    let salida = salida_encajada(window);
     let otra = state
         .space
         .elements()
         .rev()
         .find(|w| {
-            **w != *window
-                && ventanas::zona_de(w) == Some(opuesta)
-                && crate::escritorios::salida_de(state, w)
-                    == crate::escritorios::salida_de(state, window)
+            **w != *window && ventanas::zona_de(w) == Some(opuesta) && salida_encajada(w) == salida
         })
         .cloned();
     if let Some(otra) = otra {
@@ -651,6 +697,28 @@ pub fn encajada(state: &mut BookosComp, window: &Window, zona: ventanas::Zona) {
         }
         state.enfocar(window);
     }
+}
+
+/// Encaja `window` en la mitad izquierda o derecha y, si aún no quedó
+/// emparejada con otra ventana opuesta, toma la candidata más reciente para
+/// formar inmediatamente un Split-Screen estilo Android con separador central.
+pub fn emparejar_en_lado(state: &mut BookosComp, window: &Window, zona: ventanas::Zona) {
+    let opuesta = match zona {
+        ventanas::Zona::Izquierda => ventanas::Zona::Derecha,
+        ventanas::Zona::Derecha => ventanas::Zona::Izquierda,
+        _ => {
+            state.encajar(window, zona);
+            return;
+        }
+    };
+    let candidata_previa = candidata(state, window);
+    state.encajar(window, zona);
+    if !agrupada(state, window)
+        && let Some(otra) = candidata_previa.or_else(|| candidata(state, window))
+    {
+        state.encajar(&otra, opuesta);
+    }
+    state.enfocar(window);
 }
 
 // 0.1.1
@@ -686,6 +754,10 @@ pub fn retirar(state: &mut BookosComp, window: &Window) {
         }
         g.ventanas.retain(|(w, _)| w != window);
     }
+    state
+        .multitarea
+        .aparcados
+        .retain(|(w, g)| w != window && !g.ventanas.iter().any(|(v, _)| v == window));
     crate::decoracion::agrupar(window, false);
     purgar(state);
 }

@@ -27,6 +27,14 @@ impl Reloj {
             cambio: None,
         }
     }
+
+    fn progreso_cambio(&self) -> Option<f32> {
+        if tema::efectos_reducidos() {
+            return None;
+        }
+        let pasado = self.cambio?.elapsed();
+        (pasado < tema::D_TARJETA).then(|| tema::fraccion(pasado, tema::D_TARJETA))
+    }
 }
 
 /// Lo que sube el texto nuevo al cambiar de minuto.
@@ -82,7 +90,7 @@ impl Widget for Reloj {
 
     // 0.1.0
     fn animando(&self) -> bool {
-        self.cambio.is_some_and(|t| t.elapsed() < tema::D_TARJETA)
+        self.progreso_cambio().is_some()
     }
 
     /// Despierta en el cambio de minuto, no una vez por segundo.
@@ -107,9 +115,9 @@ impl Widget for Reloj {
 
     // 0.1.0
     fn ver(&self) -> PanelElement<'_> {
-        let t = self.cambio.map_or(1.0, |desde| {
-            tema::C_ENTRADA.eval(tema::fraccion(desde.elapsed(), tema::D_TARJETA))
-        });
+        let t = self
+            .progreso_cambio()
+            .map_or(1.0, |p| tema::C_ENTRADA.eval(p));
         let mut color = TEXT();
         color.a *= t;
         // El relleno de arriba es el doble de lo que se quiere bajar el texto:
@@ -123,5 +131,33 @@ impl Widget for Reloj {
         )
         .padding(iced_core::Padding::ZERO.top(2.0 * SUBIDA * (1.0 - t)))
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn efectos_reducidos_detiene_animacion_de_cambio_de_minuto() {
+        struct Guardia(bool);
+        impl Drop for Guardia {
+            fn drop(&mut self) {
+                tema::aplicar_efectos_reducidos(self.0);
+            }
+        }
+        let _guardia = Guardia(tema::efectos_reducidos());
+        tema::aplicar_efectos_reducidos(false);
+
+        let reloj = Reloj {
+            texto: "1/1/26 0:00".into(),
+            cambio: Some(Instant::now()),
+        };
+        assert!(reloj.progreso_cambio().is_some());
+        assert!(reloj.animando());
+
+        tema::aplicar_efectos_reducidos(true);
+        assert!(reloj.progreso_cambio().is_none());
+        assert!(!reloj.animando());
     }
 }

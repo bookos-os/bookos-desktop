@@ -24,8 +24,35 @@ pub fn alternar(state: &mut BookosComp) {
         cancelar(state);
         return;
     }
-    if state.shell.as_ref().is_some_and(|s| s.esta_bloqueado()) {
-        return;
+    activar(state);
+}
+
+fn puede_activar(
+    activo: bool,
+    kiosko: bool,
+    salvapantallas: bool,
+    vista_tactil: bool,
+    bloqueado: bool,
+    captura: bool,
+) -> bool {
+    !activo && !kiosko && !salvapantallas && !vista_tactil && !bloqueado && !captura
+}
+
+/// Activa el cuentagotas si no está ya puesto ni bloqueada la pantalla.
+pub fn activar(state: &mut BookosComp) -> bool {
+    let (bloqueado, captura) = state
+        .shell
+        .as_ref()
+        .map_or((false, false), |s| (s.esta_bloqueado(), s.hay_captura()));
+    if !puede_activar(
+        state.cuentagotas,
+        state.modo.kiosko(),
+        state.salvapantallas.activo(),
+        state.vista_tactil.is_some(),
+        bloqueado,
+        captura,
+    ) {
+        return false;
     }
     state.cuentagotas = true;
     // La lupa hace de puntero: su cuadro central es el píxel que se coge. Con
@@ -33,11 +60,10 @@ pub fn alternar(state: &mut BookosComp) {
     state.cursor_status = CursorImageStatus::Hidden;
     muestrear(state);
     state.needs_redraw = true;
+    true
 }
 
-// 0.1.1
-// modificado en la 0.2.0 -- suelta la lupa y devuelve el foco del puntero
-pub fn cancelar(state: &mut BookosComp) {
+fn cerrar(state: &mut BookosComp) {
     state.cuentagotas = false;
     state.cuentagotas_lupa = None;
     state.cursor_status = CursorImageStatus::default_named();
@@ -49,6 +75,13 @@ pub fn cancelar(state: &mut BookosComp) {
     state.needs_redraw = true;
 }
 
+// 0.1.1
+// modificado en la 0.2.0 -- suelta la lupa y devuelve el foco del puntero
+pub fn cancelar(state: &mut BookosComp) {
+    cerrar(state);
+    state.color_portal.take();
+}
+
 /// Pide el píxel que hay bajo el puntero. Se sirve al componer el siguiente
 /// fotograma.
 // 0.1.1
@@ -58,7 +91,7 @@ pub fn elegir(state: &mut BookosComp) {
     // de lógicos a físicos por su cuenta y a escala 1,75 podía caer en el
     // píxel de al lado del marcado.
     if let Some(centro) = state.cuentagotas_lupa.as_ref().and_then(|l| l.centro) {
-        cancelar(state);
+        cerrar(state);
         entregar(state, centro);
         return;
     }
@@ -70,7 +103,7 @@ pub fn elegir(state: &mut BookosComp) {
         alto: 1,
         destino: crate::state::DestinoCaptura::Color,
     });
-    cancelar(state);
+    cerrar(state);
 }
 
 /// Pide los píxeles de alrededor del puntero para la lupa. Se sirven al
@@ -124,6 +157,22 @@ pub fn region(state: &BookosComp, escala: f64) -> Rectangle<i32, Buffer> {
     Rectangle::new((x - LADO / 2, y - LADO / 2).into(), (LADO, LADO).into())
 }
 
+fn pixel_en(
+    rgba: &[u8],
+    leida: Rectangle<i32, Buffer>,
+    punto: Point<i32, Buffer>,
+) -> Option<[u8; 3]> {
+    if !leida.contains(punto) || leida.size.w <= 0 {
+        return None;
+    }
+    let dx = usize::try_from(punto.x - leida.loc.x).ok()?;
+    let dy = usize::try_from(punto.y - leida.loc.y).ok()?;
+    let w = usize::try_from(leida.size.w).ok()?;
+    let i = dy.checked_mul(w)?.checked_add(dx)?.checked_mul(4)?;
+    let pixel = rgba.get(i..i.checked_add(3)?)?;
+    Some([pixel[0], pixel[1], pixel[2]])
+}
+
 /// Los píxeles leídos, `rgba` del tamaño de `leida`, que es lo que quedó de
 /// `pedida` dentro de la pantalla.
 // añadido en la 0.2.0
@@ -141,11 +190,7 @@ pub fn recibir(
         .flat_map(|fila| (0..LADO).map(move |columna| (columna, fila)))
         .map(|(columna, fila)| {
             let punto: Point<i32, Buffer> = (pedida.loc.x + columna, pedida.loc.y + fila).into();
-            leida.contains(punto).then(|| {
-                let i =
-                    (((punto.y - leida.loc.y) * leida.size.w + punto.x - leida.loc.x) * 4) as usize;
-                [rgba[i], rgba[i + 1], rgba[i + 2]]
-            })
+            pixel_en(rgba, leida, punto)
         })
         .collect();
     let centro = muestra[(LADO * LADO / 2) as usize];
@@ -302,6 +347,12 @@ thread_local! {
 /// El color ya leído: al portapapeles y un aviso con una muestra.
 // 0.1.1
 pub fn entregar(state: &mut BookosComp, [r, g, b]: [u8; 3]) {
+    if let Some((_, emisario)) = state.color_portal.take() {
+        tracing::info!(r, g, b, "color entregado al portal");
+        emisario.entregar([r, g, b]);
+        state.needs_redraw = true;
+        return;
+    }
     let hex = hex([r, g, b]);
     tracing::info!(%hex, "color cogido");
     crate::backend::texto_al_portapapeles(state, &hex);
@@ -310,8 +361,8 @@ pub fn entregar(state: &mut BookosComp, [r, g, b]: [u8; 3]) {
     };
     let mut aviso = bookos_shell::notificaciones::Notificacion::nueva(
         0,
-        "Cuentagotas".into(),
-        format!("{hex} copiado"),
+        bookos_shell::t("Cuentagotas", "Eyedropper").into(),
+        format!("{hex} {}", bookos_shell::t("copiado", "copied")),
         format!("rgb({r}, {g}, {b})"),
         "",
         false,
@@ -332,8 +383,51 @@ fn hex([r, g, b]: [u8; 3]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use smithay::utils::{Buffer, Point, Rectangle};
+
     #[test]
     fn el_hex_va_en_mayusculas_y_con_dos_cifras() {
         assert_eq!(super::hex([10, 79, 255]), "#0A4FFF");
+    }
+
+    #[test]
+    fn puede_activar_rechaza_kiosko_salvapantallas_vista_bloqueo_y_captura() {
+        assert!(super::puede_activar(
+            false, false, false, false, false, false
+        ));
+        for caso in [
+            (true, false, false, false, false, false),
+            (false, true, false, false, false, false),
+            (false, false, true, false, false, false),
+            (false, false, false, true, false, false),
+            (false, false, false, false, true, false),
+            (false, false, false, false, false, true),
+        ] {
+            assert!(!super::puede_activar(
+                caso.0, caso.1, caso.2, caso.3, caso.4, caso.5
+            ));
+        }
+    }
+
+    #[test]
+    fn pixel_en_acota_buferes_truncados_y_fuera_de_rango() {
+        let leida: Rectangle<i32, Buffer> = Rectangle::new((10, 20).into(), (4, 4).into());
+        let corto = [10u8, 20, 30, 255, 40, 50];
+        assert_eq!(
+            super::pixel_en(&corto, leida, Point::from((10, 20))),
+            Some([10, 20, 30])
+        );
+        assert_eq!(super::pixel_en(&corto, leida, Point::from((11, 20))), None);
+        assert_eq!(super::pixel_en(&corto, leida, Point::from((9, 20))), None);
+        let mut degenerado: Rectangle<i32, Buffer> = Rectangle::new((0, 0).into(), (0, 2).into());
+        assert_eq!(
+            super::pixel_en(&corto, degenerado, Point::from((0, 0))),
+            None
+        );
+        degenerado.size.w = -4;
+        assert_eq!(
+            super::pixel_en(&corto, degenerado, Point::from((0, 0))),
+            None
+        );
     }
 }

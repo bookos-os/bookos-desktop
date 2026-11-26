@@ -462,6 +462,12 @@ impl XdgShellHandler for BookosComp {
         self.actualizar_dock();
     }
 
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_de_toplevel(&surface) {
+            crate::miniatura_captura::intentar_acoplar_existente(self, &window);
+        }
+    }
+
     // 0.1.0
     // modified 0.1.1 -- saca la ventana cerrada de su grupo
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -496,6 +502,18 @@ impl XdgShellHandler for BookosComp {
         if self.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
             crate::keybinds::ejecutar(self, crate::keybinds::Accion::ConmutarCancelar);
         }
+        // Primero sacamos la ventana de grupos/pestañas para que si revela una
+        // pestaña maximizada, `revisar_barras` la tenga en cuenta de inmediato.
+        if let Some(window) = self.window_de_toplevel(&surface) {
+            if self
+                .arrastre
+                .as_ref()
+                .is_some_and(|a| a.window == window)
+            {
+                self.arrastre = None;
+            }
+            crate::multitarea::retirar(self, &window);
+        }
         // Al cerrarse una ventana puede quedar libre el sitio de una barra.
         self.revisar_barras();
         // Y si estaba apartada en otro escritorio, sacarla de allí: nadie la ha
@@ -504,9 +522,6 @@ impl XdgShellHandler for BookosComp {
         // El foco de teclado apuntaba a la ventana que acaba de morir: si no se
         // reasigna, las que siguen abiertas dejan de recibir teclas y el
         // escritorio parece congelado sin estarlo.
-        if let Some(window) = self.window_de_toplevel(&surface) {
-            crate::multitarea::retirar(self, &window);
-        }
         crate::keybinds::refocalizar(self);
         sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
@@ -983,6 +998,9 @@ impl SelectionHandler for BookosComp {
         // añadido en la 0.2.3 -- el escritorio ofrece «Pegar» solo si hay archivos.
         if ty == smithay::wayland::selection::SelectionTarget::Clipboard {
             self.archivos.tipos = source.as_ref().map(|s| s.mime_types()).unwrap_or_default();
+            if let Some(source) = source.as_ref() {
+                crate::portapapeles::programar_captura_cliente(self, source.mime_types());
+            }
         }
         if let Some(xwm) = self.xwm.as_mut()
             && let Err(err) = xwm.new_selection(ty, source.map(|s| s.mime_types()))
@@ -1361,5 +1379,6 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for BookosComp {
         };
         tracing::debug!(?datos.app_id, "activación concedida");
         self.enfocar(&window);
+        crate::miniatura_captura::intentar_acoplar_existente(self, &window);
     }
 }

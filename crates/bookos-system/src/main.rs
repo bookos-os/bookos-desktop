@@ -333,8 +333,8 @@ async fn watch_audio(tx: mpsc::Sender<Change>) {
             if let Some(out) = child.stdout.take() {
                 let mut lines = BufReader::new(out).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if audio_event(&line) {
-                        let _ = tx.try_send("audio".into());
+                    if audio_event(&line) && tx.send("audio".into()).await.is_err() {
+                        break;
                     }
                 }
             }

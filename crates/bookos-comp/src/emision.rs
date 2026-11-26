@@ -132,7 +132,7 @@ impl Emisiones {
             .filter(|(_, e)| {
                 e.output == *output
                     && !self.pendientes.contains(&e.sesion)
-                    && ahora.duration_since(e.ultimo) >= e.periodo
+                    && emision_lista(ahora, e.ultimo, e.periodo)
             })
             .map(|(i, _)| i)
             .collect()
@@ -164,16 +164,15 @@ impl Emisiones {
             return Some(ruta);
         }
 
-        let stride = tamano.w.max(0) as usize * 4;
-        let alto = tamano.h.max(0) as usize;
-        let necesarios = stride * alto;
-        if pixeles.len() < necesarios {
+        let Some((stride, alto, necesarios)) = marco_necesario(tamano, pixeles.len()) else {
             tracing::warn!(
                 sesion,
-                "el readback trajo menos píxeles de los que mide la salida"
+                ?tamano,
+                pixeles = pixeles.len(),
+                "el readback tiene tamaño inválido o insuficientes píxeles"
             );
             return None;
-        }
+        };
         self.activas[indice].ultimo = ahora;
 
         self.recoger();
@@ -209,5 +208,48 @@ impl Emisiones {
                 self.libres.push(v);
             }
         }
+    }
+}
+
+fn emision_lista(ahora: Instant, ultimo: Instant, periodo: Duration) -> bool {
+    ahora.saturating_duration_since(ultimo) >= periodo
+}
+
+fn marco_necesario(
+    tamano: Size<i32, BufferCoord>,
+    pixeles_len: usize,
+) -> Option<(usize, usize, usize)> {
+    let w = usize::try_from(tamano.w).ok().filter(|&w| w > 0)?;
+    let h = usize::try_from(tamano.h).ok().filter(|&h| h > 0)?;
+    let stride = w.checked_mul(4)?;
+    let necesarios = stride.checked_mul(h)?;
+    (pixeles_len >= necesarios).then_some((stride, h, necesarios))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marco_necesario_rechaza_dimensiones_invalidas_desbordamiento_y_bufer_corto() {
+        assert_eq!(marco_necesario((0, 10).into(), 64), None);
+        let mut alto_negativo: Size<i32, BufferCoord> = (10, 1).into();
+        alto_negativo.h = -1;
+        assert_eq!(marco_necesario(alto_negativo, 1024), None);
+        assert_eq!(marco_necesario((i32::MAX, i32::MAX).into(), 1024), None);
+        assert_eq!(marco_necesario((4, 4).into(), 63), None);
+        assert_eq!(marco_necesario((4, 4).into(), 64), Some((16, 4, 64)));
+    }
+
+    #[test]
+    fn emision_lista_resiste_reloj_no_monotono() {
+        let ahora = Instant::now();
+        let futuro = ahora + Duration::from_secs(5);
+        assert!(!emision_lista(ahora, futuro, Duration::from_millis(16)));
+        assert!(emision_lista(
+            futuro,
+            ahora,
+            Duration::from_millis(16)
+        ));
     }
 }

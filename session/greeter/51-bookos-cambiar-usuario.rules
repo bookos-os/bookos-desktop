@@ -1,0 +1,15 @@
+// Cambio rápido de usuario: quien está sentado delante (sesión local y activa)
+// puede abrir una segunda ventana de inicio en tty2–tty6 sin contraseña de
+// administrador. Solo `start` y solo esa unidad: pararla cerraría la sesión
+// de otra persona.
+polkit.addRule(function(action, subject) {
+    if (action.id != "org.freedesktop.systemd1.manage-units"
+        || !subject.local || !subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (/^bookos-greetd@[2-6]\.service$/.test(action.lookup("unit"))
+        && action.lookup("verb") == "start") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

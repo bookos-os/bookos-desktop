@@ -169,7 +169,13 @@ pub async fn ruta_de(sistema: &Connection, mac: &str) -> Result<OwnedObjectPath,
                 .is_some_and(|a| a.eq_ignore_ascii_case(mac))
         })
         .map(|(ruta, _)| ruta)
-        .ok_or_else(|| format!("BlueZ no conoce {mac}: ¿están emparejados?"))
+        .ok_or_else(|| {
+            if crate::en_castellano() {
+                format!("BlueZ no conoce {mac}: ¿están emparejados?")
+            } else {
+                format!("BlueZ doesn't recognize {mac}: are they paired?")
+            }
+        })
 }
 
 /// Un intento de abrir el canal: registra los perfiles y pide a BlueZ que
@@ -227,11 +233,22 @@ pub async fn abrir(
             dev.call::<_, _, ()>("ConnectProfile", &(uuid,))
                 .await
                 .map_err(|e| e.to_string())?;
-            rx.await
-                .map_err(|_| "BlueZ cerró la conexión sin entregar el canal".to_string())
+            rx.await.map_err(|_| {
+                crate::t(
+                    "BlueZ cerró la conexión sin entregar el canal",
+                    "BlueZ closed the connection without providing the channel",
+                )
+                .to_string()
+            })
         })
         .await
-        .unwrap_or_else(|_| Err(format!("sin respuesta en {} s", LIMITE_INTENTO.as_secs())));
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "{} {} s",
+                crate::t("sin respuesta en", "timed out after"),
+                LIMITE_INTENTO.as_secs()
+            ))
+        });
         pendiente
             .lock()
             .expect("nadie entra en pánico con el pendiente tomado")
@@ -258,20 +275,34 @@ pub fn error_legible(crudo: &str) -> String {
         // Hipótesis aún sin confirmar con los registros (ver el resumen del
         // cambio): el firmware solo admite un cliente del canal de control, y
         // Galaxy Wearable en el móvil lo tiene ocupado.
-        "Los auriculares rechazaron el canal de control. Suele pasar si el móvil \
-         tiene Galaxy Wearable conectado a ellos."
+        crate::t(
+            "Los auriculares rechazaron el canal de control. Suele pasar si el móvil \
+             tiene Galaxy Wearable conectado a ellos.",
+            "The earbuds rejected the control channel. This usually happens if Galaxy \
+             Wearable on your phone is connected to them.",
+        )
     } else if c.contains("host is down")
         || c.contains("page timeout")
         || c.contains("sin respuesta")
+        || c.contains("timed out")
     {
-        "Los auriculares no responden. ¿Están fuera del estuche y cerca?"
+        crate::t(
+            "Los auriculares no responden. ¿Están fuera del estuche y cerca?",
+            "The earbuds aren't responding. Are they out of the case and nearby?",
+        )
     } else if c.contains("not connected")
         || c.contains("notavailable")
         || c.contains("not available")
     {
-        "Los auriculares no están conectados por Bluetooth."
+        crate::t(
+            "Los auriculares no están conectados por Bluetooth.",
+            "The earbuds aren't connected via Bluetooth.",
+        )
     } else {
-        "No se pudo abrir el canal de control de los auriculares."
+        crate::t(
+            "No se pudo abrir el canal de control de los auriculares.",
+            "Couldn't open the earbuds control channel.",
+        )
     };
     format!("{motivo} (BlueZ: {crudo})")
 }
@@ -431,8 +462,15 @@ impl Conexion {
 
     // 0.1.0
     pub fn enviar(&self, msg_id: u8, payload: &[u8]) -> Result<(), String> {
-        enviar_fd(&self.fd, msg_id, payload, self.legacy)
-            .map_err(|e| format!("No se pudo enviar a los auriculares: {e}"))
+        enviar_fd(&self.fd, msg_id, payload, self.legacy).map_err(|e| {
+            format!(
+                "{}: {e}",
+                crate::t(
+                    "No se pudo enviar a los auriculares",
+                    "Couldn't send command to earbuds",
+                )
+            )
+        })
     }
 
     // 0.1.0

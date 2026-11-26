@@ -289,12 +289,21 @@ impl smithay::xwayland::XwmHandler for BookosComp {
             crate::keybinds::ejecutar(self, crate::keybinds::Accion::ConmutarCancelar);
         }
         if let Some(elemento) = self.window_de_x11(&window) {
+            if self
+                .arrastre
+                .as_ref()
+                .is_some_and(|a| a.window == elemento)
+            {
+                self.arrastre = None;
+            }
             crate::multitarea::retirar(self, &elemento);
             self.space.unmap_elem(&elemento);
         }
         if !window.is_override_redirect() {
             let _ = window.set_mapped(false);
         }
+        self.revisar_barras();
+        crate::escritorios::purgar(self);
         crate::keybinds::refocalizar(self);
         crate::handlers::sincronizar_inhibicion(self, era_inhibido);
         self.needs_redraw = true;
@@ -302,10 +311,22 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     }
 
     // 0.1.0
-    fn destroyed_window(&mut self, _xwm: XwmId, _window: X11Surface) {
+    fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if self.shell.as_ref().is_some_and(|s| s.hay_conmutador()) {
             crate::keybinds::ejecutar(self, crate::keybinds::Accion::ConmutarCancelar);
         }
+        if let Some(elemento) = self.window_de_x11(&window) {
+            if self
+                .arrastre
+                .as_ref()
+                .is_some_and(|a| a.window == elemento)
+            {
+                self.arrastre = None;
+            }
+            crate::multitarea::retirar(self, &elemento);
+            self.space.unmap_elem(&elemento);
+        }
+        self.revisar_barras();
         crate::escritorios::purgar(self);
         crate::keybinds::refocalizar(self);
         self.needs_redraw = true;
@@ -330,6 +351,8 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         let elemento = self.window_de_x11(&window);
         if let Some(elemento) = &elemento
             && (crate::ventanas::encajada(elemento)
+                || crate::ventanas::maximizada(elemento)
+                || crate::ventanas::completa(elemento)
                 || (crate::multitarea::agrupada(self, elemento)
                     && crate::multitarea::raiz(self, elemento) == *elemento))
         {
@@ -514,12 +537,17 @@ impl smithay::xwayland::XwmHandler for BookosComp {
         use smithay::wayland::selection::data_device::set_data_device_selection;
         use smithay::wayland::selection::primary_selection::set_primary_selection;
         match selection {
-            SelectionTarget::Clipboard => set_data_device_selection(
-                &self.display_handle,
-                &self.seat,
-                mime_types,
-                Seleccion::X11,
-            ),
+            SelectionTarget::Clipboard => {
+                set_data_device_selection(
+                    &self.display_handle,
+                    &self.seat,
+                    mime_types.clone(),
+                    Seleccion::X11,
+                );
+                if !mime_types.is_empty() {
+                    crate::portapapeles::programar_captura_x11(self, mime_types);
+                }
+            }
             SelectionTarget::Primary => {
                 set_primary_selection(&self.display_handle, &self.seat, mime_types, Seleccion::X11)
             }
@@ -561,9 +589,50 @@ impl smithay::xwayland::XwmHandler for BookosComp {
     /// continúa sin X11, que es lo mismo que si nunca hubiera arrancado.
     // 0.1.0
     fn disconnected(&mut self, _xwm: XwmId) {
+        use smithay::wayland::selection::data_device::{
+            clear_data_device_selection, current_data_device_selection_userdata,
+        };
+        use smithay::wayland::selection::primary_selection::{
+            clear_primary_selection, current_primary_selection_userdata,
+        };
         tracing::warn!("XWayland se desconectó; la sesión sigue sin X11");
         self.xwm = None;
         self.display_x11 = None;
+        self.cliente_x11 = None;
+        if self
+            .arrastre
+            .as_ref()
+            .is_some_and(|a| a.window.x11_surface().is_some())
+        {
+            self.arrastre = None;
+        }
+        let x11: Vec<_> = self
+            .space
+            .elements()
+            .filter(|w| w.x11_surface().is_some())
+            .cloned()
+            .collect();
+        for elemento in x11 {
+            crate::multitarea::retirar(self, &elemento);
+            self.space.unmap_elem(&elemento);
+        }
+        crate::escritorios::purgar(self);
+        if matches!(
+            current_data_device_selection_userdata(&self.seat).as_deref(),
+            Some(Seleccion::X11)
+        ) {
+            clear_data_device_selection(&self.display_handle, &self.seat);
+        }
+        if matches!(
+            current_primary_selection_userdata(&self.seat).as_deref(),
+            Some(Seleccion::X11)
+        ) {
+            clear_primary_selection(&self.display_handle, &self.seat);
+        }
+        self.revisar_barras();
+        crate::keybinds::refocalizar(self);
+        self.actualizar_dock();
+        self.needs_redraw = true;
     }
 }
 
