@@ -19,7 +19,7 @@ iced_renderer = { version = "0.14", default-features = false, features = ["tiny-
 # Wayland. Nosotros no lo usamos: dibujamos a memoria y presenta el compositor.
 iced_tiny_skia = { version = "0.14", default-features = false, features = ["wayland", "image", "svg"] }
 iced_graphics = "0.14"
-tiny-skia = "0.11"
+tiny-skia = "0.12"
 # No es un crate nuevo: es el mismo `resvg` 0.45 que ya compila iced para sus
 # SVG y que el compositor declara igual. Hace falta tenerlo a mano para
 # rasterizar las miniaturas de los fondos a píxeles y recortarles las esquinas,
