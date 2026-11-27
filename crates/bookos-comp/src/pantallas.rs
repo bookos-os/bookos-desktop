@@ -1013,15 +1013,22 @@ pub fn tras_aplicar(state: &mut crate::state::BookosComp, aplicado: Aplicado) {
             .map(|(o, _)| o.current_scale().fractional_scale())
             .max_by(f64::total_cmp)
             .unwrap_or(escala);
-        state.cursor_theme = Some(crate::cursor::CursorTheme::con_tamano(
-            escala_cursor,
-            state.cursor_nominal,
-        ));
+        if state
+            .cursor_theme
+            .as_ref()
+            .is_none_or(|t| !t.coincide(escala_cursor, state.cursor_nominal))
+        {
+            state.cursor_theme = Some(crate::cursor::CursorTheme::con_tamano(
+                escala_cursor,
+                state.cursor_nominal,
+            ));
+        }
     }
 
     state.pantallas.compartido.publicar(salidas);
     state.needs_redraw = true;
     crate::xwayland::actualizar_escala(state);
+    crate::extras::enviar_pantalla(state);
     crate::ajustes::avisar_salidas(state);
 }
 

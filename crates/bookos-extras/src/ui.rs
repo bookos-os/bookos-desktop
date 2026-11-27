@@ -20,6 +20,13 @@ use smithay_client_toolkit::{
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    reexports::protocols::wp::{
+        fractional_scale::v1::client::{
+            wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+            wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+        },
+        viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
+    },
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
@@ -40,7 +47,7 @@ use tiny_skia::{
     Transform,
 };
 use wayland_client::{
-    Connection, QueueHandle,
+    Connection, Dispatch, QueueHandle, delegate_noop,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface, wl_touch},
 };
 
@@ -104,6 +111,8 @@ struct ArrastreCortina {
 
 struct EstadoCortina {
     layer: LayerSurface,
+    viewport: Option<WpViewport>,
+    fractional_scale: Option<WpFractionalScaleV1>,
     ancho: u32,
     alto: u32,
     configurada: bool,
@@ -117,9 +126,22 @@ struct EstadoCortina {
     toque: Option<ArrastreCortina>,
 }
 
+impl Drop for EstadoCortina {
+    fn drop(&mut self) {
+        if let Some(vp) = self.viewport.take() {
+            vp.destroy();
+        }
+        if let Some(fs) = self.fractional_scale.take() {
+            fs.destroy();
+        }
+    }
+}
+
 /// Cápsula circular flotante (64×64), despegada del borde y movida por GPU en X e Y.
 struct EstadoIndicador {
     layer: LayerSurface,
+    viewport: Option<WpViewport>,
+    fractional_scale: Option<WpFractionalScaleV1>,
     lado: Lado,
     configurada: bool,
     muelle_x: Muelle,
@@ -131,6 +153,17 @@ struct EstadoIndicador {
     ultimo_armado_pintado: bool,
 }
 
+impl Drop for EstadoIndicador {
+    fn drop(&mut self) {
+        if let Some(vp) = self.viewport.take() {
+            vp.destroy();
+        }
+        if let Some(fs) = self.fractional_scale.take() {
+            fs.destroy();
+        }
+    }
+}
+
 pub struct UiState {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -138,13 +171,15 @@ pub struct UiState {
     compositor: CompositorState,
     shm: Shm,
     layer_shell: LayerShell,
+    viewporter: Option<WpViewporter>,
+    fractional_scale_mgr: Option<WpFractionalScaleManagerV1>,
     pool: SlotPool,
     font_system: FontSystem,
     swash_cache: SwashCache,
 
     pub pantalla_ancho: u32,
     pub pantalla_alto: u32,
-    pub escala: i32,
+    pub escala: f64,
     pub oscuro: bool,
     pub efectos_reducidos: bool,
     pub paleta: Paleta,
@@ -175,6 +210,10 @@ impl UiState {
         let compositor = CompositorState::bind(globals, qh)?;
         let layer_shell = LayerShell::bind(globals, qh)?;
         let shm = Shm::bind(globals, qh)?;
+        let viewporter = globals.bind::<WpViewporter, _, _>(qh, 1..=1, ()).ok();
+        let fractional_scale_mgr = globals
+            .bind::<WpFractionalScaleManagerV1, _, _>(qh, 1..=1, ())
+            .ok();
         let pool = SlotPool::new(1024 * 1024 * 4, &shm)?;
         Ok(Self {
             registry_state: RegistryState::new(globals),
@@ -183,12 +222,14 @@ impl UiState {
             compositor,
             shm,
             layer_shell,
+            viewporter,
+            fractional_scale_mgr,
             pool,
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
             pantalla_ancho: 1280,
             pantalla_alto: 800,
-            escala: 1,
+            escala: 1.0,
             oscuro: true,
             efectos_reducidos: false,
             paleta: Paleta::cargar(true),
@@ -277,6 +318,26 @@ impl UiState {
         }
     }
 
+    fn reaplicar_escala(&mut self) {
+        if self.cortina.is_some() {
+            let (nw, nh) = self.medidas_cortina();
+            if let Some(c) = self.cortina.as_mut()
+                && (c.ancho != nw || c.alto != nh)
+            {
+                c.ancho = nw;
+                c.alto = nh;
+                c.layer.set_size(nw, nh);
+                c.layer.commit();
+            }
+            self.dibujar_cortina();
+            self.actualizar_posicion_cortina();
+        }
+        if let Some(ind) = self.indicador.as_mut() {
+            ind.ultima_escala_pintada = -1.0;
+            self.dibujar_indicador();
+        }
+    }
+
     pub fn actualizar_pantalla(
         &mut self,
         ancho: f64,
@@ -293,13 +354,7 @@ impl UiState {
         self.oscuro = oscuro;
         self.efectos_reducidos = efectos_reducidos;
         self.paleta = Paleta::cargar(oscuro);
-        if self.cortina.is_some() {
-            self.dibujar_cortina();
-        }
-        if let Some(ind) = self.indicador.as_mut() {
-            ind.ultima_escala_pintada = -1.0;
-            self.dibujar_indicador();
-        }
+        self.reaplicar_escala();
     }
 
     pub fn actualizar_notificaciones(&mut self, lista: Vec<NotificacionDto>, no_molestar: bool) {
@@ -459,6 +514,14 @@ impl UiState {
                 Lado::Izquierda => layer.set_margin(top, 0, 0, lat),
                 Lado::Derecha => layer.set_margin(top, lat, 0, 0),
             }
+            let viewport = self
+                .viewporter
+                .as_ref()
+                .map(|vp| vp.get_viewport(layer.wl_surface(), qh, ()));
+            let fractional_scale = self
+                .fractional_scale_mgr
+                .as_ref()
+                .map(|fs| fs.get_fractional_scale(layer.wl_surface(), qh, ()));
             layer.commit();
 
             let mut muelle_escala = Muelle::nuevo(0.45, M_RAPIDO);
@@ -466,6 +529,8 @@ impl UiState {
 
             self.indicador = Some(EstadoIndicador {
                 layer,
+                viewport,
+                fractional_scale,
                 lado,
                 configurada: false,
                 muelle_x: Muelle::nuevo(desplazamiento_x, M_RAPIDO),
@@ -511,10 +576,15 @@ impl UiState {
 
     /// Calcula ancho y alto adaptados al contenido (HIG §16: el diseño sirve al contenido).
     fn medidas_cortina(&self) -> (u32, u32) {
-        let w = (self.pantalla_ancho as i32 - 48).clamp(360, 680) as u32;
+        let w = alinear_logico(
+            (self.pantalla_ancho as i32 - 48).clamp(360, 680) as u32,
+            self.escala,
+        )
+        .clamp(360, 680);
         let max_h = ((self.pantalla_alto as f32 * 0.78) as u32).clamp(320, 700);
         if self.notificaciones.is_empty() {
-            return (w, (276 + ALTO_PIE as u32).min(max_h));
+            let h = alinear_logico((276 + ALTO_PIE as u32).min(max_h), self.escala).clamp(240, max_h);
+            return (w, h);
         }
         let mut h = LISTA_Y + MARGEN_FONDO_LISTA;
         for (i, n) in self.notificaciones.iter().enumerate() {
@@ -523,7 +593,8 @@ impl UiState {
             }
             h += alto_tarjeta(n, self.expandidas.contains(&n.id), es_espanol());
         }
-        (w, (h as u32).clamp(300, max_h))
+        let h = alinear_logico((h as u32).clamp(300, max_h), self.escala).clamp(300, max_h);
+        (w, h)
     }
 
     fn crear_cortina(&mut self, qh: &QueueHandle<Self>, progreso_inicial: f32) {
@@ -543,6 +614,14 @@ impl UiState {
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         let y_init = calcular_y_cortina(progreso_inicial, alto);
         layer.set_margin(y_init, 0, 0, 0);
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|vp| vp.get_viewport(layer.wl_surface(), qh, ()));
+        let fractional_scale = self
+            .fractional_scale_mgr
+            .as_ref()
+            .map(|fs| fs.get_fractional_scale(layer.wl_surface(), qh, ()));
         layer.commit();
 
         let toggle_init = if self.gestos_activos { 1.0 } else { 0.0 };
@@ -550,6 +629,8 @@ impl UiState {
             medidas_lista_notifs(&self.notificaciones, &self.expandidas, alto as f32, es_espanol());
         self.cortina = Some(EstadoCortina {
             layer,
+            viewport,
+            fractional_scale,
             ancho,
             alto,
             configurada: false,
@@ -700,12 +781,10 @@ impl UiState {
         }
         let ancho = c.ancho;
         let alto = c.alto;
-        let scale = self.escala.max(1);
-        let scale_u = scale as u32;
-        let scale_f = scale as f32;
-        let buf_w = ancho * scale_u;
-        let buf_h = alto * scale_u;
-        let tx = Transform::from_scale(scale_f, scale_f);
+        let (buf_w, buf_h, buffer_scale, sx, sy) =
+            tamano_buffer(ancho, alto, self.escala, c.viewport.is_some());
+        let scale_f = sy;
+        let tx = Transform::from_scale(sx, sy);
         let toggle_p = c.toggle_muelle.valor().clamp(0.0, 1.0);
         let pal = self.paleta;
         let oscuro = self.oscuro;
@@ -943,7 +1022,8 @@ impl UiState {
                     (LISTA_Y * scale_f).round() as i32,
                     (limite_y * scale_f).round() as i32,
                 ));
-                let mut cy = LISTA_Y - scroll_y;
+                let scroll_px = (scroll_y * scale_f).round() / scale_f;
+                let mut cy = LISTA_Y - scroll_px;
                 for n in &notifs {
                     let expandida = expandidas.contains(&n.id);
                     let tiene_cuerpo = !n.cuerpo.trim().is_empty();
@@ -1366,7 +1446,10 @@ impl UiState {
             c.scroll_y = scroll_y;
             c.scroll_max = scroll_max;
             let surface = c.layer.wl_surface();
-            surface.set_buffer_scale(scale);
+            surface.set_buffer_scale(buffer_scale);
+            if let Some(vp) = c.viewport.as_ref() {
+                vp.set_destination(ancho as i32, alto as i32);
+            }
             buffer.attach_to(surface).ok();
             surface.damage_buffer(0, 0, buf_w as i32, buf_h as i32);
             surface.commit();
@@ -1391,16 +1474,14 @@ impl UiState {
         let lado = ind.lado;
         let pal = self.paleta;
         let oscuro = self.oscuro;
-        let scale = self.escala.max(1);
-        let scale_u = scale as u32;
-        let scale_f = scale as f32;
-        let ind_px = IND_LADO * scale_u;
-        let tx = Transform::from_scale(scale_f, scale_f);
+        let (ind_px, ind_py, buffer_scale, sx, sy) =
+            tamano_buffer(IND_LADO, IND_LADO, self.escala, ind.viewport.is_some());
+        let tx = Transform::from_scale(sx, sy);
 
         let stride = (ind_px * 4) as i32;
         let Ok((buffer, canvas)) = self.pool.create_buffer(
             ind_px as i32,
-            ind_px as i32,
+            ind_py as i32,
             stride,
             wayland_client::protocol::wl_shm::Format::Argb8888,
         ) else {
@@ -1409,7 +1490,7 @@ impl UiState {
         canvas.fill(0);
 
         if escala_vis > 0.03
-            && let Some(mut pixmap) = PixmapMut::from_bytes(canvas, ind_px, ind_px)
+            && let Some(mut pixmap) = PixmapMut::from_bytes(canvas, ind_px, ind_py)
         {
             let cx = IND_LADO as f32 * 0.5;
             let cy = IND_LADO as f32 * 0.5;
@@ -1490,9 +1571,12 @@ impl UiState {
             ind.ultima_escala_pintada = escala_vis;
             ind.ultimo_armado_pintado = armado;
             let surface = ind.layer.wl_surface();
-            surface.set_buffer_scale(scale);
+            surface.set_buffer_scale(buffer_scale);
+            if let Some(vp) = ind.viewport.as_ref() {
+                vp.set_destination(IND_LADO as i32, IND_LADO as i32);
+            }
             buffer.attach_to(surface).ok();
-            surface.damage_buffer(0, 0, ind_px as i32, ind_px as i32);
+            surface.damage_buffer(0, 0, ind_px as i32, ind_py as i32);
             surface.commit();
         }
     }
@@ -1509,11 +1593,45 @@ fn calcular_y_cortina(progreso: f32, alto: u32) -> i32 {
     y.round() as i32
 }
 
-fn normalizar_escala(escala: f64) -> i32 {
+fn normalizar_escala(escala: f64) -> f64 {
     if escala.is_finite() {
-        escala.round().clamp(1.0, 4.0) as i32
+        escala.clamp(0.5, 4.0)
     } else {
-        1
+        1.0
+    }
+}
+
+fn paso_logico(escala: f64) -> u32 {
+    for d in [1u32, 2, 3, 4, 5, 6, 8, 10, 12] {
+        let p = escala * f64::from(d);
+        if (p - p.round()).abs() < 1e-4 {
+            return d;
+        }
+    }
+    1
+}
+
+fn alinear_logico(v: u32, escala: f64) -> u32 {
+    let paso = paso_logico(escala);
+    if paso <= 1 {
+        return v.max(1);
+    }
+    let redondeado = ((v + paso / 2) / paso) * paso;
+    redondeado.max(paso)
+}
+
+fn tamano_buffer(ancho: u32, alto: u32, escala: f64, con_viewport: bool) -> (u32, u32, i32, f32, f32) {
+    if con_viewport {
+        let buf_w = (f64::from(ancho) * escala).round().max(1.0) as u32;
+        let buf_h = (f64::from(alto) * escala).round().max(1.0) as u32;
+        let sx = buf_w as f32 / ancho.max(1) as f32;
+        let sy = buf_h as f32 / alto.max(1) as f32;
+        (buf_w, buf_h, 1, sx, sy)
+    } else {
+        let s = escala.round().clamp(1.0, 4.0) as i32;
+        let su = s as u32;
+        let sf = s as f32;
+        (ancho * su, alto * su, s, sf, sf)
     }
 }
 
@@ -2078,10 +2196,13 @@ fn draw_text(
         let sa = c.a() as u32;
         let inv = 255 - sa;
         let idx = ((py * pw + px) * 4) as usize;
-        data[idx] = ((c.r() as u32 * sa + data[idx] as u32 * inv) / 255) as u8;
-        data[idx + 1] = ((c.g() as u32 * sa + data[idx + 1] as u32 * inv) / 255) as u8;
-        data[idx + 2] = ((c.b() as u32 * sa + data[idx + 2] as u32 * inv) / 255) as u8;
-        data[idx + 3] = (sa + (data[idx + 3] as u32 * inv) / 255).min(255) as u8;
+        let sr = (c.r() as u32 * sa + 127) / 255;
+        let sg = (c.g() as u32 * sa + 127) / 255;
+        let sb = (c.b() as u32 * sa + 127) / 255;
+        data[idx] = (sr + (data[idx] as u32 * inv + 127) / 255).min(255) as u8;
+        data[idx + 1] = (sg + (data[idx + 1] as u32 * inv + 127) / 255).min(255) as u8;
+        data[idx + 2] = (sb + (data[idx + 2] as u32 * inv + 127) / 255).min(255) as u8;
+        data[idx + 3] = (sa + (data[idx + 3] as u32 * inv + 127) / 255).min(255) as u8;
     });
 }
 
@@ -2441,6 +2562,28 @@ delegate_pointer!(UiState);
 delegate_touch!(UiState);
 delegate_layer!(UiState);
 delegate_registry!(UiState);
+delegate_noop!(UiState: ignore WpViewporter);
+delegate_noop!(UiState: ignore WpViewport);
+delegate_noop!(UiState: ignore WpFractionalScaleManagerV1);
+
+impl Dispatch<WpFractionalScaleV1, ()> for UiState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            let nueva = normalizar_escala(f64::from(scale) / 120.0);
+            if (nueva - state.escala).abs() > 1e-4 {
+                state.escala = nueva;
+                state.reaplicar_escala();
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2485,10 +2628,30 @@ mod tests {
 
     #[test]
     fn escala_hidpi_normaliza_valores_no_finitos_y_extremos() {
-        assert_eq!(normalizar_escala(f64::NAN), 1);
-        assert_eq!(normalizar_escala(0.25), 1);
-        assert_eq!(normalizar_escala(1.75), 2);
-        assert_eq!(normalizar_escala(8.0), 4);
+        assert_eq!(normalizar_escala(f64::NAN), 1.0);
+        assert_eq!(normalizar_escala(0.25), 0.5);
+        assert_eq!(normalizar_escala(1.75), 1.75);
+        assert_eq!(normalizar_escala(8.0), 4.0);
+    }
+
+    #[test]
+    fn alineado_logico_evita_estiramiento_durante_deslizamiento_a_175() {
+        assert_eq!(paso_logico(1.75), 4);
+        assert_eq!(paso_logico(1.5), 2);
+        assert_eq!(paso_logico(2.0), 1);
+
+        let alto = alinear_logico(457, 1.75);
+        assert_eq!(alto % 4, 0);
+        let (_, buf_h, buffer_scale, sx, sy) = tamano_buffer(520, alto, 1.75, true);
+        assert_eq!(buffer_scale, 1);
+        assert!((sx - 1.75).abs() < 1e-5);
+        assert!((sy - 1.75).abs() < 1e-5);
+
+        for y in -500..=60 {
+            let loc = (f64::from(y) * 1.75).round();
+            let phys_h = (f64::from(alto) * 1.75 + loc).round() - loc;
+            assert_eq!(phys_h as u32, buf_h);
+        }
     }
 
     #[test]

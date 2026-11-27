@@ -175,6 +175,12 @@ impl CursorTheme {
         self.nominal
     }
 
+    pub fn coincide(&self, scale: f64, nominal: u32) -> bool {
+        let nominal = nominal.clamp(8, 128);
+        let objetivo = (nominal as f64 * scale).round().max(1.0) as u32;
+        self.nominal == nominal && self.objetivo == objetivo
+    }
+
     /// Un cursor por su nombre, cargándolo la primera vez.
     ///
     /// Devuelve `None` si no existe ni con alias: el llamante decide si eso
@@ -904,6 +910,14 @@ mod tests {
         // Redondear hacia abajo daría 0, y un elemento de tamaño cero no se
         // dibuja: cursor invisible.
         assert_eq!(a_logico((1, 1), 64, 8), (1, 1));
+    }
+
+    #[test]
+    fn cursor_theme_coincide_evita_recrearlo_si_escala_y_tamano_no_cambian() {
+        let tema = CursorTheme::con_tamano(1.75, 24);
+        assert!(tema.coincide(1.75, 24));
+        assert!(!tema.coincide(2.0, 24));
+        assert!(!tema.coincide(1.75, 32));
     }
 
     #[test]

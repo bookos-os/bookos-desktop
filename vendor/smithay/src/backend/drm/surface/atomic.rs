@@ -131,10 +131,11 @@ impl State {
             for (&id, &val) in ids.iter().zip(vals.iter()) {
                 if Some(&id) == active_prop {
                     active = property::ValueType::Boolean.convert_value(val).as_boolean();
-                    break;
-                }
-                if Some(&id) == vrr_prop {
+                } else if Some(&id) == vrr_prop {
                     vrr = property::ValueType::Boolean.convert_value(val).as_boolean();
+                }
+                // BookOS: no salir en la primera propiedad; hay que leer ACTIVE y VRR_ENABLED.
+                if active.is_some() && vrr.is_some() {
                     break;
                 }
             }
@@ -799,10 +800,15 @@ impl AtomicDrmSurface {
             }),
         };
 
+        // BookOS: test_state_internal debe probar el nuevo estado con `vrr = value`,
+        // no el `pending` antiguo (que siempre pasaba sin modeset y hacía fallar `page_flip`).
+        let mut test_pending = pending.clone();
+        test_pending.vrr = value;
+
         if *current == *pending {
             // Try a non modesetting commit
             if self
-                .test_state_internal([plane_config.clone()], false, &current, &pending)
+                .test_state_internal([plane_config.clone()], false, &current, &test_pending)
                 .is_ok()
             {
                 current.vrr = value;
@@ -812,7 +818,7 @@ impl AtomicDrmSurface {
         }
 
         // Try a modeset commit
-        self.test_state_internal([plane_config], true, &current, &pending)?;
+        self.test_state_internal([plane_config], true, &current, &test_pending)?;
         pending.vrr = value;
         Ok(())
     }

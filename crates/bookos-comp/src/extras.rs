@@ -728,7 +728,11 @@ fn encode_base64(datos: &[u8]) -> String {
 }
 
 fn reducir_rgba_dto(ancho: u32, alto: u32, rgba: &[u8], max_lado: u32) -> Option<ImagenNotifDto> {
-    if ancho == 0 || alto == 0 || rgba.len() < (ancho as usize).checked_mul(alto as usize)?.checked_mul(4)? {
+    if ancho == 0
+        || alto == 0
+        || max_lado == 0
+        || rgba.len() < (ancho as usize).checked_mul(alto as usize)?.checked_mul(4)?
+    {
         return None;
     }
     let (dw, dh) = if ancho.max(alto) <= max_lado {
@@ -739,12 +743,42 @@ fn reducir_rgba_dto(ancho: u32, alto: u32, rgba: &[u8], max_lado: u32) -> Option
         (((ancho * max_lado) / alto).max(1), max_lado)
     };
     let mut out = Vec::with_capacity((dw * dh * 4) as usize);
-    for y in 0..dh {
-        let sy = ((y as u64 * alto as u64) / dh as u64).min(alto as u64 - 1) as usize;
-        for x in 0..dw {
-            let sx = ((x as u64 * ancho as u64) / dw as u64).min(ancho as u64 - 1) as usize;
-            let idx = (sy * ancho as usize + sx) * 4;
-            out.extend_from_slice(&rgba[idx..idx + 4]);
+    if dw == ancho && dh == alto {
+        out.extend_from_slice(&rgba[..(dw as usize * dh as usize * 4)]);
+    } else {
+        let max_x = ancho - 1;
+        let max_y = alto - 1;
+        for y in 0..dh {
+            let fy = ((y as f64 + 0.5) * alto as f64 / dh as f64 - 0.5)
+                .clamp(0.0, max_y as f64);
+            let y0 = fy.floor() as u32;
+            let y1 = (y0 + 1).min(max_y);
+            let ty = fy - f64::from(y0);
+            for x in 0..dw {
+                let fx = ((x as f64 + 0.5) * ancho as f64 / dw as f64 - 0.5)
+                    .clamp(0.0, max_x as f64);
+                let x0 = fx.floor() as u32;
+                let x1 = (x0 + 1).min(max_x);
+                let tx = fx - f64::from(x0);
+
+                let i00 = ((y0 * ancho + x0) * 4) as usize;
+                let i10 = ((y0 * ancho + x1) * 4) as usize;
+                let i01 = ((y1 * ancho + x0) * 4) as usize;
+                let i11 = ((y1 * ancho + x1) * 4) as usize;
+
+                let w00 = (1.0 - tx) * (1.0 - ty);
+                let w10 = tx * (1.0 - ty);
+                let w01 = (1.0 - tx) * ty;
+                let w11 = tx * ty;
+
+                for c in 0..4 {
+                    let v = f64::from(rgba[i00 + c]) * w00
+                        + f64::from(rgba[i10 + c]) * w10
+                        + f64::from(rgba[i01 + c]) * w01
+                        + f64::from(rgba[i11 + c]) * w11;
+                    out.push(v.round().clamp(0.0, 255.0) as u8);
+                }
+            }
         }
     }
     Some(ImagenNotifDto {
@@ -764,11 +798,12 @@ fn enviar_notificaciones(state: &mut BookosComp) {
                 .iter()
                 .map(|n| {
                     let tiene_default = n.acciones.iter().any(|a| a.clave == "default");
+                    let max_lado = if n.ruta.is_some() { 104 } else { 72 };
                     let imagen = n
                         .icono
                         .as_ref()
                         .and_then(bookos_shell::icono::rgba_de)
-                        .and_then(|(w, h, rgba)| reducir_rgba_dto(w, h, rgba, 48));
+                        .and_then(|(w, h, rgba)| reducir_rgba_dto(w, h, rgba, max_lado));
                     NotificacionDto {
                         id: n.id,
                         app: n.app.clone(),
@@ -1535,5 +1570,19 @@ mod tests {
         let bloque = vec![b'a'; LIMITE_COLA_ESCRITURA];
         assert!(cola.encolar(&bloque).is_ok());
         assert!(cola.encolar(b"b").is_err());
+    }
+
+    #[test]
+    fn reducir_rgba_dto_interpola_bilinealmente_sin_perder_nitidez() {
+        let rgba = [
+            0u8, 0, 0, 255, 255, 255, 255, 255, // fila 0
+            0, 0, 0, 255, 255, 255, 255, 255, // fila 1
+        ];
+        let dto = reducir_rgba_dto(2, 2, &rgba, 1).unwrap();
+        assert_eq!((dto.ancho, dto.alto), (1, 1));
+        assert!(!dto.rgba_b64.is_empty());
+        // A tamaño menor o igual al tope mantiene el original exacto.
+        let mismo = reducir_rgba_dto(2, 2, &rgba, 72).unwrap();
+        assert_eq!((mismo.ancho, mismo.alto), (2, 2));
     }
 }

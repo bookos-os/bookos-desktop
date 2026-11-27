@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
-use smithay::backend::drm::compositor::FrameFlags;
+use smithay::backend::drm::compositor::{FrameError, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmError, DrmEvent, DrmNode};
@@ -525,6 +525,11 @@ pub fn run(
                         if salida.gamma_en_vuelo {
                             salida.gamma_en_vuelo = false;
                             salida.en_vuelo = false;
+                        } else if !salida.en_vuelo {
+                            tracing::trace!(
+                                pantalla = %salida.output.name(),
+                                "vblank tardío sin frame en vuelo ignorado"
+                            );
                         } else {
                             match salida.surface.frame_submitted() {
                                 Ok(Some(mut feedback)) => {
@@ -1143,6 +1148,24 @@ fn censar(u: &Udev) -> Vec<Salida> {
         .collect()
 }
 
+fn puede_actualizar_en_vivo(
+    actuales: &[(&str, u32, u32, u32)],
+    activas: &[&Peticion],
+) -> bool {
+    if actuales.len() != activas.len() {
+        return false;
+    }
+    activas.iter().all(|p| {
+        actuales.iter().any(|&(id, w, h, hz)| {
+            id == p.id && w == p.ancho && h == p.alto && hz == p.refresco_mhz
+        })
+    }) && actuales.iter().all(|&(id, w, h, hz)| {
+        activas.iter().any(|p| {
+            p.id == id && p.ancho == w && p.alto == h && p.refresco_mhz == hz
+        })
+    })
+}
+
 /// Aplica una configuración ya validada al hardware.
 ///
 /// Devuelve el censo releído, no lo que se pidió: si el driver acabó en otro
@@ -1189,6 +1212,99 @@ fn aplicar_en_kms(
     let asignados = asignar_crtcs(&opciones_crtc).ok_or_else(|| {
         "no existe una asignación de CRTC compatible para esta combinación".to_string()
     })?;
+
+    // Si siguen encendidas exactamente las mismas salidas, en los mismos
+    // conectores y con el mismo modo (solo cambia VRR, escala, posición,
+    // rotación o principal), actualizamos en caliente sin destruir CRTCs ni
+    // globales `wl_output` — evita parpadeos y corrupción de plano de cursor.
+    let activas: Vec<&Peticion> = peticion.iter().filter(|p| p.activa).collect();
+    let actuales: Vec<(String, u32, u32, u32)> = u
+        .salidas
+        .iter()
+        .map(|s| {
+            let m = s.surface.with_compositor(|c| c.pending_mode());
+            let (w, h) = m.size();
+            (s.id.clone(), w as u32, h as u32, m.vrefresh() * 1000)
+        })
+        .collect();
+    let actuales_ref: Vec<(&str, u32, u32, u32)> = actuales
+        .iter()
+        .map(|(id, w, h, hz)| (id.as_str(), *w, *h, *hz))
+        .collect();
+    let mismo_conector = activas.iter().all(|pedido| {
+        let Some(salida) = u.salidas.iter().find(|s| s.id == pedido.id) else {
+            return false;
+        };
+        recursos
+            .connectors()
+            .iter()
+            .filter_map(|h| u.manager.device().get_connector(*h, true).ok())
+            .any(|c| {
+                c.handle() == salida.conector
+                    && c.state() == connector::State::Connected
+                    && identificador(u.manager.device(), &c) == pedido.id
+            })
+    });
+    if mismo_conector && puede_actualizar_en_vivo(&actuales_ref, &activas) {
+        let mut transformaciones = Vec::with_capacity(activas.len());
+        for pedido in &activas {
+            let t = pantallas::transformacion(&pedido.transformacion)
+                .ok_or_else(|| format!("rotación «{}» desconocida", pedido.transformacion))?;
+            transformaciones.push(t);
+        }
+        let mut vrr_cambiadas: Vec<(usize, bool)> = Vec::new();
+        for pedido in &activas {
+            let Some(idx) = u.salidas.iter().position(|s| s.id == pedido.id) else {
+                continue;
+            };
+            let prev = u.salidas[idx].surface.with_compositor(|c| c.vrr_enabled());
+            if prev != pedido.vrr {
+                if let Err(err) = u.salidas[idx]
+                    .surface
+                    .with_compositor(|c| c.use_vrr(pedido.vrr))
+                {
+                    for (rev_idx, old_vrr) in vrr_cambiadas.into_iter().rev() {
+                        let _ = u.salidas[rev_idx]
+                            .surface
+                            .with_compositor(|c| c.use_vrr(old_vrr));
+                    }
+                    let verbo = if pedido.vrr { "activar" } else { "desactivar" };
+                    return Err(format!("no se pudo {verbo} VRR en «{}»: {err}", pedido.id));
+                }
+                vrr_cambiadas.push((idx, prev));
+            }
+        }
+        for (pedido, transformacion) in activas.iter().zip(transformaciones) {
+            if let Some(salida) = u.salidas.iter_mut().find(|s| s.id == pedido.id) {
+                salida.output.change_current_state(
+                    None,
+                    Some(transformacion),
+                    Some(Scale::Fractional(pedido.escala)),
+                    Some((pedido.x, pedido.y).into()),
+                );
+                salida.pendiente = true;
+                salida.esperando_ritmo = false;
+                salida.ultimo_envio = None;
+            }
+        }
+        let principal = peticion
+            .iter()
+            .find(|p| p.activa && p.principal)
+            .and_then(|p| u.salidas.iter().position(|s| s.id == p.id))
+            .unwrap_or(0);
+        u.principal_id = u.salidas[principal].id.clone();
+        let salidas = censar(u);
+        let mapa = u
+            .salidas
+            .iter()
+            .map(|s| (s.output.clone(), s.output.current_location()))
+            .collect::<Vec<_>>();
+        return Ok(Aplicado {
+            salidas,
+            mapa,
+            principal,
+        });
+    }
 
     // Se reconstruyen únicamente las superficies KMS, no el compositor ni la
     // sesión. Soltar `DrmOutput` libera su CRTC y permite encender/apagar o
@@ -1799,7 +1915,27 @@ fn dibujar_salida(
                 .and_then(|_| state.shell.as_ref().and_then(|s| s.emergente_nombre()));
             state.metricas.encolado(&nombre, emergente);
         }
-        Err(err) => tracing::error!("queue_frame: {err}"),
+        Err(FrameError::DrmError(DrmError::Access(ref acc)))
+            if acc.source.raw_os_error() == Some(libc::EBUSY) =>
+        {
+            salida.pendiente = true;
+            if !salida.esperando_ritmo {
+                salida.esperando_ritmo = true;
+                let _ = state.loop_handle.insert_source(
+                    Timer::from_duration(Duration::from_millis(4)),
+                    |_, _, state| {
+                        state.needs_redraw = true;
+                        TimeoutAction::Drop
+                    },
+                );
+            }
+        }
+        Err(err) => {
+            tracing::error!("queue_frame: {err}");
+            salida.pendiente = false;
+            salida.esperando_ritmo = false;
+            salida.surface.reset_buffers();
+        }
     }
     // El coste se apunta con el encolado dentro: `queue_frame` es donde se
     // paga el atómico de KMS, y dejarlo fuera escondería justo la parte que se
@@ -1984,4 +2120,50 @@ fn luces(leds: smithay::input::keyboard::LedState) -> smithay::reexports::input:
     luces.set(Led::NUMLOCK, leds.num == Some(true));
     luces.set(Led::SCROLLLOCK, leds.scroll == Some(true));
     luces
+}
+
+#[cfg(test)]
+mod tests {
+    use super::puede_actualizar_en_vivo;
+    use crate::pantallas::Peticion;
+
+    fn peticion_ejemplo(id: &str, ancho: u32, alto: u32, refresco_mhz: u32, vrr: bool) -> Peticion {
+        Peticion {
+            id: id.to_string(),
+            activa: true,
+            ancho,
+            alto,
+            refresco_mhz,
+            escala: 1.75,
+            x: 0,
+            y: 0,
+            transformacion: "normal".to_string(),
+            vrr,
+            principal: true,
+        }
+    }
+
+    #[test]
+    fn actualizar_en_vivo_acepta_cambio_de_vrr_escala_o_posicion() {
+        let actuales = [("SDC-ATNA40YK-0", 2880, 1800, 120_000)];
+        let mut p = peticion_ejemplo("SDC-ATNA40YK-0", 2880, 1800, 120_000, true);
+        p.escala = 2.0;
+        p.x = 100;
+        p.transformacion = "90".to_string();
+        assert!(puede_actualizar_en_vivo(&actuales, &[&p]));
+    }
+
+    #[test]
+    fn actualizar_en_vivo_rechaza_cambio_de_modo_o_salidas() {
+        let actuales = [("SDC-ATNA40YK-0", 2880, 1800, 120_000)];
+        let p_modo = peticion_ejemplo("SDC-ATNA40YK-0", 1920, 1200, 60_000, true);
+        assert!(!puede_actualizar_en_vivo(&actuales, &[&p_modo]));
+
+        let p_otra = peticion_ejemplo("DEL-U2720Q-1", 2880, 1800, 120_000, true);
+        assert!(!puede_actualizar_en_vivo(&actuales, &[&p_otra]));
+
+        let p_1 = peticion_ejemplo("SDC-ATNA40YK-0", 2880, 1800, 120_000, false);
+        let p_2 = peticion_ejemplo("DEL-U2720Q-1", 2560, 1440, 60_000, false);
+        assert!(!puede_actualizar_en_vivo(&actuales, &[&p_1, &p_2]));
+    }
 }

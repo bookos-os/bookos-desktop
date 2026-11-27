@@ -46,6 +46,15 @@ use smithay::wayland::viewporter::ViewporterState;
 pub struct GrabacionActiva {
     pub proceso: std::process::Child,
     pub ruta: std::path::PathBuf,
+    pub pausado: bool,
+    pub con_cursor: bool,
+    pub stderr: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+/// Resultado de una grabación de pantalla al terminar o fallar.
+pub enum EventoGrabacion {
+    Guardada(std::path::PathBuf),
+    Fallo(String),
 }
 
 /// Lo que se está escribiendo en la pantalla de bloqueo.
@@ -579,6 +588,8 @@ pub struct BookosComp {
     pub captura_generacion: u64,
     pub captura_envio:
         smithay::reexports::calloop::channel::Sender<crate::miniatura_captura::EventoCaptura>,
+    pub grabacion_aviso_envio:
+        smithay::reexports::calloop::channel::Sender<EventoGrabacion>,
     /// Modo de concentración activo (`""` = ninguno, `"trabajo"`, `"juego"`…).
     // añadido en la 0.2.4
     pub modo_concentracion: String,
@@ -661,6 +672,7 @@ pub struct BookosComp {
     /// Despertar del próximo fotograma WebP. No existe con fondos estáticos
     /// ni con movimiento reducido.
     pub tick_fondo: Option<smithay::reexports::calloop::RegistrationToken>,
+    pub tick_fondo_horario: Option<smithay::reexports::calloop::RegistrationToken>,
     /// El RGBA cambió y la textura mipmapeada del cristal sigue siendo la del
     /// fotograma anterior. Se consume una vez al construir la escena.
     pub fondo_cristal_pendiente: bool,
@@ -1387,6 +1399,17 @@ impl BookosComp {
             })
             .map_err(|err| anyhow::anyhow!("insert_source(captura): {err}"))?;
 
+        let (grabacion_aviso_envio, fuente_grabacion) =
+            smithay::reexports::calloop::channel::channel::<EventoGrabacion>();
+        loop_handle
+            .insert_source(fuente_grabacion, |evento, _, state| {
+                use smithay::reexports::calloop::channel::Event;
+                if let Event::Msg(msg) = evento {
+                    crate::backend::recibir_evento_grabacion(state, msg);
+                }
+            })
+            .map_err(|err| anyhow::anyhow!("insert_source(grabacion): {err}"))?;
+
         let brillo_auto =
             crate::brillo_auto::Estado::arrancar(&loop_handle, config.brillo_automatico)?;
 
@@ -1546,6 +1569,7 @@ impl BookosComp {
             miniatura_captura: None,
             captura_generacion: 0,
             captura_envio,
+            grabacion_aviso_envio,
             modo_concentracion: config.modo_concentracion.clone(),
             concentracion_auto_juego: config.concentracion_auto_juego,
             concentracion_permitidas: config.concentracion_permitidas.clone(),
@@ -1579,6 +1603,7 @@ impl BookosComp {
             fondo_cargado: None,
             fondo_envio,
             tick_fondo: None,
+            tick_fondo_horario: None,
             fondo_cristal_pendiente: false,
             fondo_saliente: None,
             modo_tema,

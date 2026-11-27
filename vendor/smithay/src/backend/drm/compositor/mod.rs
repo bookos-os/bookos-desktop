@@ -2083,7 +2083,9 @@ where
                 previous_state,
                 &self.surface,
                 self.supports_fencing,
-                false,
+                // BookOS: si hay un modeset pendiente (p. ej. al conmutar VRR), el test
+                // atómico debe permitir modeset para no descartar el plano del cursor.
+                self.surface.commit_pending(),
                 allow_partial_update,
             )
             .is_err()
@@ -2728,7 +2730,14 @@ where
     /// Check [`DrmCompositor::vrr_supported`], which indicates if VRR can be
     /// used without a modeset on the attached connectors.
     pub fn use_vrr(&mut self, vrr: bool) -> FrameResult<(), A, F> {
-        self.surface.use_vrr(vrr).map_err(FrameError::DrmError)
+        let changed = self.surface.vrr_enabled() != vrr;
+        self.surface.use_vrr(vrr).map_err(FrameError::DrmError)?;
+        // BookOS: al cambiar VRR forzamos un repaso completo de planos para que el
+        // próximo fotograma revalide el plano del cursor y envíe el cambio de inmediato.
+        if changed {
+            self.reset_pending = true;
+        }
+        Ok(())
     }
 
     /// Set the [`DebugFlags`] to use
@@ -4205,26 +4214,44 @@ where
     }
 
     let bo_format = bo.format().code;
-    let bo_stride = bo.stride();
 
-    let mut copy_to_bo = |src, src_stride, src_height| {
-        if src_stride == bo_stride as i32 {
-            bo.write(src).is_ok()
-        } else {
-            let res = bo.map_mut(0, 0, cursor_size.w as u32, cursor_size.h as u32, |mbo| {
-                let dst = mbo.buffer_mut();
-                for row in 0..src_height {
-                    let src_row_start = (row * src_stride) as usize;
-                    let src_row_end = src_row_start + src_stride as usize;
-                    let src_row = &src[src_row_start..src_row_end];
-                    let dst_row_start = (row * bo_stride as i32) as usize;
-                    let dst_row_end = dst_row_start + src_stride as usize;
-                    let dst_row = &mut dst[dst_row_start..dst_row_end];
-                    dst_row.copy_from_slice(src_row);
-                }
-            });
-            res.is_ok()
+    // BookOS: rellenar el BO de cursor siempre a cero vía map_mut usando mbo.stride()
+    // para evitar basura en filas/márgenes de BOs reciclados tras cambios de VRR o modo.
+    let mut copy_to_bo = |src: &[u8], src_stride: i32, src_height: i32| {
+        if src_stride <= 0 || src_height <= 0 {
+            return false;
         }
+        let src_stride = src_stride as usize;
+        let src_height = src_height as usize;
+        let Some(src_needed) = src_stride.checked_mul(src_height) else {
+            return false;
+        };
+        if src.len() < src_needed || src_height > cursor_size.h as usize {
+            return false;
+        }
+        let res = bo.map_mut(0, 0, cursor_size.w as u32, cursor_size.h as u32, |mbo| {
+            let dst_stride = mbo.stride() as usize;
+            if src_stride > dst_stride {
+                return false;
+            }
+            let Some(dst_needed) = dst_stride.checked_mul(src_height) else {
+                return false;
+            };
+            let dst = mbo.buffer_mut();
+            if dst.len() < dst_needed {
+                return false;
+            }
+            dst.fill(0);
+            for row in 0..src_height {
+                let src_row_start = row * src_stride;
+                let src_row_end = src_row_start + src_stride;
+                let dst_row_start = row * dst_stride;
+                let dst_row_end = dst_row_start + src_stride;
+                dst[dst_row_start..dst_row_end].copy_from_slice(&src[src_row_start..src_row_end]);
+            }
+            true
+        });
+        matches!(res, Ok(true))
     };
 
     match underlying_storage {

@@ -81,9 +81,9 @@ const ACCION_W: f32 = 104.0;
 const DIVISOR_ANCHO: f32 = 1.0;
 
 /// Dimensiones del popover de opciones sobre el botón «Opciones».
-pub const OPCIONES_POPOVER_W: f32 = 280.0;
-pub const OPCIONES_POPOVER_H_FOTO: f32 = 212.0;
-pub const OPCIONES_POPOVER_H_VIDEO: f32 = 212.0;
+pub const OPCIONES_POPOVER_W: f32 = 304.0;
+pub const OPCIONES_POPOVER_H_FOTO: f32 = 180.0;
+pub const OPCIONES_POPOVER_H_VIDEO: f32 = 180.0;
 const OPCIONES_POPOVER_HUECO: f32 = 10.0;
 
 /// Dimensiones del pill flotante de grabación (excluido del vídeo por el compositor).
@@ -641,7 +641,7 @@ impl Captura {
         if lx < 0.0 || lx > pw - 24.0 || ly < 0.0 {
             return None;
         }
-        if (22.0..=52.0).contains(&ly) {
+        if (22.0..=50.0).contains(&ly) {
             let pill_w = (pw - 24.0 - 12.0) / 4.0;
             for i in 0..4 {
                 let x0 = i as f32 * (pill_w + 4.0);
@@ -650,10 +650,10 @@ impl Captura {
                 }
             }
         }
-        if (64.0..=100.0).contains(&ly) {
+        if (60.0..=96.0).contains(&ly) {
             return Some(CeldaPopover::Cursor);
         }
-        if (134.0..=168.0).contains(&ly) {
+        if (128.0..=156.0).contains(&ly) {
             match self.tipo {
                 TipoCaptura::Foto => {
                     let pill_w = (pw - 24.0 - 6.0) / 2.0;
@@ -1341,16 +1341,24 @@ impl Captura {
             }
         };
 
+        let subtitulo = |etiqueta: &str| {
+            container(
+                text(etiqueta.to_string())
+                    .size(tema::T_PEQUENO)
+                    .color(tema::texto2()),
+            )
+            .height(Length::Fixed(16.0))
+            .align_y(Vertical::Center)
+        };
+
         let contenido = column![
-            text(crate::emergente::t("Temporizador", "Timer"))
-                .size(tema::T_PEQUENO)
-                .color(tema::texto2()),
+            subtitulo(crate::emergente::t("Temporizador", "Timer")),
             Space::new().height(Length::Fixed(6.0)),
             retardos,
             Space::new().height(Length::Fixed(10.0)),
             fila_cursor,
             Space::new().height(Length::Fixed(10.0)),
-            text(subtitulo_3).size(tema::T_PEQUENO).color(tema::texto2()),
+            subtitulo(subtitulo_3),
             Space::new().height(Length::Fixed(6.0)),
             grupo_3,
         ];
@@ -1444,7 +1452,7 @@ impl GrabacionPill {
             Some(0)
         } else if (112.0..=140.0).contains(&lx) {
             Some(1)
-        } else if (146.0..=PILL_GRABACION_W - 6.0).contains(&lx) {
+        } else if (146.0..=244.0).contains(&lx) {
             Some(2)
         } else {
             None
@@ -1457,8 +1465,9 @@ impl GrabacionPill {
                 .clamp(12.0, (self.pantalla.0 - PILL_GRABACION_W - 12.0).max(12.0));
             let ny = (desde_origen.1 + y - desde_puntero.1)
                 .clamp(40.0, (self.pantalla.1 - PILL_GRABACION_H - 12.0).max(40.0));
+            let cambio = self.origen != (nx, ny);
             self.origen = (nx, ny);
-            return false;
+            return cambio;
         }
         let nuevo = self.boton_en(x, y);
         let cambio = nuevo != self.señalado;
@@ -1551,9 +1560,11 @@ impl GrabacionPill {
 
         let mut fila = row![
             punto,
-            text(tiempo).size(tema::T_CUERPO).color(tema::texto()),
+            container(text(tiempo).size(tema::T_CUERPO).color(tema::texto()))
+                .width(Length::Fixed(49.0))
+                .align_y(Vertical::Center),
         ]
-        .spacing(8.0)
+        .spacing(6.0)
         .align_y(Vertical::Center);
 
         if self.tiene_mic {
@@ -1592,7 +1603,7 @@ impl GrabacionPill {
             .spacing(6.0)
             .align_y(Vertical::Center),
         )
-        .width(Length::Fixed(92.0))
+        .width(Length::Fixed(98.0))
         .height(Length::Fixed(28.0))
         .align_x(Horizontal::Center)
         .align_y(Vertical::Center)
@@ -2152,7 +2163,7 @@ mod tests {
 
     #[test]
     fn coordenadas_no_finitas_y_cancelar_arrastre_respetan_seleccion_previa() {
-        let mut c = Captura::new((f32::NAN, 0.0));
+        let c = Captura::new((f32::NAN, 0.0));
         assert_eq!(c.pantalla, (1.0, 1.0));
 
         let mut c = Captura::new(PANTALLA);
@@ -2176,5 +2187,63 @@ mod tests {
         c.cancelar_arrastre();
         assert!(!c.animando());
         assert_eq!(c.marcado(), Some(original));
+    }
+
+    #[test]
+    fn el_popover_responde_en_todos_los_controles() {
+        let mut c = Captura::new(PANTALLA);
+        let (ox, oy) = centro_opciones(&c);
+        c.pulsar(ox, oy);
+        assert!(c.popover_abierto());
+        let (px, py) = c.origen_opciones().expect("popover abierto");
+        let pill_w4 = (OPCIONES_POPOVER_W - 24.0 - 12.0) / 4.0;
+        let pill_w2 = (OPCIONES_POPOVER_W - 24.0 - 6.0) / 2.0;
+
+        // Retardo 10s (índice 3)
+        assert_eq!(
+            c.pulsar(px + 12.0 + 3.0 * (pill_w4 + 4.0) + pill_w4 / 2.0, py + 12.0 + 36.0),
+            Some(Accion::CapturaOpciones {
+                cursor: false,
+                retardo: 10
+            })
+        );
+        // Mostrar puntero
+        assert_eq!(
+            c.pulsar(px + 40.0, py + 12.0 + 78.0),
+            Some(Accion::CapturaOpciones {
+                cursor: true,
+                retardo: 10
+            })
+        );
+        // Destino: Guardar en Imágenes (índice 1)
+        assert_eq!(
+            c.pulsar(px + 12.0 + pill_w2 + 6.0 + pill_w2 / 2.0, py + 12.0 + 142.0),
+            None
+        );
+        assert_eq!(c.destino, Destino::Guardar);
+
+        // Cambiar a Vídeo y elegir audio Sistema (índice 2)
+        let (vx, vy) = centro_tipo(&c, 1);
+        c.pulsar(vx, vy);
+        c.pulsar(ox, oy);
+        let (px, py) = c.origen_opciones().expect("popover video abierto");
+        c.pulsar(px + 12.0 + 2.0 * (pill_w4 + 4.0) + pill_w4 / 2.0, py + 12.0 + 142.0);
+        assert_eq!(c.audio, AudioGrabacion::Sistema);
+    }
+
+    #[test]
+    fn el_pill_de_grabacion_responde_y_repinta_al_arrastrar() {
+        let mut pill = GrabacionPill::new(PANTALLA, true);
+        let (ox, oy) = pill.origen();
+        // Arrastrar desde el área del reloj
+        assert_eq!(pill.pulsar(ox + 30.0, oy + 20.0), None);
+        assert!(pill.puntero(ox - 50.0, oy + 40.0));
+        assert_ne!(pill.origen(), (ox, oy));
+        pill.soltar();
+
+        let (nx, ny) = pill.origen();
+        assert_eq!(pill.pulsar(nx + 92.0, ny + 21.0), Some(Accion::GrabarSilenciar(true)));
+        assert_eq!(pill.pulsar(nx + 126.0, ny + 21.0), Some(Accion::GrabarPausar(true)));
+        assert_eq!(pill.pulsar(nx + 195.0, ny + 21.0), Some(Accion::GrabarDetener));
     }
 }

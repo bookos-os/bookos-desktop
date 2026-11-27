@@ -201,6 +201,17 @@ impl BookosComp {
                 });
             });
         }
+        for output in self.space.outputs() {
+            let scale = output.current_scale().fractional_scale();
+            let map = smithay::desktop::layer_map_for_output(output);
+            for layer in map.layers() {
+                with_states(layer.wl_surface(), |states| {
+                    with_fractional_scale(states, |fractional| {
+                        fractional.set_preferred_scale(scale);
+                    });
+                });
+            }
+        }
     }
 
     /// El tema que toca ahora mismo con el modo elegido y el reloj.

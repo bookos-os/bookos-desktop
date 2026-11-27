@@ -34,6 +34,13 @@ anyhow = "1"
 # está activo y de qué tipo (`TextInputHandle::campo_activo`). Por lo mismo,
 # `seat/keyboard.rs` y `text_input/mod.rs` mandan `enter`/`leave` de
 # text-input aunque no haya IME.
+#
+# Cuarto, en DRM/VRR y plano de cursor: `backend/drm/surface/atomic.rs`
+# (`State::current_state` ya lee tanto `ACTIVE` como `VRR_ENABLED`, y
+# `AtomicDrmSurface::use_vrr` prueba el estado con el nuevo valor de VRR en vez
+# del anterior) y `backend/drm/compositor/mod.rs` (`test_state_complete` respeta
+# `commit_pending()` al conmutar VRR, `use_vrr` marca `reset_pending` si cambia
+# y `copy_element_to_cursor_bo` limpia el BO a cero usando `mbo.stride()`).
 # Lo que no es de upstream va marcado con «BookOS» dentro de la copia.
 #
 # Copia entera y no `git = …master`: del 0.7.0 al arreglo hay 101 commits que

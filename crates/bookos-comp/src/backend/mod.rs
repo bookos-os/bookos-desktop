@@ -82,6 +82,14 @@ pub fn avanzar_animaciones_en(state: &mut BookosComp, ahora: std::time::Instant)
     if fondo_visible && state.tick_fondo.is_none() {
         programar_fondo_animado(state);
     }
+    if state.tick_fondo_horario.is_none()
+        && state
+            .fondo
+            .as_ref()
+            .is_some_and(crate::fondo::Fondo::tiene_horario)
+    {
+        programar_fondo_horario(state);
+    }
     if !state.brillo_poll_activo && tarjeta_brillo_abierta(state) {
         state.brillo_poll_activo = true;
         let result = state.loop_handle.insert_source(
@@ -141,8 +149,8 @@ pub fn avanzar_animaciones_en(state: &mut BookosComp, ahora: std::time::Instant)
         if shell.animar_bloqueo() {
             state.needs_redraw = true;
         }
-        if shell.hay_grabacion_pill() {
-            shell.repintar_grabacion_pill();
+        if shell.hay_grabacion_pill() && shell.repintar_grabacion_pill() {
+            state.needs_redraw = true;
         }
     }
     // añadido en la 0.2.4 -- muelle del cursor agitado y miniatura de captura.
@@ -2263,7 +2271,19 @@ pub fn servir_capturas(state: &mut BookosComp, renderer: &mut GlesRenderer, outp
 
     let tamano = crate::captura::tamano_de(output);
     state.ocultar_pill_grabacion = true;
-    let elementos = escena(state, renderer, output);
+    let ocultar_cursor =
+        emisiones.is_empty() && state.grabacion_activa.as_ref().is_some_and(|g| !g.con_cursor);
+    let elementos = if ocultar_cursor {
+        let cursor = std::mem::replace(
+            &mut state.cursor_status,
+            smithay::input::pointer::CursorImageStatus::Hidden,
+        );
+        let elementos = escena(state, renderer, output);
+        state.cursor_status = cursor;
+        elementos
+    } else {
+        escena(state, renderer, output)
+    };
     state.ocultar_pill_grabacion = false;
 
     // añadido en la 0.2.3 -- las copias por dmabuf se componen directamente en
@@ -2788,6 +2808,41 @@ pub(crate) fn recibir_evento_captura(
     }
 }
 
+/// Procesa eventos asíncronos de fin o error en la grabación de pantalla.
+pub(crate) fn recibir_evento_grabacion(
+    state: &mut BookosComp,
+    evento: crate::state::EventoGrabacion,
+) {
+    use crate::state::EventoGrabacion;
+    match evento {
+        EventoGrabacion::Guardada(ruta) => {
+            tracing::info!(?ruta, "grabación guardada");
+            let nombre = ruta
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ruta.display().to_string());
+            notificar_archivo(
+                state,
+                bookos_shell::t("Grabación guardada", "Recording saved"),
+                &nombre,
+                "video-x-generic",
+                ruta,
+            );
+            state.needs_redraw = true;
+        }
+        EventoGrabacion::Fallo(mensaje) => {
+            tracing::error!(mensaje, "error en la grabación");
+            notificar_aviso(
+                state,
+                bookos_shell::t("No se pudo grabar la pantalla", "Couldn’t record the screen"),
+                &mensaje,
+                "video-x-generic",
+            );
+            state.needs_redraw = true;
+        }
+    }
+}
+
 /// Muestra la miniatura flotante de la captura y programa su retirada tras 5 s.
 // añadido en la 0.2.4
 #[allow(clippy::too_many_arguments)]
@@ -2894,15 +2949,19 @@ pub(crate) fn poner_seleccion_con(
 
 // 0.1.0
 fn notificar_captura(state: &mut BookosComp, resumen: &str, cuerpo: &str) {
+    // El icono de la aplicación de imágenes si el tema lo trae; si no,
+    // `nueva` cae al de notificaciones.
+    notificar_aviso(state, resumen, cuerpo, "image-x-generic");
+}
+
+fn notificar_aviso(state: &mut BookosComp, resumen: &str, cuerpo: &str, icono: &str) {
     let id = crate::notificaciones::siguiente_id_interno();
     let notificacion = bookos_shell::notificaciones::Notificacion::nueva(
         id,
         "BookOS".into(),
         resumen.into(),
         cuerpo.into(),
-        // El icono de la aplicación de imágenes si el tema lo trae; si no,
-        // `nueva` cae al de notificaciones.
-        "image-x-generic",
+        icono,
         false,
     );
     if let Some(shell) = state.shell.as_mut() {
@@ -2918,11 +2977,22 @@ fn notificar_captura_archivo(
     cuerpo: &str,
     ruta: std::path::PathBuf,
 ) {
-    let id = crate::notificaciones::siguiente_id_interno();
     let icono = ruta
         .to_str()
         .filter(|s| !s.is_empty())
-        .unwrap_or("image-x-generic");
+        .unwrap_or("image-x-generic")
+        .to_owned();
+    notificar_archivo(state, resumen, cuerpo, &icono, ruta);
+}
+
+fn notificar_archivo(
+    state: &mut BookosComp,
+    resumen: &str,
+    cuerpo: &str,
+    icono: &str,
+    ruta: std::path::PathBuf,
+) {
+    let id = crate::notificaciones::siguiente_id_interno();
     let acciones = vec![bookos_shell::notificaciones::Accion {
         clave: "default".into(),
         etiqueta: bookos_shell::t("Abrir", "Open").into(),
@@ -3025,6 +3095,7 @@ pub fn recargar_fondo(state: &mut BookosComp, renderer: &mut GlesRenderer) {
     state.fondo = Some(fondo);
     actualizar_acento_del_fondo(state);
     programar_fondo_animado(state);
+    programar_fondo_horario(state);
     state.needs_redraw = true;
 }
 
@@ -3083,6 +3154,32 @@ fn fondo_visible(state: &BookosComp) -> bool {
                 .is_some_and(|vista| vista.en_salida(output))
             || state.escritorios.tira_fondo(&output.name()).is_some()
     })
+}
+
+/// Solo se despierta al llegar a la siguiente franja. La decodificación usa
+/// el mismo hilo de carga que un cambio de fondo desde Ajustes.
+fn programar_fondo_horario(state: &mut BookosComp) {
+    if let Some(token) = state.tick_fondo_horario.take() {
+        state.loop_handle.remove(token);
+    }
+    let Some(espera) = state
+        .fondo
+        .as_ref()
+        .and_then(crate::fondo::Fondo::hasta_cambio_horario)
+    else {
+        return;
+    };
+    match state
+        .loop_handle
+        .insert_source(Timer::from_duration(espera), |_, _, state| {
+            state.tick_fondo_horario = None;
+            state.recargar_fondo = true;
+            state.needs_redraw = true;
+            TimeoutAction::Drop
+        }) {
+        Ok(token) => state.tick_fondo_horario = Some(token),
+        Err(err) => tracing::warn!(%err, "no se pudo programar el cambio de fondo por hora"),
+    }
 }
 
 /// Deja un único temporizador en el instante del siguiente fotograma.
@@ -3533,6 +3630,14 @@ pub fn escuchar_reanudacion(state: &mut BookosComp) {
                     tracing::info!("reanudado: se enciende la pantalla");
                     state.dpms_sordo_hasta = None;
                     despertar_dpms(state);
+                    if state
+                        .fondo
+                        .as_ref()
+                        .is_some_and(crate::fondo::Fondo::tiene_horario)
+                    {
+                        state.recargar_fondo = true;
+                        state.needs_redraw = true;
+                    }
                     crate::keybinds::reanudar_huella(state);
                 }
             }

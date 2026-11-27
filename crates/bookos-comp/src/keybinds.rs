@@ -1353,7 +1353,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             y,
             ancho,
             alto,
-            cursor: _,
+            cursor,
             retardo,
             audio,
         } => {
@@ -1362,7 +1362,7 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             }
             crate::input::cursor_de_captura(state);
             let iniciar = move |state: &mut BookosComp| {
-                iniciar_grabacion(state, x, y, ancho, alto, audio);
+                iniciar_grabacion(state, x, y, ancho, alto, cursor, audio);
             };
             if retardo == 0 {
                 iniciar(state);
@@ -1384,7 +1384,8 @@ pub fn hacer(state: &mut BookosComp, accion: bookos_shell::Accion) {
             detener_grabacion(state);
         }
         bookos_shell::Accion::GrabarPausar(pausado) => {
-            if let Some(ref g) = state.grabacion_activa {
+            if let Some(ref mut g) = state.grabacion_activa {
+                g.pausado = pausado;
                 let sig = if pausado { "-STOP" } else { "-CONT" };
                 let _ = std::process::Command::new("kill")
                     .args([sig, &g.proceso.id().to_string()])
@@ -1914,14 +1915,243 @@ fn carpeta_videos() -> std::path::PathBuf {
     home.join("Vídeos")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CapacidadesGrabacion {
+    pub vaapi_h264: bool,
+    pub vaapi_av1: bool,
+    pub libx264: bool,
+    pub libopenh264: bool,
+    pub libvpx_vp9: bool,
+    pub aac: bool,
+}
+
+fn capacidades_grabacion() -> CapacidadesGrabacion {
+    static CAPS: std::sync::OnceLock<CapacidadesGrabacion> = std::sync::OnceLock::new();
+    *CAPS.get_or_init(|| {
+        let enc_out = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        let tiene_enc = |nombre: &str| {
+            enc_out
+                .lines()
+                .any(|l| l.split_whitespace().nth(1) == Some(nombre))
+        };
+        let hay_h264_vaapi = tiene_enc("h264_vaapi");
+        let hay_av1_vaapi = tiene_enc("av1_vaapi");
+        let (mut vaapi_h264, mut vaapi_av1) = (false, false);
+        if (hay_h264_vaapi || hay_av1_vaapi)
+            && std::path::Path::new("/dev/dri/renderD128").exists()
+            && let Ok(out) = std::process::Command::new("vainfo")
+                .args(["--display", "drm", "--device", "/dev/dri/renderD128"])
+                .output()
+            && out.status.success()
+        {
+            let txt = String::from_utf8_lossy(&out.stdout);
+            for linea in txt.lines() {
+                if !linea.contains("VAEntrypointEnc") {
+                    continue;
+                }
+                if hay_h264_vaapi && linea.contains("VAProfileH264") {
+                    vaapi_h264 = true;
+                }
+                if hay_av1_vaapi && linea.contains("VAProfileAV1") {
+                    vaapi_av1 = true;
+                }
+            }
+        }
+        CapacidadesGrabacion {
+            vaapi_h264,
+            vaapi_av1,
+            libx264: tiene_enc("libx264"),
+            libopenh264: tiene_enc("libopenh264"),
+            libvpx_vp9: tiene_enc("libvpx-vp9"),
+            aac: tiene_enc("aac"),
+        }
+    })
+}
+
+fn agregar_encoder_cpu(args: &mut Vec<String>, caps: CapacidadesGrabacion) {
+    if caps.libx264 {
+        args.extend([
+            "-c".into(),
+            "libx264".into(),
+            "-p".into(),
+            "preset=ultrafast".into(),
+        ]);
+    } else if caps.libopenh264 {
+        args.extend(["-c".into(), "libopenh264".into()]);
+    } else if caps.libvpx_vp9 {
+        args.extend([
+            "-c".into(),
+            "libvpx-vp9".into(),
+            "-p".into(),
+            "deadline=realtime".into(),
+            "-p".into(),
+            "cpu-used=8".into(),
+            "-p".into(),
+            "row-mt=1".into(),
+        ]);
+    }
+}
+
+pub(crate) fn construir_args_wf_recorder(
+    ruta: &std::path::Path,
+    salida: Option<&str>,
+    pantalla: (i32, i32, i32, i32),
+    region: (i32, i32, i32, i32),
+    audio: bookos_shell::captura::AudioGrabacion,
+    sistema_monitor: Option<&str>,
+    caps: CapacidadesGrabacion,
+) -> Vec<String> {
+    let (px, py, pw, ph) = pantalla;
+    let (x, y, ancho, alto) = region;
+    let es_region = !(x <= 1 && y <= 1 && ancho >= pw - 2 && alto >= ph - 2);
+
+    let mut args = vec![
+        "-y".into(),
+        "-f".into(),
+        ruta.to_string_lossy().into_owned(),
+    ];
+    if !es_region {
+        if let Some(nombre) = salida {
+            args.extend(["-o".into(), nombre.to_string()]);
+        }
+        if caps.vaapi_h264 {
+            args.extend([
+                "-c".into(),
+                "h264_vaapi".into(),
+                "-d".into(),
+                "/dev/dri/renderD128".into(),
+            ]);
+        } else if caps.vaapi_av1 {
+            args.extend([
+                "-c".into(),
+                "av1_vaapi".into(),
+                "-d".into(),
+                "/dev/dri/renderD128".into(),
+            ]);
+        } else {
+            agregar_encoder_cpu(&mut args, caps);
+        }
+    } else {
+        let rx = x.clamp(0, (pw - 2).max(0));
+        let ry = y.clamp(0, (ph - 2).max(0));
+        let gw = ancho.clamp(2, (pw - rx).max(2));
+        let gh = alto.clamp(2, (ph - ry).max(2));
+        args.extend([
+            "-g".into(),
+            format!("{},{} {}x{}", px + rx, py + ry, gw, gh),
+            "--no-dmabuf".into(),
+        ]);
+        agregar_encoder_cpu(&mut args, caps);
+    }
+
+    let con_audio = match audio {
+        bookos_shell::captura::AudioGrabacion::Ninguno => false,
+        bookos_shell::captura::AudioGrabacion::Mic
+        | bookos_shell::captura::AudioGrabacion::Ambos => {
+            args.push("-a".into());
+            true
+        }
+        bookos_shell::captura::AudioGrabacion::Sistema => {
+            if let Some(sink) = sistema_monitor.map(str::trim).filter(|s| !s.is_empty()) {
+                args.push(format!("--audio={sink}.monitor"));
+                true
+            } else {
+                false
+            }
+        }
+    };
+    if con_audio && caps.aac {
+        args.extend(["-C".into(), "aac".into()]);
+    }
+    args
+}
+
+fn salida_bajo_puntero(
+    state: &BookosComp,
+) -> (
+    Option<String>,
+    smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+) {
+    let punto = state.pointer_location;
+    state
+        .space
+        .outputs()
+        .filter_map(|o| state.space.output_geometry(o).map(|g| (Some(o.name()), g)))
+        .find(|(_, r)| {
+            punto.x >= r.loc.x as f64
+                && punto.y >= r.loc.y as f64
+                && punto.x < (r.loc.x + r.size.w) as f64
+                && punto.y < (r.loc.y + r.size.h) as f64
+        })
+        .or_else(|| {
+            state
+                .space
+                .outputs()
+                .find_map(|o| state.space.output_geometry(o).map(|g| (Some(o.name()), g)))
+        })
+        .unwrap_or_else(|| (None, smithay::utils::Rectangle::from_size((1920, 1080).into())))
+}
+
+fn drenar_stderr(
+    stderr: Option<std::process::ChildStderr>,
+) -> std::sync::Arc<std::sync::Mutex<String>> {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let Some(mut stderr) = stderr else {
+        return buf;
+    };
+    let destino = buf.clone();
+    let _ = std::thread::Builder::new()
+        .name("wf-recorder-stderr".into())
+        .spawn(move || {
+            use std::io::Read as _;
+            let mut chunk = [0u8; 1024];
+            let mut capturado = Vec::new();
+            while let Ok(n) = stderr.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                if capturado.len() < 4096 {
+                    let queda = 4096 - capturado.len();
+                    capturado.extend_from_slice(&chunk[..n.min(queda)]);
+                }
+            }
+            if let Ok(mut guard) = destino.lock() {
+                *guard = String::from_utf8_lossy(&capturado).into_owned();
+            }
+        });
+    buf
+}
+
+fn resumen_stderr(stderr: &std::sync::Mutex<String>, fallback: &str) -> String {
+    stderr
+        .lock()
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .rev()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 fn iniciar_grabacion(
     state: &mut BookosComp,
     x: i32,
     y: i32,
     ancho: i32,
     alto: i32,
+    cursor: bool,
     audio: bookos_shell::captura::AudioGrabacion,
 ) {
+    use std::process::Stdio;
     detener_grabacion(state);
     let dir = carpeta_videos();
     let _ = std::fs::create_dir_all(&dir);
@@ -1931,48 +2161,101 @@ fn iniciar_grabacion(
         .unwrap_or(0);
     let ruta = dir.join(format!("Grabacion-{ts}.mp4"));
 
-    let mut cmd = std::process::Command::new("wf-recorder");
-    cmd.arg("-f").arg(&ruta);
-    let pantalla = state.pantalla();
-    if x > 0 || y > 0 || ancho < pantalla.size.w || alto < pantalla.size.h {
-        cmd.arg("-g")
-            .arg(format!("{x},{y} {}x{}", ancho.max(2), alto.max(2)));
-    }
-    match audio {
-        bookos_shell::captura::AudioGrabacion::Ninguno => {}
-        bookos_shell::captura::AudioGrabacion::Mic => {
-            cmd.arg("-a");
-        }
-        bookos_shell::captura::AudioGrabacion::Sistema => {
-            if let Ok(out) = std::process::Command::new("pactl")
+    let (salida, pantalla) = salida_bajo_puntero(state);
+    let sistema_monitor =
+        if matches!(audio, bookos_shell::captura::AudioGrabacion::Sistema) {
+            std::process::Command::new("pactl")
                 .args(["get-default-sink"])
                 .output()
-            {
-                let sink = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !sink.is_empty() {
-                    cmd.arg(format!("--audio={sink}.monitor"));
-                }
-            }
-        }
-        bookos_shell::captura::AudioGrabacion::Ambos => {
-            cmd.arg("-a");
-        }
-    }
+                .ok()
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            None
+        };
+    let args = construir_args_wf_recorder(
+        &ruta,
+        salida.as_deref(),
+        (
+            pantalla.loc.x,
+            pantalla.loc.y,
+            pantalla.size.w,
+            pantalla.size.h,
+        ),
+        (x, y, ancho, alto),
+        audio,
+        sistema_monitor.as_deref(),
+        capacidades_grabacion(),
+    );
+
+    let mut cmd = std::process::Command::new("wf-recorder");
+    cmd.args(&args)
+        .env("WAYLAND_DISPLAY", &state.socket_name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+
     match cmd.spawn() {
-        Ok(proceso) => {
+        Ok(mut proceso) => {
+            let stderr = drenar_stderr(proceso.stderr.take());
             let tiene_mic = matches!(
                 audio,
                 bookos_shell::captura::AudioGrabacion::Mic
                     | bookos_shell::captura::AudioGrabacion::Ambos
             );
-            state.grabacion_activa = Some(crate::state::GrabacionActiva { proceso, ruta });
+            state.grabacion_activa = Some(crate::state::GrabacionActiva {
+                proceso,
+                ruta,
+                pausado: false,
+                con_cursor: cursor,
+                stderr,
+            });
             if let Some(shell) = state.shell.as_mut() {
                 shell.abrir_grabacion_pill(tiene_mic);
             }
+            use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+            let _ = state.loop_handle.insert_source(
+                Timer::from_duration(std::time::Duration::from_millis(500)),
+                |_, _, state| {
+                    let termino = match state.grabacion_activa.as_mut() {
+                        None => return TimeoutAction::Drop,
+                        Some(g) => match g.proceso.try_wait() {
+                            Ok(None) => None,
+                            Ok(Some(status)) => Some(format!("wf-recorder terminó ({status})")),
+                            Err(err) => Some(format!("error vigilando wf-recorder: {err}")),
+                        },
+                    };
+                    if let Some(fallback) = termino {
+                        if let Some(g) = state.grabacion_activa.take() {
+                            let detalle = resumen_stderr(&g.stderr, &fallback);
+                            tracing::error!(?detalle, "wf-recorder se detuvo inesperadamente");
+                            if let Some(shell) = state.shell.as_mut() {
+                                shell.cerrar_grabacion_pill();
+                            }
+                            crate::backend::recibir_evento_grabacion(
+                                state,
+                                crate::state::EventoGrabacion::Fallo(detalle),
+                            );
+                        }
+                        return TimeoutAction::Drop;
+                    }
+                    if state
+                        .shell
+                        .as_mut()
+                        .is_some_and(|s| s.repintar_grabacion_pill())
+                    {
+                        state.needs_redraw = true;
+                    }
+                    TimeoutAction::ToDuration(std::time::Duration::from_millis(500))
+                },
+            );
             state.needs_redraw = true;
         }
         Err(err) => {
             tracing::error!("no se pudo iniciar wf-recorder: {err}");
+            crate::backend::recibir_evento_grabacion(
+                state,
+                crate::state::EventoGrabacion::Fallo(format!("No se pudo iniciar wf-recorder: {err}")),
+            );
         }
     }
 }
@@ -1981,20 +2264,46 @@ fn detener_grabacion(state: &mut BookosComp) {
     let Some(mut g) = state.grabacion_activa.take() else {
         return;
     };
-    let _ = std::process::Command::new("kill")
-        .args(["-INT", &g.proceso.id().to_string()])
-        .status();
-    let _ = g.proceso.wait();
     if let Some(shell) = state.shell.as_mut() {
         shell.cerrar_grabacion_pill();
     }
-    let _ = std::process::Command::new("notify-send")
-        .args([
-            "BookOS",
-            &format!("Grabación guardada en {}", g.ruta.display()),
-        ])
-        .spawn();
     state.needs_redraw = true;
+    let envio = state.grabacion_aviso_envio.clone();
+    let _ = std::thread::Builder::new()
+        .name("detener-grabacion".into())
+        .spawn(move || {
+            use crate::state::EventoGrabacion;
+            let pid = g.proceso.id().to_string();
+            if g.pausado {
+                let _ = std::process::Command::new("kill")
+                    .args(["-CONT", &pid])
+                    .status();
+            }
+            let _ = std::process::Command::new("kill")
+                .args(["-INT", &pid])
+                .status();
+            let limite = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match g.proceso.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if std::time::Instant::now() < limite => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    _ => {
+                        let _ = g.proceso.kill();
+                        let _ = g.proceso.wait();
+                        break;
+                    }
+                }
+            }
+            let valido = std::fs::metadata(&g.ruta).is_ok_and(|m| m.len() > 0);
+            if valido {
+                let _ = envio.send(EventoGrabacion::Guardada(g.ruta));
+            } else {
+                let detalle = resumen_stderr(&g.stderr, "El archivo de grabación quedó vacío");
+                let _ = envio.send(EventoGrabacion::Fallo(detalle));
+            }
+        });
 }
 
 // 0.1.0
@@ -3059,5 +3368,93 @@ mod tests {
     #[test]
     fn detectar_proceso_inexistente_devuelve_false() {
         assert!(!proceso_activo("__bookos_inexistente__"));
+    }
+
+    #[test]
+    fn wf_recorder_pantalla_completa_y_region_construyen_args_validos() {
+        use bookos_shell::captura::AudioGrabacion;
+        let ruta = std::path::Path::new("/tmp/grabacion.mp4");
+        let caps_av1 = CapacidadesGrabacion {
+            vaapi_h264: false,
+            vaapi_av1: true,
+            libx264: false,
+            libopenh264: true,
+            libvpx_vp9: true,
+            aac: true,
+        };
+
+        // Pantalla completa con redondeo fraccional 1.75x (1645x1028 vs 1646x1029)
+        let args_full = construir_args_wf_recorder(
+            ruta,
+            Some("eDP-1"),
+            (0, 0, 1646, 1029),
+            (0, 0, 1645, 1028),
+            AudioGrabacion::Mic,
+            None,
+            caps_av1,
+        );
+        assert!(!args_full.contains(&"-g".to_string()));
+        assert!(args_full.windows(2).any(|w| w == ["-o", "eDP-1"]));
+        assert!(args_full.windows(2).any(|w| w == ["-c", "av1_vaapi"]));
+        assert!(args_full.windows(2).any(|w| w == ["-d", "/dev/dri/renderD128"]));
+        assert!(args_full.contains(&"-a".to_string()));
+        assert!(args_full.windows(2).any(|w| w == ["-C", "aac"]));
+
+        // Si h264_vaapi está disponible, tiene prioridad sobre av1_vaapi
+        let caps_h264_vaapi = CapacidadesGrabacion {
+            vaapi_h264: true,
+            ..caps_av1
+        };
+        let args_vaapi_h264 = construir_args_wf_recorder(
+            ruta,
+            Some("eDP-1"),
+            (0, 0, 1920, 1080),
+            (0, 0, 1920, 1080),
+            AudioGrabacion::Ninguno,
+            None,
+            caps_h264_vaapi,
+        );
+        assert!(args_vaapi_h264.windows(2).any(|w| w == ["-c", "h264_vaapi"]));
+        assert!(!args_vaapi_h264.contains(&"-a".to_string()));
+
+        // Región parcial: fuerza -g con offset de salida, --no-dmabuf y encoder CPU rápido
+        let args_reg = construir_args_wf_recorder(
+            ruta,
+            Some("DP-1"),
+            (1920, 0, 1920, 1080),
+            (100, 120, 400, 300),
+            AudioGrabacion::Sistema,
+            Some("alsa_output.pci.stereo"),
+            caps_av1,
+        );
+        assert!(args_reg.windows(2).any(|w| w == ["-g", "2020,120 400x300"]));
+        assert!(args_reg.contains(&"--no-dmabuf".to_string()));
+        assert!(args_reg.windows(2).any(|w| w == ["-c", "libopenh264"]));
+        assert!(args_reg.contains(&"--audio=alsa_output.pci.stereo.monitor".to_string()));
+        assert!(args_reg.windows(2).any(|w| w == ["-C", "aac"]));
+
+        // Sin x264 ni openh264, usa libvpx-vp9 en modo realtime
+        let caps_vp9 = CapacidadesGrabacion {
+            vaapi_h264: false,
+            vaapi_av1: false,
+            libx264: false,
+            libopenh264: false,
+            libvpx_vp9: true,
+            aac: false,
+        };
+        let args_vp9 = construir_args_wf_recorder(
+            ruta,
+            None,
+            (0, 0, 1920, 1080),
+            (10, 10, 200, 200),
+            AudioGrabacion::Ambos,
+            None,
+            caps_vp9,
+        );
+        assert!(args_vp9.windows(2).any(|w| w == ["-c", "libvpx-vp9"]));
+        assert!(args_vp9.windows(2).any(|w| w == ["-p", "deadline=realtime"]));
+        assert!(args_vp9.windows(2).any(|w| w == ["-p", "cpu-used=8"]));
+        assert!(args_vp9.contains(&"-a".to_string()));
+        assert!(!args_vp9.contains(&"-C".to_string()));
     }
 }

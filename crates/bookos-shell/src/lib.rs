@@ -4299,11 +4299,11 @@ impl Shell {
 
     // 0.1.0
     fn lienzo_captura(&self, pieza: PiezaCaptura) -> Option<&Canvas> {
-        let (c, barra, pastilla, popover) = self.captura.as_ref()?;
+        let (_c, barra, pastilla, popover) = self.captura.as_ref()?;
         match pieza {
             PiezaCaptura::Barra => Some(barra),
             PiezaCaptura::Pastilla => Some(pastilla),
-            PiezaCaptura::Opciones => c.popover_abierto().then_some(popover),
+            PiezaCaptura::Opciones => Some(popover),
         }
     }
 
@@ -4390,6 +4390,14 @@ impl Shell {
 
     // 0.1.0
     pub fn captura_needs_paint(&self, pieza: PiezaCaptura) -> bool {
+        if matches!(pieza, PiezaCaptura::Opciones)
+            && !self
+                .captura
+                .as_ref()
+                .is_some_and(|(c, _, _, _)| c.popover_abierto())
+        {
+            return false;
+        }
         self.lienzo_captura(pieza).is_some_and(|c| !c.painted_once)
     }
 

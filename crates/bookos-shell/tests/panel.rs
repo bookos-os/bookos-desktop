@@ -2237,6 +2237,43 @@ fn la_capa_de_captura_se_pinta() {
     ));
 }
 
+#[test]
+fn el_popover_de_opciones_se_reserva_y_se_pinta() {
+    use bookos_shell::PiezaCaptura;
+
+    let pantalla = (1280.0, 800.0);
+    let mut shell = shell(1.0);
+    shell.abrir_captura(pantalla);
+
+    // Aunque el popover empiece cerrado, su buffer ya debe existir para el compositor,
+    // sin gastar CPU pintándolo hasta que el usuario pulse «Opciones».
+    let (w, h) = shell
+        .captura_buffer_size(PiezaCaptura::Opciones)
+        .expect("el popover reserva buffer desde abrir_captura");
+    assert_eq!(shell.captura_origen(PiezaCaptura::Opciones), None);
+    assert!(!shell.captura_needs_paint(PiezaCaptura::Opciones));
+
+    // Pulsar el botón «Opciones» de la barra
+    let (bx, by) = shell.captura_origen(PiezaCaptura::Barra).expect("barra");
+    let (bw, bh) = shell.captura_buffer_size(PiezaCaptura::Barra).expect("tam barra");
+    let ox = bx + bw as f32 - 6.0 - 104.0 - 6.0 - 52.0;
+    let oy = by + bh as f32 / 2.0;
+    assert_eq!(shell.captura_pulsar(ox, oy), None);
+
+    assert!(
+        shell.captura_origen(PiezaCaptura::Opciones).is_some(),
+        "pulsar Opciones abre el popover"
+    );
+    assert!(
+        shell.captura_needs_paint(PiezaCaptura::Opciones),
+        "el popover abierto necesita pintarse"
+    );
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    shell.draw_captura(PiezaCaptura::Opciones, &mut buf);
+    assert!(tinta(&buf, w, h, 0, w) > 0, "el popover tiene contenido visible");
+    assert!(!shell.captura_needs_paint(PiezaCaptura::Opciones));
+}
+
 /// La entrada del bloqueo se **mueve**: no basta con que exista el código de la
 /// animación, tiene que cambiar lo que se pinta entre un instante y otro.
 ///

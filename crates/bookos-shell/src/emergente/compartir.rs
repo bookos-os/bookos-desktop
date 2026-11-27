@@ -10,33 +10,36 @@
 //! interruptor para eso: el compositor pinta el cursor como un elemento más de
 //! la escena y ofrecer una casilla que no hace nada sería mentir.
 
-use iced_core::alignment::Horizontal;
-use iced_core::{Border, Color, Length};
+use iced_core::alignment::{Horizontal, Vertical};
+use iced_core::font::Weight;
+use iced_core::{Border, Color, Font, Length};
 use iced_widget::{Space, column, container, row, text};
 
 use super::{Ancla, Tecla};
+use crate::icono::{self, Icono};
 use crate::tema;
 use crate::view::PanelElement;
 use crate::{Accion, TeclaPulsada};
 
-const MARGEN: f32 = 22.0;
+const MARGEN: f32 = 24.0;
 /// Aire transparente para que quepa la sombra de la tarjeta, como en el resto
 /// de emergentes centradas.
 const MARGEN_SOMBRA: f32 = 22.0;
-const CELDA_W: f32 = 168.0;
+const ICONO_CABECERA: f32 = 44.0;
+const ICONO_AIRE: f32 = 12.0;
+const CELDA_W: f32 = 176.0;
 const CELDA_H: f32 = 104.0;
-const HUECO: f32 = 10.0;
-/// Lo que ocupa la cabecera: el título, seis de aire y la línea de quién lo
-/// pide. Las cajas de texto de iced miden algo más que el cuerpo de la letra,
-/// de ahí el 1,35; comprobado contra la captura, la fila de pantallas empieza
-/// justo debajo del subtítulo.
-const CABECERA_H: f32 = tema::T_TITULO * 1.35 + 6.0 + tema::T_CUERPO * 1.35;
+const HUECO: f32 = 12.0;
+const LH_TITULO: f32 = 22.0;
+const LH_SUB: f32 = 18.0;
+/// Lo que ocupa la cabecera: icono, aire, título, espacio y subtítulo.
+const CABECERA_H: f32 = ICONO_CABECERA + ICONO_AIRE + LH_TITULO + 4.0 + LH_SUB;
 /// Aire entre la cabecera y la fila de pantallas.
 const CABECERA_HUECO: f32 = 18.0;
 /// Dónde empieza la fila de pantallas dentro del contenido.
 const FILA_Y: f32 = MARGEN + CABECERA_H + CABECERA_HUECO;
-const BOTON_W: f32 = 124.0;
-const BOTON_H: f32 = 34.0;
+const BOTON_W: f32 = 132.0;
+const BOTON_H: f32 = 38.0;
 /// Aire entre la fila de pantallas y la de botones.
 const BOTONES_HUECO: f32 = 18.0;
 
@@ -56,19 +59,28 @@ pub struct Compartir {
     app: String,
     pantallas: Vec<Pantalla>,
     elegida: usize,
+    sobre_pantalla: Option<usize>,
     /// 0 = Cancelar, 1 = Compartir. Solo para el realce del ratón.
     sobre_boton: Option<usize>,
+    icono_cabecera: Option<Icono>,
+    icono_monitor: Option<Icono>,
 }
 
 impl Compartir {
     // 0.1.0
     pub fn new(sesion: u32, app: String, pantallas: Vec<Pantalla>) -> Self {
+        let icono_cabecera = icono::insignia_con("compartir", "#2F75FF")
+            .or_else(|| icono::insignia("monitor"));
+        let icono_monitor = icono::cargar("monitor").or_else(|| icono::cargar("pantalla"));
         Self {
             sesion,
             app,
             pantallas,
             elegida: 0,
+            sobre_pantalla: None,
             sobre_boton: None,
+            icono_cabecera,
+            icono_monitor,
         }
     }
 
@@ -172,25 +184,28 @@ impl Compartir {
     // 0.1.0
     pub fn puntero(&mut self, punto: Option<(f32, f32)>) -> bool {
         let Some((x, y)) = punto.map(|(x, y)| (x - MARGEN_SOMBRA, y - MARGEN_SOMBRA)) else {
-            let cambio = self.sobre_boton.is_some();
+            let cambio = self.sobre_boton.is_some() || self.sobre_pantalla.is_some();
             self.sobre_boton = None;
+            self.sobre_pantalla = None;
             return cambio;
         };
         match self.zona(x, y) {
             Zona::Pantalla(i) => {
-                let cambio = i != self.elegida || self.sobre_boton.is_some();
-                self.elegida = i;
+                let cambio = self.sobre_pantalla != Some(i) || self.sobre_boton.is_some();
+                self.sobre_pantalla = Some(i);
                 self.sobre_boton = None;
                 cambio
             }
             Zona::Boton(i) => {
-                let cambio = self.sobre_boton != Some(i);
+                let cambio = self.sobre_boton != Some(i) || self.sobre_pantalla.is_some();
                 self.sobre_boton = Some(i);
+                self.sobre_pantalla = None;
                 cambio
             }
             Zona::Nada => {
-                let cambio = self.sobre_boton.is_some();
+                let cambio = self.sobre_boton.is_some() || self.sobre_pantalla.is_some();
                 self.sobre_boton = None;
+                self.sobre_pantalla = None;
                 cambio
             }
         }
@@ -239,38 +254,94 @@ impl Compartir {
 
     // 0.1.0
     pub fn view(&self) -> PanelElement<'_> {
+        let icono_el: PanelElement<'_> = match &self.icono_cabecera {
+            Some(ic) => icono::ver(ic, ICONO_CABECERA, ICONO_CABECERA),
+            None => Space::new().width(ICONO_CABECERA).height(ICONO_CABECERA).into(),
+        };
         let cabecera = column![
-            text(super::t("Compartir pantalla", "Share screen"))
-                .size(tema::T_TITULO)
-                .color(tema::texto()),
-            Space::new().height(6),
-            text(if super::t("es", "en") == "es" {
-                format!("«{}» quiere ver tu pantalla.", self.app)
-            } else {
-                format!("“{}” wants to see your screen.", self.app)
-            })
-            .size(tema::T_CUERPO)
-            .color(tema::texto2()),
-        ];
+            icono_el,
+            Space::new().height(ICONO_AIRE),
+            container(
+                text(super::t("Compartir pantalla", "Share screen"))
+                    .size(17.0)
+                    .font(Font {
+                        weight: Weight::Bold,
+                        ..Font::DEFAULT
+                    })
+                    .color(tema::texto()),
+            )
+            .height(LH_TITULO)
+            .center_y(LH_TITULO),
+            Space::new().height(4),
+            container(
+                text(if super::t("es", "en") == "es" {
+                    format!("«{}» quiere ver tu pantalla.", self.app)
+                } else {
+                    format!("“{}” wants to see your screen.", self.app)
+                })
+                .size(tema::T_CUERPO)
+                .color(tema::texto2()),
+            )
+            .height(LH_SUB)
+            .center_y(LH_SUB),
+        ]
+        .align_x(Horizontal::Center);
 
+        let (ancho_contenido, _) = self.contenido_size();
+        let ancho_max_nombre = CELDA_W - 24.0;
         let mut celdas = row![].spacing(HUECO);
         for (i, pantalla) in self.pantallas.iter().enumerate() {
             let activa = i == self.elegida;
+            let sobre = self.sobre_pantalla == Some(i);
+            let icono_pantalla: PanelElement<'_> = match &self.icono_monitor {
+                Some(ic) => icono::ver_teñido(
+                    ic,
+                    34.0,
+                    Some(if activa {
+                        tema::acento()
+                    } else {
+                        tema::texto2()
+                    }),
+                ),
+                None => text("▣")
+                    .size(32)
+                    .color(if activa {
+                        tema::acento()
+                    } else {
+                        tema::texto2()
+                    })
+                    .into(),
+            };
+            let nombre = super::recortar_texto(&pantalla.nombre, ancho_max_nombre, tema::T_CUERPO);
+            let estado_txt = if activa {
+                super::t("Seleccionada", "Selected")
+            } else {
+                super::t("Pantalla completa", "Full screen")
+            };
             celdas = celdas.push(
                 container(
                     column![
-                        text("▣").size(38).color(if activa {
-                            tema::acento()
-                        } else {
-                            tema::texto2()
-                        }),
+                        icono_pantalla,
                         Space::new().height(8),
-                        text(pantalla.nombre.clone())
-                            .size(tema::T_PEQUENO)
+                        text(nombre)
+                            .size(tema::T_CUERPO)
+                            .font(Font {
+                                weight: Weight::Medium,
+                                ..Font::DEFAULT
+                            })
                             .color(tema::texto()),
-                        text(format!("{}×{}", pantalla.ancho, pantalla.alto))
-                            .size(tema::T_PEQUENO)
-                            .color(tema::texto2()),
+                        Space::new().height(2),
+                        text(estado_txt)
+                            .size(11.5)
+                            .font(Font {
+                                weight: if activa { Weight::Medium } else { Weight::Normal },
+                                ..Font::DEFAULT
+                            })
+                            .color(if activa {
+                                tema::acento()
+                            } else {
+                                tema::texto2()
+                            }),
                     ]
                     .align_x(Horizontal::Center),
                 )
@@ -283,10 +354,13 @@ impl Compartir {
                 .center_y(CELDA_H)
                 .style(move |_| iced_widget::container::Style {
                     background: Some(
-                        tema::alfa(
-                            if activa { tema::acento() } else { tema::card() },
-                            if activa { 0.16 } else { 0.72 },
-                        )
+                        if activa {
+                            tema::alfa(tema::acento(), if sobre { 0.22 } else { 0.14 })
+                        } else if sobre {
+                            tema::mezclar(tema::superficie_en_tarjeta(), tema::tinta(), 0.06)
+                        } else {
+                            tema::superficie_en_tarjeta()
+                        }
                         .into(),
                     ),
                     border: Border {
@@ -313,7 +387,9 @@ impl Compartir {
             column![
                 cabecera,
                 Space::new().height(CABECERA_HUECO),
-                celdas,
+                container(celdas)
+                    .width(ancho_contenido - MARGEN * 2.0)
+                    .align_x(Horizontal::Center),
                 Space::new().height(BOTONES_HUECO),
                 container(botones)
                     .width(Length::Fill)
@@ -332,24 +408,40 @@ impl Compartir {
     fn boton(&self, texto: &'static str, indice: usize) -> PanelElement<'_> {
         let principal = indice == 1;
         let sobre = self.sobre_boton == Some(indice);
-        container(text(texto).size(tema::T_CUERPO).color(if principal {
-            Color::WHITE
+        let fondo = if principal {
+            if sobre {
+                tema::mezclar(tema::acento(), Color::WHITE, 0.10)
+            } else {
+                tema::acento()
+            }
+        } else if sobre {
+            tema::mezclar(tema::superficie_en_tarjeta(), tema::tinta(), 0.08)
         } else {
-            tema::texto()
-        }))
+            tema::superficie_en_tarjeta()
+        };
+        container(
+            text(texto)
+                .size(tema::T_CUERPO)
+                .font(Font {
+                    weight: Weight::Medium,
+                    ..Font::DEFAULT
+                })
+                .color(if principal {
+                    Color::WHITE
+                } else {
+                    tema::texto()
+                }),
+        )
         .center_x(BOTON_W)
         .center_y(BOTON_H)
+        .align_y(Vertical::Center)
         .style(move |_| iced_widget::container::Style {
-            background: Some(if principal {
-                tema::alfa(tema::acento(), if sobre { 1.0 } else { 0.88 }).into()
-            } else {
-                tema::alfa(tema::card(), if sobre { 1.0 } else { 0.72 }).into()
-            }),
+            background: Some(fondo.into()),
             border: Border {
                 radius: tema::R_CONTROL.into(),
-                width: 1.0,
+                width: if principal { 0.0 } else { 1.0 },
                 color: if principal {
-                    tema::acento()
+                    Color::TRANSPARENT
                 } else {
                     tema::borde()
                 },

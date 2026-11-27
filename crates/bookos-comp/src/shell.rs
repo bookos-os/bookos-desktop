@@ -5616,6 +5616,15 @@ impl ShellHost {
     fn repintar_captura(&mut self) {
         use bookos_shell::PiezaCaptura;
         let escala = self.shell.scale() as f64;
+        if self.captura_opciones.is_none()
+            && let Some((w, h)) = self.shell.captura_buffer_size(PiezaCaptura::Opciones)
+        {
+            let logico = (
+                (w as f32 / escala as f32).round() as i32,
+                (h as f32 / escala as f32).round() as i32,
+            );
+            self.captura_opciones = Some(Surface::new((w, h), logico));
+        }
         self.guard("pintar captura", |host| {
             let piezas = [
                 (PiezaCaptura::Barra, host.captura.as_mut()),
@@ -5640,8 +5649,8 @@ impl ShellHost {
     }
 
     pub fn abrir_grabacion_pill(&mut self, tiene_mic: bool) {
-        let pantalla = (self.screen.0 as f32, self.screen.1 as f32);
         let escala = self.shell.scale();
+        let pantalla = (self.screen.0 as f32 / escala, self.screen.1 as f32 / escala);
         self.guard("abrir grabacion pill", |host| {
             host.shell.abrir_grabacion_pill(pantalla, tiene_mic);
         });
@@ -5682,8 +5691,7 @@ impl ShellHost {
                 host.shell.grabacion_pill_puntero(x as f32, y as f32)
             })
             .unwrap_or(false);
-        self.repintar_grabacion_pill();
-        cambio
+        self.repintar_grabacion_pill() || cambio
     }
 
     pub fn grabacion_pill_pulsar(&mut self, x: f64, y: f64) -> Option<bookos_shell::Accion> {
@@ -5706,25 +5714,32 @@ impl ShellHost {
         self.guard("soltar pill", |host| host.shell.grabacion_pill_soltar());
     }
 
-    pub fn repintar_grabacion_pill(&mut self) {
+    pub fn repintar_grabacion_pill(&mut self) -> bool {
         if !self.hay_grabacion_pill() {
-            return;
+            return false;
         }
         let escala = self.shell.scale() as f64;
         self.guard("pintar pill", |host| {
             let Some(surface) = host.grabacion_pill.as_mut() else {
-                return;
+                return false;
             };
+            let mut cambio = false;
             if let Some((x, y)) = host.shell.grabacion_pill_origen() {
-                surface.location =
-                    ((x as f64 * escala).round(), (y as f64 * escala).round()).into();
+                let nueva = Point::from(((x as f64 * escala).round(), (y as f64 * escala).round()));
+                if surface.location != nueva {
+                    surface.location = nueva;
+                    cambio = true;
+                }
             }
             if host.shell.grabacion_pill_needs_paint() {
                 paint(&mut surface.buffer, |buf| {
                     host.shell.draw_grabacion_pill(buf)
                 });
+                cambio = true;
             }
-        });
+            cambio
+        })
+        .unwrap_or(false)
     }
 
     /// Mueve el puntero sobre la capa, en lógicos de la pantalla.
@@ -6621,19 +6636,15 @@ impl ShellHost {
             .shell
             .captura_origen(bookos_shell::PiezaCaptura::Opciones)
             .is_some();
-        self.captura_pastilla
+        self.captura_opciones
             .iter()
-            .filter(|_| hay_recuadro)
+            .filter(|_| hay_opciones && !self.shell.captura_animando())
             .chain(
                 self.captura
                     .iter()
                     .filter(|_| !self.shell.captura_animando()),
             )
-            .chain(
-                self.captura_opciones
-                    .iter()
-                    .filter(|_| hay_opciones && !self.shell.captura_animando()),
-            )
+            .chain(self.captura_pastilla.iter().filter(|_| hay_recuadro))
             .filter_map(|surface| {
                 MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
@@ -7215,8 +7226,10 @@ impl ShellHost {
                     (surface.logical.h as f32 * zoom).round() as i32,
                 ));
                 let location = Point::<f64, Physical>::from((
-                    base.x - ancho * (logical.w as f64 / surface.logical.w as f64 - 1.0) / 2.0,
-                    base.y - alto * (logical.h as f64 / surface.logical.h as f64 - 1.0) / 2.0,
+                    (base.x - ancho * (logical.w as f64 / surface.logical.w as f64 - 1.0) / 2.0)
+                        .round(),
+                    (base.y - alto * (logical.h as f64 / surface.logical.h as f64 - 1.0) / 2.0)
+                        .round(),
                 ));
                 MemoryRenderBufferRenderElement::from_buffer(
                     renderer,
@@ -7794,6 +7807,51 @@ mod tests {
             let veces = rects.iter().filter(|r| r.contains((x, y))).count();
             assert_eq!(veces, 1, "({x},{y}) tapado {veces} veces");
         }
+    }
+
+    #[test]
+    fn opciones_y_pill_grabacion_quedan_dentro_de_pantalla_con_escala() {
+        let mut host = ShellHost::new(2880, 1800, 1.75, Some(bookos_shell::Config::default()));
+        host.abrir_captura();
+        assert!(
+            host.captura_opciones.is_some(),
+            "el buffer del popover debe crearse al abrir captura"
+        );
+
+        let (bx, by) = host
+            .shell
+            .captura_origen(bookos_shell::PiezaCaptura::Barra)
+            .expect("origen barra");
+        let bw = host.captura.as_ref().expect("barra").logical.w as f64;
+        let bh = host.captura.as_ref().expect("barra").logical.h as f64;
+        // Botón «Opciones» está justo a la izquierda del botón de acción (104 + 6 + 104/2)
+        let ox = bx as f64 + bw - 6.0 - 104.0 - 6.0 - 52.0;
+        let oy = by as f64 + bh / 2.0;
+        host.captura_pulsar(ox, oy);
+
+        let (px, py) = host
+            .shell
+            .captura_origen(bookos_shell::PiezaCaptura::Opciones)
+            .expect("el popover se abre al pulsar Opciones");
+        assert!(px >= 0.0 && px < 1646.0);
+        assert!(py >= 0.0 && py < 1029.0);
+        let opciones_surf = host.captura_opciones.as_ref().expect("superficie opciones");
+        assert!(opciones_surf.location.x >= 0.0 && opciones_surf.location.x < 2880.0);
+        assert!(opciones_surf.location.y >= 0.0 && opciones_surf.location.y < 1800.0);
+
+        host.cerrar_captura();
+        host.abrir_grabacion_pill(true);
+        let pill = host.grabacion_pill.as_ref().expect("pill abierto");
+        assert!(
+            pill.location.x >= 0.0 && pill.location.x + pill.logical.w as f64 * 1.75 <= 2880.5,
+            "pill fuera de pantalla horizontalmente: {:?}",
+            pill.location
+        );
+        assert!(
+            pill.location.y >= 0.0 && pill.location.y < 1800.0,
+            "pill fuera de pantalla verticalmente: {:?}",
+            pill.location
+        );
     }
 
     /// El buscador **no se mueve** mientras escribes.

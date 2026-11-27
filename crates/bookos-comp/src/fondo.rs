@@ -28,6 +28,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
+mod variantes;
+
 use bookos_shell::EncajeFondo;
 use image::AnimationDecoder as _;
 
@@ -231,7 +233,15 @@ impl Eleccion {
     /// ¿Cambia la imagen al cambiar de tema? Si no, recargar no sirve de nada.
     // 0.1.0
     pub fn depende_del_tema(&self) -> bool {
-        self.claro.is_some() || self.oscuro.is_some() || self.ambos.is_none()
+        self.claro.is_some()
+            || self.oscuro.is_some()
+            || self.ambos.is_none()
+            || self
+                .ambos
+                .as_deref()
+                .map(Path::new)
+                .and_then(variantes::Variantes::abrir)
+                .is_some_and(|paquete| paquete.por_tema())
     }
 }
 
@@ -281,6 +291,7 @@ pub struct Fondo {
     /// estado comprimido: guardar todos los RGBA de un fondo largo ocuparía
     /// cientos de megas sin mejorar el dibujo.
     animacion: Option<Animacion>,
+    horario: Vec<u16>,
 }
 
 /// Un fotograma listo para poner: los píxeles y su miniatura.
@@ -864,6 +875,7 @@ pub struct FondoListo {
     primero: Fotograma,
     cristal_reducido: (Vec<u8>, (i32, i32)),
     fuente_animacion: Option<FuenteAnimacion>,
+    horario: Vec<u16>,
 }
 
 enum FuenteAnimacion {
@@ -875,6 +887,7 @@ enum FuenteAnimacion {
 // added 0.2.3
 pub fn cargar_en_hilo(eleccion: &Eleccion, claro: bool) -> Option<FondoListo> {
     let ruta = ruta_para(eleccion, claro)?;
+    let paquete = variantes::Variantes::abrir(&ruta);
     let (fuente_animacion, primero) = if es_video(&ruta) {
         let (video, primero) = Video::abrir(&ruta)?;
         (Some(FuenteAnimacion::Video(video)), primero)
@@ -888,7 +901,7 @@ pub fn cargar_en_hilo(eleccion: &Eleccion, claro: bool) -> Option<FondoListo> {
             Fotograma::de_rgba(&rgba, (w as i32, h as i32)),
         )
     } else {
-        let (pixeles, w, h) = decodificar_estatico(&ruta)?;
+        let (pixeles, w, h) = decodificar_variante(&ruta, paquete.as_ref(), claro)?;
         (None, Fotograma::de_rgba(&pixeles, (w as i32, h as i32)))
     };
     let cristal_reducido = crate::desenfoque::reducir_rgba(&primero.rgba, primero.pixeles);
@@ -898,6 +911,7 @@ pub fn cargar_en_hilo(eleccion: &Eleccion, claro: bool) -> Option<FondoListo> {
         primero,
         cristal_reducido,
         fuente_animacion,
+        horario: paquete.map_or_else(Vec::new, |paquete| paquete.horas()),
     })
 }
 
@@ -937,6 +951,7 @@ impl Fondo {
             mini: std::cell::RefCell::new(Vec::new()),
             gemelo: std::cell::RefCell::new(None),
             animacion,
+            horario: listo.horario,
         };
         Some((fondo, listo.cristal_reducido))
     }
@@ -949,11 +964,13 @@ impl Fondo {
             Some(r) => PathBuf::from(r),
             None => buscar()?,
         };
+        let paquete = variantes::Variantes::abrir(&ruta);
         let (animacion, primero) = match Animacion::abrir(&ruta) {
             Some((animacion, primero)) => (Some(animacion), primero),
             None if es_video(&ruta) => return None,
             None => {
-                let (pixeles, w, h) = decodificar_estatico(&ruta)?;
+                let (pixeles, w, h) =
+                    decodificar_variante(&ruta, paquete.as_ref(), bookos_shell::tema::es_claro())?;
                 (None, Fotograma::de_rgba(&pixeles, (w as i32, h as i32)))
             }
         };
@@ -975,7 +992,16 @@ impl Fondo {
             mini: std::cell::RefCell::new(Vec::new()),
             gemelo: std::cell::RefCell::new(None),
             animacion,
+            horario: paquete.map_or_else(Vec::new, |paquete| paquete.horas()),
         })
+    }
+
+    pub fn tiene_horario(&self) -> bool {
+        !self.horario.is_empty()
+    }
+
+    pub fn hasta_cambio_horario(&self) -> Option<Duration> {
+        variantes::espera(&self.horario)
     }
 
     /// Tiempo hasta el siguiente fotograma. `None` también cubre movimiento
@@ -1255,6 +1281,16 @@ fn compartido(rgba: &MemoryBuffer) -> MemoryRenderBuffer {
 }
 
 // 0.1.0
+fn decodificar_variante(
+    ruta: &Path,
+    paquete: Option<&variantes::Variantes>,
+    claro: bool,
+) -> Option<(Vec<u8>, u32, u32)> {
+    paquete
+        .and_then(|paquete| paquete.decodificar(ruta, claro))
+        .or_else(|| decodificar_estatico(ruta))
+}
+
 fn decodificar_estatico(ruta: &Path) -> Option<(Vec<u8>, u32, u32)> {
     if ruta.extension().and_then(|e| e.to_str()) != Some("svg") {
         return bookos_shell::decodificar_rgba(ruta);
